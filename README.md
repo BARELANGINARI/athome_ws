@@ -6,38 +6,43 @@ src/                # ROS packages only (colcon)
 ├── nucleo/          # robot movement 3 motor (ala NucleoServer: main.cpp + src/Kinematic)
 │   ├── main.cpp                  # program utama (node + loop, MKiri/MKanan/MBelakang)
 │   ├── launch/nucleo.launch.py   # use_yaw_topic:=true yaw_topic:=/zed/yaw_deg
-│   ├── src/Kinematic.cpp, udpSender.cpp, udpServer.cpp  # lib murni
+│   ├── src/Kinematic.cpp, udpSender.cpp, udpServer.cpp  # lib murni (fix 32-bit wrap & time clamp)
+│   ├── scripts/odom_calibrate.py # utilitas kalibrasi geometri odom robot
 │   └── include/*.h(pp) flat      # Kinematic.hpp, nucleo_node.hpp, udpSender.h, udpServer.h
 ├── zed/             # kamera: yaw + body tracking + YOLO tas (ala zed_ws: src/main.cpp)
-│   ├── src/main.cpp              # SATU file: struct + vision murni + YOLO tas + node + main
-│   ├── include/deploy/...        # header TensorRT opsional (OFF default)
-│   ├── launch/zed.launch.py      # enable_body_tracking:=true
-│   └── models/yolov8n_sim.onnx + coco_names.txt  # YOLO tas (bag), tinggal pake
-│   # publish: /zed/yaw_deg, /zed/bag_detections, /zed/person_keypoints
-├── robot_bringup/   # shared sensors (do not run manually)
-│   ├── launch/sensors.launch.py  # auto-included by mapping/navigation
-│   │   ├── sensor 1: RPLiDAR (rplidar_node -> /scan, full 360°, ~14 Hz)
-│   │   ├── static TF: base_link -> laser_frame, base_footprint -> base_link
-│   │   └── sensor 2: ZED camera (yaw + body tracking + YOLO tas)
-│   └── config/lidar.yaml  # lidar driver params (filter 180° dilepas)
+│   ├── src/main.cpp              # SATU file: vision murni + YOLO tas + built-in debug window
+│   ├── launch/zed.launch.py      # depth_mode:=NEURAL_LIGHT, enable_body_tracking:=true
+│   └── models/                   # download_yolo.sh, setup_onnxruntime.sh, coco_names.txt
+│   # publish: /zed/yaw_deg, /zed/bag_detections, /zed/person_keypoints, /zed/image
+├── robot_bringup/   # shared sensors & hardware teleop
+│   ├── launch/sensors.launch.py  # auto-included by mapping/navigation (LiDAR + ZED + static TF)
+│   ├── launch/joystick.launch.py # teleop dualshock/joystick
+│   ├── scripts/ds4_drive, bag_kinematics # skrip penggerak manual
+│   └── config/lidar.yaml         # rplidar driver params & filter 180° opsional
 ├── mapping/         # room mapping (requires teleop)
 │   ├── launch/mapping.launch.py  # includes sensors + slam_toolbox (toolbox only)
 │   ├── config/slam.yaml          # travel thresholds 0.15, update 2 s
 │   └── rviz/mapping.rviz
-├── navigation/      # point-to-point using the map
-│   ├── launch/navigation.launch.py  # include sensors + nav2_bringup (+ rviz args)
-│   ├── config/nav2_params.yaml
-│   ├── maps/  # SINGLE source of truth: map.yaml + map.pgm (via map_saver_cli)
-│   ├── maps_backup/  # arsip peta lama (tidak ikut ter-install)
+├── navigation/      # point-to-point using the map & dynamic person following
+│   ├── launch/navigation.launch.py  # sensors + Nav2 + RViz + /goto + person_follower
+│   ├── behavior_trees/follow_person.xml # BT person following (TruncatePath 0.5m)
+│   ├── scripts/                  # person_follower.py, place_navigator.py, check_places.py, dll
+│   ├── config/                   # nav2_params.yaml, places.yaml, person_follow.yaml
+│   ├── maps/                     # SINGLE source of truth: map.yaml + map.pgm
 │   └── rviz/navigation.rviz
-├── luggage_task/    # Task 1 Carry My Luggage (state machine flowchart)
-│   ├── launch/  # split-stack: hardware (base+lidar), camera (zed),
-│   │   │       # motion (task+SLAM+RViz); + luggage_task.launch.py (1 perintah, via Nav2)
-│   ├── config/params.yaml  # SATU file param (27 kunci, section luggage_task)
-│   │   # (tuning: edit yaml + restart launch, TANPA build ulang)
-│   ├── rviz/luggage_task.rviz         # Fixed Frame: map (/map + TF + /odom + /scan)
-│   ├── include/luggage_task/task.hpp  # tipe + state + deklarasi logika
-│   └── src/task/task_node.cpp, task_logic.cpp  # node ROS + state machine murni
+├── luggage_task/    # Task 1 Carry My Luggage (state machine flowchart + HRI)
+│   ├── launch/                   # split-stack (hardware, camera, motion, hri) & luggage_task.launch.py
+│   ├── config/params.yaml        # file parameter utama (HRI, timeout, max_follow_range, dll)
+│   ├── rviz/luggage_task.rviz    # Fixed Frame: map (/map + TF + /odom + /scan)
+│   ├── include/luggage_task/task.hpp # tipe + state + deklarasi logika
+│   └── src/task/task_node.cpp, task_logic.cpp  # node ROS + FSM RoboCup
+├── hri/             # Human-Robot Interaction (voice interface & web dashboard)
+│   ├── hri/                      # barelang_hri.py, stt_engine.py, tts_engine.py, intent_recognizer.py, web_server.py
+│   ├── launch/hri.launch.py      # launcher modul suara
+│   └── src/index.html            # UI web monitoring dashboard
+└── spawn/           # simulator & pose checker tools
+    ├── launch/spawn.py, test_poses.py
+    └── scripts/check_poses.py, pose_check.py, set_pose.py
 docs/               # RUNNING.md, REQUIREMENTS.md, ARCHITECTURE.md
 ```
 
@@ -96,19 +101,25 @@ Kirim tujuan via RViz tombol 2D Goal Pose.
 ### 4. Luggage task
 Syarat: kamera ZED di USB3 + lidar di `/dev/ttyUSB0` + base `nucleo` menyala.
 `source install/setup.bash` di tiap terminal. Boolean huruf kecil (`true`).
-Mode saat ini: **gesture-dulu** (`gesture_only: true` di
-`src/luggage_task/config/params.yaml`) — deteksi menunjuk, belum lanjut
-ke SEARCH_BAG/FOLLOW.
 
-**Split-stack (3 terminal, rekomen):**
+Konfigurasi di `src/luggage_task/config/params.yaml`:
+- **Full Task RoboCup (Default):** `use_hri: true` dan `gesture_only: false`.
+- **Mode Uji Gestur:** `gesture_only: true` (berhenti di deteksi menunjuk, ulangi deteksi).
+- **Parameter Sinkron Nav2:** `person_lost_timeout_sec: 3.0` dan `max_follow_range_m: 3.0` (sinkron dengan `person_follower.py`).
+
+**Split-stack (4 terminal, rekomen):**
 ```bash
-# T1 base + lidar:
+# Terminal 1 — Hardware base (STM32 UDP motor) + LiDAR + TF statis:
 ros2 launch luggage_task hardware.launch.py
-# T2 kamera (vision):
+
+# Terminal 2 — Kamera ZED (Vision: 34 keypoint body tracking + YOLO tas):
 ros2 launch luggage_task camera.launch.py
-# T3 task + SLAM + RViz:
+
+# Terminal 3 — Task Logic + SLAM / Nav2 + RViz:
 ros2 launch luggage_task motion.launch.py
-# T4 opsional HRI:
+# (Opsional jika memakai person following Nav2 terpisah: ros2 run navigation person_follower.py)
+
+# Terminal 4 — Modul Suara HRI (Faster-Whisper STT + Piper TTS + NLU):
 ros2 launch luggage_task hri.launch.py
 ```
 
@@ -123,7 +134,7 @@ ros2 launch luggage_task luggage_task.launch.py nav2:=true nucleo:=true rviz:=fa
 - `depth_minimum_distance:=30.0` = 30cm ala maen_boss (units CENTIMETER).
 
 **Frame patah-patah?** VGA memang kecil, yang berat itu prosesnya. Ringankan
-bila perlu: `body_model:=FAST`, `depth_mode:=PERFORMANCE`, `image_stride:=3`
+bila perlu: `body_model:=FAST`, `depth_mode:=NEURAL_LIGHT` (atau `PERFORMANCE`), `image_stride:=3`
 (publish tiap 3 frame), `camera_fps:=30.0` (30 = nilai aman; turunkan ke 15
 bila firmware mendukung). Pastikan tidak ada proses lain yang buka kamera
 (1 kamera = 1 proses). Butuh akurat (bukan halus):
@@ -147,26 +158,23 @@ ros2 topic echo /zed/person_keypoints  # "person:x,y,w,h|x,y,z|yaw,rel|kpt=...;.
 - Window cuma tampil `BAWAH KIRI` / `BAWAH KANAN` (= **perspektif person**:
   tangan kanan = `KANAN`) + distance. Cek terminal ada
   `task start: ... mirror=true ...`. Matikan: `mirror:=false`.
-- Delay preview terasa? `depth_mode` default sudah `PERFORMANCE` (ringan);
-  balik ke `ULTRA` ala maen_boss bila perlu. `image_stride:=3` untuk
-  publish tiap 3 frame.
+- Delay preview terasa? `depth_mode` default sudah `NEURAL_LIGHT` / `PERFORMANCE` (ringan).
+  `image_stride:=3` untuk publish tiap 3 frame.
 
 
 **Tuning param (TANPA build):** semua di `src/luggage_task/config/params.yaml`
-(27 kunci, tiap baris ada komentar `##`). Ubah → restart launch.
-Full task (lanjut SEARCH_BAG→FOLLOW): set `gesture_only: false` + restart.
+(tiap baris ada komentar `##`). Ubah → restart launch.
+Full task (lanjut SEARCH_BAG→APPROACH→RETURN_START): pastikan `gesture_only: false` + restart.
 
-**Cara main (operator) — mode gesture-dulu:**
-1. Berdiri di depan robot (orang PALING DEKAT = yang terdeteksi).
-2. Tunjuk diagonal bawah ke kiri/kanan → window `luggage_task - gesture` tampil
-   `BAWAH KIRI` / `BAWAH KANAN` + jarak.
+**Cara main (operator) — Mode HRI Utama (RoboCup @Home):**
+1. **Panggil Robot:** Berdiri di depan kamera robot, ucapkan wakeword: *"Hello robot"* atau *"Inari"*. Robot menyapa dan meminta dipandu.
+2. **Mulai Following:** Ucapkan: *"Follow me"*. Robot merespons *"Following you now"* dan mulai mengikuti operator (menjaga jarak ~0.5 m).
+   - *Catatan Jarak:* Berjalanlah santai/pelan. Jika jarak $> 3.0\text{ m}$ atau terhalang $> 3.0\text{ s}$, robot otomatis berhenti diam dan memanggil (*"Please stop, you are too far away..."* / RECOVERY). Dekati robot kembali $\le 3.0\text{ m}$ agar follow berlanjut.
+3. **Tiba di Lokasi Tas:** Ucapkan: *"We arrived"* atau *"Stop here"*. Robot berhenti dan meminta: *"Please point to your luggage..."*.
+4. **Tunjuk Tas:** Berdiri di depan robot lalu tunjuk ke arah tas dengan gestur diagonal bawah (tangan kiri/kanan). Robot mengonfirmasi arah (*"I see you are pointing to the left/right side"*).
+5. **Ambil Tas & Pulang:** Robot mencari tas via YOLO, memutar menghadap tas (`ROTATE_TO_BAG`), maju sampai jarak 0.5 m (`APPROACH`), lalu otomatis kembali ke titik awal navigasi (`RETURN_START`) $\rightarrow$ `DONE`.
 
-**Cara main (operator):**
-1. Berdiri di depan robot menghadap kamera → `DETECT_PERSON` → `PERSON_POSE`.
-2. Tunjuk diagonal bawah ke arah tas (tangan kiri/kanan) → `DETECT_GESTURE` → `TARGET_DIR`.
-3. Robot memutar menghadap tas (`ROTATE_TO_BAG`), lalu maju sampai 0.5 m darimu dan berhenti (`APPROACH`).
-4. Membelakangi robot → `WAIT_TURN` → `TRACK`.
-5. Berjalan pelan — robot mengikuti jaga jarak ~0.5 m (`FOLLOW`) sampai durasi habis / `goal_reached` → `DONE`.
+*(Bila mode legacy `use_hri: false`: 1. DETECT_PERSON → 2. DETECT_GESTURE → 3. APPROACH → 4. Operator membelakangi robot di WAIT_TURN → 5. FOLLOW → DONE).*
 
 Lalu di RViz: klik **2D Pose Estimate**, drag di posisi robot sebenarnya
 (wajib untuk AMCL). Langkah ini TIDAK bisa dilewat: AMCL baru menerbitkan
@@ -187,11 +195,9 @@ lain), tanpa arg (task saja, tanpa peta).
 > + `rviz2`, tanpa node nav2/zed/lidar) lalu task ABORT karena
 > `/zed/person_keypoints` dan `/scan` tidak datang.
 Butuh topik: `/zed/person_keypoints`, `/zed/bag_detections`, `/zed/yaw_deg`,
-`/scan`, `/luggage/goal_reached` (opsional).
+`/scan`, `/luggage/goal_reached` (opsional), `/hri/event`, `/hri/tts_say`.
 Output: `cmd_vel`, `/luggage/status`, `/luggage/target_dir`.
-Alur state: START → DETECT_PERSON → PERSON_POSE → DETECT_GESTURE →
-TARGET_DIR → SEARCH_BAG → BAG_POSE → ROTATE_TO_BAG → APPROACH (0.5 m) →
-WAIT_TURN → TRACK → FOLLOW (jaga 0.5 m) → DONE/ABORT.
+Alur state (HRI aktif): START → WAIT_WAKEWORD → WAIT_FOLLOW → FOLLOW (jaga 0.5 m, auto-stop >3m) → DETECT_GESTURE → TARGET_DIR → SEARCH_BAG → BAG_POSE → ROTATE_TO_BAG → APPROACH (0.5 m) → RETURN_START → DONE/ABORT.
 Yang tampil di mana:
 - **Peta `.pgm` + posisi robot** → RViz (`/map` + TF `map->odom` dari
   AMCL/SLAM). File `.pgm` simpanan hanya dipakai bila `slam:=false`.
