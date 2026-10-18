@@ -81,7 +81,8 @@ struct Params
   double hand_timeout{30.0};
   double search_timeout{40.0};
   double follow_duration{0.0};  // <= 0.0 = tanpa batas waktu (mengikuti terus sampai arrived)
-  double lost_timeout{5.0};
+  double lost_timeout{3.0};
+  double max_follow_range{3.0};  // sinkron person_follower.py: berhenti bila orang > 3.0 m
   int reacquire_retries{3};
   double rotate_speed{0.3};
   double rotate_tol{5.0};
@@ -324,7 +325,8 @@ private:
   double hand_timeout_{30.0};
   double search_timeout_{40.0};
   double follow_duration_{0.0};
-  double lost_timeout_{5.0};
+  double lost_timeout_{3.0};
+  double max_follow_range_{3.0};
   int reacquire_retries_{3};
   double rotate_speed_{0.3};
   double rotate_tol_{5.0};

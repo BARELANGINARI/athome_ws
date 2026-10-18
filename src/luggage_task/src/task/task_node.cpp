@@ -38,7 +38,8 @@ void LuggageTask::loadParam()
   declare_parameter("hand_timeout_sec", 30.0);
   declare_parameter("search_timeout_sec", 40.0);
   declare_parameter("follow_duration_sec", 0.0);
-  declare_parameter("person_lost_timeout_sec", 5.0);
+  declare_parameter("person_lost_timeout_sec", 3.0);
+  declare_parameter("max_follow_range_m", 3.0);
   declare_parameter("reacquire_retries", 3);
   declare_parameter("rotate_speed", 0.3);
   declare_parameter("rotate_tolerance_deg", 5.0);
@@ -82,6 +83,7 @@ void LuggageTask::loadParam()
   search_timeout_ = get_parameter("search_timeout_sec").as_double();
   follow_duration_ = get_parameter("follow_duration_sec").as_double();
   lost_timeout_ = get_parameter("person_lost_timeout_sec").as_double();
+  max_follow_range_ = get_parameter("max_follow_range_m").as_double();
   reacquire_retries_ = get_parameter("reacquire_retries").as_int();
   rotate_speed_ = get_parameter("rotate_speed").as_double();
   rotate_tol_ = get_parameter("rotate_tolerance_deg").as_double();
@@ -116,6 +118,7 @@ void LuggageTask::syncParams()
   p.search_timeout = search_timeout_;
   p.follow_duration = follow_duration_;
   p.lost_timeout = lost_timeout_;
+  p.max_follow_range = max_follow_range_;
   p.reacquire_retries = reacquire_retries_;
   p.rotate_speed = rotate_speed_;
   p.rotate_tol = rotate_tol_;

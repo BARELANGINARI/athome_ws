@@ -1,7 +1,3 @@
-// Logika murni Task 1 (tanpa ROS): parse topik mentah zed -> fuse ->
-// state machine flowchart -> MotionCmd. Node ROS tinggal memanggil
-// integrate() + decide() tiap step lalu menulis MotionCmd ke cmd_vel/Nav2.
-
 #include "luggage_task/task.hpp"
 
 #include <cmath>
@@ -784,6 +780,34 @@ void decide(World * world, double now, bool nav_ready)
         break;
       }
       world->last_person_seen = now;
+
+      // Sinkron person_follower.py: jika operator menjauh melebihi max_follow_range (default 3.0 m)
+      double dist_to_person = -1.0;
+      for (const auto & p : world->persons) {
+        if (p.has_pos) {
+          dist_to_person = std::hypot(p.pos_x, p.pos_y);
+          break;
+        }
+      }
+      if (dist_to_person > world->params.max_follow_range) {
+        world->cmd = MotionCmd{};
+        if (world->params.use_hri) {
+          world->recovery_attempts = 1;
+          world->last_recovery_speak = now;
+          world->say("Please stop, you are too far away, I lost you.");
+          world->gotoState(
+            State::RECOVERY, now,
+            "Operator terlalu jauh (" + std::to_string(dist_to_person) + " m > " +
+            std::to_string(world->params.max_follow_range) + " m). Berhenti...");
+        } else {
+          abortTo(
+            world, now,
+            "operator terlalu jauh (" + std::to_string(dist_to_person) + " m > " +
+            std::to_string(world->params.max_follow_range) + " m)");
+        }
+        break;
+      }
+
       if (!world->robot.have_pose) {
         if (world->elapsed(now) > 15.0) {
           abortTo(world, now, "TF peta hilang (cek navigation)");
@@ -797,10 +821,25 @@ void decide(World * world, double now, bool nav_ready)
     }
     case State::RECOVERY: {
       world->cmd = MotionCmd{};
-      if (world->follow_bearing_valid || !world->persons.empty()) {
+      bool person_in_range = false;
+      if (!world->persons.empty()) {
+        for (const auto & p : world->persons) {
+          if (p.has_pos) {
+            double d = std::hypot(p.pos_x, p.pos_y);
+            if (d <= world->params.max_follow_range) {
+              person_in_range = true;
+              break;
+            }
+          } else {
+            person_in_range = true;
+            break;
+          }
+        }
+      }
+      if (person_in_range) {
         world->last_person_seen = now;
         world->say("I see you. Resuming following.");
-        world->gotoState(State::FOLLOW, now, "Operator terlihat kembali. Melanjutkan follow...");
+        world->gotoState(State::FOLLOW, now, "Operator terlihat kembali dalam jangkauan. Melanjutkan follow...");
         break;
       }
       if (now - world->last_recovery_speak >= 3.0) {
