@@ -1,0 +1,86 @@
+# Parameter person following (dynamic object following).
+#
+# Dipakai oleh node `scripts/person_follower.py`. File ini tidak boleh
+# diubah menjadi "benar" tanpa restart: Nav2 tidak membaca file ini.
+#
+# Kontrak pemanggilan
+# ------------------
+#   /follow/person   std_srvs/srv/Trigger  -> mulai following
+#   /follow/stop     std_srvs/srv/Trigger  -> berhenti following
+#   /follow/state    std_msgs/srv/String   -> IDLE / WAITING_PERSON / FOLLOWING
+#
+# Node ini SEPENUHNYA on-demand: saat launch ia hanya listen, tidak pernah
+# mengirim goal sampai ada yang memanggil /follow/person.
+#
+# SUMBER DATA
+# -----------
+#   subscribe /zed/person_keypoints (std_msgs/String) dari paket `zed`.
+#   Format tiap orang (orang ke-N dipisah tanda ';'):
+#     person:x,y,w,h|x,y,z|yaw,rel|kpt=x1,y1,...,x34,y34
+#   - x,y,z  = posisi 3D orang dalam meter, SUDAH relatif robot
+#              (x = depan, y = kiri, z = atas) sesuai REP-103 base_link
+#   - urutan  = orang paling dekat dulu, jadi index 0 = yang terdekat
+#   - "NO_PERSON" / nilai nan = tidak ada orang / depth gagal
+#
+#   CATATAN PENTING: /zed/person_keypoints hanya terisi kalau zed dijalankan
+#   dengan enable_body_tracking:=true. Default di navigation.launch.py adalah
+#   FALSE, jadi following SELALU akan menunggu tanpa ada yang muncul kalau
+#   argumen itu tidak diubah.
+
+person_follower:
+  ros__parameters:
+    # --- topik ---
+    person_topic: /zed/person_keypoints
+    goal_update_topic: /goal_update      # di-subscribe GoalUpdater (nav2)
+    state_topic: /follow/state
+    scan_topic: /scan
+    map_topic: /map
+
+    # --- frame ---
+    frame_map: map
+    frame_base: base_link
+
+    # --- LIDAR & MAP FUSION ---
+    # Memadukan deteksi ZED dengan pantulan dinamis LiDAR.
+    # Titik LiDAR yang menabrak dinding/rintangan di peta statis (/map)
+    # akan disaring/dibuang, hanya titik di area bebas (orang bergerak)
+    # yang dipakai untuk memperhalus koordinat target.
+    enable_lidar_fusion: true
+    lidar_gate_radius: 0.50       # radius pencarian pantulan di sekitar ZED (meter)
+    lidar_min_points: 3           # min pantulan dinamis untuk validasi cluster
+    lidar_max_staleness: 0.5      # batas usia data /scan (detik)
+    map_cost_threshold: 50        # cell OccupancyGrid > 50 dianggap dinding statis
+    wall_margin_cells: 1          # toleransi margin dinding (cell)
+
+    # --- JARAK (meter, pusat robot -> pusat orang) ---
+    # Deadband: robot hanya bergerak kalau orang LEBIH JAUH dari
+    # follow_start_distance, dan berhenti saat sudah <= follow_stop_distance.
+    # Celah 0.50..0.60 itu zona mati yang mencegah robot maju-rem-maju-rem.
+    follow_start_distance: 0.60
+    follow_stop_distance: 0.50
+    # Batas akhir jalur. HARUS sama dengan follow_stop_distance supaya jalur
+    # tidak pernah encouraging robot menerobos batas stop.
+    # (Nilai ini juga ditulis di behavior_trees/follow_person.xml)
+    path_truncate_distance: 0.50
+    # Orang dianggap hilang kalau menjauh lebih dari ini -> auto stop.
+    max_follow_range: 3.0
+
+    # --- waktu (detik) ---
+    # Opsi "tunggu orang": /follow/person tetap sukses walau belum ada orang,
+    # node menunggu sampai timeout ini sebelum menyerah (0.0 = tanpa batas waktu).
+    wait_person_timeout: 0.0
+    # Kalau orang hilang saat sedang following, jeda menunggu orang terlihat kembali.
+    max_lost_time: 3.0
+    # Frekuensi fallback kirim pose ke /goal_update (Hz) via timer.
+    update_hz: 3.0
+
+    # --- lain-lain ---
+    target_index: 0            # 0 = orang terdekat
+    follow_bt_xml: ""          # diisi navigation.launch.py (FindPackageShare)
+
+    # Nav2 belum tentu siap saat /follow/person dipanggil (bt_navigator masih
+    # configure, controller_server belum active). Jadi goal dikirim ulang
+    # tiap send_retry_sec detik sampai berhasil - following BERHASIL sendiri,
+    # tidak perlu panggil /follow/person lagi.
+    action_server_wait_sec: 3.0
+    send_retry_sec: 3.0

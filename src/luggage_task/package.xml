@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>luggage_task</name>
+  <version>0.1.0</version>
+  <description>Task 1 Carry My Luggage: state machine yang memanggil node existing (zed, nucleo, lidar).</description>
+  <maintainer email="ichsan@gmail.com">robot_ws</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>nav2_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+
+  <exec_depend>rviz2</exec_depend>
+  <!-- RViz memakai config milik paket navigation saat runtime
+       (FindPackageShare di launch). Sengaja TIDAK exec_depend navigation
+       agar paket ini tetap bisa dibuild terpisah tanpa full ws. -->
+  <!-- luggage_task.launch.py nav2:=true meng-include robot_bringup (sensors),
+       nucleo (base driver), slam_toolbox (mapping) + mapping (slam.yaml)
+       saat runtime: exec_depend saja, build tetap terpisah. -->
+  <exec_depend>robot_bringup</exec_depend>
+  <exec_depend>nucleo</exec_depend>
+  <exec_depend>zed</exec_depend>
+  <exec_depend>rplidar_ros</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>mapping</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -1,0 +1,37 @@
+# Daftar Lokasi Bernama untuk navigasi (dipakai place_navigator.py).
+#
+# Setiap key di bawah otomatis menjadi SATU ROS service:
+#     /goto/<nama>     tipe std_srvs/srv/Trigger
+# Contoh: key "ruang_tamu" -> service /goto/ruang_tamu
+#
+# CARA PAKAI:
+#   ros2 service call /goto/ruang_tamu std_srvs/srv/Trigger "{}"
+#   Dari program: service Trigger('/goto/ruang_tamu') (Python / C++ / bash)
+#
+# CARA TAMBAH / UBAH LOKASI:
+#   Tambah blok baru atau ubah angka di sini, lalu jalankan ulang
+#   navigation.launch.py. TIDAK perlu ubah kode apa pun.
+#
+# ATURAN PENTING:
+#   - Key WAJIB valid sebagai nama ROS: hanya huruf/angka/underscore,
+#     TIDAK boleh diawali angka, TIDAK boleh mengandung spasi atau strip.
+#     (contoh SALAH: "1", "ruang tamu", "ruang-tamu")
+#   - Semua koordinat berframe `map` (sama dengan peta maps/map.yaml),
+#     satuan meter, yaw_deg 0 = menghadap +X peta, CCW positif.
+#
+# CEK KOORDINAT (tanpa ROS, cekFREE/tidak menabrak dinding):
+#   ros2 run spawn check_poses                 # untuk poses.yaml
+#   python3 src/navigation/scripts/check_places.py   # untuk places.yaml ini
+presets:
+  # --- lokasi utama ---
+  kamar_tidur:  {x: 1.0,   y: 1.5,  yaw_deg: 0.0}    # titik kumpul tamu
+  dapur:        {x: 3.5,   y: 2.3,  yaw_deg: 0.0}    # area timur-utara
+  kamar:        {x: 2.15,  y: -2.15, yaw_deg: 0.0}   # area selatan
+  teras:        {x: -1.6,  y: 0.0,  yaw_deg: 180.0}   # sisi barat, hadap -X
+  pojok_timur:  {x: 5.55,  y: 2.15, yaw_deg: 90.0}    # ujung timur
+
+  # --- lokasi pendukung ---
+  lorong:       {x: 2.0,   y: 0.0,  yaw_deg: 0.0}    # lorong tengah
+  lantai_utara: {x: 0.9,   y: 2.5,  yaw_deg: 0.0}    # area utara
+  lantai_timur: {x: 3.9,   y: 2.3,  yaw_deg: 0.0}    # area timur
+  start:        {x: 0.0,   y: 0.0,  yaw_deg: 0.0}    # titik awal mapping

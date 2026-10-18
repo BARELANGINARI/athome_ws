@@ -1,0 +1,47 @@
+# Task 1 Carry My Luggage — SATU file param (node luggage_task).
+# Ubah nilai di sini lalu RESTART node (tanpa build).
+# mirror dikontrol via launch arg (mirror:=true/false), bukan dari file ini
+# agar override launch tidak ditimpa loader.
+
+# Task 1 Carry My Luggage — Navigasi & Pelacakan.
+# Alur: START -> DETECT_PERSON -> PERSON_POSE -> DETECT_GESTURE ->
+# TARGET_DIR -> SEARCH_BAG -> BAG_POSE -> ROTATE_TO_BAG -> APPROACH(0.5m)
+# -> WAIT_TURN -> TRACK -> FOLLOW(0.5m) -> DONE/ABORT.
+# Topik masuk (mentah dari zed):
+#   /zed/person_keypoints (bbox + 3D + keypoint + nama "person")
+#   /zed/bag_detections   (bbox + 3D + nama "bag")
+#   /zed/yaw_deg          (zed IMU, 0..360)
+#   /scan                 (lidar via robot_bringup)
+#   /luggage/goal_reached (Bool opsional: True = sampai tujuan)
+luggage_task:
+  ros__parameters:
+    person_timeout_sec: 30.0        ## maks tunggu person muncul (DETECT/TRACK/WAIT_TURN), detik
+    hand_timeout_sec: 30.0          ## maks tunggu tangan menunjuk (DETECT_GESTURE), detik
+    search_timeout_sec: 40.0        ## maks cari tas di zona arah (SEARCH_BAG), detik
+    follow_duration_sec: 0.0        ## lama maks FOLLOW sebelum DONE, detik (0.0 = tanpa batas waktu)
+    person_lost_timeout_sec: 5.0    ## person hilang > ini = kunci ulang / ABORT, detik
+    reacquire_retries: 3            ## jatah kunci ulang person bila hilang, kali
+    rotate_speed: 0.3               ## kecepatan putar badan (ROTATE_TO_BAG), rad/s
+    rotate_tolerance_deg: 5.0       ## bearing < ini = sudah menghadap tas, derajat
+    approach_stop_m: 0.5            ## berhenti segini dari operator (APPROACH), meter
+    approach_speed: 0.25            ## kecepatan maju mendekati operator, m/s
+    approach_timeout_sec: 30.0      ## maks waktu mendekati sampai 0.5 m, detik
+    follow_speed: 0.25              ## kecepatan dasar FOLLOW, m/s
+    follow_stop_distance_m: 0.5     ## jaga jarak aman saat FOLLOW, meter
+    front_sector_deg: 30.0          ## lebar sektor depan lidar untuk jarak aman, derajat
+    image_width_px: 672             ## lebar frame ZED (disinkron otomatis dari /zed/image), px
+    camera_hfov_deg: 90.0           ## HFOV kamera untuk bearing dari bbox, derajat
+    simulate_bag: false             ## true = tas pura-pura (uji tanpa YOLO)
+    search_simulate_sec: 6.0        ## jeda muncul tas simulasi (bila simulate_bag), detik
+    map_frame: map                  ## frame peta untuk lookup pose via TF
+    base_frame: base_link           ## frame badan robot untuk lookup pose via TF
+    nav2_action: navigate_to_pose   ## nama action Nav2 tempat goal FOLLOW dikirim
+    follow_goal_update_m: 0.3       ## geser operator > ini = kirim goal baru, meter
+    nav_resend_sec: 2.0             ## kirim ulang goal tiap interval ini, detik
+    nav_ready_timeout_sec: 15.0     ## maks tunggu server Nav2 siap, detik
+    nav_min_goal_m: 0.15            ## goal < ini = anggap sampai (jangan kirim), meter
+    gesture_only: true              ## true = berhenti di TARGET_DIR + ulangi deteksi; false = full task
+    user_hri: true                  ## true = mengaktifkan sistem user hri
+    debug_window: true              ## true = tampilkan window OpenCV gesture + bbox + depth
+    # mirror dikontrol via launch arg (mirror:=true/false), bukan di sini,
+    # agar override launch tidak ditimpa file ini.

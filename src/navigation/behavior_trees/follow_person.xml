@@ -1,0 +1,72 @@
+<!--
+  Person following: mengikuti pose DINAMIS dari /zed/person_keypoints.
+
+  Salinan dari nav2_bt_navigator/follow_point.xml. Bedanya hanya:
+    TruncatePath distance="0.50"  (navigasi asli: 1.0)
+
+  Cara kerja
+  (lihat langkah di bawah)
+  1. node person_follower mengirim pose orang (frame `map`) ke topik
+     `/goal_update` pada frekuensi `update_hz` (default 2 Hz).
+  2. `GoalUpdater` di bawah itu MENDENGERKAN /goal_update dan mengganti
+     goal BT secara live. Inilah yang membuat goal ikut bergerak, karena
+     node kita cuma kirim NavigateToPose sekali, goal akan beku di tempat
+     orang terakhir terdeteksi.
+  3. `ComputePathToPose` mengulang plan ke pose terbaru (dibatasi
+     `RateController hz="1.0"`, jadi maksimal 1x per detik).
+  4. `TruncatePath distance="0.50"` memotong jalur agar ujungnya berhenti
+     0.50 m SEBELUM titik tengah orang. Inilahyang menjaga jarak.
+  5. `FollowPath` + `KeepRunningUntilFailure` berjalan terus tanpa henti.
+
+  Kenapa distance = 0.50 (bukan 1.0 bawaan)
+ 
+  Jarak yang dijaga adalah jarak pusat robot -> pusat orang.
+  0.50 m dipilih karena berimpit dengan pengaman collision_monitor:
+    Stop.radius = 0.30 m, radius badan orang ~0.25 m
+    => lidar melihat badan orang pada d - 0.25
+    => d = 0.55 m sudah menyentuh Stop.radius
+  Jadi navigasi global menahan di 0.50 m dan collision_monitor menjadi
+  jaring pengaman kedua kalau orang justru mendekati robot.
+
+  PENTING
+
+  File ini dipilih per-goal lewat field `behavior_tree` pada action
+  `NavigateToPose` (lihat scripts/person_follower.py). Jadi /goto/<nama>
+  tetap memakai BT miliknya sendiri dan tidak terpengaruh file ini.
+
+  BT port tidak bisa di-override dari YAML, jadi nilai `distance` harus
+  ditulis langsung di sini. Kalau ingin diubah, edit angka 0.50 di bawah.
+
+  Recovery saat planning gagal
+  ============================
+  ComputePathToPose dibungkus RecoveryNode 4x percobaan. Setiap gagal
+  memicu ClearEntireCostmap lalu plan ulang. Alasannya: saat following,
+  obstacle orang/orang lain SEDANG BERGERAK, jadi "Failed to create plan"
+  sering bersifat sementara (costmap masih menyimpan obstacle basi).
+  Tanpa recovery, satu kegagalan saja langsung membatalkan goal following
+  ("Goal failed") dan robot berhenti although jalurnya sebenarnya ada.
+
+  4x percobaan dipilih karena itu batas yang masuk akal: cukup untuk
+  obstacle sementara hilang, tapi tidak terlalu lama menunggu kalau memang
+  jalurally memang tertutup beneran (mis. orang berdiri di lorong sempit
+  atau di depan pintu yang tertutup).
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <PipelineSequence name="NavigateWithReplanning">
+      <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+      <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+      <RateController hz="3.0">
+        <Sequence>
+          <GoalUpdater input_goal="{goal}" output_goal="{updated_goal}">
+            <ComputePathToPose goal="{updated_goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+          </GoalUpdater>
+          <TruncatePath distance="0.50" input_path="{path}" output_path="{truncated_path}"/>
+        </Sequence>
+      </RateController>
+      <KeepRunningUntilFailure>
+        <FollowPath path="{truncated_path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
+      </KeepRunningUntilFailure>
+    </PipelineSequence>
+  </BehaviorTree>
+</root>

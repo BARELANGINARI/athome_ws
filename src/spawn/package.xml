@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>spawn</name>
+  <version>0.1.0</version>
+  <description>Set robot pose di peta via preset koordinat (publish /initialpose untuk AMCL).</description>
+  <maintainer email="ichsan@gmail.com">robot_ws</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

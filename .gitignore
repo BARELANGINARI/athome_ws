@@ -1,0 +1,93 @@
+# ==========================================
+# ROS 2 Colcon Workspace Ignore
+# ==========================================
+build/
+install/
+log/
+.colcon/
+COLCON_IGNORE
+
+# ==========================================
+# Python Virtual Environments & Cache
+# ==========================================
+venv/
+.venv/
+env/
+ENV/
+*.py[cod]
+*$py.class
+__pycache__/
+*.so
+.Python
+*.egg-info/
+dist/
+eggs/
+.eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+*.egg
+
+# ==========================================
+# C / C++ Compilation Artifacts
+# ==========================================
+*.o
+*.obj
+*.a
+*.lib
+*.dylib
+*.dll
+*.exe
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# ==========================================
+# AI / ML Model Weights (Tidak di-upload ke Git)
+# ==========================================
+*.gguf
+*.onnx
+*.pth
+*.pt
+*.safetensors
+*.bin
+*.ckpt
+*.weights
+*.engine
+*.tflite
+*.pb
+*.tar.gz
+*.zip
+
+# ==========================================
+# ROS Bag & Logs
+# ==========================================
+*.bag
+*.db3
+*.db3-wal
+*.db3-shm
+*.log
+
+# ==========================================
+# IDE & System Files
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.directory
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# Temporary Files
+# ==========================================
+1
+*.tmp
+*.bak
