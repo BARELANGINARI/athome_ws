@@ -157,19 +157,17 @@ class BarelangHriNode(Node):
         # State
         self.is_operator_in_front = False
         self.last_gesture = "NONE"
+        self.gesture_ready_for_task = True
+        self.gesture_event = asyncio.Event()
 
         # Publishers
-        self.event_pub = self.create_publisher(String, "/hri/event", 10)
-        self.cmd_vel_pub = self.create_publisher(Twist, "cmd_vel", 10)
+        self.event_pub = self.create_publisher(String, "/hri/event", 10) #digunakan untuk mengirim event
+        self.cmd_vel_pub = self.create_publisher(Twist, "cmd_vel", 10) # mengirim twist kosong untuk menghentikan robot
 
         # Subscribers
         self.tts_sub = self.create_subscription(String, "/hri/tts_say", self._on_tts_say, 10)
-        self.person_label_sub = self.create_subscription(
-            String, "/zed/person_label", self._on_person_label, 10
-        )
-        self.gesture_sub = self.create_subscription(
-            String, "/zed/gesture", self._on_gesture, 10
-        )
+        self.person_label_sub = self.create_subscription(String, "/zed/person_label", self._on_person_label, 10)
+        self.gesture_sub = self.create_subscription(String, "/zed/gesture", self._on_gesture, 10)
 
         # Service Clients
         self.follow_client = self.create_client(Trigger, "/follow/person")
@@ -197,10 +195,15 @@ class BarelangHriNode(Node):
 
     def _on_gesture(self, msg: String):
         """Menerima gesture dari vision (/zed/gesture) lalu broadcast ke Web UI."""
-        gesture = msg.data.strip()
+        gesture = msg.data.strip().upper()
         if not gesture or gesture == self.last_gesture:
             return  # skip jika tidak berubah (hemat bandwidth)
         self.last_gesture = gesture
+        if gesture == "NONE":
+            self.gesture_ready_for_task = True
+        elif gesture in ("LEFT", "RIGHT") and self.gesture_ready_for_task:
+            self.gesture_ready_for_task = False
+            self.loop.call_soon_threadsafe(self.gesture_event.set)
         self.get_logger().info(f"[HRI] Gesture terdeteksi: {gesture}")
         # Broadcast ke semua Web UI client
         asyncio.run_coroutine_threadsafe(
@@ -215,6 +218,18 @@ class BarelangHriNode(Node):
             "type": "GESTURE_UPDATE",
             "gesture": gesture,          # "RIGHT" | "LEFT" | "NONE"
         })
+
+    def reset_gesture_session(self):
+        self.gesture_ready_for_task = self.last_gesture == "NONE"
+        self.last_gesture = "NONE"
+        self.gesture_event.clear()
+
+    async def wait_for_new_gesture(self, timeout: float = 30.0) -> bool:
+        try:
+            await asyncio.wait_for(self.gesture_event.wait(), timeout=timeout)
+            return self.last_gesture in ("LEFT", "RIGHT")
+        except asyncio.TimeoutError:
+            return False
 
     def publish_event(self, event_name: str):
         msg = String()
@@ -356,6 +371,7 @@ class HriCoordinator:
             self.ros_node.stop_follow()
             self.ros_node.stop_robot()
             self.audio_queue.clear()
+            self.ros_node.reset_gesture_session()
 
             await self.web.broadcast_ui({
                 "type": "STATE_UPDATE",
@@ -393,15 +409,29 @@ class HriCoordinator:
                     self.ros_node.call_homing(on_complete=on_homing_finished)
 
                 self.speak(
-                    "I've got the bag; now I'm going back to where I started.",
+                    "I've got the bag, now I'm going back to where I started.",
                     force=True,
                     on_finish=trigger_homing,
                 )
 
             # -- Chain 1: Ucapan Arrived Selesai --
-            def on_arrived_spoken():
-                # Langsung serahkan ke service align bag untuk mencari gesture & tas
-                self.ros_node.call_align_bag(on_complete=on_align_bag_finished)
+            async def on_arrived_spoken():
+                has_new_gesture = await self.ros_node.wait_for_new_gesture()
+                if not has_new_gesture:
+                    self.speak(
+                        "I did not detect a new left or right gesture. Please try again.",
+                        force=True,
+                    )
+                    return
+
+                side = "right" if self.ros_node.last_gesture == "RIGHT" else "left"
+                self.speak(
+                    f"Okay, I know which bag you're pointing to. You're pointing to the {side} bag.",
+                    force=True,
+                    on_finish=lambda: self.ros_node.call_align_bag(
+                        on_complete=on_align_bag_finished
+                    ),
+                )
 
             # Trigger awal dari rantai kejadian
             stop_text = (
