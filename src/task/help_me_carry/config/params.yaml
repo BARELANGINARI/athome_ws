@@ -1,0 +1,33 @@
+help_me_carry_node:
+  ros__parameters:
+    person_topic: "/zed/person_label"   # Topik input deteksi keypoint ZED
+    goal_update_topic: "/goal_update"       # Topik output pembaruan goal Nav2
+    action_name: "navigate_to_pose"         # Action server Nav2
+    frame_map: "map"                        # Frame koordinat global (peta)
+    frame_base: "base_link"                 # Frame koordinat robot
+    target_index: 0                         # Indeks orang yang di-follow (0 = terdekat)
+
+    # Jarak & Jangkauan
+    follow_stop_distance: 0.5               # Jarak berhenti robot terhadap orang (meter)
+    follow_start_distance: 0.7              # Jarak mulai robot mengejar orang (meter)
+    max_follow_range: 3.0                   # Jarak maksimal follow orang (meter)
+
+    # Waktu & Safety
+    max_lost_time: 3.0                      # Batas toleransi orang hilang (detik)
+    follow_bt_xml: ""                       # Path XML BT (kosong = auto-detect di share navigation)
+
+# Kompatibilitas alias node tracking_controller
+tracking_controller:
+  ros__parameters:
+    person_topic: "/zed/person_label"
+    goal_update_topic: "/goal_update"
+    action_name: "navigate_to_pose"
+    frame_map: "map"
+    frame_base: "base_link"
+    target_index: 0
+    follow_stop_distance: 0.8
+    max_follow_range: 3.0
+    max_lost_time: 3.0
+    follow_bt_xml: ""
+    action_server_wait_sec: 3.0
+    send_retry_sec: 3.0
