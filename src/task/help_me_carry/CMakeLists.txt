@@ -13,6 +13,8 @@ find_package(rclcpp_action REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
@@ -28,6 +30,8 @@ ament_target_dependencies(help_me_carry_node
   ament_index_cpp
   nav2_msgs
   geometry_msgs
+  nav_msgs
+  sensor_msgs
   std_msgs
   std_srvs
   tf2
@@ -43,6 +47,8 @@ ament_target_dependencies(tracking_controller
   ament_index_cpp
   nav2_msgs
   geometry_msgs
+  nav_msgs
+  sensor_msgs
   std_msgs
   std_srvs
   tf2

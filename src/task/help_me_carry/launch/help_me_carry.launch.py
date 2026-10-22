@@ -7,6 +7,7 @@ from launch.substitutions import (
     PathJoinSubstitution,
     PythonExpression,
 )
+from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -24,7 +25,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'nav2',
-            default_value='false',
+            default_value='true',
             description='true = ikutkan navigation.launch.py (Nav2 + sensor, '
                         'dibutuhkan state FOLLOW).',
         ),
@@ -140,5 +141,18 @@ def generate_launch_description():
                 'enable_yolo': LaunchConfiguration('enable_yolo'),
                 'map': LaunchConfiguration('map'),
             }.items(),
+        ),
+        Node(
+            package='help_me_carry',
+            executable='help_me_carry_node',
+            name='help_me_carry_node',
+            output='screen',
+            parameters=[
+                PathJoinSubstitution([
+                    FindPackageShare('help_me_carry'),
+                    'config',
+                    'params.yaml',
+                ])
+            ],
         ),
     ])

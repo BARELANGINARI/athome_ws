@@ -410,79 +410,47 @@ private:
     const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
     std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
-  // ---------- Gesture Detection ----------
-  // Indeks keypoint ZED BODY_34:
-  //   0=Pelvis, 1=Spine, 2=Chest, 3=Neck, 4=Head,
-  //   5=L_Shoulder, 6=L_Elbow, 7=L_Wrist,
-  //   8=R_Shoulder, 9=R_Elbow, 10=R_Wrist,
-  //   11=L_Hip, 12=L_Knee, 13=L_Ankle,
-  //   14=R_Hip, 15=R_Knee, 16=R_Ankle, ...
-  //
-  // Gesture yang dideteksi (dalam koordinat pixel, Y besar = bawah):
-  //   RIGHT  : tangan kanan menunjuk serong bawah-kanan (↘)
-  //            → R_Wrist di BAWAH R_Shoulder (y_wrist > y_shoulder)
-  //            → R_Wrist lebih ke KANAN dari R_Shoulder (x_wrist > x_shoulder)
-  //            → membentuk sudut serong diagonal (bukan lurus ke bawah)
-  //   LEFT   : tangan kiri menunjuk serong bawah-kiri (↙)
-  //            → L_Wrist di BAWAH L_Shoulder
-  //            → L_Wrist lebih ke KIRI dari L_Shoulder
+  // ---------- Deteksi Gestur (Opsi 1 & Opsi 2) ----------
+  // Murni hanya menggunakan Bahu (Shoulder) dan Pergelangan Tangan (Wrist):
+  // Opsi 1: Menghitung kemiringan vektor bahu -> pergelangan (dx, dy).
+  //         dy > 0 (menunjuk bawah) & |dx| >= 0.5 * dy (diagonal serong).
+  // Opsi 2: Memeriksa kedua lengan (kiri: bahu 5, wrist 7 | kanan: bahu 12, wrist 14).
+  std::string classifyArmRaw(
+    const std::vector<sl::float2> & kpt, int shoulder, int wrist)
+  {
+    constexpr float kThreshold = 0.5f;
+    if (shoulder >= static_cast<int>(kpt.size()) || wrist >= static_cast<int>(kpt.size())) {
+      return "";
+    }
+    const auto & s = kpt[shoulder];
+    const auto & w = kpt[wrist];
+    if (!std::isfinite(s.x) || !std::isfinite(s.y) || !std::isfinite(w.x) || !std::isfinite(w.y) ||
+        s.x < 0.f || s.y < 0.f || w.x < 0.f || w.y < 0.f) {
+      return "";
+    }
+
+    const float dx = w.x - s.x;
+    const float dy = w.y - s.y;
+    if (dy <= 0.0f) { return ""; }
+    if (std::fabs(dx) < kThreshold * dy) { return ""; }
+
+    return dx < 0.0f ? "DOWN_LEFT" : "DOWN_RIGHT";
+  }
+
   std::string detectGesture(const std::vector<sl::float2> & kpt)
   {
-    // Butuh minimal 11 keypoint (sampai R_Wrist index 10)
-    if (kpt.size() < 11) return "NONE";
+    if (kpt.size() < 15) return "NONE";
 
-    // Helper: cek apakah titik valid (finite & dalam frame)
-    auto valid = [](const sl::float2 & p) {
-      return std::isfinite(p.x) && std::isfinite(p.y) && p.x >= 0.f && p.y >= 0.f;
-    };
+    // Cek kedua lengan: kiri (5, 7) dan kanan (12, 14)
+    const std::string left = classifyArmRaw(kpt, 5, 7);
+    const std::string right = classifyArmRaw(kpt, 12, 14);
 
-    const auto & l_shoulder = kpt[5];   // L_Shoulder
-    const auto & l_elbow    = kpt[6];   // L_Elbow
-    const auto & l_wrist    = kpt[7];   // L_Wrist
-    const auto & r_shoulder = kpt[8];   // R_Shoulder
-    const auto & r_elbow    = kpt[9];   // R_Elbow
-    const auto & r_wrist    = kpt[10];  // R_Wrist
-
-    // Threshold pixel (bisa di-tune sesuai resolusi kamera)
-    constexpr float kMinDown  = 20.f;  // wrist harus >= 20px di bawah bahu
-    constexpr float kMinSide  = 20.f;  // wrist harus >= 20px ke samping dari bahu
-    constexpr float kMaxAngle = 70.f;  // sudut max dari vertical agar tetap "serong" bukan "lurus samping"
-                                       // (0°=lurus bawah, 90°=lurus samping)
-
-    // --- Gesture KANAN SERONG BAWAH (↘): R_Wrist ke kanan-bawah dari R_Shoulder ---
-    bool is_right = false;
-    if (valid(r_shoulder) && valid(r_elbow) && valid(r_wrist)) {
-      const float dx = r_wrist.x - r_shoulder.x;  // positif = ke kanan
-      const float dy = r_wrist.y - r_shoulder.y;  // positif = ke bawah (pixel)
-      if (dx > kMinSide && dy > kMinDown) {
-        // Hitung sudut dari vertical ke kanan (atan2 dari sumbu Y ke bawah)
-        // 0° = lurus ke bawah, 45° = serong 45°, 90° = lurus ke samping
-        const float angle_deg = std::atan2(dx, dy) * 180.f / zed_vision::PI_F;
-        // Validasi: harus benar-benar serong (bukan lurus ke bawah < 15° dan bukan lurus samping > 70°)
-        is_right = (angle_deg >= 15.f && angle_deg <= kMaxAngle);
-        // Siku juga harus di bawah atau sejajar bahu (lengan tidak ditekuk ke atas)
-        if (is_right && valid(r_elbow)) {
-          is_right = r_elbow.y >= r_shoulder.y - 15.f;
-        }
-      }
+    if (right == "DOWN_RIGHT" || left == "DOWN_RIGHT") {
+      return "RIGHT";
     }
-
-    // --- Gesture KIRI SERONG BAWAH (↙): L_Wrist ke kiri-bawah dari L_Shoulder ---
-    bool is_left = false;
-    if (valid(l_shoulder) && valid(l_elbow) && valid(l_wrist)) {
-      const float dx = l_shoulder.x - l_wrist.x;  // positif = ke kiri
-      const float dy = l_wrist.y - l_shoulder.y;  // positif = ke bawah
-      if (dx > kMinSide && dy > kMinDown) {
-        const float angle_deg = std::atan2(dx, dy) * 180.f / zed_vision::PI_F;
-        is_left = (angle_deg >= 15.f && angle_deg <= kMaxAngle);
-        if (is_left && valid(l_elbow)) {
-          is_left = l_elbow.y >= l_shoulder.y - 15.f;
-        }
-      }
+    if (left == "DOWN_LEFT" || right == "DOWN_LEFT") {
+      return "LEFT";
     }
-
-    if (is_right) return "RIGHT";
-    if (is_left)  return "LEFT";
     return "NONE";
   }
 
@@ -521,6 +489,7 @@ private:
   rclcpp::Time preview_fps_t_{0, 0, RCL_ROS_TIME};
 
   struct PrevPerson {
+    int id{-1};
     cv::Rect bbox;
     bool has_pos{false};
     double x_m{0.0};
@@ -756,6 +725,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
   } else {
     struct PersonEntry {
       const sl::BodyData * body{nullptr};
+      int id{-1};
       cv::Rect bbox;
       std::string label{"operator"};
       double x{0.0}, y{0.0}, z{0.0};
@@ -771,6 +741,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
 
       PersonEntry e;
       e.body = &body;
+      e.id = body.id;
       e.bbox = bbox;
       e.has_depth = get3dCoordinatesWithOffset(bbox, point_cloud, e.x, e.y, e.z);
       e.range_m = (e.has_depth && std::isfinite(e.x) && std::isfinite(e.y))
@@ -787,7 +758,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       entries.front().label = "operator";
       if (entries.front().has_depth) {
         const auto & person = entries.front();
-        IC(person.label, person.x, person.y, person.dist);
+        IC(person.id, person.label, person.x, person.y, person.dist);
       }
     }
 
@@ -795,7 +766,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     bool first_p = true;
     std::string gesture_result = "NONE";  // gesture dari operator terdekat
     for (const auto & e : entries) {
-      PrevPerson pp{e.bbox, e.has_depth, e.x, e.y, e.range_m, {}};
+      PrevPerson pp{e.id, e.bbox, e.has_depth, e.x, e.y, e.range_m, {}};
       const auto & points = e.body->keypoint_2d;
       for (const auto & pt : points) {
         pp.kpt.emplace_back(std::isfinite(pt.x) ? pt.x : NAN, std::isfinite(pt.y) ? pt.y : NAN);
@@ -808,17 +779,17 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
         if (gesture_result != "NONE") {
           RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 500,
-            "[GESTURE] Terdeteksi: %s", gesture_result.c_str());
+            "[GESTURE] Terdeteksi [ID %d]: %s", e.id, gesture_result.c_str());
         }
       }
 
       if (!first_p) ss << ";";
-      const std::string label = "operator";
+      const std::string label = first_p ? "operator" : "person";
       first_p = false;
       ss << label << ":" << e.bbox.x << "," << e.bbox.y << "," << e.bbox.width << "," << e.bbox.height << "|";
       if (e.has_depth) ss << std::fixed << std::setprecision(2) << e.x << "," << e.y << "," << e.z;
       else ss << "nan,nan,nan";
-      ss << "|0.0,0.0|kpt=";
+      ss << "|id=" << e.id << "|kpt=";
 
       for (size_t k = 0; k < 34; ++k) {
         if (k > 0) ss << ",";
@@ -878,6 +849,10 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       r &= cv::Rect(0, 0, W, H);
       if (r.width > 0 && r.height > 0) {
         cv::rectangle(canvas, r, cv::Scalar(0, 255, 0), 2);
+        cv::putText(
+          canvas, "ID: " + std::to_string(p.id),
+          cv::Point(r.x, std::max(20, r.y - 6)),
+          cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
         const int center_x = r.x + r.width / 2;
         const int center_y = r.y + r.height / 2;
         cv::circle(canvas, cv::Point(center_x, center_y), 5, cv::Scalar(0, 255, 255), -1);
@@ -926,7 +901,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     };
 
     const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos) ? preview_persons_[0] : PrevPerson{};
-    draw_hud("Operator :", p0.x_m, p0.y_m, p0.range_m, cv::Scalar(0, 255, 0));
+    draw_hud("Operator [ID " + std::to_string(p0.id) + "] :", p0.x_m, p0.y_m, p0.range_m, cv::Scalar(0, 255, 0));
 
     const PrevBag b0 = (!preview_bags_.empty() && preview_bags_[0].has_pos) ? preview_bags_[0] : PrevBag{};
     draw_hud("Bag :", b0.x_m, b0.y_m, b0.range_m, cv::Scalar(255, 0, 255));

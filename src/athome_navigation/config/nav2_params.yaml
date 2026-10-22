@@ -83,8 +83,8 @@ controller_server:
     general_goal_checker:
       stateful: True                     # Cek goal berbasis status bertahap
       plugin: "nav2_controller::SimpleGoalChecker" # Plugin cek toleransi sampai tujuan
-      xy_goal_tolerance: 0.35            # Toleransi posisi akhir terhadap goal (m) — dinaikkan 0.20→0.35 untuk person following
-      yaw_goal_tolerance: 0.50           # Toleransi sudut akhir terhadap goal (rad) — dinaikkan untuk person following
+      xy_goal_tolerance: 0.15            # Toleransi posisi akhir terhadap goal (m) presisi
+      yaw_goal_tolerance: 0.35           # Toleransi sudut akhir terhadap goal (rad)
 
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner" # Controller lokal utama DWB (langsung tanpa wrapper RotationShim)
@@ -112,7 +112,7 @@ controller_server:
       linear_granularity: 0.05           # Resolusi langkah evaluasi garis lurus (m)
       angular_granularity: 0.025         # Resolusi langkah evaluasi rotasi (rad)
       transform_tolerance: 0.25          # Toleransi keterlambatan TF (detik)
-      xy_goal_tolerance: 0.20            # Toleransi posisi goal XY (m)
+      xy_goal_tolerance: 0.15            # Toleransi posisi goal XY (m) presisi
       trans_stopped_velocity: 0.05       # Ambang batas kecepatan dianggap berhenti (m/s)
       short_circuit_trajectory_evaluation: True # Lewati evaluasi jika trajektori sudah menabrak
       stateful: True                     # Pertahankan status evaluasi antar siklus
