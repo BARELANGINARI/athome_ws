@@ -424,7 +424,7 @@ class HriCoordinator:
                     )
                     return
 
-                side = "right" if self.ros_node.last_gesture == "RIGHT" else "left"
+                side = "right" if self.ros_node.last_gesture == "LEFT" else "left"
                 self.speak(
                     f"Okay, I know which bag you're pointing to. You're pointing to the {side} bag.",
                     force=True,
