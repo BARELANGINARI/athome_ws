@@ -56,6 +56,8 @@ void nucleo::loadParam()
   declare_parameter("cmd_vel_timeout", 0.5);
   declare_parameter("joy_topic", "joy_vel");
   declare_parameter("test_topic", "test_vel");
+  declare_parameter("lifter_cmd_topic", "lifter_target");
+  declare_parameter("lifter_state_topic", "lifter_state");
   declare_parameter("joy_timeout", 0.05);
   declare_parameter("test_timeout", 0.5);
   declare_parameter("smoothing_enable", true);
@@ -85,6 +87,8 @@ void nucleo::loadParam()
   cmd_vel_timeout = get_parameter("cmd_vel_timeout").as_double();
   joy_topic = get_parameter("joy_topic").as_string();
   test_topic = get_parameter("test_topic").as_string();
+  lifter_cmd_topic = get_parameter("lifter_cmd_topic").as_string();
+  lifter_state_topic = get_parameter("lifter_state_topic").as_string();
   joy_timeout = get_parameter("joy_timeout").as_double();
   test_timeout = get_parameter("test_timeout").as_double();
   smoothing_enable = get_parameter("smoothing_enable").as_bool();
@@ -110,6 +114,7 @@ void nucleo::setupHardware()
 void nucleo::setupRos()
 {
   using std::placeholders::_1;
+  using std::placeholders::_2;
   auto cmd_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
   cmd_sub = create_subscription<geometry_msgs::msg::Twist>(
     "cmd_vel", cmd_qos, std::bind(&nucleo::onCmdVel, this, _1));
@@ -117,6 +122,17 @@ void nucleo::setupRos()
     joy_topic, cmd_qos, std::bind(&nucleo::onJoyVel, this, _1));
   test_sub = create_subscription<geometry_msgs::msg::Twist>(
     test_topic, cmd_qos, std::bind(&nucleo::onTestVel, this, _1));
+  lifter_sub = create_subscription<std_msgs::msg::UInt8>(
+    lifter_cmd_topic, 10, std::bind(&nucleo::onLifterCmd, this, _1));
+  lifter_state_pub = create_publisher<std_msgs::msg::UInt8>(lifter_state_topic, 10);
+
+  srv_lifter_up_ = create_service<std_srvs::srv::Trigger>(
+    "/lifter/naik",
+    std::bind(&nucleo::handleLifterUp, this, _1, _2));
+  srv_lifter_down_ = create_service<std_srvs::srv::Trigger>(
+    "/lifter/turun",
+    std::bind(&nucleo::handleLifterDown, this, _1, _2));
+
   odom_pub = create_publisher<nav_msgs::msg::Odometry>("odom", 10);
   tfBroadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(this);
   if (use_yaw_topic) {
@@ -162,6 +178,34 @@ void nucleo::onYawTopic(const std_msgs::msg::Float64::SharedPtr msg)
   ext_yaw_ready = true;
 }
 
+void nucleo::onLifterCmd(const std_msgs::msg::UInt8::SharedPtr msg)
+{
+  lifter_target_.store(msg->data);
+  RCLCPP_INFO(get_logger(), "Lifter target set: %u", static_cast<unsigned int>(lifter_target_.load()));
+}
+
+void nucleo::handleLifterUp(
+  const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+  std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+{
+  (void)req;
+  lifter_target_.store(1);
+  res->success = true;
+  res->message = "Lifter target NAIK (1) dikirim";
+  RCLCPP_INFO(get_logger(), "Service /lifter/naik dipanggil: lifter_target = 1");
+}
+
+void nucleo::handleLifterDown(
+  const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+  std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+{
+  (void)req;
+  lifter_target_.store(0);
+  res->success = true;
+  res->message = "Lifter target TURUN (0) dikirim";
+  RCLCPP_INFO(get_logger(), "Service /lifter/turun dipanggil: lifter_target = 0");
+}
+
 double nucleo::normalizeDeg(double deg)
 {
   while (deg > 180.0) {
@@ -191,6 +235,10 @@ void nucleo::controlLoop()
   struct PCtoSTM32 pc2stm = sendMotor(shaped);
 
   publishOdom(t_now);
+
+  std_msgs::msg::UInt8 l_state;
+  l_state.data = snap.lifterState;
+  lifter_state_pub->publish(l_state);
 
   IC(target.vx, target.vy, target.w);
   IC(shaped.vx, shaped.vy, shaped.w);
@@ -352,6 +400,7 @@ struct PCtoSTM32 nucleo::sendMotor(const MotionTarget & target)
   pc2stm.MKiri = radToPwm(kinematic->motor_out.v1);
   pc2stm.MBelakang = radToPwm(kinematic->motor_out.v2);
   pc2stm.MKanan = radToPwm(kinematic->motor_out.v3);
+  pc2stm.lifter_target = lifter_target_.load();
   stmSender.put(&pc2stm);
   return pc2stm;
 }

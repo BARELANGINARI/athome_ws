@@ -1,5 +1,5 @@
 # ==========================================
-# ROS 2 Colcon Workspace Ignore
+# ROS 2 Colcon Workspace
 # ==========================================
 build/
 install/
@@ -46,7 +46,7 @@ cmake_install.cmake
 Makefile
 
 # ==========================================
-# AI / ML Model Weights (Tidak di-upload ke Git)
+# AI / ML Model Weights (Large binary files)
 # ==========================================
 *.gguf
 *.onnx
@@ -86,8 +86,7 @@ Makefile
 Thumbs.db
 
 # ==========================================
-# Temporary Files
+# Temporary & Backup Files
 # ==========================================
-1
 *.tmp
 *.bak

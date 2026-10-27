@@ -36,11 +36,14 @@ struct STM32toPC {
 };
 
 struct PCtoSTM32 {
-  int16_t MKiri, MKanan, MBelakang;
+  int16_t MKiri{0}, MKanan{0}, MBelakang{0};
+  int16_t DKiri{0}, DKanan{0};
+  uint8_t lifter_target{0};
+  uint8_t kickPower{0};
 };
 
-static_assert(sizeof(PCtoSTM32) == 6,
-              "PCtoSTM32 must be 6 bytes (motor only)");
+static_assert(sizeof(PCtoSTM32) == 12,
+              "PCtoSTM32 must be 12 bytes (motor + dribbler + lifter + kicker)");
 
 #pragma pack()
 

@@ -14,15 +14,15 @@ def generate_launch_description():
         [FindPackageShare('athome_bringup'), 'config', 'lidar.yaml'])
 
     return LaunchDescription([
-        DeclareLaunchArgument('lidar_x', default_value='0.0',description='LiDAR offset X dari base_link (meter)'),
-        DeclareLaunchArgument('lidar_y', default_value='0.0',description='LiDAR offset Y dari base_link (meter)'),
-        DeclareLaunchArgument('lidar_z', default_value='0.3',description='LiDAR offset Z dari base_link (meter)'),
-        DeclareLaunchArgument('lidar_yaw', default_value='3.14159',description='LiDAR yaw offset (radian)'),
-        DeclareLaunchArgument('camera_fps', default_value='30.0',description='ZED camera FPS'),
+        DeclareLaunchArgument('lidar_x', default_value='0.0', description='LiDAR X offset from base_link (m)'),
+        DeclareLaunchArgument('lidar_y', default_value='0.0', description='LiDAR Y offset from base_link (m)'),
+        DeclareLaunchArgument('lidar_z', default_value='0.3', description='LiDAR Z offset from base_link (m)'),
+        DeclareLaunchArgument('lidar_yaw', default_value='3.14159', description='LiDAR yaw offset (rad)'),
+        DeclareLaunchArgument('camera_fps', default_value='30.0', description='ZED camera framerate (FPS)'),
         DeclareLaunchArgument(
             'use_scan_filter',
             default_value='false',
-            description='true = filter angular 180° aktif (/scan_raw->filter->/scan); false = 360° penuh langsung ke /scan',
+            description='Enable 180 deg angular laser filter',
         ),
         Node(
             package='rplidar_ros',

@@ -11,6 +11,8 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64.hpp"
+#include "std_msgs/msg/u_int8.hpp"
+#include "std_srvs/srv/trigger.hpp"
 #include "tf2_ros/transform_broadcaster.h"
 
 #include "Kinematic.hpp"
@@ -37,6 +39,13 @@ private:
   void onJoyVel(const geometry_msgs::msg::Twist::SharedPtr msg);
   void onTestVel(const geometry_msgs::msg::Twist::SharedPtr msg);
   void onYawTopic(const std_msgs::msg::Float64::SharedPtr msg);
+  void onLifterCmd(const std_msgs::msg::UInt8::SharedPtr msg);
+  void handleLifterUp(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res);
+  void handleLifterDown(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res);
   static double normalizeDeg(double deg);
   void controlLoop();
   MotionTarget resolveTarget(const rclcpp::Time & t_now, bool & timed_out);
@@ -54,6 +63,10 @@ private:
   // STM_TO_TEST ala NucleoServer: override uji manual bila fresh.
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr test_sub;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr yaw_sub;
+  rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr lifter_sub;
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr lifter_state_pub;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_lifter_up_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_lifter_down_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tfBroadcaster;
   rclcpp::TimerBase::SharedPtr timer;
@@ -68,6 +81,9 @@ private:
   bool test_ready{false};
   std::string joy_topic{"joy_vel"};
   std::string test_topic{"test_vel"};
+  std::string lifter_cmd_topic{"lifter_target"};
+  std::string lifter_state_topic{"lifter_state"};
+  std::atomic<uint8_t> lifter_target_{0};
   double joy_timeout{0.05};
   double test_timeout{0.5};
   MotionTarget smoothed_;

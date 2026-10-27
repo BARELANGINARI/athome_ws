@@ -13,6 +13,7 @@ find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tf2_ros REQUIRED)
 
 if(NOT DEFINED ICECREAM_INCLUDE_DIR AND DEFINED ENV{HOME})
@@ -38,7 +39,7 @@ target_link_libraries(udpServer udpSender)
 add_executable(nucleo main.cpp)
 target_include_directories(nucleo PRIVATE include)
 target_link_libraries(nucleo kinematic udpServer udpSender)
-ament_target_dependencies(nucleo rclcpp geometry_msgs nav_msgs std_msgs tf2_ros)
+ament_target_dependencies(nucleo rclcpp geometry_msgs nav_msgs std_msgs std_srvs tf2_ros)
 
 install(TARGETS nucleo kinematic udpServer udpSender
   ARCHIVE DESTINATION lib

@@ -85,12 +85,22 @@ def generate_launch_description():
     joy_topic_arg = DeclareLaunchArgument(
         'joy_topic',
         default_value='joy_vel',
-        description='Topik override joystick (kosongkan/disable bila liar)',
+        description='Joystick override velocity topic',
     )
     test_topic_arg = DeclareLaunchArgument(
         'test_topic',
         default_value='test_vel',
-        description='Topik override uji manual (kosongkan/disable bila liar)',
+        description='Manual test velocity topic',
+    )
+    lifter_cmd_arg = DeclareLaunchArgument(
+        'lifter_cmd_topic',
+        default_value='lifter_target',
+        description='Topic to command lifter target (0: down, 1: up)',
+    )
+    lifter_state_arg = DeclareLaunchArgument(
+        'lifter_state_topic',
+        default_value='lifter_state',
+        description='Topic for feedback of lifter state',
     )
     smoothing_enable_arg = DeclareLaunchArgument(
         'smoothing_enable',
@@ -115,17 +125,17 @@ def generate_launch_description():
     pulses_per_rev_arg = DeclareLaunchArgument(
         'pulses_per_rev',
         default_value='7500.0',
-        description='Pulses encoder per putaran roda penuh (kalibrasi odom)',
+        description='Encoder pulses per wheel revolution',
     )
     wheel_radius_arg = DeclareLaunchArgument(
         'wheel_radius_cm',
         default_value='5.0',
-        description='Jari-jari roda dalam CM (bukan diameter)',
+        description='Wheel radius (cm)',
     )
     base_length_arg = DeclareLaunchArgument(
         'base_length_cm',
         default_value='20.8',
-        description='Jarak roda belakang ke poros roda depan (cm)',
+        description='Base length between wheels (cm)',
     )
     # Nucleo driver node
     nucleo_node = Node(
@@ -150,6 +160,8 @@ def generate_launch_description():
             'cmd_vel_timeout': LaunchConfiguration('cmd_vel_timeout'),
             'joy_topic': LaunchConfiguration('joy_topic'),
             'test_topic': LaunchConfiguration('test_topic'),
+            'lifter_cmd_topic': LaunchConfiguration('lifter_cmd_topic'),
+            'lifter_state_topic': LaunchConfiguration('lifter_state_topic'),
             'smoothing_enable': LaunchConfiguration('smoothing_enable'),
             'linear_accel_limit': LaunchConfiguration('linear_accel_limit'),
             'angular_accel_limit': LaunchConfiguration('angular_accel_limit'),
@@ -178,6 +190,8 @@ def generate_launch_description():
         cmd_vel_timeout_arg,
         joy_topic_arg,
         test_topic_arg,
+        lifter_cmd_arg,
+        lifter_state_arg,
         smoothing_enable_arg,
         linear_accel_arg,
         angular_accel_arg,

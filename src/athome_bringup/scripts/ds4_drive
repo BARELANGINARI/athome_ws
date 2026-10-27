@@ -13,8 +13,10 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Joy
 from geometry_msgs.msg import Twist
+from std_msgs.msg import UInt8
 
 AX_LX, AX_LY, AX_RX = 0, 1, 3
+AX_DPAD_Y = 7
 BTN_TURBO, BTN_CRUISE = 4, 2  # L1, Segitiga
 
 
@@ -33,6 +35,13 @@ class Ds4Drive(Node):
         self.max_angular = float(self.get_parameter('max_angular').value)
         self.declare_parameter('joy_timeout', 0.2)
         self.joy_timeout = float(self.get_parameter('joy_timeout').value)
+        self.declare_parameter('lifter_topic', 'lifter_target')
+        self.lifter_topic = str(self.get_parameter('lifter_topic').value)
+
+        # Lifter state
+        self.lifter_target = 0
+        self._last_dpad_y = 0.0
+
         # QoS BestEffort + KeepLast(1) supaya cocok dengan nucleo
         # (publisher Reliable + queue 10 bikin antre/retransmit = delay).
         qos = QoSProfile(
@@ -42,6 +51,7 @@ class Ds4Drive(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
         self.pub = self.create_publisher(Twist, 'cmd_vel', qos)
+        self.lifter_pub = self.create_publisher(UInt8, self.lifter_topic, 10)
         self.sub = self.create_subscription(Joy, 'joy', self.on_joy, qos)
         self._last_joy_time = self.get_clock().now()
         self._stopped = False
@@ -49,7 +59,7 @@ class Ds4Drive(Node):
         # daripada nunggu cmd_vel_timeout 0.5 s di nucleo.
         self._timer = self.create_timer(0.05, self._check_timeout)
         self.get_logger().info(
-            'DS4 siap: stick kiri gerak, L1=cepat, segitiga=maju lurus')
+            'DS4 siap: stick kiri gerak, L1=cepat, segitiga=maju lurus, DPAD Up=Lifter Naik(1), DPAD Down=Lifter Turun(0)')
 
     @staticmethod
     def _dz(v, width):
@@ -84,6 +94,28 @@ class Ds4Drive(Node):
         twist.linear.y = vy
         twist.angular.z = yaw
         self.pub.publish(twist)
+
+        # Kontrol lifter dengan D-Pad Y (DPAD-Y)
+        # Pad ATAS (ax > 0.5)  -> lifter target = 1 (NAIK / KE ATAS)
+        # Pad BAWAH (ax < -0.5) -> lifter target = 0 (TURUN / KE BAWAH)
+        if len(ax) > AX_DPAD_Y:
+            dpad_y = ax[AX_DPAD_Y]
+            new_target = None
+            if dpad_y > 0.5 and self._last_dpad_y <= 0.5:
+                new_target = 1
+            elif dpad_y < -0.5 and self._last_dpad_y >= -0.5:
+                new_target = 0
+
+            if new_target is not None:
+                self.lifter_target = new_target
+                l_msg = UInt8()
+                l_msg.data = self.lifter_target
+                self.lifter_pub.publish(l_msg)
+                self.get_logger().info(
+                    f'Target Lifter dikirim: {self.lifter_target} ({"NAIK (1)" if self.lifter_target == 1 else "TURUN (0)"})'
+                )
+
+            self._last_dpad_y = dpad_y
 
     def _check_timeout(self):
         if self._stopped:

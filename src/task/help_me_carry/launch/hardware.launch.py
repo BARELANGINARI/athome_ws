@@ -1,3 +1,7 @@
+<<<<<<<< HEAD:src/task/help_me_carry/launch/hardware.launch.py
+========
+import os
+>>>>>>>> backup-kerjaan-lokal:src/task/receptionist/launch/hardware.launch.py
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
@@ -16,52 +20,52 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'nucleo',
             default_value='true',
-            description='true = ikutkan nucleo.launch.py (base driver STM32).',
+            description='Launch STM32 Nucleo base motor driver.',
         ),
         DeclareLaunchArgument(
             'stm_ip',
             default_value='192.168.0.4',
-            description='Diteruskan ke nucleo.launch.py bila nucleo:=true.',
+            description='STM32 IP address.',
         ),
         DeclareLaunchArgument(
             'joy_topic',
             default_value='joy_vel',
-            description='Diteruskan ke nucleo.launch.py: kanal override joystick '
-                        '(prioritas di atas cmd_vel!). Isi nama topik yang tidak '
-                        'ada (mis. joy_disabled) untuk menonaktifkan.',
+            description='Joystick override velocity topic.',
         ),
         DeclareLaunchArgument(
             'test_topic',
             default_value='test_vel',
-            description='Diteruskan ke nucleo.launch.py: kanal override uji manual. '
-                        'Isi nama topik yang tidak ada untuk menonaktifkan.',
+            description='Manual test velocity topic.',
         ),
         DeclareLaunchArgument(
             'lidar',
             default_value='true',
-            description='true = nyalakan rplidar (/scan). false = lidar sudah '
-                        'jalan dari launch lain.',
+            description='Launch RPLiDAR node.',
         ),
         DeclareLaunchArgument(
             'lidar_x',
             default_value='0.0',
-            description='LiDAR offset X dari base_link (meter).',
+            description='LiDAR X offset from base_link (m).',
         ),
         DeclareLaunchArgument(
             'lidar_y',
             default_value='0.0',
-            description='LiDAR offset Y dari base_link (meter).',
+            description='LiDAR Y offset from base_link (m).',
         ),
         DeclareLaunchArgument(
             'lidar_z',
             default_value='0.25',
-            description='LiDAR offset Z dari base_link (meter).',
+            description='LiDAR Z offset from base_link (m).',
         ),
         DeclareLaunchArgument(
             'lidar_yaw',
             default_value='3.14159',
-            description='LiDAR yaw offset (radian).',
+            description='LiDAR yaw offset (rad).',
         ),
+<<<<<<<< HEAD:src/task/help_me_carry/launch/hardware.launch.py
+========
+        # Motor control driver (UDP to Nucleo)
+>>>>>>>> backup-kerjaan-lokal:src/task/receptionist/launch/hardware.launch.py
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
@@ -79,6 +83,10 @@ def generate_launch_description():
                 'test_topic': LaunchConfiguration('test_topic'),
             }.items(),
         ),
+<<<<<<<< HEAD:src/task/help_me_carry/launch/hardware.launch.py
+========
+        # RPLiDAR node
+>>>>>>>> backup-kerjaan-lokal:src/task/receptionist/launch/hardware.launch.py
         Node(
             package='rplidar_ros',
             executable='rplidar_composition',
@@ -95,6 +103,7 @@ def generate_launch_description():
                 ])
             ],
         ),
+        # TF: base_link -> laser_frame
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
@@ -112,6 +121,7 @@ def generate_launch_description():
                 'base_link', 'laser_frame',
             ],
         ),
+        # TF: base_footprint -> base_link
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
