@@ -174,6 +174,7 @@ class BarelangHriNode(Node):
         self.follow_stop_client = self.create_client(Trigger, "/follow/stop")
         self.align_bag_client = self.create_client(Trigger, "/task/align_bag")
         self.homing_client = self.create_client(Trigger, "/homing")
+        self.arm_ambil_tas_client = self.create_client(Trigger, "/arm/ambil_tas")
 
         self.get_logger().info("BarelangHriNode Task Manager aktif.")
 
@@ -284,6 +285,27 @@ class BarelangHriNode(Node):
                 self.get_logger().info(f"[HRI] Service /homing selesai: {res.message if res else 'OK'}")
             except Exception as e:
                 self.get_logger().error(f"[HRI] Error /homing: {e}")
+            self.loop.call_soon_threadsafe(on_complete)
+
+        future.add_done_callback(_on_done)
+        return True
+
+    def call_arm_ambil_tas(self, on_complete: Callable):
+        """Memanggil routine eksekusi gerakan lengan ambil_tas."""
+        if not self.arm_ambil_tas_client.service_is_ready():
+            self.get_logger().warn("Service /arm/ambil_tas belum siap! Melewati eksekusi arm.")
+            self.loop.call_soon_threadsafe(on_complete)
+            return False
+
+        self.get_logger().info("[HRI] Menjalankan Task: Arm Ambil Tas...")
+        future = self.arm_ambil_tas_client.call_async(Trigger.Request())
+
+        def _on_done(fut):
+            try:
+                res = fut.result()
+                self.get_logger().info(f"[HRI] Service /arm/ambil_tas selesai: {res.message if res else 'OK'}")
+            except Exception as e:
+                self.get_logger().error(f"[HRI] Error /arm/ambil_tas: {e}")
             self.loop.call_soon_threadsafe(on_complete)
 
         future.add_done_callback(_on_done)
@@ -403,8 +425,8 @@ class HriCoordinator:
                     ),
                 )
 
-            # -- Chain 2: Align Bag Selesai --
-            def on_align_bag_finished():
+            # -- Chain 2.5: Arm Ambil Tas Selesai -> Mulai Homing --
+            def on_arm_finished():
                 def trigger_homing():
                     self.ros_node.call_homing(on_complete=on_homing_finished)
 
@@ -412,6 +434,16 @@ class HriCoordinator:
                     "I've got the bag, now I'm going back to where I started.",
                     force=True,
                     on_finish=trigger_homing,
+                )
+
+            # -- Chain 2: Align Bag Selesai -> Mulai Ambil Tas dengan Arm --
+            def on_align_bag_finished():
+                self.speak(
+                    "I am taking the bag now.",
+                    force=True,
+                    on_finish=lambda: self.ros_node.call_arm_ambil_tas(
+                        on_complete=on_arm_finished
+                    ),
                 )
 
             # -- Chain 1: Ucapan Arrived Selesai --
@@ -462,7 +494,7 @@ async def main():
 
     print("========================================================================")
     print("🤖 Barelang Inari HRI Server Aktif (Task Manager)")
-    print("📡 ROS 2 Services : /follow/person, /follow/stop, /task/align_bag, /homing")
+    print("📡 ROS 2 Services : /follow/person, /follow/stop, /task/align_bag, /homing, /arm/ambil_tas")
     print("========================================================================")
 
     async with websockets.serve(coordinator.web.ws_handler, "0.0.0.0", 8765, max_size=10 * 1024 * 1024):
