@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Barelang Inari - HRI Mobile Panel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      text-align: center;
+      padding: 16px;
+      margin: 0;
+      background: #f4f6f9;
+      color: #333;
+    }
+    .card {
+      background: #ffffff;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+    h2 { margin-top: 4px; margin-bottom: 8px; color: #1a365d; }
+    .badge {
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-weight: bold;
+      font-size: 15px;
+      background: #e2e8f0;
+      color: #2b6cb0;
+    }
+    .btn-record {
+      width: 100%;
+      max-width: 320px;
+      padding: 20px 24px;
+      font-size: 20px;
+      font-weight: bold;
+      color: white;
+      background: #28a745;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      box-shadow: 0 6px 16px rgba(40,167,69,0.35);
+      transition: all 0.2s;
+      outline: none;
+      margin: 12px 0;
+    }
+    .btn-record.recording {
+      background: #dc3545;
+      box-shadow: 0 6px 16px rgba(220,53,69,0.5);
+      animation: pulse 1.2s infinite;
+    }
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.04); }
+      100% { transform: scale(1); }
+    }
+    .sim-btn {
+      padding: 8px 12px;
+      font-size: 13px;
+      margin: 4px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .ip-input {
+      padding: 8px 12px;
+      font-size: 14px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      width: 65%;
+      max-width: 200px;
+    }
+    .info-box {
+      background: #edf2f7;
+      border-radius: 8px;
+      padding: 10px;
+      text-align: left;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .status-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: red;
+      margin-right: 6px;
+    }
+    .status-dot.connected { background: #28a745; }
+  </style>
+</head>
+<body>
+
+  <h2>🤖 Barelang Inari - HRI</h2>
+
+  <!-- Koneksi Server -->
+  <div class="card" style="padding: 10px;">
+    <span id="conn_dot" class="status-dot"></span>
+    <span id="conn_status">Terputus</span> | 
+    <input type="text" id="ws_ip" class="ip-input" value="" placeholder="IP Mini-PC">
+    <button onclick="connectWs()" class="sim-btn" style="background:#4a5568; color:white;">Hubungkan</button>
+  </div>
+
+  <!-- Status Following -->
+  <div class="card">
+    <p style="margin: 4px 0;">Status Following:</p>
+    <div id="state_txt" class="badge">IDLE</div>
+    <p style="margin: 6px 0 0 0; font-size: 13px; color: #718096;">Info: <b id="substate_txt">-</b></p>
+  </div>
+
+  <!-- Tombol Audio Interaktif (STT ke Mini-PC) -->
+  <div class="card">
+    <p style="margin: 0 0 8px 0; font-size: 14px; color: #4a5568;">Tekan sekali untuk mulai bicara, tekan lagi jika selesai:</p>
+    <button id="btn_rec" class="btn-record" onclick="toggleRecording()">
+      🎤 Mulai Bicara
+    </button>
+    <p id="rec_status" style="font-size: 13px; color: #718096; margin: 4px 0;">Mikrofon siap.</p>
+  </div>
+
+  <!-- Audio Player Piper (Tersembunyi tapi aktif) -->
+  <audio id="audio_player" preload="auto"></audio>
+
+  <!-- Monitor Transkrip & Respons -->
+  <div class="card">
+    <div class="info-box">
+      <div>🎧 <b>Didengar (Faster-Whisper):</b></div>
+      <div id="stt_txt" style="color: #2c5282; font-style: italic; margin-bottom: 8px;">-</div>
+      <div>🗣️ <b>Robot Berbicara (Piper TTS):</b></div>
+      <div id="tts_txt" style="color: #276749; font-weight: bold;">-</div>
+    </div>
+  </div>
+
+  <!-- Simulasi Cepat (Testing Fallback) -->
+  <div class="card" style="text-align: left;">
+    <h4 style="margin: 0 0 8px 0;">🛠️ Simulasi Perintah / Vision</h4>
+    <div style="margin-bottom: 6px;">
+      <small>Perintah Suara Cepat:</small><br>
+      <button class="sim-btn" style="background:#bee3f8;" onclick="sendSimText('hello robot')">"hello robot"</button>
+      <button class="sim-btn" style="background:#bee3f8;" onclick="sendSimText('follow me')">"follow me"</button>
+      <button class="sim-btn" style="background:#fed7d7; color:#9b2c2c;" onclick="sendSimText('stop')">"stop"</button>
+      <button class="sim-btn" style="background:#bee3f8;" onclick="sendSimText('arrived at the location')">"arrived"</button>
+    </div>
+    <div>
+      <small>Event Kamera ZED:</small><br>
+      <button class="sim-btn" style="background:#fed7d7; color:#9b2c2c;" onclick="sendSimVision('LOST')">Simulasi: Operator LOST</button>
+      <button class="sim-btn" style="background:#c6f6d5; color:#22543d;" onclick="sendSimVision('FOUND')">Simulasi: Operator FOUND</button>
+    </div>
+  </div>
+
+  <script>
+    let ws = null;
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let isRecording = false;
+    const player = document.getElementById("audio_player");
+
+    // Inisialisasi IP default dari host URL atau localhost
+    const defaultHost = window.location.hostname || "localhost";
+    document.getElementById("ws_ip").value = defaultHost;
+
+    function connectWs() {
+      const ip = document.getElementById("ws_ip").value.trim() || "localhost";
+      const wsUrl = `ws://${ip}:8765`;
+      console.log("Menghubungkan ke " + wsUrl);
+
+      if (ws) {
+        ws.close();
+      }
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        document.getElementById("conn_dot").className = "status-dot connected";
+        document.getElementById("conn_status").innerText = "Terhubung";
+        console.log("WebSocket Terhubung.");
+      };
+
+      ws.onclose = () => {
+        document.getElementById("conn_dot").className = "status-dot";
+        document.getElementById("conn_status").innerText = "Terputus";
+        console.log("WebSocket Terputus.");
+      };
+
+      ws.onerror = (err) => {
+        console.error("WebSocket Error:", err);
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          if (data.state) {
+            document.getElementById("state_txt").innerText = data.state;
+          }
+          if (data.substate) {
+            document.getElementById("substate_txt").innerText = data.substate;
+          }
+          if (data.transcript) {
+            document.getElementById("stt_txt").innerText = data.transcript;
+          }
+
+          // Pemutaran Audio Piper TTS dari Mini-PC
+          if (data.type === "TTS_PLAY") {
+            document.getElementById("tts_txt").innerText = data.text;
+
+            if (data.audio && data.audio.length > 0) {
+              const audioBytes = Uint8Array.from(atob(data.audio), c => c.charCodeAt(0));
+              const blob = new Blob([audioBytes], { type: "audio/wav" });
+              const audioUrl = URL.createObjectURL(blob);
+              player.src = audioUrl;
+              player.play().catch(e => console.warn("Audio autoplay blocked by browser policy:", e));
+            }
+          }
+        } catch (e) {
+          console.error("Gagal parse pesan WS:", e);
+        }
+      };
+    }
+
+    // Auto connect saat halaman dimuat
+    window.addEventListener("load", () => {
+      connectWs();
+    });
+
+    // Perekaman Audio Smartphone
+    async function toggleRecording() {
+      const btn = document.getElementById("btn_rec");
+      const statusTxt = document.getElementById("rec_status");
+
+      if (!isRecording) {
+        // Mulai Merekam
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaRecorder = new MediaRecorder(stream);
+          audioChunks = [];
+
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) {
+              audioChunks.push(e.data);
+            }
+          };
+
+          mediaRecorder.onstop = async () => {
+            statusTxt.innerText = "Mengirim audio ke Faster-Whisper Mini-PC...";
+            const blob = new Blob(audioChunks, { type: "audio/webm" });
+            const arrayBuffer = await blob.arrayBuffer();
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(arrayBuffer); // Kirim raw audio bytes langsung
+            } else {
+              alert("WebSocket belum terhubung ke robot!");
+            }
+            statusTxt.innerText = "Mikrofon siap.";
+          };
+
+          mediaRecorder.start();
+          isRecording = true;
+          btn.innerText = "⏹️ Selesai Bicara";
+          btn.className = "btn-record recording";
+          statusTxt.innerText = "Merekam suara... Silakan bicara.";
+        } catch (err) {
+          console.error("Akses mikrofon ditolak:", err);
+          alert("Gagal mengakses mikrofon HP: " + err.message);
+        }
+      } else {
+        // Stop Merekam
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+          mediaRecorder.stop();
+        }
+        isRecording = false;
+        btn.innerText = "🎤 Mulai Bicara";
+        btn.className = "btn-record";
+      }
+    }
+
+    function sendSimText(text) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "SIM_TEXT", text: text }));
+      }
+    }
+
+    function sendSimVision(val) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "VISION_EVENT", value: val }));
+      }
+    }
+  </script>
+</body>
+</html>

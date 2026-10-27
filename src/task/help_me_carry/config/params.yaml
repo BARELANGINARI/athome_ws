@@ -1,0 +1,33 @@
+help_me_carry_node:
+  ros__parameters:
+    # Topics & frames
+    person_topic: "/zed/person_label"   # ZED person detection topic
+    gesture_topic: "/zed/gesture"       # ZED gesture detection topic
+    bag_topic: "/zed/bag_detections"    # ZED bag detection topic
+    yaw_topic: "/zed/yaw_deg"           # Vision IMU yaw topic
+    action_name: "navigate_to_pose"     # Nav2 action server name
+    frame_map: "map"                    # Global map frame
+    frame_base: "base_link"             # Robot base frame
+
+    # Tracking distances (m)
+    follow_stop_distance: 0.5           # Stop distance (< 0.5m -> STOP)
+    follow_start_distance: 0.7          # Start follow distance (> 0.7m -> START)
+    max_follow_range: 3.0               # Maximum tracking range (m)
+
+    # Velocity limits
+    max_vx: 0.32                        # Max forward linear velocity (m/s)
+    max_vy: 0.22                        # Max lateral strafe velocity (m/s)
+    max_wz: 0.40                        # Max rotational velocity (rad/s)
+
+    # Heading PD gains
+    kp_w: 0.75                          # Proportional gain for heading
+    kd_w: 0.15                          # Derivative gain for heading
+
+    # Obstacle avoidance (LiDAR /scan)
+    enable_avoidance: true              # Enable LiDAR obstacle avoidance
+    obstacle_distance: 0.75             # Obstacle detection threshold (m)
+    min_stop_distance: 0.38             # Critical front obstacle stop distance (m)
+    footprint_radius: 0.25              # Robot footprint radius (m)
+
+    # Timing & safety
+    max_lost_time: 3.0                  # Target lost timeout (s)

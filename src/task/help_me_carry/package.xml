@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>help_me_carry</name>
+  <version>0.1.0</version>
+  <description>Help Me Carry: person following nodes, launch, dan konfigurasi task.</description>
+  <maintainer email="ichsanfyudika@gmail.com">robot_ws</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>ament_index_cpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav2_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>athome_navigation</exec_depend>
+  <exec_depend>athome_bringup</exec_depend>
+  <exec_depend>athome_base</exec_depend>
+  <exec_depend>athome_vision</exec_depend>
+  <exec_depend>rplidar_ros</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>athome_mapping</exec_depend>
+  <exec_depend>athome_hri</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
