@@ -197,11 +197,12 @@ public:
     target_index_ = declare_parameter<int>("target_index", 0);
     stop_distance_ = declare_parameter<double>("follow_stop_distance", 0.5);  // Jarak berhenti (0.5 m)
     start_distance_ = declare_parameter<double>("follow_start_distance", 0.7); // Jarak mulai maju (0.7 m)
+    bag_stop_distance_ = declare_parameter<double>("bag_stop_distance", 0.45); // Jarak berhenti di depan tas (0.45 m)
     max_range_ = declare_parameter<double>("max_follow_range", 3.0);
     max_lost_time_ = declare_parameter<double>("max_lost_time", 3.0);
     enable_avoidance_ = declare_parameter<bool>("enable_avoidance", true);
     obstacle_distance_ = declare_parameter<double>("obstacle_distance", 0.75); // Jarak deteksi halangan (0.75 m)
-    footprint_radius_ = declare_parameter<double>("footprint_radius", 0.25);   // Radius bodi robot (0.25 m)
+    footprint_radius_ = declare_parameter<double>("footprint_radius", 0.40);   // Radius bodi robot (0.25 m)
     bt_xml_ = declare_parameter<std::string>("follow_bt_xml", "");
 
     if (bt_xml_.empty()) {
@@ -219,75 +220,98 @@ public:
     path_pub_ = create_publisher<nav_msgs::msg::Path>(
       "/follow/path", rclcpp::QoS(10));
 
+    cb_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+    rclcpp::SubscriptionOptions sub_options;
+    sub_options.callback_group = cb_group_;
+
     person_sub_ = create_subscription<std_msgs::msg::String>(
       person_topic_, rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::String::SharedPtr msg) {
         on_person_detected(msg);
-      });
+      },
+      sub_options);
 
     gesture_sub_ = create_subscription<std_msgs::msg::String>(
       gesture_topic_, rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::String::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(bag_mutex_);
-        latest_gesture_ = msg->data;
-      });
+        if (msg->data.find("LEFT") != std::string::npos || msg->data.find("RIGHT") != std::string::npos){
+          latest_gesture_ = msg->data;
+        }
+      },
+      sub_options);
 
     bag_sub_ = create_subscription<std_msgs::msg::String>(
       bag_topic_, rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::String::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(bag_mutex_);
         latest_bags_ = parse_bags(msg->data);
-      });
+      },
+      sub_options);
 
     yaw_sub_ = create_subscription<std_msgs::msg::Float64>(
       yaw_topic_, rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::Float64::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(bag_mutex_);
         current_yaw_deg_ = msg->data;
-      });
+      },
+      sub_options);
 
     scan_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(
       "/scan", rclcpp::SensorDataQoS(),
       [this](const sensor_msgs::msg::LaserScan::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(scan_mutex_);
         latest_scan_ = msg;
-      });
+      },
+      sub_options);
 
     start_srv_ = create_service<Trigger>(
       "/follow/person",
       [this](const std::shared_ptr<Trigger::Request>, std::shared_ptr<Trigger::Response> resp) {
         handle_start_follow(resp);
-      });
+      },
+      rclcpp::ServicesQoS(),
+      cb_group_);
 
     start_follow_srv_alias_ = create_service<Trigger>(
       "/help_me_carry/start_follow",
       [this](const std::shared_ptr<Trigger::Request>, std::shared_ptr<Trigger::Response> resp) {
         handle_start_follow(resp);
-      });
+      },
+      rclcpp::ServicesQoS(),
+      cb_group_);
 
     stop_srv_ = create_service<Trigger>(
       "/follow/stop",
       [this](const std::shared_ptr<Trigger::Request>, std::shared_ptr<Trigger::Response> resp) {
         handle_stop_follow(resp);
-      });
+      },
+      rclcpp::ServicesQoS(),
+      cb_group_);
 
     stop_follow_srv_alias_ = create_service<Trigger>(
       "/help_me_carry/stop_follow",
       [this](const std::shared_ptr<Trigger::Request>, std::shared_ptr<Trigger::Response> resp) {
         handle_stop_follow(resp);
-      });
+      },
+      rclcpp::ServicesQoS(),
+      cb_group_);
 
     align_bag_srv_ = create_service<Trigger>(
       "/task/align_bag",
       [this](const std::shared_ptr<Trigger::Request> req, std::shared_ptr<Trigger::Response> resp) {
         handle_align_bag(req, resp);
-      });
+      },
+      rclcpp::ServicesQoS(),
+      cb_group_);
 
     homing_srv_ = create_service<Trigger>(
       "/homing",
       [this](const std::shared_ptr<Trigger::Request> req, std::shared_ptr<Trigger::Response> resp) {
         handle_homming(req, resp);
-      });
+      },
+      rclcpp::ServicesQoS(),
+      cb_group_);
 
     watchdog_timer_ = create_wall_timer(
       std::chrono::milliseconds(500), [this]() { check_safety_watchdog(); });
@@ -864,22 +888,49 @@ private:
       handle_stop_follow(dummy);
     }
 
-    // 2. Ambil data gesture dan tas terakhir dari ZED
-    std::string gest;
-    std::vector<Bag> bags;
-    {
-      std::lock_guard<std::mutex> lock(bag_mutex_);
-      gest = latest_gesture_;
-      bags = latest_bags_;
-    }
+    // 2. Tunggu sampai operator memberikan gesture valid (RIGHT atau LEFT)
+    RCLCPP_INFO(get_logger(), "[Align Bag] Menunggu gesture operator (KIRI / KANAN)...");
+    const auto wait_start = now();
+    const double gesture_timeout = 20.0; // detik timeout
+    std::string gest = "NONE";
+    bool is_right = false;
+    bool is_left = false;
 
-    const bool is_right = (gest.find("RIGHT") != std::string::npos || gest.find("KANAN") != std::string::npos);
-    const bool is_left  = (gest.find("LEFT") != std::string::npos || gest.find("KIRI") != std::string::npos);
+    rclcpp::Rate loop_rate(10);
+    while (rclcpp::ok() && (now() - wait_start).seconds() < gesture_timeout) {
+      {
+        std::lock_guard<std::mutex> lock(bag_mutex_);
+        gest = latest_gesture_;
+      }
+      is_right = (gest.find("RIGHT") != std::string::npos || gest.find("KANAN") != std::string::npos);
+      is_left  = (gest.find("LEFT") != std::string::npos || gest.find("KIRI") != std::string::npos);
+
+      if (is_right || is_left) {
+        RCLCPP_INFO(get_logger(), "[Align Bag] Gesture terdeteksi: %s", gest.c_str());
+        break;
+      }
+      loop_rate.sleep();
+    }
 
     if (!is_right && !is_left) {
       resp->success = false;
-      resp->message = "Gesture tidak valid (harus kiri atau kanan): " + gest;
+      resp->message = "Timeout menunggu gesture operator (terakhir: " + gest + ")";
+      RCLCPP_WARN(get_logger(), "[Align Bag] %s", resp->message.c_str());
       return;
+    }
+
+    // 3. Ambil data tas dari ZED (tunggu sejenak jika deteksi tas belum masuk)
+    std::vector<Bag> bags;
+    const auto bag_start = now();
+    while (rclcpp::ok() && (now() - bag_start).seconds() < 3.0) {
+      {
+        std::lock_guard<std::mutex> lock(bag_mutex_);
+        bags = latest_bags_;
+      }
+      if (!bags.empty()) {
+        break;
+      }
+      loop_rate.sleep();
     }
 
     // 3. Saring tas ZED di sisi yang dipilih (rel_y < 0: kanan, rel_y > 0: kiri)
@@ -925,12 +976,89 @@ private:
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    // 5. Berhenti seketika
+    // 5. Berhenti seketika dari rotasi
+    twist.angular.z = 0.0;
+    cmd_vel_pub_->publish(twist);
+    {
+      std::lock_guard<std::mutex>log(bag_mutex_);
+      latest_gesture_ = "NONE";
+    }
+    
+    resp->success = true;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // 6. Maju ke arah tas sesuai deteksi dari /zed/bag_detections sampai jarak target
+    RCLCPP_INFO(get_logger(), "[Align Bag] Hadap tas lurus. Mulai maju mendekati tas hingga jarak %.2f m...", bag_stop_distance_);
+    const auto t_approach = now();
+    const double max_approach_sec = 10.0; // timeout maju 10 detik
+    double last_known_dist = target_bag.x;
+
+    while (rclcpp::ok() && (now() - t_approach).seconds() < max_approach_sec) {
+      std::vector<Bag> current_bags;
+      {
+        std::lock_guard<std::mutex> lock(bag_mutex_);
+        current_bags = latest_bags_;
+      }
+
+      Bag chosen_bag{0.0, 0.0};
+      double min_d = 1e9;
+      bool found_front_bag = false;
+
+      for (const auto & b : current_bags) {
+        if (b.x <= 0.05) continue;
+        const double rel_y = -b.y; // +Y = kiri, -Y = kanan
+        const double d = std::hypot(b.x, rel_y);
+        // Prioritaskan tas di depan hadap robot
+        if (std::abs(rel_y) < 0.8 && d < min_d) {
+          min_d = d;
+          chosen_bag = {b.x, rel_y};
+          found_front_bag = true;
+        }
+      }
+
+      if (found_front_bag) {
+        last_known_dist = min_d;
+        // Cek apakah sudah sampai di depan tas
+        if (chosen_bag.x <= bag_stop_distance_ || min_d <= bag_stop_distance_) {
+          RCLCPP_INFO(get_logger(), "[Align Bag] Sampai di depan tas! Jarak: %.2f m (target: %.2f m).", min_d, bag_stop_distance_);
+          break;
+        }
+
+        // Kontrol maju dan sedikit penyesuaian rotasi
+        const double d_err = min_d - bag_stop_distance_;
+        double vx = std::clamp(0.40 * d_err, 0.08, 0.25);
+        const double angle_err = std::atan2(chosen_bag.y, chosen_bag.x);
+        double wz = std::clamp(0.80 * angle_err, -0.25, 0.25);
+
+        twist.linear.x = vx;
+        twist.linear.y = 0.0;
+        twist.angular.z = wz;
+        cmd_vel_pub_->publish(twist);
+      } else {
+        // Jika tas tidak terdeteksi (misal tas sudah sangat dekat dan keluar bawah FOV kamera)
+        if (last_known_dist <= bag_stop_distance_ + 0.15) {
+          RCLCPP_INFO(get_logger(), "[Align Bag] Tas sangat dekat (%.2f m) mendekati jangkauan FOV ZED. Selesai maju.", last_known_dist);
+          break;
+        }
+        // Perlambat perlahan jika deteksi hilang sementara
+        twist.linear.x = 0.05;
+        twist.angular.z = 0.0;
+        cmd_vel_pub_->publish(twist);
+      }
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    // 7. Stop total
+    twist.linear.x = 0.0;
+    twist.linear.y = 0.0;
     twist.angular.z = 0.0;
     cmd_vel_pub_->publish(twist);
 
     resp->success = true;
-    resp->message = std::string("Robot telah lurus sejajar tas ") + (is_right ? "kanan" : "kiri") + " (yaw vision) dan berhenti.";
+    resp->message = std::string("Robot telah lurus dan maju sampai di depan tas ") +
+                    (is_right ? "kanan" : "kiri") + " lalu berhenti total.";
     RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
     IC(resp->success, resp->message);
   }
@@ -1024,11 +1152,12 @@ private:
   int target_index_{0};
   double stop_distance_{0.5};
   double start_distance_{0.7};
+  double bag_stop_distance_{0.45};
   double max_range_{3.0};
   double max_lost_time_{3.0};
   bool enable_avoidance_{true};
   double obstacle_distance_{0.75};
-  double footprint_radius_{0.25};
+  double footprint_radius_{0.40};
   std::string bt_xml_;
 
   int locked_person_id_{-1};
@@ -1078,6 +1207,7 @@ private:
   rclcpp::Service<Trigger>::SharedPtr align_bag_srv_;
   rclcpp::Service<Trigger>::SharedPtr homing_srv_;
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
+  rclcpp::CallbackGroup::SharedPtr cb_group_;
 };
 
 int main(int argc, char ** argv)

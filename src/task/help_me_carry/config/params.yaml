@@ -15,7 +15,7 @@ help_me_carry_node:
     # Obstacle Avoidance (Lidar /scan)
     enable_avoidance: true              # Aktifkan penghindar rintangan Lidar
     obstacle_distance: 0.75             # Jarak sensitivitas deteksi rintangan (meter)
-    footprint_radius: 0.25              # Radius bodi robot (meter) untuk membuang pantulan laser fisik robot sendiri
+    footprint_radius: 0.40              # Radius bodi robot (meter) untuk membuang pantulan laser fisik robot sendiri
 
     # Waktu & Safety
     max_lost_time: 10.0                 # Batas toleransi orang hilang (detik)

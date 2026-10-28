@@ -579,10 +579,24 @@ ZedNode::ZedNode()
   init_parameters.depth_minimum_distance =
     static_cast<float>(get_parameter("depth_minimum_distance").as_double());
 
-  const auto state = zed_.open(init_parameters);
+  sl::ERROR_CODE state = sl::ERROR_CODE::FAILURE;
+  for (int attempt = 1; attempt <= 5; ++attempt) {
+    RCLCPP_INFO(get_logger(), "Membuka kamera ZED (percobaan %d/5)...", attempt);
+    state = zed_.open(init_parameters);
+    if (state == sl::ERROR_CODE::SUCCESS) {
+      RCLCPP_INFO(get_logger(), "Kamera ZED berhasil dibuka.");
+      break;
+    }
+    RCLCPP_WARN(
+      get_logger(),
+      "Percobaan %d gagal: %s. Menunggu 1 detik...",
+      attempt, sl::toString(state).c_str());
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+  }
+
   if (state != sl::ERROR_CODE::SUCCESS) {
-    RCLCPP_ERROR(get_logger(), "ZED open failed: %s", sl::toString(state).c_str());
-    throw std::runtime_error("ZED open failed");
+    RCLCPP_ERROR(get_logger(), "ZED open failed setelah 5 percobaan: %s", sl::toString(state).c_str());
+    throw std::runtime_error(std::string("ZED open failed: ") + sl::toString(state).c_str());
   }
 
   sl::PositionalTrackingParameters positional_parameters;
@@ -989,7 +1003,16 @@ int main(int argc, char ** argv)
   try {
     auto node = std::make_shared<ZedNode>();
     rclcpp::spin(node);
+  } catch (const std::exception & e) {
+    RCLCPP_FATAL(rclcpp::get_logger("zed_main"), "Fatal Exception ZED: %s", e.what());
+    std::cerr << "\033[91m[ZED Fatal Exception] " << e.what() << "\033[0m\n";
+    rclcpp::shutdown();
+    return 1;
   } catch (...) {
+    RCLCPP_FATAL(rclcpp::get_logger("zed_main"), "Unknown Fatal Exception in ZED node!");
+    std::cerr << "\033[91m[ZED Fatal Exception] Unknown error occurred!\033[0m\n";
+    rclcpp::shutdown();
+    return 1;
   }
   rclcpp::shutdown();
   return 0;

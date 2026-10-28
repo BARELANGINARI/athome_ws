@@ -1,7 +1,4 @@
-<<<<<<<< HEAD:src/task/help_me_carry/launch/hardware.launch.py
-========
 import os
->>>>>>>> backup-kerjaan-lokal:src/task/receptionist/launch/hardware.launch.py
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
@@ -43,6 +40,11 @@ def generate_launch_description():
             description='Launch RPLiDAR node.',
         ),
         DeclareLaunchArgument(
+            'lidar_port',
+            default_value='/dev/ttyUSB2',
+            description='RPLiDAR serial port device (e.g. /dev/ttyUSB2)',
+        ),
+        DeclareLaunchArgument(
             'lidar_x',
             default_value='0.0',
             description='LiDAR X offset from base_link (m).',
@@ -62,10 +64,7 @@ def generate_launch_description():
             default_value='3.14159',
             description='LiDAR yaw offset (rad).',
         ),
-<<<<<<<< HEAD:src/task/help_me_carry/launch/hardware.launch.py
-========
         # Motor control driver (UDP to Nucleo)
->>>>>>>> backup-kerjaan-lokal:src/task/receptionist/launch/hardware.launch.py
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
@@ -83,10 +82,7 @@ def generate_launch_description():
                 'test_topic': LaunchConfiguration('test_topic'),
             }.items(),
         ),
-<<<<<<<< HEAD:src/task/help_me_carry/launch/hardware.launch.py
-========
         # RPLiDAR node
->>>>>>>> backup-kerjaan-lokal:src/task/receptionist/launch/hardware.launch.py
         Node(
             package='rplidar_ros',
             executable='rplidar_composition',
@@ -100,7 +96,10 @@ def generate_launch_description():
                     FindPackageShare('athome_bringup'),
                     'config',
                     'lidar.yaml',
-                ])
+                ]),
+                {
+                    'serial_port': LaunchConfiguration('lidar_port'),
+                },
             ],
         ),
         # TF: base_link -> laser_frame
@@ -113,12 +112,14 @@ def generate_launch_description():
                 PythonExpression(["'", LaunchConfiguration('lidar'), "' == 'true'"])
             ),
             arguments=[
-                LaunchConfiguration('lidar_x'),
-                LaunchConfiguration('lidar_y'),
-                LaunchConfiguration('lidar_z'),
-                LaunchConfiguration('lidar_yaw'),
-                '0.0', '0.0',
-                'base_link', 'laser_frame',
+                '--x', LaunchConfiguration('lidar_x'),
+                '--y', LaunchConfiguration('lidar_y'),
+                '--z', LaunchConfiguration('lidar_z'),
+                '--yaw', LaunchConfiguration('lidar_yaw'),
+                '--pitch', '0.0',
+                '--roll', '0.0',
+                '--frame-id', 'base_link',
+                '--child-frame-id', 'laser_frame',
             ],
         ),
         # TF: base_footprint -> base_link
@@ -128,9 +129,8 @@ def generate_launch_description():
             name='footprint_to_base',
             output='screen',
             arguments=[
-                '0', '0', '0',
-                '0', '0', '0',
-                'base_footprint', 'base_link',
+                '--frame-id', 'base_footprint',
+                '--child-frame-id', 'base_link',
             ],
         ),
     ])

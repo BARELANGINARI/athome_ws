@@ -1,5 +1,5 @@
 ```bash
-# Terminal 1 — Hardware Base & LiDAR:
+# Terminal 1 — Hardware Base STM32 Nucleo & RPLiDAR (/dev/ttyUSB2):
 ros2 launch help_me_carry hardware.launch.py
 
 # Terminal 2 — Penglihatan Kamera ZED (Orang & Tas):

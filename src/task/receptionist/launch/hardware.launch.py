@@ -1,7 +1,4 @@
-<<<<<<<< HEAD:src/task/help_me_carry/launch/hardware.launch.py
-========
 import os
->>>>>>>> backup-kerjaan-lokal:src/task/receptionist/launch/hardware.launch.py
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
@@ -62,10 +59,7 @@ def generate_launch_description():
             default_value='3.14159',
             description='LiDAR yaw offset (rad).',
         ),
-<<<<<<<< HEAD:src/task/help_me_carry/launch/hardware.launch.py
-========
         # Motor control driver (UDP to Nucleo)
->>>>>>>> backup-kerjaan-lokal:src/task/receptionist/launch/hardware.launch.py
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
@@ -83,10 +77,7 @@ def generate_launch_description():
                 'test_topic': LaunchConfiguration('test_topic'),
             }.items(),
         ),
-<<<<<<<< HEAD:src/task/help_me_carry/launch/hardware.launch.py
-========
         # RPLiDAR node
->>>>>>>> backup-kerjaan-lokal:src/task/receptionist/launch/hardware.launch.py
         Node(
             package='rplidar_ros',
             executable='rplidar_composition',

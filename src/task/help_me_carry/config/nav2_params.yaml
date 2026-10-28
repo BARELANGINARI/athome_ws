@@ -159,7 +159,7 @@ local_costmap:
           raytrace_max_range: 3.5        # Max raytracing range (m)
           raytrace_min_range: 0.0        # Min raytracing range (m)
           obstacle_max_range: 3.0        # Max obstacle marking range (m)
-          obstacle_min_range: 0.0        # Min obstacle marking range (m)
+          obstacle_min_range: 0.4        # Min obstacle marking range (m)
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Safety buffer layer around obstacles
         cost_scaling_factor: 10.0        # Exponential cost decay factor
@@ -199,7 +199,7 @@ global_costmap:
           raytrace_max_range: 3.5
           raytrace_min_range: 0.0
           obstacle_max_range: 3.0
-          obstacle_min_range: 0.0
+          obstacle_min_range: 0.4
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
         cost_scaling_factor: 10.0        # Exponential cost decay factor

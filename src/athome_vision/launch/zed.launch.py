@@ -115,6 +115,8 @@ def generate_launch_description():
             executable='zed',
             name='zed',
             output='screen',
+            respawn=True,
+            respawn_delay=2.0,
             parameters=[{
                 'camera_fps': LaunchConfiguration('camera_fps'),
                 'publish_yaw': LaunchConfiguration('publish_yaw'),
