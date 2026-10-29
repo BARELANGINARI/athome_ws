@@ -19,7 +19,7 @@ def generate_launch_description():
         DeclareLaunchArgument('joy_topic', default_value='joy_vel', description='Joystick override velocity topic'),
         DeclareLaunchArgument('test_topic', default_value='test_vel', description='Manual test velocity topic'),
         DeclareLaunchArgument('lidar', default_value='true', description='Launch RPLiDAR sensor node'),
-        DeclareLaunchArgument('lidar_port', default_value='/dev/ttyUSB1', description='RPLiDAR serial port device'),
+        DeclareLaunchArgument('lidar_port', default_value='/dev/ttyUSB2', description='RPLiDAR serial port device'),
         DeclareLaunchArgument('lidar_x', default_value='0.0', description='LiDAR X offset from base_link (m)'),
         DeclareLaunchArgument('lidar_y', default_value='0.0', description='LiDAR Y offset from base_link (m)'),
         DeclareLaunchArgument('lidar_z', default_value='0.25', description='LiDAR Z offset from base_link (m)'),

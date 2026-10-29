@@ -9,7 +9,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     """Launch Dynamixel robotic arm motion server."""
     return LaunchDescription([
-        DeclareLaunchArgument('port', default_value='/dev/ttyUSB1', description='Dynamixel USB serial device port'),
+        DeclareLaunchArgument('port', default_value='/dev/ttyUSB0', description='Dynamixel USB serial device port'),
         DeclareLaunchArgument('baudrate', default_value='1000000', description='Dynamixel communication baud rate'),
         DeclareLaunchArgument(
             'motions_dir',

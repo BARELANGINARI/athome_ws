@@ -30,7 +30,7 @@
 
 #define PROTOCOL_VERSION        1.0
 #define BAUDRATE                1000000
-#define DEVICENAME              "/dev/ttyUSB2"
+#define DEVICENAME              "/dev/ttyUSB0"
 
 #define GRIPPER_ID              6
 #define MAX_ANGLE               300.0

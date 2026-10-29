@@ -104,7 +104,7 @@ struct MotionData {
 class ArmMotionServer : public rclcpp::Node {
 public:
     ArmMotionServer() : Node("arm_motion_server") {
-        this->declare_parameter<std::string>("port", "/dev/ttyUSB1");
+        this->declare_parameter<std::string>("port", "/dev/ttyUSB0");
         this->declare_parameter<int>("baudrate", 1000000);
         this->declare_parameter<std::string>("motions_dir", "");
 

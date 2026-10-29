@@ -10,6 +10,7 @@ import os
 import queue
 import threading
 import time
+from math import gcd
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 import wave
 
@@ -20,7 +21,7 @@ from athome_hri.tts_engine import TextToSpeech
 logger = logging.getLogger("athome_hri.audio_io")
 
 try:
-    from scipy.signal import butter, lfilter
+    from scipy.signal import butter, lfilter, resample_poly
 
     HAS_SCIPY = True
 except ImportError:
@@ -279,7 +280,7 @@ class LocalMicListener:
         is_paused_fn: Callable[[], bool],
         on_frame_metrics: Optional[Callable[[VadFrameMetrics], None]] = None,
         device_index: Optional[int] = None,
-        threshold_dbfs: float = -40.0,
+        threshold_dbfs: float = -30.0,
         threshold_flatness: float = 0.40,
         pre_roll_frames: int = 10,
         hangover_frames: int = 25,
@@ -298,6 +299,7 @@ class LocalMicListener:
         self.hangover_frames = hangover_frames
         self.min_speech_frames = min_speech_frames
         self.sample_rate = sample_rate
+        self.block_duration = block_duration
         self.block_size = int(sample_rate * block_duration)
         self.enabled: bool = False
         self._thread: Optional[threading.Thread] = None
@@ -372,25 +374,61 @@ class LocalMicListener:
 
     def _listen_with_sounddevice(self) -> None:
         audio_queue: queue.Queue[np.ndarray] = queue.Queue()
+        hw_rate = self.sample_rate
+        if self.device_index is not None:
+            try:
+                dev_info = sd.query_devices(self.device_index)
+                candidate = int(dev_info.get("default_samplerate", self.sample_rate))
+                try:
+                    sd.check_input_settings(device=self.device_index, channels=1, dtype="float32", samplerate=self.sample_rate)
+                except Exception:
+                    hw_rate = candidate
+            except Exception:
+                pass
+        else:
+            try:
+                default_dev = sd.default.device[0]
+                dev_info = sd.query_devices(default_dev)
+                candidate = int(dev_info.get("default_samplerate", self.sample_rate))
+                try:
+                    sd.check_input_settings(device=default_dev, channels=1, dtype="float32", samplerate=self.sample_rate)
+                except Exception:
+                    hw_rate = candidate
+            except Exception:
+                pass
+
+        hw_block_size = int(hw_rate * self.block_duration)
+        need_resample = hw_rate != self.sample_rate
+        if need_resample:
+            g = gcd(self.sample_rate, hw_rate)
+            up_factor = self.sample_rate // g
+            down_factor = hw_rate // g
 
         def audio_callback(
             indata: np.ndarray, frames: int, time_info: Any, status: Any
         ) -> None:
             if status:
                 logger.debug("SoundDevice status: %s", status)
-            audio_queue.put(indata[:, 0].copy())
+            sig = indata[:, 0].copy()
+            if need_resample:
+                if HAS_SCIPY:
+                    sig = resample_poly(sig, up_factor, down_factor).astype(np.float32)
+                elif hw_rate % self.sample_rate == 0:
+                    sig = sig[::hw_rate // self.sample_rate]
+            audio_queue.put(sig)
 
         try:
             with sd.InputStream(
-                samplerate=self.sample_rate,
+                samplerate=hw_rate,
                 channels=1,
                 dtype="float32",
-                blocksize=self.block_size,
+                blocksize=hw_block_size,
                 device=self.device_index,
                 callback=audio_callback,
             ):
                 logger.info(
-                    "Mikrofon lokal aktif via SoundDevice (%d Hz, block=%d, dbfs_thresh=%.1f dBFS, flatness_max=%.2f).",
+                    "Mikrofon lokal aktif via SoundDevice (HW: %d Hz -> VAD: %d Hz, block=%d, dbfs_thresh=%.1f dBFS, flatness_max=%.2f).",
+                    hw_rate,
                     self.sample_rate,
                     self.block_size,
                     self.threshold_dbfs,

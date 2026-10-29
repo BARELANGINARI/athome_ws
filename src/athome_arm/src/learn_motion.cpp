@@ -1197,4 +1197,3 @@ int main() {
     std::cout << "Torque disabled and port closed.\n";
     return 0;
 }
-}
