@@ -66,6 +66,7 @@ ament_target_dependencies(return_to_origin
   nav2_msgs
 )
 install(TARGETS return_to_origin DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS src/help_me_carry_hri.py DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)

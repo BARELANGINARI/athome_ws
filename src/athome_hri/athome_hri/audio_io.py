@@ -41,11 +41,13 @@ class AudioSpeechQueue:
         broadcast_func: Optional[BroadcastCallback],
         default_cooldown: float = 3.0,
         min_gap: float = 0.5,
+        enable_local_speaker: bool = True,
     ) -> None:
         self.tts = tts_engine
         self.broadcast_func = broadcast_func
         self.default_cooldown = default_cooldown
         self.min_gap = min_gap
+        self.enable_local_speaker = enable_local_speaker
         self.queue: asyncio.Queue[QueueItem] = asyncio.Queue()
         self.last_spoken_time: Dict[str, float] = {}
         self.global_last_spoken_time: float = 0.0
@@ -79,6 +81,36 @@ class AudioSpeechQueue:
             cls.MIN_ESTIMATED_DURATION,
         )
 
+    @staticmethod
+    def _play_wav_locally(wav_base64: str) -> bool:
+        """Memutar audio WAV Base64 ke speaker lokal menggunakan PyAudio."""
+        if not wav_base64 or not HAS_PYAUDIO:
+            return False
+        try:
+            raw_bytes = base64.b64decode(wav_base64)
+            with wave.open(io.BytesIO(raw_bytes), "rb") as wf:
+                pa = pyaudio.PyAudio()
+                try:
+                    stream = pa.open(
+                        format=pa.get_format_from_width(wf.getsampwidth()),
+                        channels=wf.getnchannels(),
+                        rate=wf.getframerate(),
+                        output=True,
+                    )
+                    chunk = 1024
+                    data = wf.readframes(chunk)
+                    while data:
+                        stream.write(data)
+                        data = wf.readframes(chunk)
+                    stream.stop_stream()
+                    stream.close()
+                    return True
+                finally:
+                    pa.terminate()
+        except Exception as exc:
+            logger.debug("Gagal memutar audio ke speaker lokal: %s", exc)
+        return False
+
     async def _worker(self) -> None:
         while True:
             text, delay_after, done_future = await self.queue.get()
@@ -89,7 +121,11 @@ class AudioSpeechQueue:
                     await asyncio.sleep(self.min_gap - gap)
 
                 logger.info('[ROBOT SPEAKS] "%s"', text)
-                wav_base64 = self.tts.synthesize_wav_base64(text) if self.tts else ""
+                wav_base64 = (
+                    await asyncio.to_thread(self.tts.synthesize_wav_base64, text)
+                    if self.tts
+                    else ""
+                )
 
                 if self.broadcast_func:
                     await self.broadcast_func(
@@ -101,7 +137,12 @@ class AudioSpeechQueue:
                     )
 
                 duration = self._estimate_duration(wav_base64, text)
-                await asyncio.sleep(duration + delay_after + self.POST_SPEECH_BUFFER_SEC)
+                t0 = time.time()
+                if self.enable_local_speaker and wav_base64:
+                    await asyncio.to_thread(self._play_wav_locally, wav_base64)
+                elapsed = time.time() - t0
+                remaining = max(0.0, duration - elapsed)
+                await asyncio.sleep(remaining + delay_after + self.POST_SPEECH_BUFFER_SEC)
                 self.global_last_spoken_time = time.time()
 
             except asyncio.CancelledError:

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Barelang Inari - Human-Robot Interaction (HRI) Master Node.
 
@@ -317,7 +318,7 @@ class HriCoordinator:
         await self.handle_audio(audio_bytes)
 
     async def handle_audio(self, audio_bytes: bytes) -> None:
-        transcript = self.stt.transcribe(audio_bytes)
+        transcript = await asyncio.to_thread(self.stt.transcribe, audio_bytes)
         if transcript:
             logger.info('[STT TRANSCRIPT] "%s"', transcript)
         await self.web.broadcast_ui({"type": "TRANSCRIPT", "transcript": transcript})
