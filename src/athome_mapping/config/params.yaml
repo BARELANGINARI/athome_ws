@@ -1,0 +1,22 @@
+help_me_carry_node:
+  ros__parameters:
+    person_topic: "/zed/person_label"   # Topik input deteksi keypoint ZED
+    goal_update_topic: "/goal_update"   # Topik output pembaruan goal Nav2
+    action_name: "navigate_to_pose"     # Action server Nav2
+    frame_map: "map"                    # Frame koordinat global (peta)
+    frame_base: "base_link"             # Frame koordinat robot
+    target_index: 0                     # Indeks orang yang di-follow (0 = terdekat)
+
+    # Jarak & Jangkauan (berdasarkan deteksi kamera ZED)
+    follow_stop_distance: 1.0         # Jarak berhenti robot terhadap orang: < 0.5m -> STOP
+    follow_start_distance: 0.5          # Jarak mulai robot mengejar orang: > 0.7m -> START FOLLOWING
+    max_follow_range: 3.0               # Jarak maksimal follow orang (meter)
+
+    # Obstacle Avoidance (Lidar /scan)
+    enable_avoidance: true              # Aktifkan penghindar rintangan Lidar
+    obstacle_distance: 0.75             # Jarak sensitivitas deteksi rintangan (meter)
+    footprint_radius: 0.40              # Radius bodi robot (meter) untuk membuang pantulan laser fisik robot sendiri
+
+    # Waktu & Safety
+    max_lost_time: 10.0                 # Batas toleransi orang hilang (detik)
+    follow_bt_xml: ""                   # Path XML BT (kosong = auto-detect di share navigation)
