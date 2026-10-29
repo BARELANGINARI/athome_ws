@@ -23,7 +23,7 @@
 #define ADDR_MOVING_SPEED       32  // RAM (2 byte, 0-1023)
 #define ADDR_TORQUE_LIMIT       34  // RAM (2 byte, 0-1023)
 #define ADDR_PRESENT_POS        36  // RAM (2 byte, 0-1023)
-#define ADDR_PRESENT_LOAD       40  // RAM (2 byte, bit 10 = arah, 0-9 = magnitude)
+#define ADDR_PRESENT_LOAD       40  // RAM (2 byte, bit 10 = direction, 0-9 = magnitude)
 #define ADDR_PRESENT_VOLT       42  // RAM (1 byte, x0.1V)
 #define ADDR_PRESENT_TEMP       43  // RAM (1 byte, deg C)
 
@@ -34,26 +34,26 @@
 
 #define MAX_ANGLE               300.0
 #define MAX_TICKS               1023
-#define SAFE_MIN_TICK           10      // ~2.9 deg (mencegah masuk dead zone bawah 0)
-#define SAFE_MAX_TICK           1010    // ~296.2 deg (mencegah masuk dead zone atas 1011-1023)
-#define NOMINAL_CENTER_TICK     512     // 150.0 derajat pada Dynamixel Wizard
+#define SAFE_MIN_TICK           10      // ~2.9 deg (prevents lower dead zone 0)
+#define SAFE_MAX_TICK           1010    // ~296.2 deg (prevents upper dead zone 1011-1023)
+#define NOMINAL_CENTER_TICK     512     // 150.0 deg on Dynamixel Wizard
 #define COMPLIANCE_SLOPE        32
 
-// Parameter keamanan saat kalibrasi & uji awal
-#define LOW_SPEED_VAL           40      // ~4.5 RPM (sangat lambat & aman)
-#define LOW_TORQUE_VAL          600     // ~58% torsi maks agar kuat mengangkat lengan melawan gravitasi
-#define INITIAL_SAFE_DEG        15.0    // Batas konservatif awal (+/- 15 derajat)
-#define FULL_WORK_RANGE_DEG     260.0   // Rentang kerja maksimum penuh (J1 & J2)
-#define FULL_GRIP_OPEN_DEG      80.0    // Rentang buka penuh Gripper ID 2 (~780 ticks)
+// Safety parameters during calibration & initial test
+#define LOW_SPEED_VAL           40      // ~4.5 RPM (slow & safe)
+#define LOW_TORQUE_VAL          600     // ~58% max torque to support arm against gravity
+#define INITIAL_SAFE_DEG        15.0    // Initial conservative limit (+/- 15 deg)
+#define FULL_WORK_RANGE_DEG     260.0   // Max work range (J1 & J2)
+#define FULL_GRIP_OPEN_DEG      80.0    // Full open range Gripper ID 2 (~780 ticks)
 
 const uint8_t SERVO_IDS[] = {1, 4, 5, 2};
 
 struct ServoCalib {
     uint8_t  id;
-    uint16_t raw_zero;      // Posisi aktual saat lengan di titik 0 mekanis
-    int16_t  trim_ticks;    // Koreksi halus (khususnya ID 4 & 5)
-    uint16_t cw_limit;      // Batas minimum tick (CW)
-    uint16_t ccw_limit;     // Batas maksimum tick (CCW)
+    uint16_t raw_zero;      // Actual raw position at mechanical zero
+    int16_t  trim_ticks;    // Fine trim (ID 4 & 5)
+    uint16_t cw_limit;      // Minimum tick limit (CW)
+    uint16_t ccw_limit;     // Maximum tick limit (CCW)
 
     uint16_t effectiveCenter() const {
         int val = static_cast<int>(raw_zero) + trim_ticks;
@@ -97,7 +97,7 @@ bool read2Byte(uint8_t id, uint16_t addr, uint16_t &val) {
 
 void setTorqueAll(bool enable) {
     if (!enable) {
-        // Pastikan servo non-aktif (misal ID 1 & 2) juga dimatikan torsinya jika terhubung
+        // Ensure inactive servos are also torque disabled if connected
         const uint8_t all_possible[] = {1, 4, 5, 2};
         for (uint8_t id : all_possible) {
             write1Byte(id, ADDR_TORQUE_ENABLE, 0);
@@ -118,7 +118,7 @@ void setLowSpeedAndTorque(uint16_t speed = LOW_SPEED_VAL, uint16_t torque = LOW_
     }
 }
 
-// Membaca beban (Present Load): negatif = CW, positif = CCW
+// Read present load: negative = CW, positive = CCW
 int readSignedLoad(uint8_t id) {
     uint16_t raw = 0;
     if (!read2Byte(id, ADDR_PRESENT_LOAD, raw)) return 0;
@@ -128,45 +128,45 @@ int readSignedLoad(uint8_t id) {
 }
 
 void waitEnter(const std::string &prompt) {
-    std::cout << prompt << " [Tekan ENTER untuk lanjut] ";
+    std::cout << prompt << " [Press ENTER to continue] ";
     std::string dummy;
     std::getline(std::cin, dummy);
 }
 
-// ---------------- VERIFIKASI KONEKSI ----------------
+// ---------------- VERIFY CONNECTION ----------------
 bool checkServos() {
-    std::cout << "Memeriksa koneksi servo ID 1, 4, 5, 2 pada " << DEVICENAME
+    std::cout << "Checking servo connection ID 1, 4, 5, 2 on " << DEVICENAME
               << " @ " << BAUDRATE << " bps...\n";
     bool all_ok = true;
     for (uint8_t id : SERVO_IDS) {
         uint16_t model = 0;
         uint8_t err = 0;
         if (packetHandler->ping(portHandler, id, &model, &err) != COMM_SUCCESS) {
-            std::cerr << "  [ERROR] Servo ID " << (int)id << " tidak merespons!\n";
+            std::cerr << "  [ERROR] Servo ID " << (int)id << " not responding!\n";
             all_ok = false;
         } else {
-            std::cout << "  [OK] Servo ID " << (int)id << " terdeteksi (Model: " << model << ")\n";
+            std::cout << "  [OK] Servo ID " << (int)id << " detected (Model: " << model << ")\n";
         }
     }
     return all_ok;
 }
 
-// ---------------- STEP 1 & 2: TORQUE OFF & POSISI NOL MEKANIS ----------------
+// ---------------- STEP 1 & 2: TORQUE OFF & MECHANICAL ZERO POSITION ----------------
 void step1And2_DisableTorqueAndPlaceZero() {
     std::cout << "\n========================================================\n";
-    std::cout << "STEP 1 & 2: DISABLE TORQUE & POSISIKAN LENGAN DI TITIK 0\n";
+    std::cout << "STEP 1 & 2: DISABLE TORQUE & POSITION ARM AT ZERO\n";
     std::cout << "========================================================\n";
     setTorqueAll(false);
-    std::cout << "[INFO] Torque pada ID 1, 4, 5, 2 telah DIMATIKAN.\n";
-    std::cout << "[INSTRUKSI] Posisikan lengan secara mekanis pada posisi 0 (Zero Position) yang diinginkan.\n";
-    std::cout << "            Jangan hanya mengandalkan nilai tengah 512 (150 deg) Dynamixel Wizard.\n\n";
+    std::cout << "[INFO] Torque on ID 1, 4, 5, 2 DISABLED.\n";
+    std::cout << "[INSTRUCTION] Manually place the arm at the desired zero position.\n";
+    std::cout << "            Do not rely solely on center value 512 (150 deg) from Dynamixel Wizard.\n\n";
 
     while (true) {
-        std::cout << "Ketik 'p' lalu ENTER untuk preview posisi saat ini, atau langsung ENTER jika posisi 0 sudah siap: ";
+        std::cout << "Type 'p' and ENTER to preview current position, or press ENTER if zero position is ready: ";
         std::string line;
         std::getline(std::cin, line);
         if (line == "p" || line == "P") {
-            std::cout << "  Posisi saat ini:\n";
+            std::cout << "  Current position:\n";
             for (uint8_t id : SERVO_IDS) {
                 uint16_t pos = 0;
                 read2Byte(id, ADDR_PRESENT_POS, pos);
@@ -179,16 +179,16 @@ void step1And2_DisableTorqueAndPlaceZero() {
     }
 }
 
-// ---------------- STEP 3 & 4: BACA & REKAM CENTER AKTUAL ----------------
+// ---------------- STEP 3 & 4: READ & RECORD ACTUAL CENTER ----------------
 void step3And4_ReadAndRecordCenters(std::map<uint8_t, ServoCalib> &calib) {
     std::cout << "\n========================================================\n";
-    std::cout << "STEP 3 & 4: BACA & REKAM CENTER AKTUAL (ID 1, 4, 5, 2)\n";
+    std::cout << "STEP 3 & 4: READ & RECORD ACTUAL CENTER (ID 1, 4, 5, 2)\n";
     std::cout << "========================================================\n";
     std::cout << std::left
               << std::setw(6)  << "ID"
               << std::setw(12) << "Raw Tick"
-              << std::setw(14) << "Sudut (deg)"
-              << std::setw(22) << "Selisih vs Wizard(512)" << "\n";
+              << std::setw(14) << "Angle (deg)"
+              << std::setw(22) << "Diff vs Wizard(512)" << "\n";
     std::cout << "--------------------------------------------------------\n";
 
     for (uint8_t id : SERVO_IDS) {
@@ -205,14 +205,14 @@ void step3And4_ReadAndRecordCenters(std::map<uint8_t, ServoCalib> &calib) {
     }
 }
 
-// ---------------- STEP 5: KOREKSI HALUS (FINE-TUNE) ID 4 & 5 ----------------
+// ---------------- STEP 5: FINE ALIGNMENT FOR PARALLEL JOINTS ID 4 & 5 ----------------
 void step5_AlignPairedJoint4And5(std::map<uint8_t, ServoCalib> &calib) {
     std::cout << "\n========================================================\n";
-    std::cout << "STEP 5: KOREKSI HALUS (ALIGNMENT) JOINT PARAREL ID 4 & 5\n";
+    std::cout << "STEP 5: FINE ALIGNMENT FOR PARALLEL JOINTS ID 4 & 5\n";
     std::cout << "========================================================\n";
-    std::cout << "Mengunci ID 4 & 5 pada posisi center aktual dengan torsi & kecepatan rendah...\n";
+    std::cout << "Locking ID 4 & 5 at actual center with low speed & torque...\n";
 
-    // Buka limit sementara agar tidak tertahan limit lama di EEPROM
+    // Open limits temporarily so old EEPROM limits don't block
     write1Byte(4, ADDR_TORQUE_ENABLE, 0);
     write1Byte(5, ADDR_TORQUE_ENABLE, 0);
     write2Byte(4, ADDR_CW_ANGLE_LIMIT, 0);
@@ -227,11 +227,11 @@ void step5_AlignPairedJoint4And5(std::map<uint8_t, ServoCalib> &calib) {
     write1Byte(5, ADDR_TORQUE_ENABLE, 1);
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
-    std::cout << "\nGunakan perintah berikut untuk menyelaraskan ID 4 & 5 agar tidak saling melawan:\n"
-              << "  4 +n / 4 -n  -> Geser trim ID 4 sebanyak +n atau -n ticks (contoh: 4 +2 atau 4 -1)\n"
-              << "  5 +n / 5 -n  -> Geser trim ID 5 sebanyak +n atau -n ticks (contoh: 5 -2 atau 5 +1)\n"
-              << "  r            -> Refresh pembacaan posisi & beban (load)\n"
-              << "  ok           -> Selesai koreksi ID 4 & 5\n\n";
+    std::cout << "\nUse the following commands to align ID 4 & 5:\n"
+              << "  4 +n / 4 -n  -> Adjust ID 4 trim by +n or -n ticks (e.g.: 4 +2 or 4 -1)\n"
+              << "  5 +n / 5 -n  -> Adjust ID 5 trim by +n or -n ticks (e.g.: 5 -2 or 5 +1)\n"
+              << "  r            -> Refresh position & load reading\n"
+              << "  ok           -> Done with ID 4 & 5 alignment\n\n";
 
     while (true) {
         uint16_t p4 = 0, p5 = 0;
@@ -246,7 +246,7 @@ void step5_AlignPairedJoint4And5(std::map<uint8_t, ServoCalib> &calib) {
                   << "ID 5: center=" << calib[5].effectiveCenter()
                   << " (trim=" << std::showpos << calib[5].trim_ticks << std::noshowpos
                   << ", pos=" << p5 << ", load=" << load5 << ")\n";
-        std::cout << "Perintah koreksi (4 +/-n | 5 +/-n | r | ok): ";
+        std::cout << "Correction command (4 +/-n | 5 +/-n | r | ok): ";
 
         std::string line;
         if (!std::getline(std::cin, line) || line == "ok" || line == "OK") break;
@@ -260,7 +260,7 @@ void step5_AlignPairedJoint4And5(std::map<uint8_t, ServoCalib> &calib) {
             write2Byte(id, ADDR_GOAL_POSITION, target);
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         } else {
-            std::cout << "  [!] Format tidak dikenali. Contoh: '4 +1', '5 -2', 'r', atau 'ok'.\n";
+            std::cout << "  [!] Unrecognized format. Example: '4 +1', '5 -2', 'r', or 'ok'.\n";
         }
     }
 }
@@ -268,15 +268,15 @@ void step5_AlignPairedJoint4And5(std::map<uint8_t, ServoCalib> &calib) {
 // ---------------- STEP 6: SET CONSERVATIVE CW/CCW LIMITS ----------------
 void applyAngleLimitsDeg(std::map<uint8_t, ServoCalib> &calib,
                          double j1_deg, double j2_deg, double grip_deg) {
-    // Matikan torsi sebentar karena CW/CCW Angle Limit berada di area EEPROM
+    // Briefly disable torque because CW/CCW limits are in EEPROM
     setTorqueAll(false);
 
     int d1 = degToTicks(j1_deg);
     int d2 = degToTicks(j2_deg);
     int dg = degToTicks(grip_deg);
 
-    // Tetapkan batas sesuai geometri kerja tiap joint dengan proteksi SAFE_MIN_TICK..SAFE_MAX_TICK (10..1010)
-    // agar tidak pernah melewati 1011-1023 (Zona Buta)
+    // Set limits with SAFE_MIN_TICK..SAFE_MAX_TICK protection (10..1010)
+    // to avoid blind zone 1011-1023
     if (calib.count(4)) {
         calib[4].cw_limit  = clampTicks(calib[4].effectiveCenter() - d1);
         calib[4].ccw_limit = clampTicks(calib[4].effectiveCenter() + d1);
@@ -290,12 +290,12 @@ void applyAngleLimitsDeg(std::map<uint8_t, ServoCalib> &calib,
         calib[1].ccw_limit = clampTicks(calib[1].effectiveCenter() + d2);
     }
     if (calib.count(2)) {
-        // ID 2 (Gripper): center (~506) adalah posisi menutup rapat, arah membuka adalah +ticks (hingga ~753+)
+        // ID 2 (Gripper): center (~506) is fully closed, opening direction is +ticks (up to ~753+)
         calib[2].cw_limit  = clampTicks(calib[2].effectiveCenter() - 15);
         calib[2].ccw_limit = clampTicks(calib[2].effectiveCenter() + dg);
     }
 
-    std::cout << "\nMenulis batas CW/CCW ke EEPROM:\n";
+    std::cout << "\nWriting CW/CCW limits to EEPROM:\n";
     for (uint8_t id : SERVO_IDS) {
         write2Byte(id, ADDR_CW_ANGLE_LIMIT,  calib[id].cw_limit);
         write2Byte(id, ADDR_CCW_ANGLE_LIMIT, calib[id].ccw_limit);
@@ -306,7 +306,7 @@ void applyAngleLimitsDeg(std::map<uint8_t, ServoCalib> &calib,
                   << " (" << ticksToDeg(calib[id].ccw_limit) << " deg)\n";
     }
 
-    // Kembalikan konfigurasi low speed & low torque lalu aktifkan torsi
+    // Restore low speed & low torque then enable torque
     setLowSpeedAndTorque(LOW_SPEED_VAL, LOW_TORQUE_VAL);
     for (uint8_t id : SERVO_IDS) {
         uint16_t cur = calib[id].effectiveCenter();
@@ -317,13 +317,13 @@ void applyAngleLimitsDeg(std::map<uint8_t, ServoCalib> &calib,
     }
 }
 
-// ---------------- GERAK JOINT TERKALIBRASI ----------------
-// Menggerakkan Joint 1 (ID 4 & ID 5 berlawanan arah secara sinkron)
+// ---------------- CALIBRATED JOINT MOTION ----------------
+// Move Joint 1 (ID 4 & ID 5 symmetrically in opposite directions)
 void moveJoint1Rel(dynamixel::GroupSyncWrite &gsw,
                    const std::map<uint8_t, ServoCalib> &calib,
                    double delta_deg) {
     if (!calib.count(4) || !calib.count(5)) {
-        std::cout << "  [!] Servo ID 4 & 5 tidak aktif.\n";
+        std::cout << "  [!] Servo ID 4 & 5 inactive.\n";
         return;
     }
     int dt = degToTicks(delta_deg);
@@ -339,27 +339,27 @@ void moveJoint1Rel(dynamixel::GroupSyncWrite &gsw,
     gsw.addParam(5, p5);
     gsw.txPacket();
 
-    std::cout << "  -> Joint 1 menuju " << std::showpos << delta_deg << std::noshowpos
+    std::cout << "  -> Joint 1 moving to " << std::showpos << delta_deg << std::noshowpos
               << " deg (ID4=" << g4 << ", ID5=" << g5 << ")\n";
 }
 
-// Menggerakkan servo tunggal (ID 1 atau ID 2) relatif terhadap center-nya
-// delta_deg positif = CCW (+ticks), delta_deg negatif = CW (-ticks)
+// Move single servo (ID 1 or ID 2) relative to its center
+// Positive delta_deg = CCW (+ticks), negative delta_deg = CW (-ticks)
 void moveSingleRel(const std::map<uint8_t, ServoCalib> &calib,
                    uint8_t id, double delta_deg) {
     if (!calib.count(id)) {
-        std::cout << "  [!] Servo ID " << (int)id << " sedang dinonaktifkan.\n";
+        std::cout << "  [!] Servo ID " << (int)id << " is disabled.\n";
         return;
     }
     int dt = degToTicks(delta_deg);
     uint16_t goal = std::clamp(clampTicks(calib.at(id).effectiveCenter() + dt),
                                calib.at(id).cw_limit, calib.at(id).ccw_limit);
     write2Byte(id, ADDR_GOAL_POSITION, goal);
-    std::cout << "  -> Servo ID " << (int)id << " menuju " << std::showpos << delta_deg
-              << std::noshowpos << " deg dari center (tick=" << goal << ")\n";
+    std::cout << "  -> Servo ID " << (int)id << " moving to " << std::showpos << delta_deg
+              << std::noshowpos << " deg from center (tick=" << goal << ")\n";
 }
 
-// ---------------- STEP 7 & 8: UJI GERAK & EKSPANSI RENTANG BERTAHAP ----------------
+// ---------------- STEP 7 & 8: TEST MOTION & STEPWISE RANGE EXPANSION ----------------
 void step7And8_TestAndExpandRange(dynamixel::GroupSyncWrite &gsw,
                                   std::map<uint8_t, ServoCalib> &calib) {
     double max_j1   = INITIAL_SAFE_DEG;
@@ -367,28 +367,28 @@ void step7And8_TestAndExpandRange(dynamixel::GroupSyncWrite &gsw,
     double max_grip = INITIAL_SAFE_DEG;
 
     std::cout << "\n========================================================\n";
-    std::cout << "STEP 6: SET BATAS KONSERVATIF AWAL (+/- " << INITIAL_SAFE_DEG << " DERAJAT)\n";
+    std::cout << "STEP 6: SET INITIAL CONSERVATIVE LIMITS (+/- " << INITIAL_SAFE_DEG << " DEG)\n";
     std::cout << "========================================================\n";
     applyAngleLimitsDeg(calib, max_j1, max_j2, max_grip);
 
     std::cout << "\n========================================================\n";
-    std::cout << "STEP 7 & 8: UJI KECEPATAN/TORSI RENDAH & EKSPANSI RENTANG\n";
+    std::cout << "STEP 7 & 8: LOW SPEED/TORQUE TEST & RANGE EXPANSION\n";
     std::cout << "========================================================\n";
 
     while (true) {
-        std::cout << "\n--- Menu Uji & Ekspansi Rentang (Speed=" << LOW_SPEED_VAL
+        std::cout << "\n--- Test & Range Expansion Menu (Speed=" << LOW_SPEED_VAL
                   << ", TorqueLimit=" << LOW_TORQUE_VAL << ") ---\n"
-                  << "  Batas aktif saat ini : J1(ID4&5)=+/-" << max_j1 << " deg | "
+                  << "  Active limits : J1(ID4&5)=+/-" << max_j1 << " deg | "
                   << "J2(ID1)=+/-" << max_j2 << " deg | Gripper(ID2)=0..+" << max_grip << " deg\n"
-                  << "  Perintah:\n"
-                  << "    j1 <deg>     -> Uji Joint 1 (+/-deg, misal: j1 -10, j1 -90, atau j1 0)\n"
-                  << "    j2 <deg>     -> Uji Joint 2 (ID 1, -deg=angkat ke atas, +deg=tekuk dalam)\n"
-                  << "    grip <deg>   -> Uji Gripper (ID 2, 0=tutup rapat s/d +75=buka penuh)\n"
-                  << "    zero         -> Kembalikan semua servo aktif ke posisi 0 terkalibrasi\n"
-                  << "    expand <d1> [d2] [dg] -> Perlebar batas derajat (maks 260), misal: expand 260 260 80\n"
-                  << "    status       -> Baca posisi & beban (load) semua servo aktif saat ini\n"
-                  << "    save         -> Terapkan rentang kerja penuh, simpan calibration_data.h & keluar\n"
-                  << "Pilih perintah: ";
+                  << "  Commands:\n"
+                  << "    j1 <deg>     -> Test Joint 1 (+/-deg, e.g.: j1 -10, j1 -90, j1 0)\n"
+                  << "    j2 <deg>     -> Test Joint 2 (ID 1, -deg=lift up, +deg=bend down)\n"
+                  << "    grip <deg>   -> Test Gripper (ID 2, 0=closed to +75=fully open)\n"
+                  << "    zero         -> Move all active servos to calibrated zero position\n"
+                  << "    expand <d1> [d2] [dg] -> Expand degree limits (max 260), e.g.: expand 260 260 80\n"
+                  << "    status       -> Read current position & load for all active servos\n"
+                  << "    save         -> Apply full work range, save calibration_data.h & exit\n"
+                  << "Select command: ";
 
         std::string line;
         if (!std::getline(std::cin, line)) break;
@@ -430,7 +430,7 @@ void step7And8_TestAndExpandRange(dynamixel::GroupSyncWrite &gsw,
                 max_grip = std::clamp(dg, 5.0, FULL_GRIP_OPEN_DEG);
                 applyAngleLimitsDeg(calib, max_j1, max_j2, max_grip);
             } else {
-                std::cout << "  [!] Format: expand <deg> atau expand <max_j1> <max_j2> <max_grip>\n";
+                std::cout << "  [!] Format: expand <deg> or expand <max_j1> <max_j2> <max_grip>\n";
             }
         } else if (cmd == "status") {
             for (uint8_t id : SERVO_IDS) {
@@ -441,14 +441,12 @@ void step7And8_TestAndExpandRange(dynamixel::GroupSyncWrite &gsw,
                 std::cout << "  ID " << (int)id
                           << ": pos=" << std::setw(4) << pos
                           << " (" << std::showpos << std::fixed << std::setprecision(2)
-                          << rel_deg << " deg dari center" << std::noshowpos
+                          << rel_deg << " deg from center" << std::noshowpos
                           << "), load=" << load << "\n";
             }
         } else if (cmd == "save") {
-            // Pastikan saat save dilakukan, batas kerja di EEPROM & calibration_data.h
-            // dibuka ke rentang operasional penuh (bukan tertinggal di limit konservatif +/-15 deg)
             if (max_j1 < FULL_WORK_RANGE_DEG || max_j2 < FULL_WORK_RANGE_DEG || max_grip < FULL_GRIP_OPEN_DEG) {
-                std::cout << "\n[INFO] Membuka CW/CCW limit ke rentang kerja maksimum yang aman sebelum menyimpan...\n";
+                std::cout << "\n[INFO] Opening CW/CCW limits to safe maximum range before saving...\n";
                 max_j1   = FULL_WORK_RANGE_DEG;
                 max_j2   = FULL_WORK_RANGE_DEG;
                 max_grip = FULL_GRIP_OPEN_DEG;
@@ -456,22 +454,22 @@ void step7And8_TestAndExpandRange(dynamixel::GroupSyncWrite &gsw,
             }
             break;
         } else if (!cmd.empty()) {
-            std::cout << "  [!] Perintah tidak dikenal.\n";
+            std::cout << "  [!] Unknown command.\n";
         }
     }
 }
 
-// ---------------- SIMPAN HEADER KALIBRASI ----------------
+// ---------------- SAVE CALIBRATION HEADER ----------------
 void saveCalibrationHeader(const std::map<uint8_t, ServoCalib> &calib, const std::string &path) {
     std::ofstream out(path);
     if (!out) {
-        std::cerr << "[ERROR] Gagal menulis file " << path << "\n";
+        std::cerr << "[ERROR] Failed to write file " << path << "\n";
         return;
     }
 
     out << "#pragma once\n"
         << "#include <cstdint>\n\n"
-        << "// Dihasilkan otomatis oleh calibrate_arm.cpp\n"
+        << "// Auto-generated by calibrate_arm.cpp\n"
         << "struct CalibratedServoConfig {\n"
         << "    uint8_t  id;\n"
         << "    uint16_t raw_zero;\n"
@@ -493,7 +491,7 @@ void saveCalibrationHeader(const std::map<uint8_t, ServoCalib> &calib, const std
     }
     out << "};\n";
     out.close();
-    std::cout << "\n[SUKSES] Data kalibrasi disimpan ke: " << path << "\n";
+    std::cout << "\n[SUCCESS] Calibration data saved to: " << path << "\n";
 }
 
 // ---------------- MAIN ----------------
@@ -503,7 +501,7 @@ int main() {
     dynamixel::GroupSyncWrite gsw(portHandler, packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
 
     if (!portHandler->openPort() || !portHandler->setBaudRate(BAUDRATE)) {
-        std::cerr << "[ERROR] Gagal membuka port " << DEVICENAME << " atau set baudrate!\n";
+        std::cerr << "[ERROR] Failed to open port " << DEVICENAME << " or set baudrate!\n";
         return -1;
     }
 
@@ -514,27 +512,27 @@ int main() {
 
     std::map<uint8_t, ServoCalib> calib;
 
-    // Step 1 & 2: Disable torque & posisikan arm secara mekanis ke titik 0
+    // Step 1 & 2: Disable torque & position arm manually to point 0
     step1And2_DisableTorqueAndPlaceZero();
 
-    // Step 3 & 4: Baca & catat center aktual untuk ID 1, 4, 5, dan 2
+    // Step 3 & 4: Read and record actual center for ID 1, 4, 5, and 2
     step3And4_ReadAndRecordCenters(calib);
 
-    // Step 5: Koreksi halus (fine-tuning) untuk ID 4 dan 5 hingga sejajar & tidak saling melawan
+    // Step 5: Fine tuning for ID 4 and 5 alignment
     step5_AlignPairedJoint4And5(calib);
 
-    // Step 6, 7, 8: Set limit konservatif, uji pada speed/torsi rendah, dan ekspansi bertahap
+    // Step 6, 7, 8: Set conservative limits, test at low speed/torque, and expand range
     step7And8_TestAndExpandRange(gsw, calib);
 
-    // Simpan hasil ke header (otomatis mendeteksi apakah dijalankan dari root atau subfolder)
+    // Save result to header
     std::string header_path = std::filesystem::exists("opencm_dynamixel_servos/calibrate_arm.cpp")
                                   ? "opencm_dynamixel_servos/calibration_data.h"
                                   : "calibration_data.h";
     saveCalibrationHeader(calib, header_path);
 
-    // Matikan torsi dengan aman sebelum keluar
+    // Turn torque off safely before exit
     setTorqueAll(false);
     portHandler->closePort();
-    std::cout << "Torque dimatikan dan port ditutup.\n";
+    std::cout << "Torque disabled and port closed.\n";
     return 0;
 }

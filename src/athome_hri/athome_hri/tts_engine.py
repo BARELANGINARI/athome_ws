@@ -19,33 +19,32 @@ except ImportError:
 
 
 class TextToSpeech:
-    """Modul khusus sintesis suara teks ke audio WAV (Base64) via Piper TTS."""
+    """Text-to-speech synthesis module to 16-bit mono WAV (Base64) via Piper TTS."""
 
     def __init__(self, model_filename: str = "en_US-lessac-medium.onnx") -> None:
         self.piper: Optional["PiperVoice"] = None
         if not HAS_PIPER:
-            logger.warning("piper-tts tidak terinstal. TTS tidak aktif.")
+            logger.warning("piper-tts is not installed. TTS disabled.")
             return
 
         model_path = self._find_model(model_filename)
         if not model_path:
             logger.warning(
-                "Model '%s' tidak ditemukan di lokasi pencarian.", model_filename
+                "Model '%s' not found in search paths.", model_filename
             )
             return
 
         try:
-            logger.info("Memuat model Piper TTS dari: %s", model_path)
+            logger.info("Loading Piper TTS model from: %s", model_path)
             self.piper = PiperVoice.load(model_path)
-            logger.info("Piper TTS siap.")
+            logger.info("Piper TTS ready.")
         except Exception as exc:
-            logger.error("Gagal memuat model Piper: %s", exc)
+            logger.error("Failed to load Piper model: %s", exc)
 
     @staticmethod
     def _find_model(filename: str) -> Optional[str]:
-        """Mencari path file model ONNX melalui ament_index atau direktori relatif paket."""
+        """Search ONNX model file path via ament_index or relative package directory."""
         candidates: list[Path] = []
-
         try:
             from ament_index_python.packages import get_package_share_directory
 
@@ -69,7 +68,7 @@ class TextToSpeech:
         return None
 
     def synthesize_wav_base64(self, text: str) -> str:
-        """Menyintesis teks menjadi audio WAV mono 16-bit dan mengembalikan string Base64."""
+        """Synthesize text into mono 16-bit WAV audio and return Base64 string."""
         if not self.piper or not text or not text.strip():
             return ""
 
@@ -84,5 +83,5 @@ class TextToSpeech:
 
             return base64.b64encode(buffer.getvalue()).decode("utf-8")
         except Exception as exc:
-            logger.error("Sintesis audio gagal untuk '%s': %s", text, exc)
+            logger.error("Audio synthesis failed for '%s': %s", text, exc)
             return ""

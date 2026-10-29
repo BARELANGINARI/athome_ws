@@ -50,27 +50,27 @@ namespace fs = std::filesystem;
 #define MAX_SPEED_DPS           60.0
 #define MIN_DURATION_S          0.4
 #define COMPLIANCE_SLOPE        64         //32
-#define DEFAULT_TORQUE_LIM      1023     // ~78% torsi maks agar kuat menahan beban
+#define DEFAULT_TORQUE_LIM      1023     // ~78% max torque to hold weight
 
-// Parameter Proteksi Deadzone & Haptic Wall
-#define DEADZONE_LOW_TICK       15       // Ambang bawah mendekati deadzone 0
-#define DEADZONE_HIGH_TICK      1008     // Ambang atas mendekati deadzone 1023
-#define DEADZONE_MARGIN_TICKS   35       // Zona deteksi sebelum memasuki deadzone
-#define MAX_TICK_JUMP           120      // Lonjakan > ~35 deg dalam 1 siklus (20ms) = wrap-around deadzone
-#define HAPTIC_WALL_MARGIN      8        // Aktifkan torsi penahan saat berjarak 8 ticks dari limit
+// Deadzone & Haptic Wall Protection Parameters
+#define DEADZONE_LOW_TICK       15       // Lower threshold near deadzone 0
+#define DEADZONE_HIGH_TICK      1008     // Upper threshold near deadzone 1023
+#define DEADZONE_MARGIN_TICKS   35       // Detection margin before deadzone
+#define MAX_TICK_JUMP           120      // Jump > ~35 deg per cycle (20ms) = deadzone wrap-around
+#define HAPTIC_WALL_MARGIN      8        // Enable holding torque within 8 ticks from limit
 
-// Parameter Adaptive Grasping (ID 6)
+// Adaptive Grasping Parameters (ID 6)
 #define GRIPPER_ID              6
-#define DEFAULT_GRASP_LOAD      170     //180 // Ambang beban deteksi objek (~17.6% torsi)
-#define GRASP_STEP_TICKS        4       // Langkah penutupan per iterasi (~1.17 deg)
-#define GRASP_STEP_MS           40      // Periode sampling 25 Hz
-#define GRASP_STALL_TICKS       15      // Selisih (Pos - Goal) indikasi tertahan objek
-#define GRASP_SQUEEZE_TICKS     20      // 8       // Pre-load penekanan setelah kontak
-#define GRASP_CONFIRM_COUNT     3       // Konfirmasi siklus kontak
-#define GRASP_COMPLIANCE_SLOPE  50      // Compliance lembut saat grasping
-#define GRASP_CLOSING_SPEED     60      // Kecepatan menutup (~6.8 RPM)
-#define MAX_OPEN_DEG            80.0    // Sudut buka penuh (~780 ticks, mencakup bukaan fisik 753 ticks)
-#define DEFAULT_RELEASE_DEG     65.0    // Sudut buka default
+#define DEFAULT_GRASP_LOAD      170     //180 // Detection load threshold (~17.6% torque)
+#define GRASP_STEP_TICKS        4       // Step per iteration (~1.17 deg)
+#define GRASP_STEP_MS           40      // 25 Hz sampling period
+#define GRASP_STALL_TICKS       15      // Lag (Pos - Goal) indicating object stall
+#define GRASP_SQUEEZE_TICKS     20      // Pre-load squeeze after contact
+#define GRASP_CONFIRM_COUNT     3       // Contact confirmation cycles
+#define GRASP_COMPLIANCE_SLOPE  50      // Soft compliance during grasp
+#define GRASP_CLOSING_SPEED     60      // Closing speed (~6.8 RPM)
+#define MAX_OPEN_DEG            80.0    // Full open angle (~780 ticks, covers physical opening of 753 ticks)
+#define DEFAULT_RELEASE_DEG     65.0    // Default open angle
 
 const std::string MOTION_DIR = "motions";
 const uint8_t ARM_CORE_IDS[] = {4, 5, 1};
@@ -82,16 +82,16 @@ const Servo JOINT2[] = { {1, false} };
 const Servo JOINT3[] = { {2, false} };
 
 enum class FrameAction {
-    MOVE,           // Waypoint / sampel gerak biasa
-    ADAPTIVE_GRASP, // Langkah adaptive grasping pada ID 6
-    RELEASE         // Langkah buka gripper eksplisit pada ID 6
+    MOVE,           // Normal waypoint / motion sample
+    ADAPTIVE_GRASP, // Adaptive grasping step on ID 6
+    RELEASE         // Explicit gripper open on ID 6
 };
 
 struct Frame {
     double j1;          // Joint 1 (ID 4 & 5)
     double j2;          // Joint 2 (ID 1)
     double grip;        // Gripper (ID 6)
-    double duration;    // Durasi transisi (detik); <= 0 berarti otomatis via MAX_SPEED_DPS
+    double duration;    // Transition duration (sec); <= 0 auto via MAX_SPEED_DPS
     FrameAction action = FrameAction::MOVE;
     int grasp_load     = DEFAULT_GRASP_LOAD;
 };
@@ -111,7 +111,7 @@ public:
     RawTerminalGuard() {
         if (tcgetattr(STDIN_FILENO, &orig_termios_) == 0) {
             struct termios raw = orig_termios_;
-            raw.c_lflag &= ~(ICANON | ECHO); // Matikan canonical mode & echo
+            raw.c_lflag &= ~(ICANON | ECHO); // Disable canonical mode & echo
             raw.c_cc[VMIN]  = 0;
             raw.c_cc[VTIME] = 0;
             tcsetattr(STDIN_FILENO, TCSANOW, &raw);
@@ -125,7 +125,7 @@ public:
     }
 };
 
-// Membaca 1 karakter dari keyboard tanpa menghentikan loop 50Hz (-1 jika tidak ada tombol)
+// Read 1 character from keyboard without blocking 50Hz loop (-1 if no key)
 int readKeyNonBlocking() {
     fd_set readfds;
     FD_ZERO(&readfds);
@@ -142,7 +142,7 @@ dynamixel::PortHandler   *portHandler   = nullptr;
 dynamixel::PacketHandler *packetHandler = nullptr;
 bool g_gripper_online = false;
 
-// State filter anti-jump deadzone & background monitor untuk mode free
+// Anti-jump deadzone filter state & background monitor for free mode
 static std::map<uint8_t, uint16_t> g_last_valid_raw;
 static std::map<uint8_t, bool>     g_in_deadzone;
 static std::map<uint8_t, bool>     g_servo_is_free;
@@ -231,8 +231,8 @@ uint16_t readFilteredRawPos(uint8_t id, bool enable_haptic_wall = false) {
 
         if ((near_high || near_low) && diff > MAX_TICK_JUMP) {
             if (!g_in_deadzone[id]) {
-                std::cerr << "\n  [WARN] ID " << (int)id << " melewati batas sudut/deadzone (raw="
-                          << raw << ")! Menahan pembacaan pada limit: " << prev << " ticks.\n";
+                std::cerr << "\n  [WARN] ID " << (int)id << " exceeded angle limit/deadzone (raw="
+                          << raw << ")! Holding reading at limit: " << prev << " ticks.\n";
                 g_in_deadzone[id] = true;
             }
             raw = static_cast<uint16_t>(near_high ? max_lim : min_lim);
@@ -248,7 +248,7 @@ uint16_t readFilteredRawPos(uint8_t id, bool enable_haptic_wall = false) {
     uint16_t clamped = std::clamp<uint16_t>(raw, min_lim, max_lim);
     g_last_valid_raw[id] = clamped;
 
-    // Active Haptic Wall hanya untuk servo yang sedang di-free / record
+    // Active Haptic Wall only for servos currently in free / record mode
     if (enable_haptic_wall && g_servo_is_free[id]) {
         uint8_t err = 0;
         if (clamped >= max_lim - HAPTIC_WALL_MARGIN || clamped <= min_lim + HAPTIC_WALL_MARGIN || g_in_deadzone[id]) {
@@ -296,7 +296,7 @@ void readCurrentPose(double pose[3], bool enable_haptic_wall = false) {
     }
 }
 
-// ---------------- BACKGROUND MONITOR THREAD (UNTUK MODE FREE) ----------------
+// ---------------- BACKGROUND MONITOR THREAD (FOR FREE MODE) ----------------
 void stopFreeMonitor() {
     if (g_free_monitor_active.load()) {
         g_free_monitor_active.store(false);
@@ -349,7 +349,7 @@ void setTorqueAll(bool enable) {
     }
 }
 
-// Mengatur torsi khusus lengan utama J1 & J2 (ID 4, 5, 1) TANPA mengubah status Gripper (ID 6)
+// Set torque for main arm J1 & J2 (ID 4, 5, 1) WITHOUT altering Gripper (ID 6) status
 void setArmOnlyTorque(dynamixel::GroupSyncWrite &gsw, double cur[3], bool enable) {
     uint8_t err = 0;
     if (enable) {
@@ -420,7 +420,7 @@ bool initServos() {
     for (uint8_t id : ARM_CORE_IDS) {
         uint16_t model = 0;
         if (packetHandler->ping(portHandler, id, &model, &err) != COMM_SUCCESS) {
-            std::cerr << "[ERROR] Servo utama ID " << (int)id << " tidak terdeteksi!\n";
+            std::cerr << "[ERROR] Main servo ID " << (int)id << " not detected!\n";
             return false;
         }
         g_servo_is_free[id] = false;
@@ -440,10 +440,10 @@ bool initServos() {
             packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_CW_ANGLE_LIMIT,  c->cw_limit,  &err);
             packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_CCW_ANGLE_LIMIT, c->ccw_limit, &err);
         }
-        std::cout << "[OK] Gripper ID 6 terdeteksi (Adaptive Grasping aktif).\n";
+        std::cout << "[OK] Gripper ID 6 detected (Adaptive Grasping active).\n";
     } else {
         g_gripper_online = false;
-        std::cout << "[WARN] Gripper ID 6 tidak terdeteksi pada bus.\n";
+        std::cout << "[WARN] Gripper ID 6 not detected on bus.\n";
     }
     resetDeadzoneFilter();
     return true;
@@ -468,7 +468,7 @@ bool adaptiveGrasp(double &cur_grip_deg, int load_threshold = DEFAULT_GRASP_LOAD
         if (packetHandler->ping(portHandler, GRIPPER_ID, &model, &err) == COMM_SUCCESS) {
             g_gripper_online = true;
         } else {
-            std::cout << "  [!] Gripper ID 6 tidak terhubung!\n";
+            std::cout << "  [!] Gripper ID 6 not connected!\n";
             return false;
         }
     }
@@ -480,7 +480,7 @@ bool adaptiveGrasp(double &cur_grip_deg, int load_threshold = DEFAULT_GRASP_LOAD
 
     uint16_t start_pos = closed_tick;
     if (!readRawPos(GRIPPER_ID, start_pos)) {
-        std::cout << "  [!] Gagal membaca posisi awal ID 6.\n";
+        std::cout << "  [!] Failed to read ID 6 start position.\n";
         return false;
     }
 
@@ -496,21 +496,21 @@ bool adaptiveGrasp(double &cur_grip_deg, int load_threshold = DEFAULT_GRASP_LOAD
 
     if (static_cast<int>(start_pos) <= closed_tick + 10) {
         uint16_t open_tick = relAngleToPosition(GRIPPER_ID, 80.0, false);
-        std::cout << "  [PRE-OPEN] Rahang sedang tertutup rapat, membuka ke +80.0 deg (tick=" << open_tick << ")...\n";
+        std::cout << "  [PRE-OPEN] Jaws closed, opening to +80.0 deg (tick=" << open_tick << ")...\n";
         packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_GOAL_POSITION, open_tick, &err);
         std::this_thread::sleep_for(std::chrono::milliseconds(650));
         readRawPos(GRIPPER_ID, start_pos);
     }
 
-    std::cout << "\n================ PROSES ADAPTIVE GRASPING (ID 6) ================\n";
-    std::cout << "  Menutup dari tick " << start_pos << " (" << std::fixed << std::setprecision(1)
-              << rawToRelAngle(GRIPPER_ID, start_pos, false) << " deg) turun menuju tick " << closed_tick << " (0.0 deg)\n"
-              << "  Ambang Load: " << load_threshold << " | Stall Limit: " << GRASP_STALL_TICKS << " ticks\n";
+    std::cout << "\n================ ADAPTIVE GRASPING PROCESS (ID 6) ================\n";
+    std::cout << "  Closing from tick " << start_pos << " (" << std::fixed << std::setprecision(1)
+              << rawToRelAngle(GRIPPER_ID, start_pos, false) << " deg) down to tick " << closed_tick << " (0.0 deg)\n"
+              << "  Load Threshold: " << load_threshold << " | Stall Limit: " << GRASP_STALL_TICKS << " ticks\n";
     std::cout << std::left
               << std::setw(6)  << "Step"
               << std::setw(6)  << "Goal"
               << std::setw(6)  << "Pos"
-              << std::setw(9)  << "Sudut"
+              << std::setw(9)  << "Angle"
               << std::setw(6)  << "Lag"
               << std::setw(12) << "Load(Raw/%)"
               << std::setw(24) << "Load Bar"
@@ -574,12 +574,12 @@ bool adaptiveGrasp(double &cur_grip_deg, int load_threshold = DEFAULT_GRASP_LOAD
             cur_grip_deg = rawToRelAngle(GRIPPER_ID, static_cast<uint16_t>(hold_tick), false);
             g_last_valid_raw[GRIPPER_ID] = static_cast<uint16_t>(hold_tick);
             std::cout << "-----------------------------------------------------------------------------\n";
-            std::cout << "  [HOLDING OBJECT] Objek berhasil digenggam!\n"
-                      << "    -> Posisi Objek  : tick " << present_pos << " ("
+            std::cout << "  [HOLDING OBJECT] Object grasped successfully!\n"
+                      << "    -> Object Position : tick " << present_pos << " ("
                       << std::fixed << std::setprecision(1) << cur_grip_deg << " deg)\n"
-                      << "    -> Target Kunci  : tick " << hold_tick << " (squeeze -" << GRASP_SQUEEZE_TICKS << " ticks)\n"
-                      << "    -> Beban Kontak  : " << load_mag << " (" << load_pct << "%)\n"
-                      << "    -> Holding Torque: " << hold_torque << " / 1023 ("
+                      << "    -> Lock Target     : tick " << hold_tick << " (squeeze -" << GRASP_SQUEEZE_TICKS << " ticks)\n"
+                      << "    -> Contact Load    : " << load_mag << " (" << load_pct << "%)\n"
+                      << "    -> Holding Torque  : " << hold_torque << " / 1023 ("
                       << (hold_torque / 1023.0 * 100.0) << "%)\n";
             std::cout << "=============================================================================\n";
             return true;
@@ -590,8 +590,8 @@ bool adaptiveGrasp(double &cur_grip_deg, int load_threshold = DEFAULT_GRASP_LOAD
     cur_grip_deg = 0.0;
     g_last_valid_raw[GRIPPER_ID] = static_cast<uint16_t>(closed_tick);
     std::cout << "-----------------------------------------------------------------------------\n";
-    std::cout << "  [CLOSED EMPTY] Rahang mencapai 0.0 deg (tick=" << closed_tick
-              << ") tanpa mendeteksi objek.\n";
+    std::cout << "  [CLOSED EMPTY] Jaws reached 0.0 deg (tick=" << closed_tick
+              << ") without detecting object.\n";
     std::cout << "=============================================================================\n";
     return false;
 }
@@ -631,7 +631,7 @@ void moveSmooth(dynamixel::GroupSyncWrite &gsw, double cur[3], const double targ
     resetDeadzoneFilter();
 }
 
-// Membuka gripper saja tanpa mengganggu status torsi lengan J1 & J2 (aman dipanggil saat Pause-and-Lock)
+// Open gripper without altering arm J1 & J2 torque state
 void openGripperOnly(double &cur_grip_deg, double open_deg = DEFAULT_RELEASE_DEG) {
     open_deg = std::clamp(open_deg, 0.0, MAX_OPEN_DEG);
     if (!g_gripper_online) return;
@@ -641,7 +641,7 @@ void openGripperOnly(double &cur_grip_deg, double open_deg = DEFAULT_RELEASE_DEG
     packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_LED, 0, &err);
     packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_CW_SLOPE,  COMPLIANCE_SLOPE, &err);
     packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_CCW_SLOPE, COMPLIANCE_SLOPE, &err);
-    packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_MOVING_SPEED, 120, &err); // ~13.6 RPM halus
+    packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_MOVING_SPEED, 120, &err);
     packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_LIMIT, DEFAULT_TORQUE_LIM, &err);
     packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_ENABLE, 1, &err);
 
@@ -667,14 +667,14 @@ void releaseGripper(dynamixel::GroupSyncWrite &gsw, double cur[3], double open_d
         packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_LIMIT, DEFAULT_TORQUE_LIM, &err);
     }
     double target[3] = { cur[0], cur[1], open_deg };
-    std::cout << "  [RELEASE] Membuka gripper ke +" << open_deg << " deg...\n";
+    std::cout << "  [RELEASE] Opening gripper to +" << open_deg << " deg...\n";
     moveSmooth(gsw, cur, target, 0.5);
 }
 
 void executeMotion(dynamixel::GroupSyncWrite &gsw, double cur[3], const MotionData &motion, int loops) {
     stopFreeMonitor();
     if (motion.frames.empty()) {
-        std::cout << "  [!] Data gerakan kosong.\n";
+        std::cout << "  [!] Motion data is empty.\n";
         return;
     }
 
@@ -682,7 +682,7 @@ void executeMotion(dynamixel::GroupSyncWrite &gsw, double cur[3], const MotionDa
 
     for (int l = 1; l <= loops; l++) {
         if (loops > 1) {
-            std::cout << "  -> Menjalankan siklus " << l << " / " << loops << "...\n";
+            std::cout << "  -> Running cycle " << l << " / " << loops << "...\n";
         }
         bool holding_object = false;
 
@@ -710,13 +710,13 @@ void executeMotion(dynamixel::GroupSyncWrite &gsw, double cur[3], const MotionDa
                 }
             }
         } else {
-            // STREAM Mode: mendukung penyisipan aksi ADAPTIVE_GRASP & RELEASE dengan mulus
+            // STREAM Mode: seamless ADAPTIVE_GRASP & RELEASE
             const auto &first = motion.frames.front();
             double start_target[3] = { first.j1, first.j2, first.grip };
-            std::cout << "  -> Menuju titik awal rekaman...\n";
+            std::cout << "  -> Moving to start position...\n";
             moveSmooth(gsw, cur, start_target, 0.0);
 
-            std::cout << "  -> Memutar ulang stream (" << motion.frames.size() << " sampel @ "
+            std::cout << "  -> Replaying stream (" << motion.frames.size() << " samples @ "
                       << UPDATE_RATE_HZ << " Hz)...\n";
             auto next = std::chrono::steady_clock::now();
             const auto period = std::chrono::microseconds(1000000 / UPDATE_RATE_HZ);
@@ -726,17 +726,17 @@ void executeMotion(dynamixel::GroupSyncWrite &gsw, double cur[3], const MotionDa
                     double arm_hold[3] = { f.j1, f.j2, cur[2] };
                     sendJoints(gsw, arm_hold);
                     cur[0] = f.j1; cur[1] = f.j2;
-                    std::cout << "\n  [STREAM EVENT] Menjalankan Adaptive Grasp (load=" << f.grasp_load << ")...\n";
+                    std::cout << "\n  [STREAM EVENT] Executing Adaptive Grasp (load=" << f.grasp_load << ")...\n";
                     holding_object = adaptiveGrasp(cur[2], f.grasp_load);
-                    next = std::chrono::steady_clock::now(); // Reset timer setelah jeda grasp
+                    next = std::chrono::steady_clock::now();
                 } else if (f.action == FrameAction::RELEASE) {
                     double arm_hold[3] = { f.j1, f.j2, cur[2] };
                     sendJoints(gsw, arm_hold);
                     cur[0] = f.j1; cur[1] = f.j2;
-                    std::cout << "\n  [STREAM EVENT] Membuka Gripper ke +" << f.grip << " deg...\n";
+                    std::cout << "\n  [STREAM EVENT] Opening Gripper to +" << f.grip << " deg...\n";
                     releaseGripper(gsw, cur, f.grip);
                     holding_object = false;
-                    next = std::chrono::steady_clock::now(); // Reset timer setelah jeda release
+                    next = std::chrono::steady_clock::now();
                 } else {
                     double grip_cmd = holding_object ? cur[2] : f.grip;
                     double a[3] = { f.j1, f.j2, grip_cmd };
@@ -749,30 +749,30 @@ void executeMotion(dynamixel::GroupSyncWrite &gsw, double cur[3], const MotionDa
             resetDeadzoneFilter();
         }
     }
-    std::cout << "  [OK] Gerakan selesai dijalankan.\n";
+    std::cout << "  [OK] Motion execution completed.\n";
 }
 
-// ---------------- REKAMAN KONTINU INTERAKTIF (OPSI B: PAUSE-AND-LOCK) ----------------
+// ---------------- INTERACTIVE CONTINUOUS RECORDING (PAUSE-AND-LOCK) ----------------
 void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
                              MotionData &buffer, double max_secs) {
     stopFreeMonitor();
 
-    // 1. Buka gripper ke posisi siap ambil (+65 deg) dan tetap kunci ID 6 agar stabil,
-    //    sedangkan lengan J1 & J2 (ID 4, 5, 1) dibebaskan (free).
+    // 1. Open gripper to ready position (+65 deg) and keep ID 6 locked,
+    //    while J1 & J2 (ID 4, 5, 1) are free.
     readCurrentPose(cur, false);
     if (g_gripper_online) {
         openGripperOnly(cur[2], DEFAULT_RELEASE_DEG);
     }
     setArmOnlyTorque(gsw, cur, false);
 
-    std::cout << "\n================ MODE RECORD INTERAKTIF (50 Hz) ================\n"
-              << "  - Torsi lengan (J1 & J2) telah DIMATIKAN; Gripper siap di +" << cur[2] << " deg.\n"
-              << "  - Kontrol Tombol Real-time (tanpa perlu tekan ENTER):\n"
-              << "      [g]         -> PAUSE & LOCK Lengan + Jalankan Adaptive Grasp\n"
-              << "      [r]         -> PAUSE & LOCK Lengan + Buka Gripper (Release)\n"
-              << "      [q] / SPACE -> Selesai merekam lebih awal & kunci posisi\n"
+    std::cout << "\n================ INTERACTIVE RECORD MODE (50 Hz) ================\n"
+              << "  - Arm torque (J1 & J2) DISABLED; Gripper ready at +" << cur[2] << " deg.\n"
+              << "  - Real-time Key Controls (no need to press ENTER):\n"
+              << "      [g]         -> PAUSE & LOCK Arm + Run Adaptive Grasp\n"
+              << "      [r]         -> PAUSE & LOCK Arm + Open Gripper (Release)\n"
+              << "      [q] / SPACE -> Finish recording early & lock position\n"
               << "----------------------------------------------------------------\n"
-              << "  Siapkan tangan Anda pada lengan robot, tekan ENTER untuk MULAI...";
+              << "  Place your hand on the robot arm, press ENTER to START...";
     std::string dummy;
     std::getline(std::cin, dummy);
 
@@ -784,18 +784,18 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
     const auto period = std::chrono::microseconds(1000000 / UPDATE_RATE_HZ);
     bool holding_object = false;
 
-    std::cout << "\n  [REC] Merekam gerakan (Maks " << max_secs << "s)... "
-              << "Tekan [g]=Grasp, [r]=Release, [q]=Stop\n";
+    std::cout << "\n  [REC] Recording motion (Max " << max_secs << "s)... "
+              << "Press [g]=Grasp, [r]=Release, [q]=Stop\n";
 
     {
-        RawTerminalGuard raw_term; // Aktifkan pembacaan tombol non-blocking
+        RawTerminalGuard raw_term;
         auto next = std::chrono::steady_clock::now();
 
         for (int k = 0; k < max_steps; k++) {
             double p[3] = {cur[0], cur[1], cur[2]};
-            readCurrentPose(p, true); // Baca pose + aktifkan Active Haptic Wall pada batas sudut
+            readCurrentPose(p, true);
             if (holding_object) {
-                p[2] = cur[2]; // Pertahankan sudut cengkeraman objek
+                p[2] = cur[2];
             }
             cur[0] = p[0]; cur[1] = p[1]; cur[2] = p[2];
 
@@ -803,7 +803,6 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
                 p[0], p[1], p[2], 1.0 / UPDATE_RATE_HZ, FrameAction::MOVE, DEFAULT_GRASP_LOAD
             });
 
-            // Tampilkan status live di baris yang sama setiap 5 siklus (10 Hz)
             if (k % 5 == 0) {
                 double elapsed = static_cast<double>(k) / UPDATE_RATE_HZ;
                 std::cout << "\r  [REC " << std::fixed << std::setprecision(1)
@@ -814,57 +813,51 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
                           << (holding_object ? "[HOLDING]" : "[OPEN]   ") << std::flush;
             }
 
-            // Cek penekanan tombol keyboard
             int key = readKeyNonBlocking();
             if (key == 'g' || key == 'G') {
-                std::cout << "\n\n  >>> [TRIGGER 'g'] PAUSE & LOCK Lengan untuk Adaptive Grasp...\n";
-                // Kunci J1 & J2 pada posisi saat ini agar lengan tidak goyang saat grasping
+                std::cout << "\n\n  >>> [TRIGGER 'g'] PAUSE & LOCK Arm for Adaptive Grasp...\n";
                 setArmOnlyTorque(gsw, cur, true);
 
-                // Jalankan Adaptive Grasp pada ID 6
                 holding_object = adaptiveGrasp(cur[2], DEFAULT_GRASP_LOAD);
 
-                // Rekam event ADAPTIVE_GRASP ke dalam stream
                 buffer.frames.push_back(Frame{
                     cur[0], cur[1], cur[2], 0.0, FrameAction::ADAPTIVE_GRASP, DEFAULT_GRASP_LOAD
                 });
 
-                // Bebaskan kembali J1 & J2 (sedangkan Gripper ID 6 tetap mengunci objek!)
                 setArmOnlyTorque(gsw, cur, false);
-                std::cout << "  <<< [RESUME REC] Lengan J1 & J2 bebas kembali (Gripper mengunci objek). "
-                          << "Silakan angkat/pindahkan barang!\n";
+                std::cout << "  <<< [RESUME REC] Arm J1 & J2 freed (Gripper holding object). "
+                          << "Move the object now!\n";
                 next = std::chrono::steady_clock::now();
             } else if (key == 'r' || key == 'R') {
-                std::cout << "\n\n  >>> [TRIGGER 'r'] PAUSE & LOCK Lengan untuk Release Gripper...\n";
+                std::cout << "\n\n  >>> [TRIGGER 'r'] PAUSE & LOCK Arm for Gripper Release...\n";
                 setArmOnlyTorque(gsw, cur, true);
 
                 openGripperOnly(cur[2], DEFAULT_RELEASE_DEG);
                 holding_object = false;
 
-                // Rekam event RELEASE ke dalam stream
                 buffer.frames.push_back(Frame{
                     cur[0], cur[1], cur[2], 0.5, FrameAction::RELEASE, DEFAULT_GRASP_LOAD
                 });
 
                 setArmOnlyTorque(gsw, cur, false);
-                std::cout << "  <<< [RESUME REC] Barang dilepas, lengan J1 & J2 bebas kembali.\n";
+                std::cout << "  <<< [RESUME REC] Object released, arm J1 & J2 freed.\n";
                 next = std::chrono::steady_clock::now();
             } else if (key == 'q' || key == 'Q' || key == ' ') {
-                std::cout << "\n\n  >>> [STOP] Rekaman dihentikan oleh pengguna.\n";
+                std::cout << "\n\n  >>> [STOP] Recording stopped by user.\n";
                 break;
             }
 
             next += period;
             std::this_thread::sleep_until(next);
         }
-    } // RawTerminalGuard otomatis mengembalikan mode terminal normal di sini
+    }
 
     lockCurrentPose(gsw, cur);
-    std::cout << "\n  [SELESAI] Rekaman kontinu selesai (" << buffer.frames.size()
-              << " sampel) dan posisi lengan dikunci kembali.\n";
+    std::cout << "\n  [DONE] Continuous recording complete (" << buffer.frames.size()
+              << " samples) and arm position locked.\n";
 }
 
-// ---------------- SIMPAN & MUAT FILE GERAKAN ----------------
+// ---------------- SAVE & LOAD MOTION FILES ----------------
 std::string getMotionPath(const std::string &name) {
     fs::create_directories(MOTION_DIR);
     return MOTION_DIR + "/" + name + ".motion";
@@ -872,13 +865,13 @@ std::string getMotionPath(const std::string &name) {
 
 bool saveMotionToFile(const std::string &name, const MotionData &motion) {
     if (motion.frames.empty()) {
-        std::cout << "  [!] Belum ada titik gerakan yang direkam. Gunakan 'add' atau 'record' dulu.\n";
+        std::cout << "  [!] No motion points recorded yet. Use 'add' or 'record' first.\n";
         return false;
     }
     std::string path = getMotionPath(name);
     std::ofstream out(path);
     if (!out) {
-        std::cerr << "  [ERROR] Gagal menulis file: " << path << "\n";
+        std::cerr << "  [ERROR] Failed to write file: " << path << "\n";
         return false;
     }
 
@@ -894,8 +887,8 @@ bool saveMotionToFile(const std::string &name, const MotionData &motion) {
         }
     }
     out.close();
-    std::cout << "  [SUKSES] Gerakan '" << name << "' (" << motion.frames.size()
-              << " titik) disimpan ke " << path << "\n";
+    std::cout << "  [SUCCESS] Motion '" << name << "' (" << motion.frames.size()
+              << " points) saved to " << path << "\n";
     return true;
 }
 
@@ -903,7 +896,7 @@ bool loadMotionFromFile(const std::string &name, MotionData &motion) {
     std::string path = getMotionPath(name);
     std::ifstream in(path);
     if (!in) {
-        std::cout << "  [!] File gerakan '" << path << "' tidak ditemukan.\n";
+        std::cout << "  [!] Motion file '" << path << "' not found.\n";
         return false;
     }
 
@@ -951,7 +944,7 @@ bool loadMotionFromFile(const std::string &name, MotionData &motion) {
 
 void listSavedMotions() {
     fs::create_directories(MOTION_DIR);
-    std::cout << "  Daftar gerakan tersimpan di folder '" << MOTION_DIR << "/':\n";
+    std::cout << "  Saved motions in folder '" << MOTION_DIR << "/':\n";
     bool any = false;
     for (const auto &entry : fs::directory_iterator(MOTION_DIR)) {
         if (entry.path().extension() == ".motion") {
@@ -960,37 +953,37 @@ void listSavedMotions() {
         }
     }
     if (!any) {
-        std::cout << "    (Belum ada file gerakan yang disimpan)\n";
+        std::cout << "    (No motion files saved yet)\n";
     }
 }
 
 void printHelp() {
-    std::cout << "\n================ MENU TEACH, PLAYBACK & ADAPTIVE GRASPING ================\n"
-              << "  1. Kontrol Torsi & Pose Manual:\n"
-              << "     free                 -> Matikan torsi semua servo (+Monitor Deadzone & Haptic Wall 50Hz)\n"
-              << "     free arm             -> Matikan torsi J1 & J2 saja (Gripper tetap mengunci barang!)\n"
-              << "     free <j1|j2|grip>    -> Matikan torsi 1 joint saja (+Monitor Deadzone & Haptic Wall 50Hz)\n"
-              << "     lock                 -> Kunci (Torque ON) posisi lengan saat ini\n"
-              << "     move <j1> <j2> <grip>-> Gerakkan lengan ke sudut tertentu (J1, J2, Grip: 0=tutup..+65=buka)\n"
-              << "     zero                 -> Gerakkan semua joint kembali ke posisi 0 terkalibrasi\n\n"
+    std::cout << "\n================ TEACH, PLAYBACK & ADAPTIVE GRASPING MENU ================\n"
+              << "  1. Torque Control & Manual Pose:\n"
+              << "     free                 -> Disable all servo torque (+50Hz Deadzone & Haptic Wall Monitor)\n"
+              << "     free arm             -> Disable J1 & J2 torque only (Gripper keeps holding!)\n"
+              << "     free <j1|j2|grip>    -> Disable single joint torque (+50Hz Deadzone & Haptic Wall Monitor)\n"
+              << "     lock                 -> Lock (Torque ON) arm at current position\n"
+              << "     move <j1> <j2> <grip>-> Move arm to specific angles (J1, J2, Grip: 0=closed..+65=open)\n"
+              << "     zero                 -> Move all joints to calibrated zero position\n\n"
               << "  2. Adaptive Grasping (Gripper ID 6):\n"
-              << "     grasp [load_thresh]  -> Jepit objek secara adaptif (default load=" << DEFAULT_GRASP_LOAD << ")\n"
-              << "     release [deg]        -> Buka rahang gripper (default +" << DEFAULT_RELEASE_DEG << " deg)\n\n"
-              << "  3. Perekaman Gerakan Utuh (Stream & Waypoint):\n"
-              << "     record [detik]       -> Rekam gerakan kontinu 50 Hz (default 20s) dengan tombol live:\n"
+              << "     grasp [load_thresh]  -> Grasp object adaptively (default load=" << DEFAULT_GRASP_LOAD << ")\n"
+              << "     release [deg]        -> Open gripper jaws (default +" << DEFAULT_RELEASE_DEG << " deg)\n\n"
+              << "  3. Full Motion Recording (Stream & Waypoint):\n"
+              << "     record [seconds]     -> Record 50 Hz continuous motion (default 20s) with live keys:\n"
               << "                             [g]=Pause & Grasp, [r]=Pause & Release, [q]/SPACE=Stop\n"
-              << "     add [durasi_detik]   -> Rekam posisi lengan saat ini sebagai waypoint\n"
-              << "     add grasp [load]     -> Jalankan & rekam Adaptive Grasping pada posisi saat ini\n"
-              << "     add release [deg]    -> Jalankan & rekam buka gripper pada posisi saat ini\n"
-              << "     show                 -> Lihat posisi sekarang & daftar titik di memori\n"
-              << "     clear                -> Hapus rekaman sementara di memori\n\n"
-              << "  4. Simpan & Jalankan Gerakan:\n"
-              << "     save <nama>          -> Simpan rekaman ke file (contoh: save ambil_benda)\n"
-              << "     play <nama> [loop]   -> Jalankan gerakan tersimpan (contoh: play ambil_benda)\n"
-              << "     play                 -> Jalankan rekaman yang sedang ada di memori\n"
-              << "     list                 -> Lihat semua nama gerakan yang sudah tersimpan\n"
-              << "     help                 -> Tampilkan menu bantuan ini\n"
-              << "     quit                 -> Matikan torsi dan keluar\n"
+              << "     add [duration_sec]   -> Record current arm position as waypoint\n"
+              << "     add grasp [load]     -> Run & record Adaptive Grasping at current position\n"
+              << "     add release [deg]    -> Run & record gripper open at current position\n"
+              << "     show                 -> View current position & recorded waypoints in memory\n"
+              << "     clear                -> Clear temporary recording from memory\n\n"
+              << "  4. Save & Play Motion:\n"
+              << "     save <name>          -> Save recording to file (e.g.: save pick_item)\n"
+              << "     play <name> [loop]   -> Play saved motion (e.g.: play pick_item)\n"
+              << "     play                 -> Play recording currently in memory\n"
+              << "     list                 -> List all saved motion names\n"
+              << "     help                 -> Show this help menu\n"
+              << "     quit                 -> Disable torque and exit\n"
               << "==========================================================================\n";
 }
 
@@ -1001,7 +994,7 @@ int main() {
     dynamixel::GroupSyncWrite gsw(portHandler, packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
 
     if (!portHandler->openPort() || !portHandler->setBaudRate(BAUDRATE)) {
-        std::cerr << "[ERROR] Gagal membuka port " << DEVICENAME << " atau set baudrate!\n";
+        std::cerr << "[ERROR] Failed to open port " << DEVICENAME << " or set baudrate!\n";
         return -1;
     }
 
@@ -1012,7 +1005,7 @@ int main() {
 
     double cur[3] = {0.0, 0.0, 0.0};
     lockCurrentPose(gsw, cur);
-    std::cout << "[OK] Semua servo siap dan terkunci pada posisi awal: "
+    std::cout << "[OK] All servos ready and locked at initial pose: "
               << "J1=" << std::fixed << std::setprecision(1) << cur[0]
               << ", J2=" << cur[1] << ", Grip=" << cur[2] << "\n";
 
@@ -1020,7 +1013,7 @@ int main() {
     printHelp();
 
     while (true) {
-        std::cout << "\nPerintah (ketik 'help' untuk bantuan): ";
+        std::cout << "\nCommand (type 'help' for menu): ";
         std::string line;
         if (!std::getline(std::cin, line)) break;
 
@@ -1034,15 +1027,15 @@ int main() {
             if (ss >> which) {
                 setJointTorque(which, false);
                 startFreeMonitor();
-                std::cout << "  [FREE] Torsi '" << which << "' dimatikan (Proteksi Deadzone & Haptic Wall 50Hz AKTIF).\n";
+                std::cout << "  [FREE] Torque '" << which << "' disabled (50Hz Deadzone & Haptic Wall Protection ACTIVE).\n";
             } else {
                 setTorqueAll(false);
                 startFreeMonitor();
-                std::cout << "  [FREE] Torsi semua servo dimatikan (Proteksi Deadzone & Haptic Wall 50Hz AKTIF).\n";
+                std::cout << "  [FREE] All servo torque disabled (50Hz Deadzone & Haptic Wall Protection ACTIVE).\n";
             }
         } else if (cmd == "lock") {
             lockCurrentPose(gsw, cur);
-            std::cout << "  [LOCK] Posisi dikunci pada: J1=" << cur[0]
+            std::cout << "  [LOCK] Position locked at: J1=" << cur[0]
                       << " deg, J2=" << cur[1] << " deg, Grip=" << cur[2] << " deg\n";
         } else if (cmd == "grasp") {
             bool was_free = g_free_monitor_active.load();
@@ -1055,7 +1048,7 @@ int main() {
             double open_deg = DEFAULT_RELEASE_DEG;
             ss >> open_deg;
             openGripperOnly(cur[2], open_deg);
-            std::cout << "  [RELEASE] Gripper dibuka ke +" << cur[2] << " deg.\n";
+            std::cout << "  [RELEASE] Gripper opened to +" << cur[2] << " deg.\n";
             if (was_free) startFreeMonitor();
         } else if (cmd == "add") {
             bool was_free = g_free_monitor_active.load();
@@ -1072,13 +1065,12 @@ int main() {
                 if (sub == "grasp") {
                     int load_thresh = DEFAULT_GRASP_LOAD;
                     ss >> load_thresh;
-                    // Kunci J1 & J2 sementara dan jalankan Adaptive Grasp secara live agar barang langsung terjepit
                     setArmOnlyTorque(gsw, cur, true);
                     adaptiveGrasp(cur[2], load_thresh);
                     Frame f{cur[0], cur[1], cur[2], 0.0, FrameAction::ADAPTIVE_GRASP, load_thresh};
                     buffer.frames.push_back(f);
                     std::cout << "  [ADD GRASP] Waypoint #" << buffer.frames.size()
-                              << " direkam: J1=" << cur[0] << " deg, J2=" << cur[1]
+                              << " recorded: J1=" << cur[0] << " deg, J2=" << cur[1]
                               << " deg + Adaptive Grasp (load=" << load_thresh << ")\n";
                     if (was_free) {
                         setArmOnlyTorque(gsw, cur, false);
@@ -1093,26 +1085,26 @@ int main() {
                     Frame f{cur[0], cur[1], open_deg, 0.5, FrameAction::RELEASE, DEFAULT_GRASP_LOAD};
                     buffer.frames.push_back(f);
                     std::cout << "  [ADD RELEASE] Waypoint #" << buffer.frames.size()
-                              << " direkam: J1=" << cur[0] << " deg, J2=" << cur[1]
+                              << " recorded: J1=" << cur[0] << " deg, J2=" << cur[1]
                               << " deg, Release Grip=+" << open_deg << " deg\n";
                     if (was_free) startFreeMonitor();
                     continue;
                 } else {
                     double dur = std::stod(sub);
                     buffer.frames.push_back(Frame{cur[0], cur[1], cur[2], dur});
-                    std::cout << "  [ADD] Waypoint #" << buffer.frames.size() << " direkam: "
+                    std::cout << "  [ADD] Waypoint #" << buffer.frames.size() << " recorded: "
                               << "J1=" << cur[0] << " deg, J2=" << cur[1]
-                              << " deg, Grip=" << cur[2] << " deg (durasi=" << dur << "s)\n";
+                              << " deg, Grip=" << cur[2] << " deg (duration=" << dur << "s)\n";
                     if (was_free) startFreeMonitor();
                     continue;
                 }
             }
             buffer.frames.push_back(Frame{cur[0], cur[1], cur[2], 0.0});
-            std::cout << "  [ADD] Waypoint #" << buffer.frames.size() << " direkam: "
+            std::cout << "  [ADD] Waypoint #" << buffer.frames.size() << " recorded: "
                       << "J1=" << cur[0] << " deg, J2=" << cur[1] << " deg, Grip=" << cur[2] << " deg\n";
             if (was_free) startFreeMonitor();
         } else if (cmd == "record") {
-            double secs = 20.0; // Default 20 detik (bisa dihentikan kapan saja dengan tombol 'q' / SPACE)
+            double secs = 20.0;
             ss >> secs;
             secs = std::clamp(secs, 1.0, 120.0);
             recordInteractiveStream(gsw, cur, buffer, secs);
@@ -1126,15 +1118,15 @@ int main() {
                     std::clamp(gr, 0.0, MAX_OPEN_DEG)
                 };
                 moveSmooth(gsw, cur, target, 0.0);
-                std::cout << "  [MOVE] Posisi sekarang: J1=" << cur[0]
+                std::cout << "  [MOVE] Current position: J1=" << cur[0]
                           << ", J2=" << cur[1] << ", Grip=" << cur[2] << "\n";
             } else {
-                std::cout << "  [!] Format: move <j1_deg> <j2_deg> <grip_deg> (contoh: move -30 -20 30)\n";
+                std::cout << "  [!] Format: move <j1_deg> <j2_deg> <grip_deg> (e.g.: move -30 -20 30)\n";
             }
         } else if (cmd == "zero") {
             lockCurrentPose(gsw, cur);
             double zero_pose[3] = {0.0, 0.0, 0.0};
-            std::cout << "  -> Kembali ke posisi 0 terkalibrasi...\n";
+            std::cout << "  -> Returning to calibrated zero position...\n";
             moveSmooth(gsw, cur, zero_pose, 0.0);
         } else if (cmd == "show") {
             bool was_free = g_free_monitor_active.load();
@@ -1142,9 +1134,9 @@ int main() {
             readCurrentPose(cur, false);
             int signed_load = 0;
             int grip_load = g_gripper_online ? readLoadMagnitude(GRIPPER_ID, signed_load) : 0;
-            std::cout << "  Posisi saat ini : J1=" << cur[0] << " deg, J2=" << cur[1]
+            std::cout << "  Current position: J1=" << cur[0] << " deg, J2=" << cur[1]
                       << " deg, Grip=" << cur[2] << " deg (Grip Load=" << grip_load << ")\n";
-            std::cout << "  Buffer memori   : " << buffer.frames.size() << " titik ("
+            std::cout << "  Memory buffer   : " << buffer.frames.size() << " points ("
                       << (buffer.mode == MotionMode::STREAM ? "STREAM 50Hz" : "WAYPOINT") << ")\n";
             if (buffer.mode == MotionMode::WAYPOINT) {
                 for (size_t i = 0; i < buffer.frames.size(); i++) {
@@ -1166,13 +1158,13 @@ int main() {
         } else if (cmd == "clear") {
             buffer.frames.clear();
             buffer.mode = MotionMode::WAYPOINT;
-            std::cout << "  [CLEAR] Buffer rekaman di memori telah dikosongkan.\n";
+            std::cout << "  [CLEAR] Memory recording buffer cleared.\n";
         } else if (cmd == "save") {
             std::string name;
             if (ss >> name) {
                 saveMotionToFile(name, buffer);
             } else {
-                std::cout << "  [!] Format: save <nama_gerakan> (contoh: save ambil_benda)\n";
+                std::cout << "  [!] Format: save <motion_name> (e.g.: save pick_item)\n";
             }
         } else if (cmd == "play") {
             std::string name;
@@ -1181,11 +1173,11 @@ int main() {
                 if (!(ss >> loops) || loops < 1) loops = 1;
                 MotionData loaded;
                 if (loadMotionFromFile(name, loaded)) {
-                    std::cout << "  [PLAY] Menjalankan gerakan '" << name << "'...\n";
+                    std::cout << "  [PLAY] Executing motion '" << name << "'...\n";
                     executeMotion(gsw, cur, loaded, loops);
                 }
             } else {
-                std::cout << "  [PLAY] Menjalankan gerakan dari memori...\n";
+                std::cout << "  [PLAY] Executing motion from memory...\n";
                 executeMotion(gsw, cur, buffer, 1);
             }
         } else if (cmd == "list") {
@@ -1195,13 +1187,14 @@ int main() {
         } else if (cmd == "quit" || cmd == "exit" || cmd == "q") {
             break;
         } else {
-            std::cout << "  [!] Perintah tidak dikenal. Ketik 'help' untuk daftar perintah.\n";
+            std::cout << "  [!] Unknown command. Type 'help' for command list.\n";
         }
     }
 
     stopFreeMonitor();
     setTorqueAll(false);
     portHandler->closePort();
-    std::cout << "Torque dimatikan dan port ditutup.\n";
+    std::cout << "Torque disabled and port closed.\n";
     return 0;
+}
 }

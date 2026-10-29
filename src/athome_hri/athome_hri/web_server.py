@@ -25,7 +25,7 @@ class _ReusableTCPServer(socketserver.TCPServer):
 
 
 class WebServer:
-    """Modul khusus server web HTTP dan WebSocket untuk antarmuka smartphone/klien."""
+    """HTTP and WebSocket web server module for smartphone/client interface."""
 
     def __init__(
         self,
@@ -42,14 +42,14 @@ class WebServer:
         self._httpd: Optional[socketserver.TCPServer] = None
 
     def start_http(self) -> None:
-        """Menjalankan HTTP server lokal di background daemon thread."""
+        """Run local HTTP server in a background daemon thread."""
         thread = threading.Thread(
             target=self._run_http, name="HriHttpServer", daemon=True
         )
         thread.start()
 
     def stop_http(self) -> None:
-        """Menghentikan HTTP server bila sedang berjalan."""
+        """Stop HTTP server if running."""
         if self._httpd is not None:
             try:
                 self._httpd.shutdown()
@@ -80,10 +80,10 @@ class WebServer:
                         httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
                         proto = "https"
                     except Exception as ssl_exc:
-                        logger.warning("SSL fallback ke HTTP: %s", ssl_exc)
+                        logger.warning("SSL fallback to HTTP: %s", ssl_exc)
 
                 logger.info(
-                    "Web UI aktif di %s://0.0.0.0:%d (Folder: %s)",
+                    "Web UI active at %s://0.0.0.0:%d (Dir: %s)",
                     proto,
                     self.http_port,
                     web_dir,
@@ -91,14 +91,13 @@ class WebServer:
                 httpd.serve_forever()
         except Exception as exc:
             logger.error(
-                "Port HTTP %d sudah digunakan atau gagal: %s", self.http_port, exc
+                "HTTP port %d unavailable or failed: %s", self.http_port, exc
             )
 
     @staticmethod
     def _find_web_dir() -> str:
-        """Mencari direktori statis Web UI (index.html) melalui ament_index atau path lokal."""
+        """Search Web UI static directory (index.html) via ament_index or local path."""
         candidates: list[Path] = []
-
         try:
             from ament_index_python.packages import get_package_share_directory
 
@@ -122,7 +121,7 @@ class WebServer:
         return str(module_dir)
 
     async def broadcast_ui(self, payload: Dict[str, Any]) -> None:
-        """Mengirim pesan JSON ke seluruh client WebSocket yang aktif."""
+        """Send JSON message to all connected WebSocket clients."""
         if not self.active_ws:
             return
         msg = json.dumps(payload)
@@ -134,9 +133,9 @@ class WebServer:
             )
 
     async def ws_handler(self, websocket: WebSocketServerProtocol) -> None:
-        """Menangani siklus koneksi dan pesan masuk dari klien WebSocket."""
+        """Handle client WebSocket connection lifecycle and incoming messages."""
         self.active_ws.add(websocket)
-        logger.info("Klien WebSocket terhubung dari %s", websocket.remote_address)
+        logger.info("WebSocket client connected from %s", websocket.remote_address)
 
         try:
             async for message in websocket:
@@ -148,7 +147,7 @@ class WebServer:
                 try:
                     data = json.loads(message)
                 except json.JSONDecodeError:
-                    logger.warning("Payload JSON WebSocket tidak valid.")
+                    logger.warning("Invalid WebSocket JSON payload.")
                     continue
 
                 msg_type = data.get("type", "")
@@ -165,4 +164,4 @@ class WebServer:
             pass
         finally:
             self.active_ws.discard(websocket)
-            logger.info("Klien WebSocket terputus.")
+            logger.info("WebSocket client disconnected.")

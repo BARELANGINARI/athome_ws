@@ -9,58 +9,15 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
+    """Launch ZED camera, body tracking, and YOLO bag detection preview."""
     return LaunchDescription([
-        DeclareLaunchArgument(
-            'camera_fps',
-            default_value='30.0',
-            description='FPS kamera ZED (30 aman; 15 bila patah-patah).',
-        ),
-        DeclareLaunchArgument(
-            'body_model',
-            default_value='MEDIUM',
-            description='Model body tracking ZED (MEDIUM akurat / FAST halus).',
-        ),
-        DeclareLaunchArgument(
-            'depth_minimum_distance',
-            default_value='30.0',
-            description='Depth minimum ZED (cm ala maen_boss, 30 = 30cm).',
-        ),
-        DeclareLaunchArgument(
-            'depth_mode',
-            default_value='ULTRA',
-            description='Depth ZED: ULTRA (default), NEURAL_LIGHT, atau PERFORMANCE.',
-        ),
-        DeclareLaunchArgument(
-            'image_stride',
-            default_value='2',
-            description='Publish /zed/image tiap N frame (kecilkan delay).',
-        ),
-        DeclareLaunchArgument(
-            'yolo_conf',
-            default_value='0.20',
-            description='Confidence threshold YOLO deteksi tas.',
-        ),
-        DeclareLaunchArgument(
-            'yolo_stride',
-            default_value='2',
-            description='Inferensi YOLO tiap N frame (hemat beban CPU).',
-        ),
-        DeclareLaunchArgument(
-            'debug_window',
-            default_value='true',
-            description=(
-                'Preview OpenCV dari node zed: bbox person/tas, HUD koordinat, '
-                'garis pelacak, dan fps. Tekan q untuk keluar. Default true karena '
-                'file ini memang khusus kamera. Matikan: '
-                'debug_window:=false. Kalau mesin tanpa display, node tetap '
-                'jalan, hanya preview-nya yang dimatikan.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'mirror',
-            default_value='false',
-            description='Balik preview kiri-kanan (tangan kanan = kanan layar).',
-        ),
+        DeclareLaunchArgument('camera_fps', default_value='30.0', description='Camera frame rate (FPS)'),
+        DeclareLaunchArgument('depth_minimum_distance', default_value='30.0', description='Minimum depth sensing distance (cm)'),
+        DeclareLaunchArgument('image_stride', default_value='2', description='Publish preview image every N frames'),
+        DeclareLaunchArgument('yolo_conf', default_value='0.25', description='YOLO confidence threshold'),
+        DeclareLaunchArgument('debug_window', default_value='true', description='Show OpenCV preview visualization window'),
+        DeclareLaunchArgument('mirror', default_value='false', description='Mirror display preview horizontally'),
+
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
@@ -74,12 +31,9 @@ def generate_launch_description():
                 'publish_yaw': 'true',
                 'publish_image': 'true',
                 'image_stride': LaunchConfiguration('image_stride'),
-                'depth_mode': LaunchConfiguration('depth_mode'),
-                'body_model': LaunchConfiguration('body_model'),
                 'enable_body_tracking': 'true',
                 'enable_yolo': 'true',
                 'yolo_conf': LaunchConfiguration('yolo_conf'),
-                'yolo_stride': LaunchConfiguration('yolo_stride'),
                 'debug_window': LaunchConfiguration('debug_window'),
                 'mirror': LaunchConfiguration('mirror'),
                 'depth_minimum_distance': LaunchConfiguration('depth_minimum_distance'),

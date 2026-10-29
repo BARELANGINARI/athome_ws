@@ -7,24 +7,14 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
+    """Launch Dynamixel robotic arm motion server."""
     return LaunchDescription([
-        DeclareLaunchArgument(
-            'port',
-            default_value='/dev/ttyUSB1',
-            description='Port USB serial Dynamixel Arm',
-        ),
-        DeclareLaunchArgument(
-            'baudrate',
-            default_value='1000000',
-            description='Baudrate komunikasi Dynamixel AX-18A',
-        ),
+        DeclareLaunchArgument('port', default_value='/dev/ttyUSB1', description='Dynamixel USB serial device port'),
+        DeclareLaunchArgument('baudrate', default_value='1000000', description='Dynamixel communication baud rate'),
         DeclareLaunchArgument(
             'motions_dir',
-            default_value=PathJoinSubstitution([
-                FindPackageShare('athome_arm'),
-                'motions',
-            ]),
-            description='Direktori penyimpanan file gerakan arm',
+            default_value=PathJoinSubstitution([FindPackageShare('athome_arm'), 'motions']),
+            description='Path to arm motion files directory',
         ),
         Node(
             package='athome_arm',
@@ -38,4 +28,3 @@ def generate_launch_description():
             }],
         ),
     ])
-

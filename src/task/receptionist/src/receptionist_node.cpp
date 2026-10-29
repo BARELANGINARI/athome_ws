@@ -107,27 +107,27 @@ public:
     std::lock_guard<std::mutex> lock(nav_mutex_);
     if (is_navigating_) {
       res->success = false;
-      res->message = "Robot sedang sibuk melakukan navigasi lain";
+      res->message = "Robot is currently busy with another navigation task";
       publishStatus(res->message);
       return;
     }
 
     Waypoint wp = getWaypoint(target_name);
-    publishStatus("Menerima perintah: Navigasi menuju " + target_name + "...");
+    publishStatus("Command received: Navigating to " + target_name + "...");
     is_navigating_ = true;
 
     bool ok = navigateTo(wp);
     is_navigating_ = false;
 
     res->success = ok;
-    res->message = ok ? "Berhasil mencapai " + target_name : "Gagal mencapai " + target_name;
+    res->message = ok ? "Reached " + target_name : "Failed to reach " + target_name;
     publishStatus(res->message);
   }
 
   bool navigateTo(const Waypoint & wp)
   {
     if (!nav_client_->wait_for_action_server(std::chrono::seconds(5))) {
-      RCLCPP_ERROR(get_logger(), "Nav2 action server 'navigate_to_pose' tidak tersedia!");
+      RCLCPP_ERROR(get_logger(), "Nav2 action server 'navigate_to_pose' unavailable");
       return false;
     }
 
@@ -141,13 +141,13 @@ public:
 
     auto send_goal_future = nav_client_->async_send_goal(goal);
     if (send_goal_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
-      RCLCPP_ERROR(get_logger(), "Gagal mengirim goal navigasi ke %s", wp.name.c_str());
+      RCLCPP_ERROR(get_logger(), "Failed to send navigation goal to %s", wp.name.c_str());
       return false;
     }
 
     auto goal_handle = send_goal_future.get();
     if (!goal_handle) {
-      RCLCPP_ERROR(get_logger(), "Goal navigasi ditolak oleh Nav2 untuk %s", wp.name.c_str());
+      RCLCPP_ERROR(get_logger(), "Navigation goal rejected by Nav2 for %s", wp.name.c_str());
       return false;
     }
 

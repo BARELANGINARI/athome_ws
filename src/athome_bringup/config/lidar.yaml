@@ -12,37 +12,7 @@ rplidar_node:
       name: angle_360_full
       type: laser_filters/LaserScanAngularBoundsFilterInPlace
       params:
-        # 360° penuh: loloskan semua beam (-pi s/d +pi).
         lower_angle: -3.14159
         upper_angle: 3.14159
         replace_with_nan: true
         wrap_angle: false
-
-
-
-
-# rplidar_node:
-#   ros__parameters:
-#     serial_port: /dev/ttyUSB2
-#     serial_baudrate: 256000
-#     frame_id: laser_frame
-#     scan_mode: DenseBoost
-#     angle_compensate: true
-
-# /**:
-#   ros__parameters:
-#     filter1:
-#       name: angle_180_remove_front
-#       type: laser_filters/LaserScanAngularBoundsFilterInPlace
-#       params:
-#         # PERHATIAN: filter ini MEMBUANG beam di antara lower..upper
-#         # (bukan menyimpan!). Setting di bawah = buang 180° depan
-#         # (laser_frame), simpan 180° belakang. Hanya dipakai saat
-#         # use_scan_filter:=true.
-#         # Untuk 360° penuh JANGAN lebarkan ke +-pi (itu malah membuang
-#         # semua beam sehingga /scan kosong!) — pakai default
-#         # use_scan_filter:=false agar filter di-bypass.
-#         lower_angle: -1.5707963
-#         upper_angle: 1.5707963
-#         replace_with_nan: true
-#         wrap_angle: false

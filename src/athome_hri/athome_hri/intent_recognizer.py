@@ -46,7 +46,7 @@ DEFAULT_INTENT_CORPUS: Dict[str, Tuple[str, ...]] = {
 
 
 class IntentRecognizer:
-    """Modul khusus analisis teks untuk mencocokkan intensi perintah operator."""
+    """Text analysis module for matching operator command intents."""
 
     SUBSTRING_BONUS_SCORE: float = 0.95
 
@@ -63,7 +63,7 @@ class IntentRecognizer:
         )
 
     def score_intent(self, transcript: str, target_intent: str) -> float:
-        """Menghitung skor kemiripan tertinggi (0.0 - 1.0) terhadap target intent."""
+        """Calculate highest similarity score (0.0 - 1.0) against target intent."""
         if not transcript or not transcript.strip():
             return 0.0
 
@@ -80,7 +80,7 @@ class IntentRecognizer:
         return best_score
 
     def match_intent(self, transcript: str, target_intent: str) -> bool:
-        """Memeriksa apakah teks transkripsi cocok dengan target intent di atas ambang batas."""
+        """Check if transcribed text matches the target intent above threshold."""
         best_score = self.score_intent(transcript, target_intent)
         logger.info(
             "Input: '%s' | Target: %s | Similarity: %.2f",
@@ -91,7 +91,7 @@ class IntentRecognizer:
         return best_score >= self.threshold
 
     def get_intent(self, transcript: str) -> Optional[str]:
-        """Mengekstrak intent terbaik dari teks, atau mengembalikan None jika tidak cocok."""
+        """Extract best matching intent from text, or return None if no match."""
         if not transcript or not transcript.strip():
             return None
 

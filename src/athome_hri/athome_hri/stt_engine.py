@@ -10,7 +10,7 @@ import numpy as np
 
 logger = logging.getLogger("athome_hri.stt")
 
-# Patch kompatibilitas PyAV & Faster-Whisper
+# PyAV & Faster-Whisper compatibility patch
 try:
     import av
 
@@ -35,10 +35,8 @@ AsrResultCallback = Callable[[str, str], None]
 
 
 class SpeechToText:
-    """
-    Modul khusus transkripsi audio (numpy float32 array atau .wav/.webm bytes)
-    ke teks via Faster-Whisper (identik dengan utilitas/record_stream_visualize.py).
-    """
+    """Audio transcription module (numpy float32 array or .wav/.webm bytes)
+    to text via Faster-Whisper."""
 
     DEFAULT_MODEL_SIZE: str = "deepdml/faster-whisper-large-v3-turbo-ct2"
     FALLBACK_MODEL_SIZE: str = "base.en"
@@ -69,7 +67,7 @@ class SpeechToText:
         self.whisper: Optional["WhisperModel"] = None
 
         if not HAS_WHISPER:
-            logger.warning("faster_whisper tidak terinstal. STT tidak aktif.")
+            logger.warning("faster_whisper is not installed. STT disabled.")
             return
 
         device, compute_type = self._detect_compute_backend()
@@ -77,24 +75,24 @@ class SpeechToText:
 
     @staticmethod
     def _detect_compute_backend() -> tuple[str, str]:
-        """Mendeteksi ketersediaan akselerasi GPU CUDA untuk CTranslate2."""
+        """Detect CUDA GPU acceleration availability for CTranslate2."""
         try:
             import ctranslate2
 
             cuda_count = ctranslate2.get_cuda_device_count()
             if cuda_count > 0:
                 logger.info(
-                    "GPU NVIDIA terdeteksi (%d device). Menggunakan CUDA + int8_float16.",
+                    "NVIDIA GPU detected (%d device). Using CUDA + int8_float16.",
                     cuda_count,
                 )
                 return "cuda", "int8_float16"
-            logger.info("GPU tidak terdeteksi. Menggunakan CPU (int8).")
+            logger.info("No GPU detected. Using CPU (int8).")
         except Exception:
-            logger.info("CTranslate2 fallback ke CPU (int8).")
+            logger.info("CTranslate2 fallback to CPU (int8).")
         return "cpu", "int8"
 
     def _load_model(self, device: str, compute_type: str) -> None:
-        """Memuat model Faster-Whisper dengan fallback otomatis ke CPU atau base.en bila gagal."""
+        """Load Faster-Whisper model with fallback to CPU or base.en on failure."""
         candidates = [(self.model_size, device, compute_type)]
         if device == "cuda":
             candidates.append((self.model_size, "cuda", "float16"))
@@ -113,7 +111,7 @@ class SpeechToText:
         for model_name, dev, comp in candidates:
             try:
                 logger.info(
-                    "Memuat model Faster-Whisper '%s' (%s, %s)...",
+                    "Loading Faster-Whisper model '%s' (%s, %s)...",
                     model_name,
                     dev,
                     comp,
@@ -125,24 +123,21 @@ class SpeechToText:
                     cpu_threads=4 if dev == "cpu" else 1,
                 )
                 self.model_size = model_name
-                logger.info("Faster-Whisper siap ('%s' pada %s).", model_name, dev)
+                logger.info("Faster-Whisper ready ('%s' on %s).", model_name, dev)
                 return
             except Exception as exc:
                 logger.warning(
-                    "Gagal memuat Faster-Whisper '%s' (%s, %s): %s",
+                    "Failed to load Faster-Whisper '%s' (%s, %s): %s",
                     model_name,
                     dev,
                     comp,
                     exc,
                 )
 
-        logger.error("Semua percobaan pemuatan model Faster-Whisper gagal.")
+        logger.error("All Faster-Whisper model loading attempts failed.")
 
     def transcribe(self, audio_input: Union[np.ndarray, bytes]) -> str:
-        """
-        Menerima array float32 numpy (16 kHz) dari mikrofon lokal atau raw bytes (.wav/.webm)
-        dari WebSocket, lalu mengembalikan teks transkripsi yang telah difilter.
-        """
+        """Receive float32 numpy array (16 kHz) or raw bytes (.wav/.webm) and return transcribed text."""
         if self.whisper is None or audio_input is None:
             return ""
         if isinstance(audio_input, np.ndarray) and audio_input.size == 0:
@@ -181,7 +176,6 @@ class SpeechToText:
                     "speech_pad_ms": self.DEFAULT_VAD_SPEECH_PAD_MS,
                 },
             )
-
             valid_text = [
                 seg.text.strip()
                 for seg in segments
@@ -199,9 +193,9 @@ class SpeechToText:
                 and len(text) > 2
             ):
                 metrics_str = (
-                    f"RTF: {rtf:.3f} | Latensi: {proc_time:.2f}s | Audio: {dur:.2f}s"
+                    f"RTF: {rtf:.3f} | Latency: {proc_time:.2f}s | Audio: {dur:.2f}s"
                     if dur > 0
-                    else f"Latensi: {proc_time:.2f}s"
+                    else f"Latency: {proc_time:.2f}s"
                 )
                 logger.info('[ASR] "%s" (%s)', text, metrics_str)
                 if self.on_asr_result:
@@ -210,18 +204,19 @@ class SpeechToText:
 
             if text:
                 logger.info(
-                    "[ASR] Ditolak - noise/halusinasi Raw: %s (%.2fs)",
+                    "[ASR] Rejected - noise/hallucination Raw: %s (%.2fs)",
                     text,
                     proc_time,
                 )
                 if self.on_asr_result:
                     self.on_asr_result(
-                        f"[Ditolak: {text}]",
-                        f"Noise/Halusinasi ({proc_time:.2f}s)",
+                        f"[Rejected: {text}]",
+                        f"Noise/Hallucination ({proc_time:.2f}s)",
                     )
             return ""
         except Exception as exc:
-            logger.error("Transkripsi gagal: %s", exc)
+            logger.error("Transcription failed: %s", exc)
+            return ""
             return ""
         finally:
             if temp_path and os.path.exists(temp_path):

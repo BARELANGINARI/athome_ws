@@ -23,7 +23,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def _resolve_map_file(map_path, navigation_share):
-    """Resolusi path peta (.yaml) secara robust dengan fallback ke source tree."""
+    """Resolve map YAML file path with fallback to source tree."""
     if map_path and os.path.isabs(map_path) and os.path.exists(map_path):
         return os.path.abspath(map_path)
 
@@ -46,22 +46,20 @@ def _resolve_map_file(map_path, navigation_share):
     return os.path.abspath(map_path) if map_path else os.path.join(navigation_share, 'maps', 'map.yaml')
 
 
-def _resolve_params_file(params_path, navigation_share):
-    """Resolusi path nav2_params.yaml dengan fallback ke source tree."""
+def _resolve_params_file(params_path, fallback_share):
+    """Resolve Nav2 params YAML file path with fallback to task package."""
     if params_path and os.path.isabs(params_path) and os.path.exists(params_path):
         return os.path.abspath(params_path)
 
-    src_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     candidates = [
         os.path.abspath(params_path) if params_path else '',
-        os.path.join(navigation_share, 'config', 'nav2_params.yaml'),
-        os.path.join(src_dir, 'config', 'nav2_params.yaml'),
+        os.path.join(fallback_share, 'config', 'nav2_params.yaml'),
     ]
     for c in candidates:
         if c and os.path.exists(c):
             return os.path.abspath(c)
 
-    return os.path.abspath(params_path) if params_path else os.path.join(navigation_share, 'config', 'nav2_params.yaml')
+    return os.path.abspath(params_path) if params_path else os.path.join(fallback_share, 'config', 'nav2_params.yaml')
 
 
 def _prepare_params(params_file, map_file, x, y, yaw):
@@ -90,6 +88,7 @@ def _prepare_params(params_file, map_file, x, y, yaw):
 
 def _launch_setup(context, *args, **kwargs):
     navigation_share = get_package_share_directory('athome_navigation')
+    help_me_carry_share = get_package_share_directory('help_me_carry')
     nav2_bringup_share = get_package_share_directory('nav2_bringup')
 
     rviz_config_arg = context.perform_substitution(LaunchConfiguration('rviz_config'))
@@ -105,14 +104,14 @@ def _launch_setup(context, *args, **kwargs):
     slam_enabled = context.perform_substitution(LaunchConfiguration('slam')).lower() in ('true', '1')
 
     map_file = _resolve_map_file(raw_map_file, navigation_share)
-    params_file = _resolve_params_file(raw_params_file, navigation_share)
+    params_file = _resolve_params_file(raw_params_file, help_me_carry_share)
 
     if slam_enabled:
-        print("\033[92m[INFO] [navigation.launch]: Mode Online SLAM aktif (navigasi di lingkungan tanpa peta).\033[0m")
+        print("\033[92m[INFO] [navigation.launch]: Online SLAM mode active (mapless navigation).\033[0m")
     elif not os.path.exists(map_file):
-        print(f"\033[91m[ERROR] [navigation.launch]: File peta tidak ditemukan di '{map_file}'!\033[0m")
+        print(f"\033[91m[ERROR] [navigation.launch]: Map file not found at '{map_file}'!\033[0m")
     else:
-        print(f"\033[92m[INFO] [navigation.launch]: Menggunakan peta: {map_file}\033[0m")
+        print(f"\033[92m[INFO] [navigation.launch]: Using map: {map_file}\033[0m")
 
     prepared_params = _prepare_params(
         params_file, map_file, initial_x, initial_y, initial_yaw)
@@ -217,7 +216,6 @@ def _launch_setup(context, *args, **kwargs):
         arguments=['-d', rviz_config],
         additional_env={'LIBGL_ALWAYS_SOFTWARE': '1'},
     )
-    help_me_carry_share = get_package_share_directory('help_me_carry')
     carry_params = os.path.join(help_me_carry_share, 'config', 'params.yaml')
 
     carry_node = Node(
@@ -229,7 +227,7 @@ def _launch_setup(context, *args, **kwargs):
         parameters=[
             carry_params,
             {'follow_bt_xml': os.path.join(
-                navigation_share, 'behavior_trees', 'follow_person.xml')},
+                help_me_carry_share, 'behavior_trees', 'follow_person.xml')},
         ],
     )
 
@@ -246,109 +244,34 @@ def _launch_setup(context, *args, **kwargs):
 
 def generate_launch_description():
     navigation_share = get_package_share_directory('athome_navigation')
+    help_me_carry_share = get_package_share_directory('help_me_carry')
 
     default_map = os.path.join(navigation_share, 'maps', 'map.yaml')
-    default_params = os.path.join(navigation_share, 'config', 'nav2_params.yaml')
+    default_params = os.path.join(help_me_carry_share, 'config', 'nav2_params.yaml')
 
     return LaunchDescription([
-        DeclareLaunchArgument(
-            'slam',
-            default_value='false',
-            description='Aktifkan Online SLAM (slam_toolbox) untuk navigasi di lingkungan tanpa peta awal.',
-        ),
-        DeclareLaunchArgument(
-            'map',
-            default_value=default_map,
-            description='Path peta (.yaml) hasil mapping. Default maps/map.yaml.',
-        ),
-        DeclareLaunchArgument(
-            'params_file',
-            default_value=default_params,
-            description='File parameter Nav2 (config/nav2_params.yaml).',
-        ),
-        DeclareLaunchArgument(
-            'use_sensors',
-            default_value='true',
-            description='Aktifkan sensor lidar & kamera ZED via robot_bringup/sensors.launch.py.',
-        ),
-        DeclareLaunchArgument(
-            'publish_static_tf',
-            default_value='true',
-            description='Aktifkan static TF standalone jika use_sensors:=false (set false bila TF sudah dari hardware.launch.py).',
-        ),
-        DeclareLaunchArgument(
-            'initial_x',
-            default_value='0.0',
-            description='Pose awal robot di peta (x meter, frame map).',
-        ),
-        DeclareLaunchArgument(
-            'initial_y',
-            default_value='0.0',
-            description='Pose awal robot di peta (y meter, frame map).',
-        ),
-        DeclareLaunchArgument(
-            'initial_yaw',
-            default_value='0.0',
-            description='Heading awal robot (radian, 0 = +X peta).',
-        ),
-        DeclareLaunchArgument(
-            'use_composition',
-            default_value='False',
-            description='False = tiap node Nav2 proses sendiri (aman).',
-        ),
-        DeclareLaunchArgument(
-            'rviz',
-            default_value='true',
-            description='Tampilkan RViz.',
-        ),
-        DeclareLaunchArgument(
-            'rviz_software',
-            default_value='false',
-            description='Paksa RViz software rendering.',
-        ),
-        DeclareLaunchArgument(
-            'rviz_config',
-            default_value=default_map.replace('maps/map.yaml', 'rviz/navigation.rviz'),
-            description='Path ke file konfigurasi RViz (.rviz).',
-        ),
-        DeclareLaunchArgument(
-            'use_following',
-            default_value='true',
-            description=(
-                'Aktifkan person_follower (dynamic object following). '
-                'BUTUH zed dengan enable_body_tracking:=true, kalau tidak '
-                'topik /zed/person_label selalu NO_PERSON.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'enable_person_detection',
-            default_value='true',
-            description='Aktifkan deteksi orang (alias untuk enable_body_tracking ZED). Default true.',
-        ),
-        DeclareLaunchArgument(
-            'enable_body_tracking',
-            default_value=LaunchConfiguration('enable_person_detection'),
-            description='Enable ZED body tracking / deteksi orang. Default true.',
-        ),
-        DeclareLaunchArgument('depth_minimum_distance', default_value='30.0'),
-        DeclareLaunchArgument('image_stride', default_value='2'),
-        DeclareLaunchArgument('depth_mode', default_value='ULTRA'),
-        DeclareLaunchArgument('body_model', default_value='MEDIUM'),
-        DeclareLaunchArgument('camera_fps', default_value='30.0'),
-        DeclareLaunchArgument('enable_yolo', default_value='true'),
-        DeclareLaunchArgument(
-            'zed_debug_window',
-            default_value='false',
-            description=(
-                'Preview kamera OpenCV dari node zed: bbox person/tas, 34 '
-                'keypoint, jarak. Tekan q untuk keluar. Default false supaya '
-                'aman di mesin tanpa display.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'zed_mirror',
-            default_value='true',
-            description='Balik preview zed kiri-kanan (tangan kanan = kanan layar).',
-        ),
+        DeclareLaunchArgument('slam', default_value='false', description='Enable real-time SLAM (slam_toolbox)'),
+        DeclareLaunchArgument('map', default_value=default_map, description='Path to map YAML file'),
+        DeclareLaunchArgument('params_file', default_value=default_params, description='Path to Nav2 params file'),
+        DeclareLaunchArgument('use_sensors', default_value='true', description='Launch LiDAR and ZED sensors'),
+        DeclareLaunchArgument('publish_static_tf', default_value='true', description='Publish standalone static TF when use_sensors is false'),
+        DeclareLaunchArgument('initial_x', default_value='0.0', description='Initial robot X pose on map (m)'),
+        DeclareLaunchArgument('initial_y', default_value='0.0', description='Initial robot Y pose on map (m)'),
+        DeclareLaunchArgument('initial_yaw', default_value='0.0', description='Initial robot heading on map (rad)'),
+        DeclareLaunchArgument('use_composition', default_value='False', description='Use Nav2 composable nodes'),
+        DeclareLaunchArgument('rviz', default_value='true', description='Launch RViz2 visualization'),
+        DeclareLaunchArgument('rviz_software', default_value='false', description='Force RViz software OpenGL rendering'),
+        DeclareLaunchArgument('rviz_config', default_value=default_map.replace('maps/map.yaml', 'rviz/navigation.rviz'), description='Path to RViz configuration file'),
+        DeclareLaunchArgument('use_following', default_value='true', description='Launch person following node'),
+        DeclareLaunchArgument('enable_person_detection', default_value='true', description='Enable person detection (body tracking alias)'),
+        DeclareLaunchArgument('enable_body_tracking', default_value=LaunchConfiguration('enable_person_detection'), description='Enable ZED body tracking'),
+        DeclareLaunchArgument('depth_minimum_distance', default_value='30.0', description='Minimum depth sensing distance (cm)'),
+        DeclareLaunchArgument('image_stride', default_value='2', description='Publish image every N frames'),
+        DeclareLaunchArgument('depth_mode', default_value='PERFORMANCE', description='ZED depth sensing mode'),
+        DeclareLaunchArgument('body_model', default_value='FAST', description='ZED body tracking model'),
+        DeclareLaunchArgument('camera_fps', default_value='30.0', description='Camera frame rate (FPS)'),
+        DeclareLaunchArgument('enable_yolo', default_value='true', description='Enable YOLO object detection'),
+        DeclareLaunchArgument('zed_debug_window', default_value='false', description='Show OpenCV preview window'),
+        DeclareLaunchArgument('zed_mirror', default_value='true', description='Mirror display preview horizontally'),
         OpaqueFunction(function=_launch_setup),
     ])
