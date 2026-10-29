@@ -120,32 +120,13 @@ class AudioSpeechQueue:
 
     @staticmethod
     def _play_wav_locally(wav_base64: str) -> bool:
-        """Memutar audio WAV Base64 ke speaker lokal menggunakan PyAudio atau SoundDevice."""
+        """Memutar audio WAV Base64 ke speaker lokal menggunakan SoundDevice atau PyAudio."""
         if not wav_base64:
             return False
         try:
             raw_bytes = base64.b64decode(wav_base64)
             with wave.open(io.BytesIO(raw_bytes), "rb") as wf:
-                if HAS_PYAUDIO:
-                    pa = pyaudio.PyAudio()
-                    try:
-                        stream = pa.open(
-                            format=pa.get_format_from_width(wf.getsampwidth()),
-                            channels=wf.getnchannels(),
-                            rate=wf.getframerate(),
-                            output=True,
-                        )
-                        chunk = 1024
-                        data = wf.readframes(chunk)
-                        while data:
-                            stream.write(data)
-                            data = wf.readframes(chunk)
-                        stream.stop_stream()
-                        stream.close()
-                        return True
-                    finally:
-                        pa.terminate()
-                elif HAS_SOUNDDEVICE:
+                if HAS_SOUNDDEVICE:
                     rate = wf.getframerate()
                     frames = wf.readframes(wf.getnframes())
                     audio_np = (
@@ -155,6 +136,26 @@ class AudioSpeechQueue:
                     sd.play(audio_np, samplerate=rate)
                     sd.wait()
                     return True
+                elif HAS_PYAUDIO:
+                    pa = pyaudio.PyAudio()
+                    try:
+                        chunk = 4096
+                        stream = pa.open(
+                            format=pa.get_format_from_width(wf.getsampwidth()),
+                            channels=wf.getnchannels(),
+                            rate=wf.getframerate(),
+                            output=True,
+                            frames_per_buffer=chunk,
+                        )
+                        data = wf.readframes(chunk)
+                        while data:
+                            stream.write(data)
+                            data = wf.readframes(chunk)
+                        stream.stop_stream()
+                        stream.close()
+                        return True
+                    finally:
+                        pa.terminate()
         except Exception as exc:
             logger.debug("Gagal memutar audio ke speaker lokal: %s", exc)
         return False
@@ -409,17 +410,33 @@ class LocalMicListener:
     def _listen_with_pyaudio(self) -> None:
         pa = pyaudio.PyAudio()
         stream = None
+        hw_rate = self.sample_rate
+        hw_block = self.block_size
         try:
-            stream = pa.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=self.sample_rate,
-                input=True,
-                input_device_index=self.device_index,
-                frames_per_buffer=self.block_size,
-            )
+            for cand_rate in (self.sample_rate, 48000, 44100):
+                try:
+                    cand_block = int(cand_rate * self.BLOCK_DURATION)
+                    stream = pa.open(
+                        format=pyaudio.paInt16,
+                        channels=1,
+                        rate=cand_rate,
+                        input=True,
+                        input_device_index=self.device_index,
+                        frames_per_buffer=cand_block,
+                    )
+                    hw_rate = cand_rate
+                    hw_block = cand_block
+                    break
+                except Exception:
+                    continue
+
+            if stream is None:
+                logger.error("Gagal membuka mikrofon lokal via PyAudio pada semua sample rate.")
+                return
+
             logger.info(
-                "Mikrofon lokal aktif via PyAudio (%d Hz, block=%d, dbfs_thresh=%.1f dBFS, flatness_max=%.2f).",
+                "Mikrofon lokal aktif via PyAudio (%d Hz -> %d Hz, block=%d, dbfs_thresh=%.1f dBFS, flatness_max=%.2f).",
+                hw_rate,
                 self.sample_rate,
                 self.block_size,
                 self.threshold_dbfs,
@@ -431,7 +448,7 @@ class LocalMicListener:
             while self.enabled:
                 try:
                     pcm_bytes = stream.read(
-                        self.block_size, exception_on_overflow=False
+                        hw_block, exception_on_overflow=False
                     )
                 except Exception:
                     time.sleep(0.01)
@@ -440,6 +457,12 @@ class LocalMicListener:
                     np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
                     / 32768.0
                 )
+                if hw_rate != self.sample_rate and len(sig) > 0:
+                    x_old = np.linspace(0.0, 1.0, num=len(sig), endpoint=False)
+                    x_new = np.linspace(
+                        0.0, 1.0, num=self.block_size, endpoint=False
+                    )
+                    sig = np.interp(x_new, x_old, sig).astype(np.float32)
                 audio_queue.put(sig)
                 while not audio_queue.empty():
                     self._process_vad_frame(audio_queue.get_nowait())

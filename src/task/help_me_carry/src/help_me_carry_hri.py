@@ -9,6 +9,7 @@ import asyncio
 from enum import Enum, auto
 import logging
 import threading
+import time
 from typing import Callable, Dict, Optional, Set, Tuple, Union
 
 from geometry_msgs.msg import Twist
@@ -95,6 +96,7 @@ class BarelangHriNode(Node):
     }
 
     VALID_POINTING_GESTURES: Tuple[str, str] = ("LEFT", "RIGHT")
+    OPERATOR_GRACE_PERIOD_SEC: float = 3.0
 
     def __init__(
         self,
@@ -145,7 +147,8 @@ class BarelangHriNode(Node):
         )
 
         # Vision & Gesture State
-        self.is_operator_in_front: bool = False
+        self._person_topic_received: bool = False
+        self._last_operator_seen_time: float = 0.0
         self.last_gesture: str = "NONE"
         self.gesture_ready_for_task: bool = True
         self.gesture_event = asyncio.Event()
@@ -183,11 +186,25 @@ class BarelangHriNode(Node):
         if text and self.on_tts_command:
             self.loop.call_soon_threadsafe(self.on_tts_command, text)
 
+    @property
+    def is_operator_in_front(self) -> bool:
+        """
+        Mengembalikan True jika operator terlihat dalam OPERATOR_GRACE_PERIOD_SEC terakhir,
+        atau jika topik kamera /zed/person_label belum aktif (mode pengujian HRI standalone).
+        """
+        if not self._person_topic_received:
+            return True
+        return (
+            time.monotonic() - self._last_operator_seen_time
+        ) <= self.OPERATOR_GRACE_PERIOD_SEC
+
     def _on_person_label(self, msg: String) -> None:
+        self._person_topic_received = True
         data = msg.data.strip()
-        self.is_operator_in_front = bool(
-            data and data != "NO_PERSON" and ("operator:" in data or "person:" in data)
-        )
+        if data and data != "NO_PERSON" and (
+            "operator:" in data or "person:" in data
+        ):
+            self._last_operator_seen_time = time.monotonic()
 
     def _on_gesture(self, msg: String) -> None:
         gesture = msg.data.strip().upper()
@@ -271,6 +288,7 @@ class HriCoordinator:
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self.loop = loop
         self.state = RobotState.IDLE
+        self._stt_lock = asyncio.Lock()
 
         self.ros_node = BarelangHriNode(
             async_loop=loop,
@@ -368,7 +386,8 @@ class HriCoordinator:
         await self.handle_audio(audio_input)
 
     async def handle_audio(self, audio_input: Union[np.ndarray, bytes]) -> None:
-        transcript = await asyncio.to_thread(self.stt.transcribe, audio_input)
+        async with self._stt_lock:
+            transcript = await asyncio.to_thread(self.stt.transcribe, audio_input)
         if transcript:
             logger.info('[STT TRANSCRIPT] "%s"', transcript)
         await self.web.broadcast_ui({"type": "TRANSCRIPT", "transcript": transcript})

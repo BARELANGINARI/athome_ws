@@ -3,6 +3,7 @@
 import logging
 import os
 import tempfile
+import threading
 import time
 from typing import Callable, Optional, Set, Union
 
@@ -35,24 +36,32 @@ AsrResultCallback = Callable[[str, str], None]
 
 
 class SpeechToText:
-    """Audio transcription module (numpy float32 array or .wav/.webm bytes)
-    to text via Faster-Whisper."""
+    """
+    Modul khusus transkripsi audio (numpy float32 array atau .wav/.webm bytes)
+    ke teks via Faster-Whisper dengan thread-safety dan proteksi halusinasi.
+    """
 
     DEFAULT_MODEL_SIZE: str = "deepdml/faster-whisper-large-v3-turbo-ct2"
     FALLBACK_MODEL_SIZE: str = "base.en"
     SAMPLE_RATE: int = 16000
     DEFAULT_BEAM_SIZE: int = 2
-    DEFAULT_NO_SPEECH_THRESHOLD: float = 0.5
+    DEFAULT_NO_SPEECH_THRESHOLD: float = 0.6
     DEFAULT_LOG_PROB_THRESHOLD: float = -0.8
     DEFAULT_COMPRESSION_RATIO_THRESHOLD: float = 1.8
     DEFAULT_VAD_SILENCE_MS: int = 400
     DEFAULT_VAD_SPEECH_PAD_MS: int = 200
+    COMMAND_INITIAL_PROMPT: str = (
+        "Hello robot, halo robot, follow me, please follow me, "
+        "stop, we have arrived at the location."
+    )
 
     HALLUCINATION_BLACKLIST: Set[str] = {
         "terima kasih",
         "terimakasih",
         "thank you",
         "thanks",
+        "thank you very much",
+        "you",
     }
 
     def __init__(
@@ -65,6 +74,7 @@ class SpeechToText:
         self.language = language
         self.on_asr_result = on_asr_result
         self.whisper: Optional["WhisperModel"] = None
+        self._lock = threading.Lock()
 
         if not HAS_WHISPER:
             logger.warning("faster_whisper is not installed. STT disabled.")
@@ -137,7 +147,10 @@ class SpeechToText:
         logger.error("All Faster-Whisper model loading attempts failed.")
 
     def transcribe(self, audio_input: Union[np.ndarray, bytes]) -> str:
-        """Receive float32 numpy array (16 kHz) or raw bytes (.wav/.webm) and return transcribed text."""
+        """
+        Menerima array float32 numpy (16 kHz) dari mikrofon lokal atau raw bytes (.wav/.webm)
+        dari WebSocket, lalu mengembalikan teks transkripsi yang telah difilter secara thread-safe.
+        """
         if self.whisper is None or audio_input is None:
             return ""
         if isinstance(audio_input, np.ndarray) and audio_input.size == 0:
@@ -162,25 +175,33 @@ class SpeechToText:
                     temp_path = tmp_file.name
                 audio_source = temp_path
 
-            segments, _ = self.whisper.transcribe(
-                audio_source,
-                beam_size=self.DEFAULT_BEAM_SIZE,
-                language=self.language,
-                condition_on_previous_text=True,
-                no_speech_threshold=self.DEFAULT_NO_SPEECH_THRESHOLD,
-                log_prob_threshold=self.DEFAULT_LOG_PROB_THRESHOLD,
-                compression_ratio_threshold=self.DEFAULT_COMPRESSION_RATIO_THRESHOLD,
-                vad_filter=True,
-                vad_parameters={
-                    "min_silence_duration_ms": self.DEFAULT_VAD_SILENCE_MS,
-                    "speech_pad_ms": self.DEFAULT_VAD_SPEECH_PAD_MS,
-                },
-            )
-            valid_text = [
-                seg.text.strip()
-                for seg in segments
-                if seg.no_speech_prob < self.DEFAULT_NO_SPEECH_THRESHOLD
-            ]
+            with self._lock:
+                segments, _ = self.whisper.transcribe(
+                    audio_source,
+                    beam_size=self.DEFAULT_BEAM_SIZE,
+                    language=self.language,
+                    initial_prompt=self.COMMAND_INITIAL_PROMPT,
+                    condition_on_previous_text=False,
+                    no_speech_threshold=self.DEFAULT_NO_SPEECH_THRESHOLD,
+                    log_prob_threshold=self.DEFAULT_LOG_PROB_THRESHOLD,
+                    compression_ratio_threshold=self.DEFAULT_COMPRESSION_RATIO_THRESHOLD,
+                    vad_filter=True,
+                    vad_parameters={
+                        "min_silence_duration_ms": self.DEFAULT_VAD_SILENCE_MS,
+                        "speech_pad_ms": self.DEFAULT_VAD_SPEECH_PAD_MS,
+                    },
+                )
+
+                # Terima segmen selama confidence log_prob memadai atau no_speech_prob rendah
+                valid_text = [
+                    seg.text.strip()
+                    for seg in segments
+                    if (
+                        seg.no_speech_prob < self.DEFAULT_NO_SPEECH_THRESHOLD
+                        or seg.avg_logprob >= self.DEFAULT_LOG_PROB_THRESHOLD
+                    )
+                ]
+
             text = " ".join(valid_text).strip()
 
             proc_time = time.perf_counter() - t0
@@ -190,7 +211,7 @@ class SpeechToText:
             if (
                 text
                 and cleaned_check not in self.HALLUCINATION_BLACKLIST
-                and len(text) > 2
+                and len(cleaned_check) > 2
             ):
                 metrics_str = (
                     f"RTF: {rtf:.3f} | Latency: {proc_time:.2f}s | Audio: {dur:.2f}s"
