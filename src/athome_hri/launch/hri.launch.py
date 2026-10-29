@@ -17,6 +17,11 @@ def generate_launch_description():
             description="Aktifkan input audio dari Web UI WebSocket",
         ),
         DeclareLaunchArgument(
+            "enable_visualizer",
+            default_value="true",
+            description="Aktifkan jendela grafik visualisasi VAD & ASR real-time (Matplotlib)",
+        ),
+        DeclareLaunchArgument(
             "threshold_dbfs",
             default_value="-40.0",
             description="Ambang batas energi Speech-Band (300-3400 Hz) dalam dBFS",
@@ -56,6 +61,7 @@ def generate_launch_description():
                 {
                     "enable_local_mic": LaunchConfiguration("enable_local_mic"),
                     "enable_ws_audio": LaunchConfiguration("enable_ws_audio"),
+                    "enable_visualizer": LaunchConfiguration("enable_visualizer"),
                     "threshold_dbfs": LaunchConfiguration("threshold_dbfs"),
                     "threshold_flatness": LaunchConfiguration("threshold_flatness"),
                     "pre_roll_frames": LaunchConfiguration("pre_roll_frames"),

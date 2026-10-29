@@ -2,7 +2,7 @@
 """
 Barelang Inari - Human-Robot Interaction (HRI) Master Node.
 
-Bertugas sebagai Task Manager & antarmuka terpadu (Voice/NLU/Web/ROS 2).
+Bertugas sebagai Task Manager & antarmuka terpadu (Voice/NLU/Web/ROS 2/VAD Visualizer).
 """
 
 import asyncio
@@ -20,7 +20,11 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 import websockets
 
-from athome_hri.audio_io import AudioSpeechQueue, LocalMicListener
+from athome_hri.audio_io import (
+    AudioSpeechQueue,
+    LocalMicListener,
+    VadVisualizer,
+)
 from athome_hri.intent_recognizer import IntentRecognizer
 from athome_hri.stt_engine import SpeechToText
 from athome_hri.tts_engine import TextToSpeech
@@ -33,6 +37,7 @@ logger = logging.getLogger("athome_hri.coordinator")
 # =====================================================================
 ENABLE_LOCAL_MIC: bool = True
 ENABLE_WS_AUDIO: bool = True
+ENABLE_VISUALIZER: bool = True
 MIC_DEVICE_INDEX: Optional[int] = None
 THRESHOLD_DBFS: float = -40.0
 THRESHOLD_FLATNESS: float = 0.40
@@ -105,6 +110,7 @@ class BarelangHriNode(Node):
         # Deklarasi parameter ROS 2 (Sesuai record_stream_visualize.py)
         self.declare_parameter("enable_local_mic", ENABLE_LOCAL_MIC)
         self.declare_parameter("enable_ws_audio", ENABLE_WS_AUDIO)
+        self.declare_parameter("enable_visualizer", ENABLE_VISUALIZER)
         self.declare_parameter("threshold_dbfs", THRESHOLD_DBFS)
         self.declare_parameter("threshold_flatness", THRESHOLD_FLATNESS)
         self.declare_parameter("pre_roll_frames", PRE_ROLL_FRAMES)
@@ -116,6 +122,9 @@ class BarelangHriNode(Node):
             self.get_parameter("enable_local_mic").value
         )
         self.enable_ws_audio: bool = bool(self.get_parameter("enable_ws_audio").value)
+        self.enable_visualizer: bool = bool(
+            self.get_parameter("enable_visualizer").value
+        )
         self.threshold_dbfs: float = float(
             self.get_parameter("threshold_dbfs").value
         )
@@ -257,7 +266,7 @@ class BarelangHriNode(Node):
 # 3. HRI COORDINATOR (LINEAR STATE MACHINE)
 # =====================================================================
 class HriCoordinator:
-    """Koordinator utama state machine HRI yang menyatukan STT, NLU, TTS, Web UI, dan ROS 2."""
+    """Koordinator utama state machine HRI yang menyatukan STT, NLU, TTS, Web UI, Visualizer, dan ROS 2."""
 
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self.loop = loop
@@ -265,24 +274,17 @@ class HriCoordinator:
 
         self.ros_node = BarelangHriNode(
             async_loop=loop,
-            on_tts_command=lambda text: self.audio_queue.enqueue(text),
+            on_tts_command=lambda text: (
+                self.audio_queue.enqueue(text)
+                if hasattr(self, "audio_queue")
+                else None
+            ),
             on_gesture_changed=self._on_gesture_changed,
         )
 
-        self.stt = SpeechToText(model_size=self.ros_node.whisper_model)
-        self.tts = TextToSpeech()
-        self.nlu = IntentRecognizer(threshold=0.68)
-        self.web = WebServer(
-            http_port=HTTP_PORT,
-            ws_port=WS_PORT,
-            on_audio_received=self.handle_ws_audio,
-            on_text_received=self.handle_text,
-        )
-        self.audio_queue = AudioSpeechQueue(self.tts, self.web.broadcast_ui)
-        self.audio_queue.start(loop)
-
         self.enable_local_mic: bool = self.ros_node.enable_local_mic
         self.enable_ws_audio: bool = self.ros_node.enable_ws_audio
+        self.enable_visualizer: bool = self.ros_node.enable_visualizer
 
         self.mic_listener = LocalMicListener(
             loop=loop,
@@ -295,12 +297,34 @@ class HriCoordinator:
             hangover_frames=self.ros_node.hangover_frames,
             min_speech_frames=self.ros_node.min_speech_frames,
         )
+
+        self.visualizer = VadVisualizer(self.mic_listener)
+        self.mic_listener.on_frame_metrics = self.visualizer.push_frame
+
+        self.stt = SpeechToText(
+            model_size=self.ros_node.whisper_model,
+            on_asr_result=self.visualizer.update_asr_status,
+        )
+        self.tts = TextToSpeech()
+        self.nlu = IntentRecognizer(threshold=0.68)
+        self.web = WebServer(
+            http_port=HTTP_PORT,
+            ws_port=WS_PORT,
+            on_audio_received=self.handle_ws_audio,
+            on_text_received=self.handle_text,
+        )
+        self.audio_queue = AudioSpeechQueue(self.tts, self.web.broadcast_ui)
+        self.audio_queue.start(loop)
+
         if self.enable_local_mic:
+            if self.enable_visualizer:
+                self.visualizer.start(loop)
             self.mic_listener.start()
 
     def shutdown(self) -> None:
-        """Membersihkan resource audio, server HTTP, dan node ROS 2 saat aplikasi berhenti."""
+        """Membersihkan resource audio, visualisasi, server HTTP, dan node ROS 2 saat aplikasi berhenti."""
         self.mic_listener.stop()
+        self.visualizer.stop()
         self.audio_queue.stop()
         self.web.stop_http()
         self.ros_node.destroy_node()
@@ -505,8 +529,9 @@ async def main() -> None:
     logger.info("=" * 72)
     logger.info("Barelang Inari HRI Server Aktif (Clean Task Manager)")
     logger.info(
-        "Input Audio -> Local Mic: %s | WebSocket: %s",
+        "Input Audio -> Local Mic: %s | Visualizer: %s | WebSocket: %s",
         coordinator.enable_local_mic,
+        coordinator.enable_visualizer,
         coordinator.enable_ws_audio,
     )
     logger.info("Services: %s", services_list)

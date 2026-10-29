@@ -1,10 +1,12 @@
-"""Audio I/O components: asynchronous TTS playback queue and local microphone VAD listener."""
+"""Audio I/O components: asynchronous TTS playback queue, local microphone VAD listener, and real-time VAD visualizer."""
 
 import asyncio
 import base64
 from collections import deque
+from dataclasses import dataclass
 import io
 import logging
+import os
 import queue
 import threading
 import time
@@ -38,9 +40,29 @@ try:
 except ImportError:
     HAS_PYAUDIO = False
 
+try:
+    import matplotlib.pyplot as plt
+
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
+
 BroadcastCallback = Callable[[Dict[str, Any]], Awaitable[Any]]
 AudioCapturedCallback = Callable[[Union[np.ndarray, bytes]], Awaitable[Any]]
 QueueItem = Tuple[str, float, Optional[asyncio.Future]]
+
+
+@dataclass(frozen=True)
+class VadFrameMetrics:
+    """Data metrik per-frame (30 ms) untuk pemrosesan VAD dan visualisasi real-time."""
+
+    signal: np.ndarray
+    fft_mag: np.ndarray
+    dbfs: float
+    dbfs_speech: float
+    flatness: float
+    is_speaking: bool
+    is_paused: bool
 
 
 class AudioSpeechQueue:
@@ -168,7 +190,9 @@ class AudioSpeechQueue:
                     await asyncio.to_thread(self._play_wav_locally, wav_base64)
                 elapsed = time.time() - t0
                 remaining = max(0.0, duration - elapsed)
-                await asyncio.sleep(remaining + delay_after + self.POST_SPEECH_BUFFER_SEC)
+                await asyncio.sleep(
+                    remaining + delay_after + self.POST_SPEECH_BUFFER_SEC
+                )
                 self.global_last_spoken_time = time.time()
 
             except asyncio.CancelledError:
@@ -181,7 +205,9 @@ class AudioSpeechQueue:
                     done_future.set_result(True)
                 self.queue.task_done()
 
-    def _can_enqueue(self, text: str, cooldown: Optional[float], force: bool) -> bool:
+    def _can_enqueue(
+        self, text: str, cooldown: Optional[float], force: bool
+    ) -> bool:
         key = text.lower()
         now = time.time()
         if not force and key in self.last_spoken_time:
@@ -250,6 +276,7 @@ class LocalMicListener:
         loop: asyncio.AbstractEventLoop,
         on_audio_captured: AudioCapturedCallback,
         is_paused_fn: Callable[[], bool],
+        on_frame_metrics: Optional[Callable[[VadFrameMetrics], None]] = None,
         device_index: Optional[int] = None,
         threshold_dbfs: float = -40.0,
         threshold_flatness: float = 0.40,
@@ -262,6 +289,7 @@ class LocalMicListener:
         self.loop = loop
         self.on_audio_captured = on_audio_captured
         self.is_paused_fn = is_paused_fn
+        self.on_frame_metrics = on_frame_metrics
         self.device_index = device_index
         self.threshold_dbfs = threshold_dbfs
         self.threshold_flatness = threshold_flatness
@@ -272,6 +300,7 @@ class LocalMicListener:
         self.block_size = int(sample_rate * block_duration)
         self.enabled: bool = False
         self._thread: Optional[threading.Thread] = None
+        self._hanning_window = np.hanning(self.block_size)
 
         if HAS_SCIPY:
             nyq = 0.5 * self.sample_rate
@@ -285,8 +314,8 @@ class LocalMicListener:
 
     def _compute_features(
         self, signal: np.ndarray
-    ) -> Tuple[np.ndarray, float, float, float]:
-        """Menghitung Full-band dBFS, Speech-band dBFS (300-3400 Hz), dan Spectral Flatness."""
+    ) -> Tuple[np.ndarray, np.ndarray, float, float, float]:
+        """Menghitung Full-band dBFS, Speech-band dBFS (300-3400 Hz), FFT Magnitude, dan Spectral Flatness."""
         eps = 1e-10
         rms = float(np.sqrt(np.mean(signal**2) + eps))
         dbfs = float(20.0 * np.log10(rms + eps))
@@ -303,10 +332,15 @@ class LocalMicListener:
 
         dbfs_speech = float(20.0 * np.log10(rms_speech + eps))
 
-        fft_mag = np.abs(np.fft.rfft(signal * np.hanning(len(signal)))) + eps
+        window = (
+            self._hanning_window
+            if len(signal) == len(self._hanning_window)
+            else np.hanning(len(signal))
+        )
+        fft_mag = np.abs(np.fft.rfft(signal * window)) + eps
         flatness = float(np.exp(np.mean(np.log(fft_mag))) / np.mean(fft_mag))
 
-        return signal, dbfs, dbfs_speech, flatness
+        return signal, fft_mag, dbfs, dbfs_speech, flatness
 
     def start(self) -> None:
         """Memulai thread pembacaan mikrofon lokal."""
@@ -338,7 +372,9 @@ class LocalMicListener:
     def _listen_with_sounddevice(self) -> None:
         audio_queue: queue.Queue[np.ndarray] = queue.Queue()
 
-        def audio_callback(indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
+        def audio_callback(
+            indata: np.ndarray, frames: int, time_info: Any, status: Any
+        ) -> None:
             if status:
                 logger.debug("SoundDevice status: %s", status)
             audio_queue.put(indata[:, 0].copy())
@@ -391,9 +427,12 @@ class LocalMicListener:
             )
 
             audio_queue: queue.Queue[np.ndarray] = queue.Queue()
+            self._init_vad_state()
             while self.enabled:
                 try:
-                    pcm_bytes = stream.read(self.block_size, exception_on_overflow=False)
+                    pcm_bytes = stream.read(
+                        self.block_size, exception_on_overflow=False
+                    )
                 except Exception:
                     time.sleep(0.01)
                     continue
@@ -402,7 +441,8 @@ class LocalMicListener:
                     / 32768.0
                 )
                 audio_queue.put(sig)
-                self._drain_vad_queue(audio_queue)
+                while not audio_queue.empty():
+                    self._process_vad_frame(audio_queue.get_nowait())
         except Exception as exc:
             logger.error("Gagal membuka mikrofon lokal via PyAudio: %s", exc)
         finally:
@@ -415,14 +455,16 @@ class LocalMicListener:
             pa.terminate()
             logger.info("Mikrofon lokal dinonaktifkan.")
 
-    def _InitVadState(self) -> None:
+    def _init_vad_state(self) -> None:
         self._is_speaking = False
         self._speech_buffer: List[np.ndarray] = []
         self._pre_roll_buffer: deque[np.ndarray] = deque(maxlen=self.pre_roll_frames)
         self._silence_counter = 0
 
-    def _run_vad_state_machine(self, audio_queue: "queue.Queue[np.ndarray]") -> None:
-        self._InitVadState()
+    def _run_vad_state_machine(
+        self, audio_queue: "queue.Queue[np.ndarray]"
+    ) -> None:
+        self._init_vad_state()
         while self.enabled:
             try:
                 sig = audio_queue.get(timeout=0.05)
@@ -430,23 +472,29 @@ class LocalMicListener:
                 continue
             self._process_vad_frame(sig)
 
-    def _drain_vad_queue(self, audio_queue: "queue.Queue[np.ndarray]") -> None:
-        if not hasattr(self, "_is_speaking"):
-            self._InitVadState()
-        while not audio_queue.empty():
-            sig = audio_queue.get_nowait()
-            self._process_vad_frame(sig)
-
     def _process_vad_frame(self, sig: np.ndarray) -> None:
-        if self.is_paused_fn and self.is_paused_fn():
+        sig, fft_mag, dbfs, dbfs_speech, flatness = self._compute_features(sig)
+        paused = bool(self.is_paused_fn and self.is_paused_fn())
+
+        if paused:
             if self._is_speaking or len(self._pre_roll_buffer) > 0:
                 self._pre_roll_buffer.clear()
                 self._speech_buffer.clear()
                 self._is_speaking = False
                 self._silence_counter = 0
+            if self.on_frame_metrics:
+                self.on_frame_metrics(
+                    VadFrameMetrics(
+                        signal=sig,
+                        fft_mag=fft_mag,
+                        dbfs=dbfs,
+                        dbfs_speech=dbfs_speech,
+                        flatness=flatness,
+                        is_speaking=False,
+                        is_paused=True,
+                    )
+                )
             return
-
-        sig, _dbfs, dbfs_speech, flatness = self._compute_features(sig)
 
         # Logika Keputusan VAD (Kombinasi Energy Speech-Band & Spectral Flatness)
         frame_is_voice = (dbfs_speech > self.threshold_dbfs) and (
@@ -483,3 +531,281 @@ class LocalMicListener:
                     self._silence_counter = 0
             else:
                 self._pre_roll_buffer.append(sig)
+
+        if self.on_frame_metrics:
+            self.on_frame_metrics(
+                VadFrameMetrics(
+                    signal=sig,
+                    fft_mag=fft_mag,
+                    dbfs=dbfs,
+                    dbfs_speech=dbfs_speech,
+                    flatness=flatness,
+                    is_speaking=self._is_speaking,
+                    is_paused=False,
+                )
+            )
+
+
+class VadVisualizer:
+    """
+    Visualisasi grafik real-time Matplotlib untuk VAD & ASR
+    (Waveform, FFT Spectrum 300-3400 Hz, Rolling Speech-Band dBFS, dan status transkripsi).
+    """
+
+    HISTORY_LEN: int = 100
+    RENDER_INTERVAL_SEC: float = 0.03
+    MAX_QUEUE_SIZE: int = 60
+
+    def __init__(self, mic_listener: LocalMicListener) -> None:
+        self.mic_listener = mic_listener
+        self._frame_queue: queue.Queue[VadFrameMetrics] = queue.Queue(
+            maxsize=self.MAX_QUEUE_SIZE
+        )
+        self._latest_transcript: str = "[Menunggu suara...]"
+        self._latest_asr_metrics: str = "RTF: 0.00 | Durasi: 0.0s"
+        self._asr_dirty: bool = False
+        self._render_task: Optional[asyncio.Task] = None
+        self._active: bool = False
+
+        self.fig: Optional[Any] = None
+        self._dbfs_hist = np.full(self.HISTORY_LEN, -80.0)
+        self._speech_dbfs_hist = np.full(self.HISTORY_LEN, -80.0)
+
+    @staticmethod
+    def _has_display() -> bool:
+        return bool(
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        )
+
+    def push_frame(self, metrics: VadFrameMetrics) -> None:
+        """Menerima frame metrik dari thread audio secara non-blocking."""
+        if not self._active:
+            return
+        if self._frame_queue.full():
+            try:
+                self._frame_queue.get_nowait()
+            except queue.Empty:
+                pass
+        try:
+            self._frame_queue.put_nowait(metrics)
+        except queue.Full:
+            pass
+
+    def update_asr_status(self, transcript: str, metrics: str) -> None:
+        """Memperbarui teks hasil transkripsi dan metrik RTF ASR di bagian bawah grafik."""
+        self._latest_transcript = transcript
+        self._latest_asr_metrics = metrics
+        self._asr_dirty = True
+
+    def start(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Menginisialisasi jendela grafik Matplotlib dan memulai task perenderan asinkron."""
+        if not HAS_MATPLOTLIB:
+            logger.warning(
+                "matplotlib tidak terinstal. Visualisasi grafik VAD dinonaktifkan."
+            )
+            return
+        if not self._has_display():
+            logger.warning(
+                "Environment DISPLAY tidak terdeteksi (headless). Visualisasi grafik VAD dinonaktifkan."
+            )
+            return
+
+        try:
+            self._setup_figure()
+            self._active = True
+            self._render_task = loop.create_task(self._render_loop())
+            logger.info(
+                "Visualisasi grafik VAD aktif (Gunakan panah UP/DOWN untuk dBFS, LEFT/RIGHT untuk Flatness)."
+            )
+        except Exception as exc:
+            logger.warning("Gagal menginisialisasi jendela visualisasi VAD: %s", exc)
+            self._active = False
+
+    def stop(self) -> None:
+        """Menghentikan loop perenderan dan menutup jendela Matplotlib."""
+        self._active = False
+        if self._render_task and not self._render_task.done():
+            self._render_task.cancel()
+        if HAS_MATPLOTLIB and self.fig is not None:
+            try:
+                plt.close(self.fig)
+            except Exception:
+                pass
+            self.fig = None
+
+    def _setup_figure(self) -> None:
+        plt.ion()
+        block_size = self.mic_listener.block_size
+        sample_rate = self.mic_listener.sample_rate
+
+        self.fig, (self.ax_wave, self.ax_spec, self.ax_dbfs) = plt.subplots(
+            3, 1, figsize=(10, 8.5)
+        )
+        self.fig.canvas.manager.set_window_title(
+            "Barelang Inari HRI - Real-Time VAD & ASR Visualizer"
+        )
+        plt.subplots_adjust(hspace=0.5, bottom=0.15)
+
+        # Plot 1: Waveform & Indikator Status VAD
+        x_wave = np.arange(block_size) / sample_rate * 1000.0
+        (self.line_wave,) = self.ax_wave.plot(
+            x_wave, np.zeros(block_size), color="#007acc"
+        )
+        self.ax_wave.set_ylim(-1.0, 1.0)
+        self.title_wave = self.ax_wave.set_title(
+            "VAD Status: SILENCE | menunggu input...",
+            fontweight="bold",
+            color="gray",
+        )
+        self.ax_wave.set_ylabel("Amplitude")
+
+        # Plot 2: FFT Spectrum
+        freqs = np.fft.rfftfreq(block_size, 1.0 / sample_rate)
+        (self.line_spec,) = self.ax_spec.plot(
+            freqs, np.zeros(len(freqs)), color="#d9534f"
+        )
+        self.ax_spec.axvspan(
+            self.mic_listener.BANDPASS_LOWCUT,
+            self.mic_listener.BANDPASS_HIGHCUT,
+            color="green",
+            alpha=0.15,
+            label="Speech Band (300-3400 Hz)",
+        )
+        self.ax_spec.set_xlim(0, 8000)
+        self.ax_spec.set_ylim(-60, 20)
+        self.ax_spec.set_title("Frequency Spectrum (FFT dB)")
+        self.ax_spec.set_ylabel("dB")
+        self.ax_spec.legend(loc="upper right")
+
+        # Plot 3: Rolling Energy & Threshold
+        (self.line_dbfs,) = self.ax_dbfs.plot(
+            self._dbfs_hist, label="Full dBFS", color="gray", alpha=0.5
+        )
+        (self.line_speech_dbfs,) = self.ax_dbfs.plot(
+            self._speech_dbfs_hist, label="Speech-Band dBFS", color="#2ca02c"
+        )
+        thresh = self.mic_listener.threshold_dbfs
+        flat_max = self.mic_listener.threshold_flatness
+        self.line_thresh = self.ax_dbfs.axhline(
+            thresh,
+            color="red",
+            linestyle="--",
+            label=f"Thresh ({thresh:.1f} dBFS)",
+        )
+        self.ax_dbfs.set_ylim(-80, 0)
+        self.ax_dbfs.set_title(
+            f"VAD Energy | [UP/DOWN] dBFS Thresh | [LEFT/RIGHT] Flatness Max: {flat_max:.2f}"
+        )
+        self.ax_dbfs.set_ylabel("dBFS")
+        self.ax_dbfs.legend(loc="upper left")
+
+        # Kotak Teks Hasil Transkripsi ASR di Bagian Bawah
+        self.asr_text_box = self.fig.text(
+            0.5,
+            0.03,
+            f"ASR: {self._latest_transcript}\n{self._latest_asr_metrics}",
+            ha="center",
+            va="center",
+            fontsize=11,
+            fontweight="bold",
+            bbox=dict(
+                boxstyle="round,pad=0.5",
+                facecolor="#f0f4f8",
+                edgecolor="#007acc",
+            ),
+        )
+
+        self.fig.canvas.mpl_connect("key_press_event", self._on_key_press)
+        self.fig.show()
+
+    def _on_key_press(self, event: Any) -> None:
+        if event.key == "up":
+            self.mic_listener.threshold_dbfs = min(
+                0.0, self.mic_listener.threshold_dbfs + 1.0
+            )
+        elif event.key == "down":
+            self.mic_listener.threshold_dbfs = max(
+                -80.0, self.mic_listener.threshold_dbfs - 1.0
+            )
+        elif event.key == "right":
+            self.mic_listener.threshold_flatness = min(
+                1.0, self.mic_listener.threshold_flatness + 0.05
+            )
+        elif event.key == "left":
+            self.mic_listener.threshold_flatness = max(
+                0.05, self.mic_listener.threshold_flatness - 0.05
+            )
+        else:
+            return
+
+        thresh = self.mic_listener.threshold_dbfs
+        flat_max = self.mic_listener.threshold_flatness
+        self.line_thresh.set_ydata([thresh, thresh])
+        self.line_thresh.set_label(f"Thresh ({thresh:.1f} dBFS)")
+        self.ax_dbfs.set_title(
+            f"VAD Energy | [UP/DOWN] dBFS Thresh | [LEFT/RIGHT] Flatness Max: {flat_max:.2f}"
+        )
+        self.ax_dbfs.legend(loc="upper left")
+
+    async def _render_loop(self) -> None:
+        while self._active and self.fig is not None:
+            try:
+                if not plt.fignum_exists(self.fig.number):
+                    logger.info("Jendela visualisasi VAD ditutup oleh pengguna.")
+                    self._active = False
+                    break
+
+                updated = False
+                last_metrics: Optional[VadFrameMetrics] = None
+
+                while not self._frame_queue.empty():
+                    metrics = self._frame_queue.get_nowait()
+                    last_metrics = metrics
+                    self._dbfs_hist = np.roll(self._dbfs_hist, -1)
+                    self._dbfs_hist[-1] = metrics.dbfs
+                    self._speech_dbfs_hist = np.roll(self._speech_dbfs_hist, -1)
+                    self._speech_dbfs_hist[-1] = metrics.dbfs_speech
+                    updated = True
+
+                if last_metrics is not None:
+                    self.line_wave.set_ydata(last_metrics.signal)
+                    self.line_spec.set_ydata(20.0 * np.log10(last_metrics.fft_mag))
+                    self.line_dbfs.set_ydata(self._dbfs_hist)
+                    self.line_speech_dbfs.set_ydata(self._speech_dbfs_hist)
+
+                    if last_metrics.is_paused:
+                        self.title_wave.set_text(
+                            "VAD Status: [PAUSED - ROBOT SPEAKING / BUSY]"
+                        )
+                        self.title_wave.set_color("#d9534f")
+                        self.line_wave.set_color("#999999")
+                    elif last_metrics.is_speaking:
+                        self.title_wave.set_text(
+                            f"VAD Status: [SPEECH DETECTED - RECORDING] (Flatness: {last_metrics.flatness:.2f})"
+                        )
+                        self.title_wave.set_color("green")
+                        self.line_wave.set_color("#2ca02c")
+                    else:
+                        self.title_wave.set_text(
+                            f"VAD Status: SILENCE (Flatness: {last_metrics.flatness:.2f})"
+                        )
+                        self.title_wave.set_color("gray")
+                        self.line_wave.set_color("#007acc")
+
+                if self._asr_dirty:
+                    self.asr_text_box.set_text(
+                        f"ASR: {self._latest_transcript}\n{self._latest_asr_metrics}"
+                    )
+                    self._asr_dirty = False
+                    updated = True
+
+                if updated:
+                    self.fig.canvas.draw_idle()
+                self.fig.canvas.flush_events()
+
+                await asyncio.sleep(self.RENDER_INTERVAL_SEC)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("Kesalahan render visualisasi VAD: %s", exc)
+                await asyncio.sleep(0.1)

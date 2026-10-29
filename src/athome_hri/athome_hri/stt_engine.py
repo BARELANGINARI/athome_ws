@@ -4,7 +4,7 @@ import logging
 import os
 import tempfile
 import time
-from typing import Optional, Set, Union
+from typing import Callable, Optional, Set, Union
 
 import numpy as np
 
@@ -30,6 +30,8 @@ try:
     HAS_WHISPER = True
 except ImportError:
     HAS_WHISPER = False
+
+AsrResultCallback = Callable[[str, str], None]
 
 
 class SpeechToText:
@@ -59,9 +61,11 @@ class SpeechToText:
         self,
         model_size: str = DEFAULT_MODEL_SIZE,
         language: str = "en",
+        on_asr_result: Optional[AsrResultCallback] = None,
     ) -> None:
         self.model_size = model_size
         self.language = language
+        self.on_asr_result = on_asr_result
         self.whisper: Optional["WhisperModel"] = None
 
         if not HAS_WHISPER:
@@ -194,14 +198,14 @@ class SpeechToText:
                 and cleaned_check not in self.HALLUCINATION_BLACKLIST
                 and len(text) > 2
             ):
-                if dur > 0:
-                    logger.info(
-                        '[ASR] "%s" (RTF: %.3f | Latensi: %.2fs | Audio: %.2fs)',
-                        text,
-                        rtf,
-                        proc_time,
-                        dur,
-                    )
+                metrics_str = (
+                    f"RTF: {rtf:.3f} | Latensi: {proc_time:.2f}s | Audio: {dur:.2f}s"
+                    if dur > 0
+                    else f"Latensi: {proc_time:.2f}s"
+                )
+                logger.info('[ASR] "%s" (%s)', text, metrics_str)
+                if self.on_asr_result:
+                    self.on_asr_result(f'"{text}"', metrics_str)
                 return text
 
             if text:
@@ -210,6 +214,11 @@ class SpeechToText:
                     text,
                     proc_time,
                 )
+                if self.on_asr_result:
+                    self.on_asr_result(
+                        f"[Ditolak: {text}]",
+                        f"Noise/Halusinasi ({proc_time:.2f}s)",
+                    )
             return ""
         except Exception as exc:
             logger.error("Transkripsi gagal: %s", exc)
