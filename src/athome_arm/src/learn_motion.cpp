@@ -74,12 +74,12 @@ namespace fs = std::filesystem;
 
 const std::string MOTION_DIR = "motions";
 const uint8_t ARM_CORE_IDS[] = {4, 5, 1};
-const uint8_t ALL_IDS[]      = {4, 5, 1, 6};
+const uint8_t ALL_IDS[]      = {4, 5, 1, 2};
 
 struct Servo { uint8_t id; bool inverted; };
 const Servo JOINT1[] = { {4, false}, {5, true} };
 const Servo JOINT2[] = { {1, false} };
-const Servo JOINT3[] = { {6, false} };
+const Servo JOINT3[] = { {2, false} };
 
 enum class FrameAction {
     MOVE,           // Waypoint / sampel gerak biasa

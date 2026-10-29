@@ -41,8 +41,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'lidar_port',
-            default_value='/dev/ttyUSB2',
-            description='RPLiDAR serial port device (e.g. /dev/ttyUSB2)',
+            default_value='/dev/ttyUSB1',
+            description='RPLiDAR serial port device (e.g. /dev/ttyUSB1)',
         ),
         DeclareLaunchArgument(
             'lidar_x',

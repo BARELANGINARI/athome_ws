@@ -26,7 +26,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'barelang_hri = athome_hri.barelang_hri:main_entry',
+            'help_me_carry_hri = athome_hri.help_me_carry_hri:main_entry',
+            'barelang_hri = athome_hri.help_me_carry_hri:main_entry',
         ],
     },
 )
