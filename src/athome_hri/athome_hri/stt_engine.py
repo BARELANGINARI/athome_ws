@@ -3,7 +3,10 @@
 import logging
 import os
 import tempfile
-from typing import Optional
+import time
+from typing import Optional, Set, Union
+
+import numpy as np
 
 logger = logging.getLogger("athome_hri.stt")
 
@@ -30,12 +33,33 @@ except ImportError:
 
 
 class SpeechToText:
-    """Modul khusus transkripsi audio raw (.wav/.webm) ke teks via Faster-Whisper."""
+    """
+    Modul khusus transkripsi audio (numpy float32 array atau .wav/.webm bytes)
+    ke teks via Faster-Whisper (identik dengan utilitas/record_stream_visualize.py).
+    """
 
-    DEFAULT_BEAM_SIZE: int = 5
+    DEFAULT_MODEL_SIZE: str = "deepdml/faster-whisper-large-v3-turbo-ct2"
+    FALLBACK_MODEL_SIZE: str = "base.en"
+    SAMPLE_RATE: int = 16000
+    DEFAULT_BEAM_SIZE: int = 2
+    DEFAULT_NO_SPEECH_THRESHOLD: float = 0.5
+    DEFAULT_LOG_PROB_THRESHOLD: float = -0.8
+    DEFAULT_COMPRESSION_RATIO_THRESHOLD: float = 1.8
     DEFAULT_VAD_SILENCE_MS: int = 400
+    DEFAULT_VAD_SPEECH_PAD_MS: int = 200
 
-    def __init__(self, model_size: str = "base.en", language: str = "en") -> None:
+    HALLUCINATION_BLACKLIST: Set[str] = {
+        "terima kasih",
+        "terimakasih",
+        "thank you",
+        "thanks",
+    }
+
+    def __init__(
+        self,
+        model_size: str = DEFAULT_MODEL_SIZE,
+        language: str = "en",
+    ) -> None:
         self.model_size = model_size
         self.language = language
         self.whisper: Optional["WhisperModel"] = None
@@ -56,69 +80,137 @@ class SpeechToText:
             cuda_count = ctranslate2.get_cuda_device_count()
             if cuda_count > 0:
                 logger.info(
-                    "GPU NVIDIA terdeteksi (%d device). Menggunakan CUDA + FP16.",
+                    "GPU NVIDIA terdeteksi (%d device). Menggunakan CUDA + int8_float16.",
                     cuda_count,
                 )
-                return "cuda", "float16"
+                return "cuda", "int8_float16"
             logger.info("GPU tidak terdeteksi. Menggunakan CPU (int8).")
         except Exception:
             logger.info("CTranslate2 fallback ke CPU (int8).")
         return "cpu", "int8"
 
     def _load_model(self, device: str, compute_type: str) -> None:
-        """Memuat model Faster-Whisper dengan fallback otomatis ke CPU bila gagal."""
-        try:
-            logger.info(
-                "Memuat model Faster-Whisper '%s' (%s, %s)...",
-                self.model_size,
-                device,
-                compute_type,
+        """Memuat model Faster-Whisper dengan fallback otomatis ke CPU atau base.en bila gagal."""
+        candidates = [(self.model_size, device, compute_type)]
+        if device == "cuda":
+            candidates.append((self.model_size, "cuda", "float16"))
+            candidates.append((self.model_size, "cpu", "int8"))
+        if self.model_size != self.FALLBACK_MODEL_SIZE:
+            candidates.append(
+                (
+                    self.FALLBACK_MODEL_SIZE,
+                    device,
+                    "float16" if device == "cuda" else "int8",
+                )
             )
-            self.whisper = WhisperModel(
-                self.model_size,
-                device=device,
-                compute_type=compute_type,
-                cpu_threads=4 if device == "cpu" else 1,
-            )
-            logger.info("Faster-Whisper siap.")
-        except Exception as exc:
-            logger.error("Gagal memuat Faster-Whisper (%s): %s", device, exc)
             if device == "cuda":
-                try:
-                    logger.info("Mencoba fallback ke CPU (int8)...")
-                    self.whisper = WhisperModel(
-                        self.model_size,
-                        device="cpu",
-                        compute_type="int8",
-                        cpu_threads=4,
-                    )
-                    logger.info("Faster-Whisper CPU siap.")
-                except Exception as fallback_exc:
-                    logger.error("Fallback CPU juga gagal: %s", fallback_exc)
+                candidates.append((self.FALLBACK_MODEL_SIZE, "cpu", "int8"))
 
-    def transcribe(self, audio_bytes: bytes) -> str:
-        """Menerima raw audio bytes (.wav atau .webm) dan mengembalikan teks transkripsi."""
-        if not self.whisper or not audio_bytes:
+        for model_name, dev, comp in candidates:
+            try:
+                logger.info(
+                    "Memuat model Faster-Whisper '%s' (%s, %s)...",
+                    model_name,
+                    dev,
+                    comp,
+                )
+                self.whisper = WhisperModel(
+                    model_name,
+                    device=dev,
+                    compute_type=comp,
+                    cpu_threads=4 if dev == "cpu" else 1,
+                )
+                self.model_size = model_name
+                logger.info("Faster-Whisper siap ('%s' pada %s).", model_name, dev)
+                return
+            except Exception as exc:
+                logger.warning(
+                    "Gagal memuat Faster-Whisper '%s' (%s, %s): %s",
+                    model_name,
+                    dev,
+                    comp,
+                    exc,
+                )
+
+        logger.error("Semua percobaan pemuatan model Faster-Whisper gagal.")
+
+    def transcribe(self, audio_input: Union[np.ndarray, bytes]) -> str:
+        """
+        Menerima array float32 numpy (16 kHz) dari mikrofon lokal atau raw bytes (.wav/.webm)
+        dari WebSocket, lalu mengembalikan teks transkripsi yang telah difilter.
+        """
+        if self.whisper is None or audio_input is None:
+            return ""
+        if isinstance(audio_input, np.ndarray) and audio_input.size == 0:
+            return ""
+        if isinstance(audio_input, (bytes, bytearray)) and len(audio_input) == 0:
             return ""
 
-        suffix = ".wav" if audio_bytes[:4] == b"RIFF" else ".webm"
         temp_path: Optional[str] = None
+        t0 = time.perf_counter()
+        dur = 0.0
 
         try:
-            with tempfile.NamedTemporaryFile(
-                prefix="hri_stt_", suffix=suffix, delete=False
-            ) as tmp_file:
-                tmp_file.write(audio_bytes)
-                temp_path = tmp_file.name
+            if isinstance(audio_input, np.ndarray):
+                audio_source: Union[np.ndarray, str] = audio_input.astype(np.float32)
+                dur = len(audio_source) / float(self.SAMPLE_RATE)
+            else:
+                suffix = ".wav" if audio_input[:4] == b"RIFF" else ".webm"
+                with tempfile.NamedTemporaryFile(
+                    prefix="hri_stt_", suffix=suffix, delete=False
+                ) as tmp_file:
+                    tmp_file.write(audio_input)
+                    temp_path = tmp_file.name
+                audio_source = temp_path
 
             segments, _ = self.whisper.transcribe(
-                temp_path,
+                audio_source,
                 beam_size=self.DEFAULT_BEAM_SIZE,
                 language=self.language,
+                condition_on_previous_text=True,
+                no_speech_threshold=self.DEFAULT_NO_SPEECH_THRESHOLD,
+                log_prob_threshold=self.DEFAULT_LOG_PROB_THRESHOLD,
+                compression_ratio_threshold=self.DEFAULT_COMPRESSION_RATIO_THRESHOLD,
                 vad_filter=True,
-                vad_parameters={"min_silence_duration_ms": self.DEFAULT_VAD_SILENCE_MS},
+                vad_parameters={
+                    "min_silence_duration_ms": self.DEFAULT_VAD_SILENCE_MS,
+                    "speech_pad_ms": self.DEFAULT_VAD_SPEECH_PAD_MS,
+                },
             )
-            return " ".join(seg.text for seg in segments).strip()
+
+            valid_text = [
+                seg.text.strip()
+                for seg in segments
+                if seg.no_speech_prob < self.DEFAULT_NO_SPEECH_THRESHOLD
+            ]
+            text = " ".join(valid_text).strip()
+
+            proc_time = time.perf_counter() - t0
+            rtf = (proc_time / dur) if dur > 0 else 0.0
+
+            cleaned_check = text.lower().rstrip(".!,?")
+            if (
+                text
+                and cleaned_check not in self.HALLUCINATION_BLACKLIST
+                and len(text) > 2
+            ):
+                if dur > 0:
+                    logger.info(
+                        '[ASR] "%s" (RTF: %.3f | Latensi: %.2fs | Audio: %.2fs)',
+                        text,
+                        rtf,
+                        proc_time,
+                        dur,
+                    )
+                return text
+
+            if text:
+                logger.info(
+                    "[ASR] Ditolak - noise/halusinasi Raw: %s (%.2fs)",
+                    text,
+                    proc_time,
+                )
+            return ""
         except Exception as exc:
             logger.error("Transkripsi gagal: %s", exc)
             return ""

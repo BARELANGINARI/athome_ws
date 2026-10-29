@@ -9,9 +9,10 @@ import asyncio
 from enum import Enum, auto
 import logging
 import threading
-from typing import Callable, Dict, Optional, Set, Tuple
+from typing import Callable, Dict, Optional, Set, Tuple, Union
 
 from geometry_msgs.msg import Twist
+import numpy as np
 import rclpy
 from rclpy.client import Client
 from rclpy.node import Node
@@ -28,13 +29,17 @@ from athome_hri.web_server import WebServer
 logger = logging.getLogger("athome_hri.coordinator")
 
 # =====================================================================
-# 0. DEFAULT KONFIGURASI INPUT AUDIO & SERVER
+# 0. DEFAULT KONFIGURASI INPUT AUDIO & SERVER (Sesuai record_stream_visualize.py)
 # =====================================================================
 ENABLE_LOCAL_MIC: bool = True
 ENABLE_WS_AUDIO: bool = True
 MIC_DEVICE_INDEX: Optional[int] = None
-MIC_ENERGY_THRESHOLD: int = 500
-MIC_SILENCE_LIMIT: float = 1.0
+THRESHOLD_DBFS: float = -40.0
+THRESHOLD_FLATNESS: float = 0.40
+PRE_ROLL_FRAMES: int = 10      # 300 ms sebelum suara terdeteksi
+HANGOVER_FRAMES: int = 25      # 750 ms tunggu hening sebelum potong kalimat
+MIN_SPEECH_FRAMES: int = 15    # 450 ms minimal durasi bicara
+WHISPER_MODEL_SIZE: str = "deepdml/faster-whisper-large-v3-turbo-ct2"
 HTTP_PORT: int = 8000
 WS_PORT: int = 8765
 WS_MAX_SIZE_BYTES: int = 10 * 1024 * 1024
@@ -97,21 +102,37 @@ class BarelangHriNode(Node):
         self.on_tts_command = on_tts_command
         self.on_gesture_changed = on_gesture_changed
 
-        # Deklarasi parameter ROS 2
+        # Deklarasi parameter ROS 2 (Sesuai record_stream_visualize.py)
         self.declare_parameter("enable_local_mic", ENABLE_LOCAL_MIC)
         self.declare_parameter("enable_ws_audio", ENABLE_WS_AUDIO)
-        self.declare_parameter("mic_energy_threshold", MIC_ENERGY_THRESHOLD)
-        self.declare_parameter("mic_silence_limit", MIC_SILENCE_LIMIT)
+        self.declare_parameter("threshold_dbfs", THRESHOLD_DBFS)
+        self.declare_parameter("threshold_flatness", THRESHOLD_FLATNESS)
+        self.declare_parameter("pre_roll_frames", PRE_ROLL_FRAMES)
+        self.declare_parameter("hangover_frames", HANGOVER_FRAMES)
+        self.declare_parameter("min_speech_frames", MIN_SPEECH_FRAMES)
+        self.declare_parameter("whisper_model", WHISPER_MODEL_SIZE)
 
         self.enable_local_mic: bool = bool(
             self.get_parameter("enable_local_mic").value
         )
         self.enable_ws_audio: bool = bool(self.get_parameter("enable_ws_audio").value)
-        self.mic_energy_threshold: int = int(
-            self.get_parameter("mic_energy_threshold").value
+        self.threshold_dbfs: float = float(
+            self.get_parameter("threshold_dbfs").value
         )
-        self.mic_silence_limit: float = float(
-            self.get_parameter("mic_silence_limit").value
+        self.threshold_flatness: float = float(
+            self.get_parameter("threshold_flatness").value
+        )
+        self.pre_roll_frames: int = int(
+            self.get_parameter("pre_roll_frames").value
+        )
+        self.hangover_frames: int = int(
+            self.get_parameter("hangover_frames").value
+        )
+        self.min_speech_frames: int = int(
+            self.get_parameter("min_speech_frames").value
+        )
+        self.whisper_model: str = str(
+            self.get_parameter("whisper_model").value
         )
 
         # Vision & Gesture State
@@ -242,7 +263,13 @@ class HriCoordinator:
         self.loop = loop
         self.state = RobotState.IDLE
 
-        self.stt = SpeechToText()
+        self.ros_node = BarelangHriNode(
+            async_loop=loop,
+            on_tts_command=lambda text: self.audio_queue.enqueue(text),
+            on_gesture_changed=self._on_gesture_changed,
+        )
+
+        self.stt = SpeechToText(model_size=self.ros_node.whisper_model)
         self.tts = TextToSpeech()
         self.nlu = IntentRecognizer(threshold=0.68)
         self.web = WebServer(
@@ -254,12 +281,6 @@ class HriCoordinator:
         self.audio_queue = AudioSpeechQueue(self.tts, self.web.broadcast_ui)
         self.audio_queue.start(loop)
 
-        self.ros_node = BarelangHriNode(
-            async_loop=loop,
-            on_tts_command=lambda text: self.audio_queue.enqueue(text),
-            on_gesture_changed=self._on_gesture_changed,
-        )
-
         self.enable_local_mic: bool = self.ros_node.enable_local_mic
         self.enable_ws_audio: bool = self.ros_node.enable_ws_audio
 
@@ -268,8 +289,11 @@ class HriCoordinator:
             on_audio_captured=self.handle_local_mic_audio,
             is_paused_fn=self._is_mic_paused,
             device_index=MIC_DEVICE_INDEX,
-            energy_threshold=self.ros_node.mic_energy_threshold,
-            silence_limit=self.ros_node.mic_silence_limit,
+            threshold_dbfs=self.ros_node.threshold_dbfs,
+            threshold_flatness=self.ros_node.threshold_flatness,
+            pre_roll_frames=self.ros_node.pre_roll_frames,
+            hangover_frames=self.ros_node.hangover_frames,
+            min_speech_frames=self.ros_node.min_speech_frames,
         )
         if self.enable_local_mic:
             self.mic_listener.start()
@@ -312,13 +336,15 @@ class HriCoordinator:
             return
         await self.handle_audio(audio_bytes)
 
-    async def handle_local_mic_audio(self, audio_bytes: bytes) -> None:
+    async def handle_local_mic_audio(
+        self, audio_input: Union[np.ndarray, bytes]
+    ) -> None:
         if not self.enable_local_mic:
             return
-        await self.handle_audio(audio_bytes)
+        await self.handle_audio(audio_input)
 
-    async def handle_audio(self, audio_bytes: bytes) -> None:
-        transcript = await asyncio.to_thread(self.stt.transcribe, audio_bytes)
+    async def handle_audio(self, audio_input: Union[np.ndarray, bytes]) -> None:
+        transcript = await asyncio.to_thread(self.stt.transcribe, audio_input)
         if transcript:
             logger.info('[STT TRANSCRIPT] "%s"', transcript)
         await self.web.broadcast_ui({"type": "TRANSCRIPT", "transcript": transcript})
