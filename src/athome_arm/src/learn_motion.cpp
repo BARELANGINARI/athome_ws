@@ -41,7 +41,7 @@ namespace fs = std::filesystem;
 #define LEN_GOAL_POSITION       2
 #define PROTOCOL_VERSION        1.0
 #define BAUDRATE                1000000
-#define DEVICENAME              "/dev/ttyUSB1"
+#define DEVICENAME              "/dev/ttyUSB0"
 
 #define MAX_ANGLE               300.0
 #define MAX_TICKS               1023
