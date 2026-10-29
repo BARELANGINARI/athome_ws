@@ -1,92 +1,130 @@
+"""Speech-to-Text (STT) engine module powered by Faster-Whisper."""
+
+import logging
 import os
+import tempfile
+from typing import Optional
+
+logger = logging.getLogger("athome_hri.stt")
 
 # Patch kompatibilitas PyAV & Faster-Whisper
 try:
     import av
-    orig_av_open = av.open
 
-    def patched_av_open(*args, **kwargs):
+    _orig_av_open = av.open
+
+    def _patched_av_open(*args, **kwargs):
         kwargs.pop("metadata_errors", None)
-        return orig_av_open(*args, **kwargs)
+        return _orig_av_open(*args, **kwargs)
 
-    av.open = patched_av_open
+    av.open = _patched_av_open
 except Exception:
     pass
 
 try:
     from faster_whisper import WhisperModel
+
     HAS_WHISPER = True
 except ImportError:
     HAS_WHISPER = False
 
 
 class SpeechToText:
-    """Modul khusus transkripsi audio raw/webm ke teks via Faster-Whisper."""
+    """Modul khusus transkripsi audio raw (.wav/.webm) ke teks via Faster-Whisper."""
 
-    def __init__(self, model_size: str = "base.en"):
-        self.whisper = None
+    DEFAULT_BEAM_SIZE: int = 5
+    DEFAULT_VAD_SILENCE_MS: int = 400
+
+    def __init__(self, model_size: str = "base.en", language: str = "en") -> None:
+        self.model_size = model_size
+        self.language = language
+        self.whisper: Optional["WhisperModel"] = None
+
         if not HAS_WHISPER:
-            print("[STT WARN] faster_whisper tidak terinstal. STT tidak aktif.")
+            logger.warning("faster_whisper tidak terinstal. STT tidak aktif.")
             return
 
-        device = "cpu"
-        compute_type = "int8"
+        device, compute_type = self._detect_compute_backend()
+        self._load_model(device, compute_type)
+
+    @staticmethod
+    def _detect_compute_backend() -> tuple[str, str]:
+        """Mendeteksi ketersediaan akselerasi GPU CUDA untuk CTranslate2."""
         try:
             import ctranslate2
-            if ctranslate2.get_cuda_device_count() > 0:
-                device = "cuda"
-                compute_type = "float16"
-                print(f"[STT] GPU NVIDIA terdeteksi ({ctranslate2.get_cuda_device_count()} device). Menggunakan CUDA + FP16.")
-            else:
-                print("[STT] GPU tidak terdeteksi. Menggunakan CPU.")
-        except Exception:
-            print("[STT] CTranslate2 fallback ke CPU.")
 
+            cuda_count = ctranslate2.get_cuda_device_count()
+            if cuda_count > 0:
+                logger.info(
+                    "GPU NVIDIA terdeteksi (%d device). Menggunakan CUDA + FP16.",
+                    cuda_count,
+                )
+                return "cuda", "float16"
+            logger.info("GPU tidak terdeteksi. Menggunakan CPU (int8).")
+        except Exception:
+            logger.info("CTranslate2 fallback ke CPU (int8).")
+        return "cpu", "int8"
+
+    def _load_model(self, device: str, compute_type: str) -> None:
+        """Memuat model Faster-Whisper dengan fallback otomatis ke CPU bila gagal."""
         try:
-            print(f"[STT] Memuat model Faster-Whisper '{model_size}' ({device}, {compute_type})...")
+            logger.info(
+                "Memuat model Faster-Whisper '%s' (%s, %s)...",
+                self.model_size,
+                device,
+                compute_type,
+            )
             self.whisper = WhisperModel(
-                model_size,
+                self.model_size,
                 device=device,
                 compute_type=compute_type,
                 cpu_threads=4 if device == "cpu" else 1,
             )
-            print("[STT] Faster-Whisper siap.")
-        except Exception as e:
-            print(f"[STT Error] Gagal memuat Faster-Whisper ({device}): {e}")
+            logger.info("Faster-Whisper siap.")
+        except Exception as exc:
+            logger.error("Gagal memuat Faster-Whisper (%s): %s", device, exc)
             if device == "cuda":
                 try:
-                    print("[STT] Mencoba fallback ke CPU (int8)...")
-                    self.whisper = WhisperModel(model_size, device="cpu", compute_type="int8", cpu_threads=4)
-                    print("[STT] Faster-Whisper CPU siap.")
-                except Exception as e2:
-                    print(f"[STT Error] Fallback CPU juga gagal: {e2}")
+                    logger.info("Mencoba fallback ke CPU (int8)...")
+                    self.whisper = WhisperModel(
+                        self.model_size,
+                        device="cpu",
+                        compute_type="int8",
+                        cpu_threads=4,
+                    )
+                    logger.info("Faster-Whisper CPU siap.")
+                except Exception as fallback_exc:
+                    logger.error("Fallback CPU juga gagal: %s", fallback_exc)
 
     def transcribe(self, audio_bytes: bytes) -> str:
-        """Menerima raw audio bytes dan mengembalikan string teks transkripsi."""
-        if not self.whisper:
+        """Menerima raw audio bytes (.wav atau .webm) dan mengembalikan teks transkripsi."""
+        if not self.whisper or not audio_bytes:
             return ""
 
-        temp_path = "/tmp/hri_input_audio.webm"
+        suffix = ".wav" if audio_bytes[:4] == b"RIFF" else ".webm"
+        temp_path: Optional[str] = None
+
         try:
-            with open(temp_path, "wb") as f:
-                f.write(audio_bytes)
+            with tempfile.NamedTemporaryFile(
+                prefix="hri_stt_", suffix=suffix, delete=False
+            ) as tmp_file:
+                tmp_file.write(audio_bytes)
+                temp_path = tmp_file.name
 
             segments, _ = self.whisper.transcribe(
                 temp_path,
-                beam_size=5,
-                language="en",
+                beam_size=self.DEFAULT_BEAM_SIZE,
+                language=self.language,
                 vad_filter=True,
-                vad_parameters=dict(min_silence_duration_ms=400),
+                vad_parameters={"min_silence_duration_ms": self.DEFAULT_VAD_SILENCE_MS},
             )
-            text = " ".join([seg.text for seg in segments]).strip()
-            return text
-        except Exception as e:
-            print(f"[STT Error] Transkripsi gagal: {e}")
+            return " ".join(seg.text for seg in segments).strip()
+        except Exception as exc:
+            logger.error("Transkripsi gagal: %s", exc)
             return ""
         finally:
-            if os.path.exists(temp_path):
+            if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
                 except OSError:
                     pass
-

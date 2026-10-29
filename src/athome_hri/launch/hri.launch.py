@@ -6,8 +6,8 @@ def generate_launch_description():
   return LaunchDescription([
       Node(
           package="athome_hri",
-          executable="barelang_hri",
-          name="barelang_hri",
+          executable="help_me_carry_hri",
+          name="help_me_carry_hri",
           output="screen",
           emulate_tty=True,
       )
