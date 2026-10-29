@@ -293,10 +293,8 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /initialpose
-    # CATATAN: rviz_default_plugins/SetGoal SENGAJA TIDAK ADA di sini.
-    # nav2_rviz_plugins/GoalTool (di bawah) sudah menggantikan perannya sebagai
-    # tool "2D Goal Pose" untuk Nav2. Kalau keduanya dimuat, ada dua tool goal
-    # yang tumpang tindih dan toolbar jadi ambigu.
+    # NOTE: rviz_default_plugins/SetGoal is intentionally excluded here.
+    # nav2_rviz_plugins/GoalTool below serves as the 2D Goal Pose tool for Nav2.
     - Class: nav2_rviz_plugins/GoalTool
       Topic:
         Depth: 5

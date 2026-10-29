@@ -48,7 +48,7 @@ class RobotState(Enum):
 
 
 # =====================================================================
-# 2. AUDIO SPEECH QUEUE (MENDUKUNG ASYNC AWAIT)
+# 2. AUDIO SPEECH QUEUE (ASYNC/AWAIT SUPPORT)
 # =====================================================================
 class AudioSpeechQueue:
     def __init__(
@@ -143,7 +143,7 @@ class AudioSpeechQueue:
         delay_after: float = 0.0,
         force: bool = True,
     ) -> bool:
-        """Memasukkan teks ke antrean dan menunggu (await) hingga selesai diucapkan."""
+        """Enqueue text and wait until speech finishes."""
         text_clean = text.strip()
         if not text_clean or not self._can_enqueue(text_clean, None, force):
             return False
@@ -193,7 +193,7 @@ class BarelangHriNode(Node):
         self.create_subscription(String, "/zed/person_label", self._on_person_label, 10)
         self.create_subscription(String, "/zed/gesture", self._on_gesture, 10)
 
-        # Service Clients Map (Menghilangkan duplikasi client)
+        # Service clients map (avoids client duplication)
         self.srv_clients: Dict[str, Client] = {
             "follow_start": self.create_client(Trigger, "/follow/person"),
             "follow_stop": self.create_client(Trigger, "/follow/stop"),
@@ -235,7 +235,7 @@ class BarelangHriNode(Node):
             self.gesture_ready_for_task = False
             self.loop.call_soon_threadsafe(self.gesture_event.set)
 
-        self.get_logger().info(f"[HRI] Gesture terdeteksi: {gesture}")
+        self.get_logger().info(f"[HRI] Gesture detected: {gesture}")
         if self.on_gesture_changed:
             self.loop.call_soon_threadsafe(self.on_gesture_changed, gesture)
 
@@ -254,13 +254,13 @@ class BarelangHriNode(Node):
     async def call_trigger(
         self, service_key: str, timeout: float = 60.0
     ) -> Tuple[bool, str]:
-        """Wrapper generik untuk memanggil Trigger service secara async."""
+        """Generic async wrapper to call Trigger service."""
         client = self.srv_clients.get(service_key)
         if not client or not client.service_is_ready():
-            self.get_logger().warn(f"Service '{service_key}' belum siap!")
+            self.get_logger().warn(f"Service '{service_key}' not ready!")
             return False, "Service not ready"
 
-        self.get_logger().info(f"[HRI] Memanggil service: {service_key}...")
+        self.get_logger().info(f"[HRI] Calling service: {service_key}...")
         ros_future = client.call_async(Trigger.Request())
         async_future = self.loop.create_future()
 
@@ -280,7 +280,7 @@ class BarelangHriNode(Node):
         try:
             success, message = await asyncio.wait_for(async_future, timeout=timeout)
             self.get_logger().info(
-                f"[HRI] Service '{service_key}' selesai (success={success}): {message}"
+                f"[HRI] Service '{service_key}' completed (success={success}): {message}"
             )
             return success, message
         except asyncio.TimeoutError:
@@ -338,7 +338,7 @@ class HriCoordinator:
         await self.process_intent(text)
 
     async def process_intent(self, text: str):
-        # State Guard: Abaikan perintah suara saat robot sedang sibuk mengeksekusi task
+        # State guard: ignore voice commands while the robot is busy executing a task
         busy_states = {
             RobotState.WAIT_GESTURE,
             RobotState.ALIGNING_BAG,
@@ -348,46 +348,46 @@ class HriCoordinator:
         if self.state in busy_states:
             return
 
-        # 1. INISIALISASI (WAKEWORD)
+        # 1. INITIALIZATION (WAKEWORD)
         if self.nlu.match_intent(text, "WAKEWORD"):
             if self.ros_node.is_operator_in_front:
                 self.ros_node.publish_event("WAKEWORD_DETECTED")
-                await self.set_state(RobotState.READY_TO_FOLLOW, "Menunggu perintah Follow Me")
+                await self.set_state(RobotState.READY_TO_FOLLOW, "Waiting for Follow Me command")
                 self.audio_queue.enqueue(
                     "Hello, I'm Barelang Inari, I want to help you to carry the luggage. "
                     "If you are ready, please guide me to the place, and say follow me."
                 )
             else:
                 self.ros_node.get_logger().warn(
-                    "Wakeword terdengar, tapi operator belum terdeteksi di depan robot."
+                    "Wakeword detected, but operator not in front of robot."
                 )
             return
 
-        # 2. MULAI MENGIKUTI
+        # 2. START FOLLOWING
         if self.nlu.match_intent(text, "FOLLOW_ME"):
             self.ros_node.publish_event("FOLLOW_COMMAND")
             ok, _ = await self.ros_node.call_trigger("follow_start", timeout=5.0)
             if ok:
-                await self.set_state(RobotState.FOLLOWING, "Menghadapi rintangan (Nav2)")
+                await self.set_state(RobotState.FOLLOWING, "Following operator (Nav2)")
                 self.audio_queue.enqueue("Following you now.")
             else:
                 self.audio_queue.enqueue("Person following is not ready. Please check the system.")
             return
 
-        # 3. ALUR ARRIVED (Berjalan di background task agar tidak memblokir WebSocket)
+        # 3. ARRIVAL SEQUENCE (runs in background task to avoid blocking WebSocket)
         if self.nlu.match_intent(text, "ARRIVED"):
             asyncio.create_task(self._execute_arrival_sequence())
 
     async def _execute_arrival_sequence(self):
-        """Sekuens tugas linear tanpa nested callbacks."""
+        """Linear task sequence without nested callbacks."""
         self.ros_node.publish_event("ARRIVED_COMMAND")
         await self.ros_node.call_trigger("follow_stop", timeout=5.0)
         self.ros_node.stop_robot()
         self.audio_queue.clear()
         self.ros_node.reset_gesture_session()
 
-        # Step 1: Tanya tas mana yang harus diambil & tunggu gesture
-        await self.set_state(RobotState.WAIT_GESTURE, "Menunggu gesture tunjuk tas")
+        # Step 1: Ask which bag to pick and wait for gesture
+        await self.set_state(RobotState.WAIT_GESTURE, "Waiting for bag pointing gesture")
         await self.audio_queue.speak_and_wait(
             "Okay, stopping. We have already arrived at the destination. "
             "Tell me, which bag should I take?"
@@ -401,8 +401,8 @@ class HriCoordinator:
             await self.set_state(RobotState.READY_TO_FOLLOW, "Gesture timeout")
             return
 
-        # Mirroring perspektif kamera ke perspektif operator
-        side = "right" if gesture == "LEFT" else "left"
+        # Operator pointing gesture
+        side = "right" if gesture == "RIGHT" else "left"
         await self.audio_queue.speak_and_wait(
             f"Okay, I know which bag you're pointing to. You're pointing to the {side} bag."
         )
@@ -414,16 +414,16 @@ class HriCoordinator:
             await self._abort_sequence(f"Failed to align with the bag: {msg}")
             return
 
-        # Step 3: Arm Ambil Tas
-        await self.set_state(RobotState.GRABBING_BAG, "Mengambil tas dengan lengan")
+        # Step 3: Arm pick bag
+        await self.set_state(RobotState.GRABBING_BAG, "Grabbing bag with arm")
         await self.audio_queue.speak_and_wait("I am taking the bag now.")
         ok, msg = await self.ros_node.call_trigger("grab_bag", timeout=60.0)
         if not ok:
             await self._abort_sequence(f"Failed to grab the bag: {msg}")
             return
 
-        # Step 4: Homing
-        await self.set_state(RobotState.HOMING, "Kembali ke titik awal")
+        # Step 4: Return to home / starting position
+        await self.set_state(RobotState.HOMING, "Returning to origin")
         await self.audio_queue.speak_and_wait(
             "I've got the bag, now I'm going back to where I started."
         )
@@ -432,11 +432,11 @@ class HriCoordinator:
             await self._abort_sequence(f"Failed to return to starting point: {msg}")
             return
 
-        # Step 5: Selesai
+        # Step 5: Done
         await self.audio_queue.speak_and_wait("I have reached the starting point.")
         await self.audio_queue.speak_and_wait("Task Completed.")
         await self.set_state(RobotState.DONE, "Task Completed")
-        self.ros_node.get_logger().info("[HRI] TASK COMPLETED. Sistem standby.")
+        self.ros_node.get_logger().info("[HRI] TASK COMPLETED. System standby.")
 
     async def _abort_sequence(self, reason: str):
         self.ros_node.get_logger().error(f"[HRI Abort] {reason}")

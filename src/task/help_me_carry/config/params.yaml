@@ -1,22 +1,62 @@
 help_me_carry_node:
   ros__parameters:
-    person_topic: "/zed/person_label"   # Topik input deteksi keypoint ZED
-    goal_update_topic: "/goal_update"   # Topik output pembaruan goal Nav2
-    action_name: "navigate_to_pose"     # Action server Nav2
-    frame_map: "map"                    # Frame koordinat global (peta)
-    frame_base: "base_link"             # Frame koordinat robot
-    target_index: 0                     # Indeks orang yang di-follow (0 = terdekat)
+    # -------------------------------------------------------------
+    # 1. TOPICS & FRAMES
+    # -------------------------------------------------------------
+    person_topic: "/zed/person_label"         # Topic for ZED person detections
+    gesture_topic: "/zed/gesture"             # Topic for pointing gesture detections
+    bag_topic: "/zed/bag_detections"          # Topic for YOLO paper bag detections
+    yaw_topic: "/zed/yaw_deg"                 # Topic for IMU yaw data
+    cmd_vel_topic: "/cmd_vel"                 # Topic for base velocity commands
+    path_topic: "/following_path"             # Topic for RViz following trajectory
+    goal_update_topic: "/goal_update"         # Topic for Nav2 dynamic goal updates
+    action_name: "navigate_to_pose"           # Nav2 NavigateToPose action server
+    frame_map: "map"                          # Global map frame
+    frame_base: "base_link"                   # Robot base frame
+    follow_bt_xml: ""                         # Custom Nav2 BT XML path (empty = auto-detect)
 
-    # Jarak & Jangkauan (berdasarkan deteksi kamera ZED)
-    follow_stop_distance: 1.0         # Jarak berhenti robot terhadap orang: < 0.5m -> STOP
-    follow_start_distance: 0.5          # Jarak mulai robot mengejar orang: > 0.7m -> START FOLLOWING
-    max_follow_range: 3.0               # Jarak maksimal follow orang (meter)
+    # -------------------------------------------------------------
+    # 2. FOLLOWING DISTANCES & TIMEOUTS
+    # -------------------------------------------------------------
+    follow_stop_distance: 0.5                 # Distance to stop following (meters)
+    follow_start_distance: 0.7                # Distance to start moving forward (meters)
+    bag_stop_distance: 0.45                   # Distance to stop in front of bag (meters)
+    max_follow_range: 3.0                     # Max detection range to follow (meters)
+    max_lost_time: 3.0                        # Watchdog safety timeout before reset (seconds)
+    occlusion_timeout: 1.5                    # Kalman dead-reckoning window on occlusion (seconds)
 
-    # Obstacle Avoidance (Lidar /scan)
-    enable_avoidance: true              # Aktifkan penghindar rintangan Lidar
-    obstacle_distance: 0.75             # Jarak sensitivitas deteksi rintangan (meter)
-    footprint_radius: 0.40              # Radius bodi robot (meter) untuk membuang pantulan laser fisik robot sendiri
+    # -------------------------------------------------------------
+    # 3. VELOCITY LIMITS & PID GAINS
+    # -------------------------------------------------------------
+    min_vx: 0.08                              # Minimum forward speed when moving (m/s)
+    max_vx: 0.32                              # Maximum forward speed (m/s)
+    max_vy: 0.22                              # Maximum lateral strafe speed (m/s)
+    max_wz: 0.40                              # Maximum angular rotation speed (rad/s)
+    occlusion_max_vx: 0.22                    # Capped forward speed during Kalman dead-reckoning (m/s)
+    kp_dist: 0.45                             # Proportional gain for forward distance error
+    kp_yaw: 0.75                              # Proportional gain for yaw heading error
+    kd_yaw: 0.15                              # Derivative damping gain for yaw rate
+    deadband_moving: 0.04                     # Heading deadband when robot is moving (rad, ~2.3 deg)
+    deadband_stop: 0.12                       # Heading deadband when robot is stopped (rad, ~6.9 deg)
 
-    # Waktu & Safety
-    max_lost_time: 10.0                 # Batas toleransi orang hilang (detik)
-    follow_bt_xml: ""                   # Path XML BT (kosong = auto-detect di share navigation)
+    # -------------------------------------------------------------
+    # 4. LOW-PASS FILTERING & SMOOTHING
+    # -------------------------------------------------------------
+    alpha_v: 0.35                             # Slew-rate smoothing factor for linear velocities (0-1)
+    alpha_w: 0.40                             # Slew-rate smoothing factor for angular velocity (0-1)
+    bearing_beta: 0.35                        # Low-pass filter weight for raw vision bearing (0-1)
+
+    # -------------------------------------------------------------
+    # 5. LIDAR OBSTACLE & SAFETY CORRIDOR
+    # -------------------------------------------------------------
+    enable_avoidance: true                    # Enable real-time LiDAR obstacle avoidance
+    obstacle_distance: 0.75                   # Distance threshold to start slowing down (meters)
+    footprint_radius: 0.40                    # Robot self-footprint radius filter (meters)
+    min_stop_x: 0.38                          # Hard safety braking distance from robot center (meters)
+    corridor_width: 0.32                      # Front danger corridor half-width (|y| in meters)
+
+    # -------------------------------------------------------------
+    # 6. KALMAN FILTER TUNING
+    # -------------------------------------------------------------
+    kf_process_noise: 1.2                     # Kalman process noise covariance (motion uncertainty)
+    kf_measurement_noise: 0.15                # Kalman measurement noise standard deviation (meters)

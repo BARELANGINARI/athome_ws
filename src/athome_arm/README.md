@@ -1,46 +1,21 @@
 # athome_arm
 
-Package ROS 2 untuk kontrol lengan robot dan adaptive gripper pada robot **Barelang Inari** (RoboCup@Home). Package ini menyediakan teaching motion recording/playback, kalibrasi servo Dynamixel AX-18A, adaptive grasping, dan ROS 2 service server untuk integrasi ke sistem HRI dan task manager.
+ROS 2 package for controlling the Dynamixel AX-18A robotic arm and adaptive gripper on **Barelang Inari** (RoboCup@Home).
 
----
+## Prerequisites
 
-## 1. Prasyarat & Instalasi Dependensi
+* **Dynamixel SDK (C++):**
+  ```bash
+  git clone https://github.com/ROBOTIS-GIT/DynamixelSDK.git
+  cd DynamixelSDK/c++/build/linux64
+  make && sudo make install
+  ```
+* **Serial Port Permissions:**
+  ```bash
+  sudo usermod -aG dialout $USER
+  ```
 
-### A. Dynamixel SDK (C++)
-Package ini membutuhkan library C++ Dynamixel SDK dari ROBOTIS:
-
-```bash
-git clone https://github.com/ROBOTIS-GIT/DynamixelSDK.git
-cd DynamixelSDK/c++/build/linux64    # gunakan linux_sbc bila di Raspberry Pi / Jetson
-make
-sudo make install
-```
-
-### B. Dependensi Paket ROS 2
-Pastikan paket ROS 2 berikut sudah terinstal di sistem:
-
-```bash
-sudo apt update
-sudo apt install -y \
-  ros-$ROS_DISTRO-rclcpp \
-  ros-$ROS_DISTRO-std-srvs \
-  ros-$ROS_DISTRO-std-msgs \
-  ros-$ROS_DISTRO-ament-index-cpp
-```
-
-### C. Izin Akses Serial Port
-Pastikan user memiliki akses ke port serial `/dev/ttyUSB*`:
-
-```bash
-sudo usermod -aG dialout $USER
-```
-*(Logout dan login kembali agar izin grup aktif).*
-
----
-
-## 2. Cara Kompilasi (Build)
-
-Jalankan perintah berikut di root workspace ROS 2:
+## Build
 
 ```bash
 cd ~/athome_ws
@@ -48,68 +23,54 @@ colcon build --packages-select athome_arm
 source install/setup.bash
 ```
 
----
+## Running
 
-## 3. Cara Menjalankan
+### 1. ROS 2 Motion Server Node
+Runs the playback service for taught arm motions:
+```bash
+ros2 launch athome_arm arm.launch.py port:=/dev/ttyUSB1 baudrate:=1000000
+```
 
-### A. Menjalankan ROS 2 Service Node (Arm Motion Server)
-Node ini memutar motion hasil teaching secara otomatis ketika menerima request service.
+**Trigger bag pickup motion:**
+```bash
+ros2 service call /arm/ambil_tas std_srvs/srv/Trigger {}
+```
 
-* **Via Launch File:**
+### 2. Standalone CLI Tools
+
+* **Teach & Record Motion (`learn_motion`):**
   ```bash
-  ros2 launch athome_arm arm.launch.py
+  ros2 run athome_arm learn_motion
   ```
-  *Parameter opsional:*
-  * `port:=/dev/ttyUSB1` (default: `/dev/ttyUSB1`)
-  * `baudrate:=1000000` (default: `1000000`)
+  *Interactive commands:* `record`, `add`, `play <name>`, `save <name>`, `list`.
 
-* **Uji Coba Memanggil Gerakan `ambil_tas`:**
+* **Calibrate Servos (`calibrate_arm`):**
   ```bash
-  ros2 service call /arm/ambil_tas std_srvs/srv/Trigger {}
+  ros2 run athome_arm calibrate_arm
   ```
 
----
+* **Test Adaptive Gripper (`adaptive_gripper`):**
+  ```bash
+  ros2 run athome_arm adaptive_gripper
+  ```
 
-### B. Program Utilitas Mandiri (CLI Tools)
-
-1. **Teaching & Recording Gerakan (`learn_motion`):**
-   Program interaktif di terminal untuk merekam pose/stream gerakan dan menyimpannya ke folder `motions/`:
-   ```bash
-   ros2 run athome_arm learn_motion
-   ```
-   *Perintah interaktif utama:* `record`, `add`, `play <nama>`, `save <nama>`, `list`.
-
-2. **Kalibrasi Zero & Limit Servo (`calibrate_arm`):**
-   Program untuk memandu kalibrasi posisi 0 dan batas sudut setiap servo Dynamixel:
-   ```bash
-   ros2 run athome_arm calibrate_arm
-   ```
-
-3. **Uji Coba Adaptive Gripper (`adaptive_gripper`):**
-   Uji coba penutupan gripper adaptif berbasis deteksi beban torsi (load sensing):
-   ```bash
-   ros2 run athome_arm adaptive_gripper
-   ```
-
----
-
-## 4. Struktur Direktori
+## Directory Structure
 
 ```text
 src/athome_arm/
-├── CMakeLists.txt                # Build configuration ament_cmake
-├── package.xml                   # Manifest dependensi ROS 2
-├── README.md                     # Panduan penggunaan
-├── include/athome_arm/
-│   └── calibration_data.h        # Data sudut kalibrasi servo
+├── CMakeLists.txt
+├── package.xml
+├── README.md
+├── include/
+│   └── athome_arm/
+│       └── calibration_data.h    # Servo calibration values
 ├── src/
-│   ├── arm_motion_server.cpp     # ROS 2 Service Node pemutar file motion
-│   ├── learn_motion.cpp          # CLI offline untuk teaching gerakan
-│   ├── calibrate_arm.cpp         # CLI kalibrasi servo
-│   └── adaptive_gripper.cpp      # CLI uji adaptive grasping
+│   ├── arm_motion_server.cpp     # ROS 2 service node for motion playback
+│   ├── learn_motion.cpp          # Offline CLI for motion teaching
+│   ├── calibrate_arm.cpp         # CLI for servo zero & limit calibration
+│   └── adaptive_gripper.cpp      # CLI for adaptive torque grasping
 ├── motions/
-│   └── ambil_tas                 # File rekaman gerakan stream 50Hz
+│   └── ambil_tas                 # Recorded motion trajectory
 └── launch/
-    └── arm.launch.py             # Launch file ROS 2
+    └── arm.launch.py             # Launch file
 ```
-

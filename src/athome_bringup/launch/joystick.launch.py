@@ -12,63 +12,19 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Launch gabungan: Joystick teleop + driver base motor & lifter (STM32 Nucleo)."""
+    """Launch joystick teleop and STM32 Nucleo motor/lifter hardware driver."""
     return LaunchDescription([
-        # Nucleo / Base Driver Options
-        DeclareLaunchArgument(
-            'launch_nucleo',
-            default_value='true',
-            description='Jalankan driver hardware base motor dan lifter (athome_base/nucleo)',
-        ),
-        DeclareLaunchArgument(
-            'stm_ip',
-            default_value='192.168.0.4',
-            description='IP address STM32 Nucleo',
-        ),
-        DeclareLaunchArgument(
-            'stm_port',
-            default_value='2002',
-            description='Port UDP STM32',
-        ),
-        DeclareLaunchArgument(
-            'use_yaw_topic',
-            default_value='false',
-            description='Gunakan /zed/yaw_deg jika true; false untuk pakai IMU internal STM32',
-        ),
-        DeclareLaunchArgument(
-            'smoothing_enable',
-            default_value='true',
-            description='Aktifkan perhalus akselerasi gerakan motor',
-        ),
+        DeclareLaunchArgument('launch_nucleo', default_value='true', description='Launch STM32 Nucleo hardware base and lifter driver'),
+        DeclareLaunchArgument('stm_ip', default_value='192.168.0.4', description='STM32 Nucleo IP address'),
+        DeclareLaunchArgument('stm_port', default_value='2002', description='STM32 Nucleo UDP port'),
+        DeclareLaunchArgument('use_yaw_topic', default_value='false', description='Use /zed/yaw_deg instead of internal IMU'),
+        DeclareLaunchArgument('smoothing_enable', default_value='true', description='Enable motor acceleration smoothing'),
+        DeclareLaunchArgument('joy_id', default_value='0', description='Joystick device ID (e.g. 0 for /dev/input/js0)'),
+        DeclareLaunchArgument('cmd_vel_topic', default_value='/cmd_vel', description='Output velocity topic'),
+        DeclareLaunchArgument('lifter_topic', default_value='lifter_target', description='Output lifter target topic (0: down, 1: up)'),
+        DeclareLaunchArgument('autorepeat_rate', default_value='50.0', description='Joystick publish rate (Hz)'),
+        DeclareLaunchArgument('joy_timeout', default_value='0.2', description='Joystick timeout in seconds'),
 
-        # Joystick Parameters
-        DeclareLaunchArgument(
-            'joy_id',
-            default_value='0',
-            description='Joystick device ID (misal: 0 untuk /dev/input/js0)',
-        ),
-        DeclareLaunchArgument(
-            'cmd_vel_topic',
-            default_value='/cmd_vel',
-            description='Topic velocity motor',
-        ),
-        DeclareLaunchArgument(
-            'lifter_topic',
-            default_value='lifter_target',
-            description='Topic perintah posisi lifter (0: bawah/turun, 1: atas/naik)',
-        ),
-        DeclareLaunchArgument(
-            'autorepeat_rate',
-            default_value='50.0',
-            description='Frekuensi publish joystick (Hz)',
-        ),
-        DeclareLaunchArgument(
-            'joy_timeout',
-            default_value='0.2',
-            description='Timeout joystick (detik)',
-        ),
-
-        # 1. Driver Base Motor & Lifter (STM32 Nucleo via UDP)
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
@@ -89,7 +45,6 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # 2. Static TF: base_footprint -> base_link (diperlukan odometri dasar)
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
@@ -104,7 +59,6 @@ def generate_launch_description():
             ],
         ),
 
-        # 3. Joystick Node (Membaca controller USB/Bluetooth)
         Node(
             package='joy',
             executable='joy_node',
@@ -119,7 +73,6 @@ def generate_launch_description():
             }],
         ),
 
-        # 4. DS4 Drive Teleop Node (Mengontrol motor & lifter)
         Node(
             package='athome_bringup',
             executable='ds4_drive',

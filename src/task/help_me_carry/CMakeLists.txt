@@ -67,6 +67,7 @@ ament_target_dependencies(return_to_origin
 )
 install(TARGETS return_to_origin DESTINATION lib/${PROJECT_NAME})
 
+install(DIRECTORY behavior_trees/ DESTINATION share/${PROJECT_NAME}/behavior_trees)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 install(DIRECTORY rviz/ DESTINATION share/${PROJECT_NAME}/rviz)

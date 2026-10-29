@@ -2,7 +2,7 @@ from difflib import SequenceMatcher
 
 
 class IntentRecognizer:
-    """Modul khusus analisis teks untuk mencocokkan intensi perintah operator."""
+    """Text analysis module for matching operator command intents."""
 
     def __init__(self, threshold: float = 0.68):
         self.threshold = threshold
@@ -45,7 +45,7 @@ class IntentRecognizer:
         }
 
     def match_intent(self, transcript: str, target_intent: str) -> bool:
-        """Memeriksa apakah teks transkripsi cocok dengan target intent."""
+        """Check if transcribed text matches the target intent."""
         if not transcript or not transcript.strip():
             return False
 
@@ -63,7 +63,7 @@ class IntentRecognizer:
         return best_score >= self.threshold
 
     def get_intent(self, transcript: str) -> str:
-        """Mengekstrak intent terbaik dari teks, atau mengembalikan None jika tidak cocok."""
+        """Extract best matching intent from text, or return None if no match."""
         if not transcript or not transcript.strip():
             return None
 

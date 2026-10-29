@@ -10,17 +10,17 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from faster_whisper import WhisperModel
 
-# --- 1. KONFIGURASI SISTEM & MODEL ---
+# --- 1. SYSTEM & MODEL CONFIGURATION ---
 SAMPLE_RATE = 16000
 BLOCK_DURATION = 0.03  # 30 ms per frame
 BLOCK_SIZE = int(SAMPLE_RATE * BLOCK_DURATION)
 
-# Parameter State Machine VAD
-PRE_ROLL_FRAMES = 10      # Simpan 300 ms sebelum suara terdeteksi (cegah huruf awal terpotong)
-HANGOVER_FRAMES = 25      # Tunggu 750 ms hening sebelum memutuskan kalimat selesai
-MIN_SPEECH_FRAMES = 15    # Minimal durasi bicara 450 ms agar diproses ASR (abaikan batuk/klik)
+# VAD State Machine Parameters
+PRE_ROLL_FRAMES = 10      # Store 300 ms before speech detected (prevents clipping onset)
+HANGOVER_FRAMES = 25      # Wait 750 ms of silence before concluding end of sentence
+MIN_SPEECH_FRAMES = 15    # Minimum speech duration 450 ms to process ASR (ignore coughs/clicks)
 
-# Konfigurasi Whisper (Ganti device="cpu", compute_type="int8" jika ingin tes CPU)
+# Whisper Configuration (Change device="cpu", compute_type="int8" to test on CPU)
 WHISPER_MODEL_SIZE = "base"
 WHISPER_DEVICE = "cuda"
 WHISPER_COMPUTE = "float16"
@@ -30,17 +30,17 @@ audio_queue = queue.Queue()
 asr_queue = queue.Queue()
 
 threshold_dbfs = -40.0 #-35.0
-threshold_flatness = 0.40  # Speech biasanya memiliki flatness < 0.45
-latest_transcript = "[Menunggu suara...]"
-latest_asr_metrics = "RTF: 0.00 | Durasi: 0.0s"
+threshold_flatness = 0.40  # Speech typically has flatness < 0.45
+latest_transcript = "[Waiting for speech...]"
+latest_asr_metrics = "RTF: 0.00 | Duration: 0.0s"
 
-# State VAD
+# VAD State
 is_speaking = False
 speech_buffer = []
 pre_roll_buffer = deque(maxlen=PRE_ROLL_FRAMES)
 silence_counter = 0
 
-# Filter Bandpass Vokal (300 - 3400 Hz)
+# Vocal Bandpass Filter (300 - 3400 Hz)
 def butter_bandpass(lowcut, highcut, fs, order=4):
     nyq = 0.5 * fs
     return butter(order, [lowcut / nyq, highcut / nyq], btype='band')
@@ -65,19 +65,19 @@ def compute_features(indata):
     
     return signal, fft_mag, dbfs, dbfs_speech, flatness
 
-# filter kalimat halusinasi
+# Hallucination filter
 HALLUCINATION_BLACKLIST = ["Terima kasih", "terimakasih", "Thank You", "Thanks", "thank you", "Thank you"]
 
-# --- 3. BACKGROUND WORKER THREAD UNTUK ASR ---
+# --- 3. BACKGROUND WORKER THREAD FOR ASR ---
 def asr_worker():
     global latest_transcript, latest_asr_metrics
-    print(f"[ASR INIT] Memuat Model Whisper ({WHISPER_MODEL_SIZE}) pada {WHISPER_DEVICE}...")
+    print(f"[ASR INIT] Loading Whisper model ({WHISPER_MODEL_SIZE}) on {WHISPER_DEVICE}...")
     try:
         model = WhisperModel("deepdml/faster-whisper-large-v3-turbo-ct2", device="cuda", compute_type="int8_float16")
     except Exception as e:
-        print(f"[WARNING] Gagal memuat di {WHISPER_DEVICE} ({e}). Beralih ke CPU int8...")
+        print(f"[WARNING] Failed to load on {WHISPER_DEVICE} ({e}). Falling back to CPU int8...")
         model = WhisperModel("deepdml/faster-whisper-large-v3-turbo-ct2", device="cpu", compute_type="int8")
-    print("[ASR READY] Siap menerima segmen suara dari VAD.")
+    print("[ASR READY] Ready to receive audio segments from VAD.")
 
     while True:
         audio_segment = asr_queue.get()
@@ -87,7 +87,7 @@ def asr_worker():
         dur = len(audio_segment) / SAMPLE_RATE
         t0 = time.perf_counter()
         
-        # Transkripsi langsung dari array 
+        # Transcribe directly from array
         segments, _ = model.transcribe(
             audio_segment,
             beam_size=2,
@@ -110,35 +110,35 @@ def asr_worker():
         proc_time = time.perf_counter() - t0
         rtf = proc_time / dur if dur > 0 else 0
 
-        # post filter nlacklist dan panjang kalimat
+        # Post-filter blacklist and sentence length
         if text and text.lower().rstrip(".!") not in HALLUCINATION_BLACKLIST and len(text)>2:
 
             latest_transcript = f'"{text}"'
-            latest_asr_metrics = f"RTF: {rtf:.3f} | Latensi: {proc_time:.2f}s | Audio: {dur:.2f}s"
+            latest_asr_metrics = f"RTF: {rtf:.3f} | Latency: {proc_time:.2f}s | Audio: {dur:.2f}s"
             print(f"[ASR] {latest_transcript} ({latest_asr_metrics})")
         else:
-            print(f"[ASR] Ditolak - noise halusinasi Raw: {text} ({proc_time:.2f}s)")
+            print(f"[ASR] Rejected hallucinated noise - Raw: {text} ({proc_time:.2f}s)")
 
         asr_queue.task_done()
 
 asr_thread = threading.Thread(target=asr_worker, daemon=True)
 asr_thread.start()
 
-# --- 4. CALLBACK AUDIO ---
+# --- 4. AUDIO CALLBACK ---
 def audio_callback(indata, frames, time_info, status):
     if status:
         print(status)
     audio_queue.put(indata.copy())
 
-# --- 5. SETUP GUI MATPLOTLIB ---
+# --- 5. MATPLOTLIB GUI SETUP ---
 fig, (ax_wave, ax_spec, ax_dbfs) = plt.subplots(3, 1, figsize=(10, 8.5))
 plt.subplots_adjust(hspace=0.5, bottom=0.15)
 
-# Plot 1: Waveform & Indikator Status VAD
+# Plot 1: Waveform & VAD Status Indicator
 x_wave = np.arange(BLOCK_SIZE) / SAMPLE_RATE * 1000
 line_wave, = ax_wave.plot(x_wave, np.zeros(BLOCK_SIZE), color='#007acc')
 ax_wave.set_ylim(-1.0, 1.0)
-title_wave = ax_wave.set_title("VAD Status: SILENCE | menunggu input...", fontweight="bold", color="gray")
+title_wave = ax_wave.set_title("VAD Status: SILENCE | waiting for input...", fontweight="bold", color="gray")
 ax_wave.set_ylabel("Amplitude")
 
 # Plot 2: FFT Spectrum
@@ -165,7 +165,7 @@ ax_dbfs.set_title(f"VAD Energy | [UP/DOWN] dBFS Thresh | [LEFT/RIGHT] Flatness M
 ax_dbfs.set_ylabel("dBFS")
 ax_dbfs.legend(loc="upper left")
 
-# Kotak Teks Hasil Transkripsi ASR di Bagian Bawah
+# ASR transcription result text box at the bottom
 asr_text_box = fig.text(0.5, 0.03, f"ASR: {latest_transcript}\n{latest_asr_metrics}", 
                         ha="center", va="center", fontsize=11, fontweight="bold",
                         bbox=dict(boxstyle="round,pad=0.5", facecolor="#f0f4f8", edgecolor="#007acc"))
@@ -188,7 +188,7 @@ def on_key(event):
 
 fig.canvas.mpl_connect('key_press_event', on_key)
 
-# --- 6. UPDATE LOOP & STATE MACHINE VAD ---
+# --- 6. UPDATE LOOP & VAD STATE MACHINE ---
 def update_plot(frame):
     global dbfs_hist, speech_dbfs_hist, is_speaking, speech_buffer, silence_counter
     
@@ -196,13 +196,13 @@ def update_plot(frame):
         indata = audio_queue.get_nowait()
         sig, fft_mag, dbfs, dbfs_speech, flatness = compute_features(indata)
         
-        # Logika Keputusan VAD (Kombinasi Energy Speech-Band & Spectral Flatness)
+        # VAD Decision Logic (Combination of Speech-Band Energy & Spectral Flatness)
         frame_is_voice = (dbfs_speech > threshold_dbfs) and (flatness < threshold_flatness)
         
         if frame_is_voice:
             if not is_speaking:
                 is_speaking = True
-                # Masukkan pre-roll buffer agar awal kata tidak terpotong
+                # Insert pre-roll buffer to prevent cutting off start of words
                 speech_buffer.extend(list(pre_roll_buffer))
             speech_buffer.append(sig)
             silence_counter = 0
@@ -210,7 +210,7 @@ def update_plot(frame):
             if is_speaking:
                 speech_buffer.append(sig)
                 silence_counter += 1
-                # Jika sudah hening melebihi hangover time, kirim ke ASR
+                # If silence exceeds hangover duration, send to ASR
                 if silence_counter >= HANGOVER_FRAMES:
                     if len(speech_buffer) >= MIN_SPEECH_FRAMES + PRE_ROLL_FRAMES:
                         full_audio = np.concatenate(speech_buffer)
@@ -234,7 +234,7 @@ def update_plot(frame):
         line_dbfs.set_ydata(dbfs_hist)
         line_speech_dbfs.set_ydata(speech_dbfs_hist)
         
-        # Update Indikator Visual VAD
+        # Update VAD Visual Indicator
         if is_speaking:
             title_wave.set_text(f"VAD Status: [SPEECH DETECTED - RECORDING] (Flatness: {flatness:.2f})")
             title_wave.set_color("green")
@@ -247,7 +247,7 @@ def update_plot(frame):
     asr_text_box.set_text(f"ASR: {latest_transcript}\n{latest_asr_metrics}")
     return line_wave, line_spec, line_dbfs, line_speech_dbfs, line_thresh, title_wave, asr_text_box
 
-# --- EKSEKUSI UTAMA ---
+# --- MAIN EXECUTION ---
 with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='float32',
                     blocksize=BLOCK_SIZE, callback=audio_callback):
     ani = FuncAnimation(fig, update_plot, interval=30, blit=False, cache_frame_data=False)

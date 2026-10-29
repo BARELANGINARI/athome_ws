@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""DS4 drive: stick kiri gerak, L1 turbo, segitiga cruise maju -> cmd_vel.
+"""DS4 drive: left stick moves, L1 turbo, triangle cruise forward -> cmd_vel.
 
-Menggantikan teleop_twist_joy (tidak bisa mapping tombol->maju).
-Layout DualShock 4 kernel: 8 axes, 13 tombol.
+Replaces teleop_twist_joy.
+DualShock 4 kernel layout: 8 axes, 13 buttons.
   axes: 0=LX 1=LY 2=L2 3=RX 4=RY 5=R2 6=DPAD-X 7=DPAD-Y
-  buttons: 0=X 1=O 2=Segitiga 3=Kotak 4=L1 5=R1 6=L2 7=R2
+  buttons: 0=X 1=O 2=Triangle 3=Square 4=L1 5=R1 6=L2 7=R2
            8=Share 9=Options 10=PS 11=L3 12=R3
 """
 
@@ -42,8 +42,8 @@ class Ds4Drive(Node):
         self.lifter_target = 0
         self._last_dpad_y = 0.0
 
-        # QoS BestEffort + KeepLast(1) supaya cocok dengan nucleo
-        # (publisher Reliable + queue 10 bikin antre/retransmit = delay).
+        # QoS BestEffort + KeepLast(1) to match nucleo
+        # (publisher Reliable + queue 10 causes queuing/retransmits).
         qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
@@ -55,11 +55,11 @@ class Ds4Drive(Node):
         self.sub = self.create_subscription(Joy, 'joy', self.on_joy, qos)
         self._last_joy_time = self.get_clock().now()
         self._stopped = False
-        # Safety: kalau joy putus (bluetooth drop), kirim 0 secepatnya
-        # daripada nunggu cmd_vel_timeout 0.5 s di nucleo.
+        # Safety: if joy connection drops, publish zero immediately
+        # rather than waiting for 0.5s cmd_vel_timeout in nucleo.
         self._timer = self.create_timer(0.05, self._check_timeout)
         self.get_logger().info(
-            'DS4 siap: stick kiri gerak, L1=cepat, segitiga=maju lurus, DPAD Up=Lifter Naik(1), DPAD Down=Lifter Turun(0)')
+            'DS4 ready: left stick=motion, L1=turbo, triangle=cruise, DPAD Up=Lifter UP(1), DPAD Down=Lifter DOWN(0)')
 
     @staticmethod
     def _dz(v, width):
@@ -81,7 +81,7 @@ class Ds4Drive(Node):
 
         vx = ly * lin
         if cruise:
-            vx = lin  # segitiga: maju lurus (vy/yaw dari stick tetap aktif)
+            vx = lin  # triangle: cruise straight
         vy = lx * lin
         yaw = rx * ang
 
@@ -95,9 +95,9 @@ class Ds4Drive(Node):
         twist.angular.z = yaw
         self.pub.publish(twist)
 
-        # Kontrol lifter dengan D-Pad Y (DPAD-Y)
-        # Pad ATAS (ax > 0.5)  -> lifter target = 1 (NAIK / KE ATAS)
-        # Pad BAWAH (ax < -0.5) -> lifter target = 0 (TURUN / KE BAWAH)
+        # Lifter control via D-Pad Y (DPAD-Y)
+        # Pad UP (ax > 0.5)   -> lifter target = 1 (UP)
+        # Pad DOWN (ax < -0.5) -> lifter target = 0 (DOWN)
         if len(ax) > AX_DPAD_Y:
             dpad_y = ax[AX_DPAD_Y]
             new_target = None
@@ -112,7 +112,7 @@ class Ds4Drive(Node):
                 l_msg.data = self.lifter_target
                 self.lifter_pub.publish(l_msg)
                 self.get_logger().info(
-                    f'Target Lifter dikirim: {self.lifter_target} ({"NAIK (1)" if self.lifter_target == 1 else "TURUN (0)"})'
+                    f'Lifter target sent: {self.lifter_target} ({"UP (1)" if self.lifter_target == 1 else "DOWN (0)"})'
                 )
 
             self._last_dpad_y = dpad_y
@@ -122,7 +122,7 @@ class Ds4Drive(Node):
             return
         age = (self.get_clock().now() - self._last_joy_time).nanoseconds * 1e-9
         if age > self.joy_timeout:
-            self.pub.publish(Twist())  # semua nol = stop
+            self.pub.publish(Twist())  # all zero = stop
             self._stopped = True
 
 

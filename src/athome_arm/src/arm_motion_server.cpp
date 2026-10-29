@@ -122,15 +122,15 @@ public:
             std::bind(&ArmMotionServer::handleAmbilTas, this, std::placeholders::_1, std::placeholders::_2)
         );
 
-        RCLCPP_INFO(this->get_logger(), "Arm Motion Server Node siap.");
+        RCLCPP_INFO(this->get_logger(), "Arm Motion Server ready.");
         RCLCPP_INFO(this->get_logger(), "Port: %s, Baudrate: %d", port_name_.c_str(), baudrate_);
-        RCLCPP_INFO(this->get_logger(), "Service: /arm/ambil_tas, /arm/play_motion");
+        RCLCPP_INFO(this->get_logger(), "Services: /arm/ambil_tas, /arm/play_motion");
 
-        // Inisialisasi koneksi hardware
+        // Initialize hardware connection
         if (initHardware()) {
-            RCLCPP_INFO(this->get_logger(), "[Arm Motion Server] Hardware Dynamixel terhubung dan siap.");
+            RCLCPP_INFO(this->get_logger(), "[Arm Motion Server] Dynamixel hardware connected.");
         } else {
-            RCLCPP_WARN(this->get_logger(), "[Arm Motion Server] Belum dapat membuka port %s. Akan dicoba lagi saat service dipanggil.", port_name_.c_str());
+            RCLCPP_WARN(this->get_logger(), "[Arm Motion Server] Failed opening port %s. Will retry on service call.", port_name_.c_str());
         }
     }
 
@@ -351,7 +351,7 @@ private:
             if (packetHandler->ping(portHandler, GRIPPER_ID, &model, &err) == COMM_SUCCESS) {
                 g_gripper_online = true;
             } else {
-                RCLCPP_WARN(this->get_logger(), "[AdaptiveGrasp] Gripper ID 6 tidak terhubung!");
+                RCLCPP_WARN(this->get_logger(), "[AdaptiveGrasp] Gripper ID 6 not connected!");
                 return false;
             }
         }
@@ -363,7 +363,7 @@ private:
 
         uint16_t start_pos = closed_tick;
         if (!readRawPos(GRIPPER_ID, start_pos)) {
-            RCLCPP_WARN(this->get_logger(), "[AdaptiveGrasp] Gagal membaca posisi awal ID 6.");
+            RCLCPP_WARN(this->get_logger(), "[AdaptiveGrasp] Failed reading initial position of ID 6.");
             return false;
         }
 
@@ -423,7 +423,7 @@ private:
 
                 cur_grip_deg = rawToRelAngle(GRIPPER_ID, static_cast<uint16_t>(hold_tick), false);
                 g_last_valid_raw[GRIPPER_ID] = static_cast<uint16_t>(hold_tick);
-                RCLCPP_INFO(this->get_logger(), "[AdaptiveGrasp] Objek berhasil digenggam! Posisi: %.1f deg, Load: %d", cur_grip_deg, load_mag);
+                RCLCPP_INFO(this->get_logger(), "[AdaptiveGrasp] Object grasped! Position: %.1f deg, Load: %d", cur_grip_deg, load_mag);
                 return true;
             }
         }
@@ -431,7 +431,7 @@ private:
         packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_LED, 0, &err);
         cur_grip_deg = 0.0;
         g_last_valid_raw[GRIPPER_ID] = static_cast<uint16_t>(closed_tick);
-        RCLCPP_INFO(this->get_logger(), "[AdaptiveGrasp] Rahang tertutup penuh tanpa mendeteksi beban.");
+        RCLCPP_INFO(this->get_logger(), "[AdaptiveGrasp] Gripper fully closed without load detection.");
         return false;
     }
 
@@ -447,13 +447,13 @@ private:
             packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_LIMIT, DEFAULT_TORQUE_LIM, &err);
         }
         double target[3] = { cur[0], cur[1], open_deg };
-        RCLCPP_INFO(this->get_logger(), "[ReleaseGripper] Membuka gripper ke +%.1f deg...", open_deg);
+        RCLCPP_INFO(this->get_logger(), "[ReleaseGripper] Opening gripper to +%.1f deg...", open_deg);
         moveSmooth(gsw, cur, target, 0.5);
     }
 
     void executeMotion(dynamixel::GroupSyncWrite &gsw, double cur[3], const MotionData &motion, int loops) {
         if (motion.frames.empty()) {
-            RCLCPP_WARN(this->get_logger(), "[ExecuteMotion] Data gerakan kosong.");
+            RCLCPP_WARN(this->get_logger(), "[ExecuteMotion] Motion data is empty.");
             return;
         }
 
@@ -484,10 +484,10 @@ private:
                 // STREAM Mode
                 const auto &first = motion.frames.front();
                 double start_target[3] = { first.j1, first.j2, first.grip };
-                RCLCPP_INFO(this->get_logger(), "[ExecuteMotion] Menuju titik awal rekaman...");
+                RCLCPP_INFO(this->get_logger(), "[ExecuteMotion] Moving to recorded start pose...");
                 moveSmooth(gsw, cur, start_target, 0.0);
 
-                RCLCPP_INFO(this->get_logger(), "[ExecuteMotion] Memutar ulang stream (%zu sampel @ %d Hz)...",
+                RCLCPP_INFO(this->get_logger(), "[ExecuteMotion] Replaying stream (%zu samples @ %d Hz)...",
                             motion.frames.size(), UPDATE_RATE_HZ);
                 auto next = std::chrono::steady_clock::now();
                 const auto period = std::chrono::microseconds(1000000 / UPDATE_RATE_HZ);
@@ -518,7 +518,7 @@ private:
                 resetDeadzoneFilter();
             }
         }
-        RCLCPP_INFO(this->get_logger(), "[ExecuteMotion] Gerakan selesai dijalankan.");
+        RCLCPP_INFO(this->get_logger(), "[ExecuteMotion] Motion execution completed.");
     }
 
     std::string resolveMotionPath(const std::string &name) {
@@ -553,11 +553,11 @@ private:
     bool loadMotionFromFile(const std::string &name, MotionData &motion) {
         std::string path = resolveMotionPath(name);
         if (path.empty()) {
-            RCLCPP_ERROR(this->get_logger(), "[LoadMotion] File '%s' tidak ditemukan di kandidat direktori motions.", name.c_str());
+            RCLCPP_ERROR(this->get_logger(), "[LoadMotion] File '%s' not found in candidate motion dirs.", name.c_str());
             return false;
         }
 
-        RCLCPP_INFO(this->get_logger(), "[LoadMotion] Membaca file gerakan dari: %s", path.c_str());
+        RCLCPP_INFO(this->get_logger(), "[LoadMotion] Loading motion file from: %s", path.c_str());
         std::ifstream in(path);
         if (!in) {
             return false;
@@ -623,7 +623,7 @@ private:
         for (uint8_t id : ARM_CORE_IDS) {
             uint16_t model = 0;
             if (packetHandler->ping(portHandler, id, &model, &err) != COMM_SUCCESS) {
-                RCLCPP_WARN(this->get_logger(), "Servo ID %d tidak merespons ping.", id);
+                RCLCPP_WARN(this->get_logger(), "Servo ID %d did not respond to ping.", id);
             }
             g_servo_is_free[id] = false;
             packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 0, &err);
@@ -642,7 +642,7 @@ private:
                 packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_CW_ANGLE_LIMIT,  c->cw_limit,  &err);
                 packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_CCW_ANGLE_LIMIT, c->ccw_limit, &err);
             }
-            RCLCPP_INFO(this->get_logger(), "Gripper ID 6 terdeteksi.");
+            RCLCPP_INFO(this->get_logger(), "Gripper ID 6 detected.");
         } else {
             g_gripper_online = false;
         }
@@ -672,11 +672,11 @@ private:
     {
         std::lock_guard<std::mutex> lock(hardware_mutex_);
 
-        RCLCPP_INFO(this->get_logger(), "[Service Call] Menerima trigger eksekusi motion 'ambil_tas'...");
+        RCLCPP_INFO(this->get_logger(), "[Service Call] Received trigger to execute motion 'ambil_tas'...");
 
         if (!initHardware()) {
             response->success = false;
-            response->message = "Gagal menghubungkan hardware Dynamixel pada port " + port_name_;
+            response->message = "Failed to connect to Dynamixel hardware on port " + port_name_;
             RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
             return;
         }
@@ -684,7 +684,7 @@ private:
         MotionData motion;
         if (!loadMotionFromFile("ambil_tas", motion)) {
             response->success = false;
-            response->message = "Gagal memuat file gerakan 'ambil_tas'";
+            response->message = "Failed to load motion file 'ambil_tas'";
             RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
             return;
         }
@@ -697,11 +697,11 @@ private:
             executeMotion(gsw, cur, motion, 1);
 
             response->success = true;
-            response->message = "Motion ambil_tas berhasil dieksekusi.";
+            response->message = "Motion ambil_tas executed successfully.";
             RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());
         } catch (const std::exception &e) {
             response->success = false;
-            response->message = std::string("Error eksekusi motion: ") + e.what();
+            response->message = std::string("Motion execution error: ") + e.what();
             RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
         }
     }

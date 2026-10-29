@@ -191,8 +191,8 @@ void nucleo::handleLifterUp(
   (void)req;
   lifter_target_.store(1);
   res->success = true;
-  res->message = "Lifter target NAIK (1) dikirim";
-  RCLCPP_INFO(get_logger(), "Service /lifter/naik dipanggil: lifter_target = 1");
+  res->message = "Lifter target UP (1) sent";
+  RCLCPP_INFO(get_logger(), "Service /lifter/naik called: lifter_target = 1");
 }
 
 void nucleo::handleLifterDown(
@@ -202,8 +202,8 @@ void nucleo::handleLifterDown(
   (void)req;
   lifter_target_.store(0);
   res->success = true;
-  res->message = "Lifter target TURUN (0) dikirim";
-  RCLCPP_INFO(get_logger(), "Service /lifter/turun dipanggil: lifter_target = 0");
+  res->message = "Lifter target DOWN (0) sent";
+  RCLCPP_INFO(get_logger(), "Service /lifter/turun called: lifter_target = 0");
 }
 
 double nucleo::normalizeDeg(double deg)

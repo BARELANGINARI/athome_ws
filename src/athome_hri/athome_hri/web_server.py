@@ -11,7 +11,7 @@ import websockets
 
 
 class WebServer:
-    """Modul khusus server web HTTP dan WebSocket untuk antarmuka smartphone/klien."""
+    """HTTP and WebSocket web server module for smartphone/client interface."""
 
     def __init__(
         self,
@@ -27,7 +27,7 @@ class WebServer:
         self.active_ws: Set[websockets.WebSocketServerProtocol] = set()
 
     def start_http(self):
-        """Menjalankan HTTP server lokal di background thread."""
+        """Run local HTTP server in a background thread."""
         thread = threading.Thread(target=self._run_http, daemon=True)
         thread.start()
 
@@ -55,19 +55,18 @@ class WebServer:
                         httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
                         proto = "https"
                     except Exception as e:
-                        print(f"[HTTP] SSL fallback ke HTTP: {e}")
+                        print(f"[HTTP] SSL fallback to HTTP: {e}")
 
-                print(f"[HTTP] Web UI aktif di {proto}://0.0.0.0:{self.http_port} (Folder: {web_dir})")
+                print(f"[HTTP] Web UI active at {proto}://0.0.0.0:{self.http_port} (Dir: {web_dir})")
                 httpd.serve_forever()
         except Exception as e:
-            print(f"[HTTP] Port {self.http_port} sudah digunakan atau gagal: {e}")
+            print(f"[HTTP] Port {self.http_port} unavailable or failed: {e}")
 
     def _find_web_dir(self) -> str:
         candidates = [
             os.path.join(os.path.dirname(__file__), "..", "src"),
             os.path.join(os.path.dirname(__file__), "src"),
             os.path.join(os.getcwd(), "src", "athome_hri", "src"),
-            "/home/yesaya/Documents/cluster_3/draft_program/athome-ws/src/athome_hri/src",
         ]
         try:
             from ament_index_python.packages import get_package_share_directory
@@ -81,7 +80,7 @@ class WebServer:
         return os.path.dirname(__file__)
 
     async def broadcast_ui(self, payload: dict):
-        """Mengirim pesan JSON ke seluruh client smartphone yang terhubung."""
+        """Send JSON message to all connected clients."""
         if not self.active_ws:
             return
         msg = json.dumps(payload)
@@ -91,9 +90,9 @@ class WebServer:
         )
 
     async def ws_handler(self, websocket):
-        """Menangani siklus koneksi WebSocket klien."""
+        """Handle client WebSocket connection lifecycle."""
         self.active_ws.add(websocket)
-        print(f"[WS] Klien terhubung dari {websocket.remote_address}")
+        print(f"[WS] Client connected from {websocket.remote_address}")
 
         try:
             async for message in websocket:

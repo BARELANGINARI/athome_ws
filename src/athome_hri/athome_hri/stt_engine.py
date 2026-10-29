@@ -1,6 +1,6 @@
 import os
 
-# Patch kompatibilitas PyAV & Faster-Whisper
+# PyAV & Faster-Whisper compatibility patch
 try:
     import av
     orig_av_open = av.open
@@ -26,7 +26,7 @@ class SpeechToText:
     def __init__(self, model_size: str = "base.en"):
         self.whisper = None
         if not HAS_WHISPER:
-            print("[STT WARN] faster_whisper tidak terinstal. STT tidak aktif.")
+            print("[STT WARN] faster_whisper is not installed. STT disabled.")
             return
 
         device = "cpu"
@@ -36,33 +36,33 @@ class SpeechToText:
             if ctranslate2.get_cuda_device_count() > 0:
                 device = "cuda"
                 compute_type = "float16"
-                print(f"[STT] GPU NVIDIA terdeteksi ({ctranslate2.get_cuda_device_count()} device). Menggunakan CUDA + FP16.")
+                print(f"[STT] NVIDIA GPU detected ({ctranslate2.get_cuda_device_count()} device). Using CUDA + FP16.")
             else:
-                print("[STT] GPU tidak terdeteksi. Menggunakan CPU.")
+                print("[STT] No GPU detected. Using CPU.")
         except Exception:
-            print("[STT] CTranslate2 fallback ke CPU.")
+            print("[STT] CTranslate2 fallback to CPU.")
 
         try:
-            print(f"[STT] Memuat model Faster-Whisper '{model_size}' ({device}, {compute_type})...")
+            print(f"[STT] Loading Faster-Whisper model '{model_size}' ({device}, {compute_type})...")
             self.whisper = WhisperModel(
                 model_size,
                 device=device,
                 compute_type=compute_type,
                 cpu_threads=4 if device == "cpu" else 1,
             )
-            print("[STT] Faster-Whisper siap.")
+            print("[STT] Faster-Whisper ready.")
         except Exception as e:
-            print(f"[STT Error] Gagal memuat Faster-Whisper ({device}): {e}")
+            print(f"[STT Error] Failed loading Faster-Whisper ({device}): {e}")
             if device == "cuda":
                 try:
-                    print("[STT] Mencoba fallback ke CPU (int8)...")
+                    print("[STT] Trying fallback to CPU (int8)...")
                     self.whisper = WhisperModel(model_size, device="cpu", compute_type="int8", cpu_threads=4)
-                    print("[STT] Faster-Whisper CPU siap.")
+                    print("[STT] Faster-Whisper CPU ready.")
                 except Exception as e2:
-                    print(f"[STT Error] Fallback CPU juga gagal: {e2}")
+                    print(f"[STT Error] CPU fallback failed: {e2}")
 
     def transcribe(self, audio_bytes: bytes) -> str:
-        """Menerima raw audio bytes dan mengembalikan string teks transkripsi."""
+        """Receive raw audio bytes and return transcribed text string."""
         if not self.whisper:
             return ""
 
@@ -81,7 +81,7 @@ class SpeechToText:
             text = " ".join([seg.text for seg in segments]).strip()
             return text
         except Exception as e:
-            print(f"[STT Error] Transkripsi gagal: {e}")
+            print(f"[STT Error] Transcription failed: {e}")
             return ""
         finally:
             if os.path.exists(temp_path):
