@@ -278,7 +278,7 @@ class LocalMicListener:
         is_paused_fn: Callable[[], bool],
         on_frame_metrics: Optional[Callable[[VadFrameMetrics], None]] = None,
         device_index: Optional[int] = None,
-        threshold_dbfs: float = -40.0,
+        threshold_dbfs: float = -20.0,
         threshold_flatness: float = 0.40,
         pre_roll_frames: int = 10,
         hangover_frames: int = 25,
