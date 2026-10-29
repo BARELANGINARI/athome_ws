@@ -149,8 +149,10 @@ class BarelangHriNode(Node):
         # Vision & Gesture State
         self._person_topic_received: bool = False
         self._last_operator_seen_time: float = 0.0
+        self._gesture_lock = threading.Lock()
         self.last_gesture: str = "NONE"
-        self.gesture_ready_for_task: bool = True
+        self.gesture_ready_for_task: bool = False
+        self._captured_gesture: Optional[str] = None
         self.gesture_event = asyncio.Event()
 
         # Publishers & Subscribers
@@ -208,36 +210,52 @@ class BarelangHriNode(Node):
 
     def _on_gesture(self, msg: String) -> None:
         gesture = msg.data.strip().upper()
-        if not gesture or gesture == self.last_gesture:
+        if not gesture:
             return
-        self.last_gesture = gesture
 
-        if gesture == "NONE":
-            self.gesture_ready_for_task = True
-        elif gesture in self.VALID_POINTING_GESTURES and self.gesture_ready_for_task:
-            self.gesture_ready_for_task = False
+        trigger_event = False
+        changed = False
+        with self._gesture_lock:
+            if gesture != self.last_gesture:
+                self.last_gesture = gesture
+                changed = True
+            if (
+                gesture in self.VALID_POINTING_GESTURES
+                and self.gesture_ready_for_task
+            ):
+                self.gesture_ready_for_task = False
+                self._captured_gesture = gesture
+                trigger_event = True
+
+        if trigger_event:
             self.loop.call_soon_threadsafe(self.gesture_event.set)
 
-        self.get_logger().info(f"[HRI] Gesture terdeteksi: {gesture}")
-        if self.on_gesture_changed:
-            self.loop.call_soon_threadsafe(self.on_gesture_changed, gesture)
+        if changed:
+            self.get_logger().info(f"[HRI] Gesture terdeteksi: {gesture}")
+            if self.on_gesture_changed:
+                self.loop.call_soon_threadsafe(self.on_gesture_changed, gesture)
 
     def reset_gesture_session(self) -> None:
-        """Mereset state deteksi gesture sebelum memulai sesi tunggu gesture baru."""
-        self.gesture_ready_for_task = self.last_gesture == "NONE"
-        self.last_gesture = "NONE"
+        """Mereset state deteksi gesture secara thread-safe tepat sebelum menunggu gesture baru."""
+        with self._gesture_lock:
+            self.last_gesture = "NONE"
+            self._captured_gesture = None
+            self.gesture_ready_for_task = True
         self.gesture_event.clear()
 
     async def wait_for_new_gesture(self, timeout: float = 30.0) -> Optional[str]:
         """Menunggu secara asinkron hingga gesture tunjuk (LEFT/RIGHT) baru terdeteksi."""
         try:
             await asyncio.wait_for(self.gesture_event.wait(), timeout=timeout)
-            return (
-                self.last_gesture
-                if self.last_gesture in self.VALID_POINTING_GESTURES
-                else None
-            )
+            with self._gesture_lock:
+                return (
+                    self._captured_gesture
+                    if self._captured_gesture in self.VALID_POINTING_GESTURES
+                    else None
+                )
         except asyncio.TimeoutError:
+            with self._gesture_lock:
+                self.gesture_ready_for_task = False
             return None
 
     async def call_trigger(
@@ -456,7 +474,6 @@ class HriCoordinator:
         await self.ros_node.call_trigger("follow_stop", timeout=5.0)
         self.ros_node.stop_robot()
         self.audio_queue.clear()
-        self.ros_node.reset_gesture_session()
 
         # Step 1: Tanya tas mana yang harus diambil & tunggu gesture
         await self.set_state(RobotState.WAIT_GESTURE, "Menunggu gesture tunjuk tas")
@@ -465,6 +482,7 @@ class HriCoordinator:
             "Tell me, which bag should I take?"
         )
 
+        self.ros_node.reset_gesture_session()
         gesture = await self.ros_node.wait_for_new_gesture(timeout=30.0)
         if not gesture:
             await self.audio_queue.speak_and_wait(
