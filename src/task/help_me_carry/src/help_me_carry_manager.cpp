@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread> //mengatur timeout
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -342,25 +343,35 @@ private:
   void callTrigger(
     const TriggerClient::SharedPtr & client,
     const std::string & service_name,
-    TriggerResult result)
+    TriggerResult result,
+    std::chrono::seconds timeout = 3s)
   {
-    if (!client->service_is_ready()) {
-      RCLCPP_WARN(get_logger(), "Service %s belum siap.", service_name.c_str());
-      result(false, "Service not ready");
-      return;
-    }
+    std::thread([this, client, service_name, result, timeout]() {
+      if (!client) {
+        result(false, "Client is null");
+        return;
+      }
+    // mengatur timeout service
+      if (!client->wait_for_service(timeout)) {
+        RCLCPP_WARN(
+          get_logger(), "Service %s belum siap setelah timeout %ld detik.",
+          service_name.c_str(), static_cast<long>(timeout.count()));
+        result(false, "Service not ready (timeout)");
+        return;
+      }
 
-    auto request = std::make_shared<Trigger::Request>();
-    client->async_send_request(
-      request,
-      [result](TriggerClient::SharedFuture future) {
-        try {
-          const auto response = future.get();
-          result(response->success, response->message);
-        } catch (const std::exception & exception) {
-          result(false, exception.what());
-        }
-      });
+      auto request = std::make_shared<Trigger::Request>();
+      client->async_send_request(
+        request,
+        [result](TriggerClient::SharedFuture future) {
+          try {
+            const auto response = future.get();
+            result(response->success, response->message);
+          } catch (const std::exception & exception) {
+            result(false, exception.what());
+          }
+        });
+    }).detach();
   }
 
   void stopFollowing(std::function<void(bool)> on_done)
@@ -479,7 +490,7 @@ private:
       case TaskState::RECOVER_OPERATOR:
         if (!recovery_prompt_sent_) {
           recovery_prompt_sent_ = true;
-          speakAsync("I lost sight of you. Please call me or wave your hand.");
+          speakAsync("I lost sight of you. Please stand on front of me");
         } else if (operator_seen_.load()) {
           busy_ = true;
           callTrigger(
