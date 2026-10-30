@@ -509,9 +509,17 @@ bool adaptiveGrasp(double &cur_grip_deg, int load_threshold = DEFAULT_GRASP_LOAD
     if (static_cast<int>(start_pos) <= closed_tick + 10) {
         uint16_t open_tick = relAngleToPosition(GRIPPER_ID, 80.0, false);
         std::cout << "  [PRE-OPEN] Jaws closed, opening to +80.0 deg (tick=" << open_tick << ")...\n";
+        packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_MOVING_SPEED, 200, &err);
         packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_GOAL_POSITION, open_tick, &err);
-        std::this_thread::sleep_for(std::chrono::milliseconds(650));
-        readRawPos(GRIPPER_ID, start_pos);
+
+        auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 1.5) {
+            readRawPos(GRIPPER_ID, start_pos);
+            if (start_pos >= open_tick - 15) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+
+        packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_MOVING_SPEED, GRASP_CLOSING_SPEED, &err);
     }
 
     std::cout << "\n================ ADAPTIVE GRASPING PROCESS (ID 6) ================\n";
