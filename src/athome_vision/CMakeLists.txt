@@ -15,6 +15,7 @@ set(CMAKE_BUILD_TYPE Release)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(OpenCV REQUIRED)
@@ -60,7 +61,7 @@ target_include_directories(zed PRIVATE
   ${ONNXRUNTIME_INCLUDE}
 )
 ament_target_dependencies(zed
-  rclcpp std_msgs sensor_msgs ament_index_cpp)
+  rclcpp std_msgs std_srvs sensor_msgs ament_index_cpp)
 target_link_libraries(zed
   ${CUDA_cudart_LIBRARY}
   ${OpenCV_LIBS}
