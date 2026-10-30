@@ -22,6 +22,7 @@ namespace fs = std::filesystem;
 // ---------------- REGISTER AX-18A (PROTOCOL 1.0) ----------------
 #define ADDR_MODEL_NUMBER       0
 #define ADDR_FIRMWARE           2
+#define ADDR_RETURN_DELAY_TIME  5
 #define ADDR_CW_ANGLE_LIMIT     6
 #define ADDR_CCW_ANGLE_LIMIT    8
 #define ADDR_TORQUE_ENABLE      24
@@ -145,6 +146,7 @@ bool g_gripper_online = false;
 // Anti-jump deadzone filter state & background monitor for free mode
 static std::map<uint8_t, uint16_t> g_last_valid_raw;
 static std::map<uint8_t, bool>     g_in_deadzone;
+static std::map<uint8_t, bool>     g_wall_active;
 static std::map<uint8_t, bool>     g_servo_is_free;
 static std::atomic<bool>           g_free_monitor_active{false};
 static std::thread                 g_free_monitor_thread;
@@ -207,6 +209,7 @@ void resetDeadzoneFilter() {
         }
         g_last_valid_raw[id] = pos;
         g_in_deadzone[id]    = false;
+        g_wall_active[id]    = false;
     }
 }
 
@@ -248,20 +251,27 @@ uint16_t readFilteredRawPos(uint8_t id, bool enable_haptic_wall = false) {
     uint16_t clamped = std::clamp<uint16_t>(raw, min_lim, max_lim);
     g_last_valid_raw[id] = clamped;
 
-    // Active Haptic Wall only for servos currently in free / record mode
+    // Active Haptic Wall only for servos currently in free / record mode (Stateful: write only on state change)
     if (enable_haptic_wall && g_servo_is_free[id]) {
         uint8_t err = 0;
-        if (clamped >= max_lim - HAPTIC_WALL_MARGIN || clamped <= min_lim + HAPTIC_WALL_MARGIN || g_in_deadzone[id]) {
-            uint16_t wall_pos = (clamped >= max_lim - HAPTIC_WALL_MARGIN)
-                                    ? (max_lim - HAPTIC_WALL_MARGIN)
-                                    : (min_lim + HAPTIC_WALL_MARGIN);
-            packetHandler->write2ByteTxRx(portHandler, id, ADDR_TORQUE_LIMIT, 500, &err);
-            packetHandler->write2ByteTxRx(portHandler, id, ADDR_GOAL_POSITION, wall_pos, &err);
-            packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 1, &err);
-            packetHandler->write1ByteTxRx(portHandler, id, ADDR_LED, 1, &err);
+        bool in_wall = (clamped >= max_lim - HAPTIC_WALL_MARGIN || clamped <= min_lim + HAPTIC_WALL_MARGIN || g_in_deadzone[id]);
+        if (in_wall) {
+            if (!g_wall_active[id]) {
+                uint16_t wall_pos = (clamped >= max_lim - HAPTIC_WALL_MARGIN)
+                                        ? (max_lim - HAPTIC_WALL_MARGIN)
+                                        : (min_lim + HAPTIC_WALL_MARGIN);
+                packetHandler->write2ByteTxRx(portHandler, id, ADDR_TORQUE_LIMIT, 500, &err);
+                packetHandler->write2ByteTxRx(portHandler, id, ADDR_GOAL_POSITION, wall_pos, &err);
+                packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 1, &err);
+                packetHandler->write1ByteTxRx(portHandler, id, ADDR_LED, 1, &err);
+                g_wall_active[id] = true;
+            }
         } else {
-            packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 0, &err);
-            packetHandler->write1ByteTxRx(portHandler, id, ADDR_LED, 0, &err);
+            if (g_wall_active[id]) {
+                packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 0, &err);
+                packetHandler->write1ByteTxRx(portHandler, id, ADDR_LED, 0, &err);
+                g_wall_active[id] = false;
+            }
         }
     }
 
@@ -424,6 +434,7 @@ bool initServos() {
             return false;
         }
         g_servo_is_free[id] = false;
+        packetHandler->write1ByteTxRx(portHandler, id, ADDR_RETURN_DELAY_TIME, 10, &err);
         packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 0, &err);
         if (const auto *c = getCalib(id)) {
             packetHandler->write2ByteTxRx(portHandler, id, ADDR_CW_ANGLE_LIMIT,  c->cw_limit,  &err);
@@ -435,6 +446,7 @@ bool initServos() {
     if (packetHandler->ping(portHandler, GRIPPER_ID, &grip_model, &err) == COMM_SUCCESS) {
         g_gripper_online = true;
         g_servo_is_free[GRIPPER_ID] = false;
+        packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_RETURN_DELAY_TIME, 10, &err);
         packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_ENABLE, 0, &err);
         if (const auto *c = getCalib(GRIPPER_ID)) {
             packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_CW_ANGLE_LIMIT,  c->cw_limit,  &err);
@@ -789,11 +801,12 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
 
     {
         RawTerminalGuard raw_term;
-        auto next = std::chrono::steady_clock::now();
+        auto start_time = std::chrono::steady_clock::now();
+        auto next = start_time;
 
         for (int k = 0; k < max_steps; k++) {
             double p[3] = {cur[0], cur[1], cur[2]};
-            readCurrentPose(p, true);
+            readCurrentPose(p, false);
             if (holding_object) {
                 p[2] = cur[2];
             }
@@ -804,7 +817,7 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
             });
 
             if (k % 5 == 0) {
-                double elapsed = static_cast<double>(k) / UPDATE_RATE_HZ;
+                double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
                 std::cout << "\r  [REC " << std::fixed << std::setprecision(1)
                           << std::setw(4) << elapsed << "s / " << max_secs << "s] "
                           << "J1=" << std::setw(6) << p[0] << " deg | "
@@ -816,6 +829,7 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
             int key = readKeyNonBlocking();
             if (key == 'g' || key == 'G') {
                 std::cout << "\n\n  >>> [TRIGGER 'g'] PAUSE & LOCK Arm for Adaptive Grasp...\n";
+                auto pause_start = std::chrono::steady_clock::now();
                 setArmOnlyTorque(gsw, cur, true);
 
                 holding_object = adaptiveGrasp(cur[2], DEFAULT_GRASP_LOAD);
@@ -827,9 +841,11 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
                 setArmOnlyTorque(gsw, cur, false);
                 std::cout << "  <<< [RESUME REC] Arm J1 & J2 freed (Gripper holding object). "
                           << "Move the object now!\n";
+                start_time += (std::chrono::steady_clock::now() - pause_start);
                 next = std::chrono::steady_clock::now();
             } else if (key == 'r' || key == 'R') {
                 std::cout << "\n\n  >>> [TRIGGER 'r'] PAUSE & LOCK Arm for Gripper Release...\n";
+                auto pause_start = std::chrono::steady_clock::now();
                 setArmOnlyTorque(gsw, cur, true);
 
                 openGripperOnly(cur[2], DEFAULT_RELEASE_DEG);
@@ -841,6 +857,7 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
 
                 setArmOnlyTorque(gsw, cur, false);
                 std::cout << "  <<< [RESUME REC] Object released, arm J1 & J2 freed.\n";
+                start_time += (std::chrono::steady_clock::now() - pause_start);
                 next = std::chrono::steady_clock::now();
             } else if (key == 'q' || key == 'Q' || key == ' ') {
                 std::cout << "\n\n  >>> [STOP] Recording stopped by user.\n";
@@ -848,7 +865,12 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
             }
 
             next += period;
-            std::this_thread::sleep_until(next);
+            auto now = std::chrono::steady_clock::now();
+            if (next < now) {
+                next = now;
+            } else {
+                std::this_thread::sleep_until(next);
+            }
         }
     }
 

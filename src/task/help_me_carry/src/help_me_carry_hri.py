@@ -82,6 +82,7 @@ class BarelangHriNode(Node):
     """Node ROS 2 yang menjembatani komunikasi topik/service robot dengan event loop HRI."""
 
     TOPIC_HRI_EVENT = "/hri/event"
+    TOPIC_STT_TRANSCRIPT = "/hri/stt_transcript"
     TOPIC_CMD_VEL = "cmd_vel"
     TOPIC_TTS_SAY = "/hri/tts_say"
     TOPIC_PERSON_LABEL = "/zed/person_label"
@@ -119,6 +120,7 @@ class BarelangHriNode(Node):
         self.declare_parameter("hangover_frames", HANGOVER_FRAMES)
         self.declare_parameter("min_speech_frames", MIN_SPEECH_FRAMES)
         self.declare_parameter("whisper_model", WHISPER_MODEL_SIZE)
+        self.declare_parameter("enable_task_manager", True)
 
         self.enable_local_mic: bool = bool(
             self.get_parameter("enable_local_mic").value
@@ -145,6 +147,9 @@ class BarelangHriNode(Node):
         self.whisper_model: str = str(
             self.get_parameter("whisper_model").value
         )
+        self.enable_task_manager: bool = bool(
+            self.get_parameter("enable_task_manager").value
+        )
 
         # Vision & Gesture State
         self._person_topic_received: bool = False
@@ -157,6 +162,9 @@ class BarelangHriNode(Node):
 
         # Publishers & Subscribers
         self.event_pub = self.create_publisher(String, self.TOPIC_HRI_EVENT, 10)
+        self.transcript_pub = self.create_publisher(
+            String, self.TOPIC_STT_TRANSCRIPT, 10
+        )
         self.cmd_vel_pub = self.create_publisher(Twist, self.TOPIC_CMD_VEL, 10)
 
         self.create_subscription(String, self.TOPIC_TTS_SAY, self._on_tts_say, 10)
@@ -182,6 +190,11 @@ class BarelangHriNode(Node):
         msg.data = event_name
         self.event_pub.publish(msg)
         self.get_logger().info(f"[HRI Event] {event_name}")
+
+    def publish_transcript(self, text: str) -> None:
+        msg = String()
+        msg.data = text
+        self.transcript_pub.publish(msg)
 
     def _on_tts_say(self, msg: String) -> None:
         text = msg.data.strip()
@@ -410,14 +423,20 @@ class HriCoordinator:
             logger.info('[STT TRANSCRIPT] "%s"', transcript)
         await self.web.broadcast_ui({"type": "TRANSCRIPT", "transcript": transcript})
         if transcript:
+            self.ros_node.publish_transcript(transcript)
+        if transcript:
             await self.process_intent(transcript)
 
     async def handle_text(self, text: str) -> None:
         await self.web.broadcast_ui({"type": "TRANSCRIPT", "transcript": text})
+        if text.strip():
+            self.ros_node.publish_transcript(text)
         await self.process_intent(text)
 
     async def process_intent(self, text: str) -> None:
         """Mengevaluasi teks transkripsi terhadap NLU dan memicu transisi state yang sesuai."""
+        if not self.ros_node.enable_task_manager:
+            return
         if self.state in BUSY_TASK_STATES:
             return
 

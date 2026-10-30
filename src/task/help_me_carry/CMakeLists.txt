@@ -58,6 +58,7 @@ target_link_libraries(tracking_controller Threads::Threads)
 install(TARGETS tracking_controller DESTINATION lib/${PROJECT_NAME})
 
 add_executable(return_to_origin src/return_to_origin.cpp)
+add_executable(help_me_carry_manager src/help_me_carry_manager.cpp)
 ament_target_dependencies(return_to_origin
   rclcpp
   rclcpp_action
@@ -66,6 +67,12 @@ ament_target_dependencies(return_to_origin
   nav2_msgs
 )
 install(TARGETS return_to_origin DESTINATION lib/${PROJECT_NAME})
+ament_target_dependencies(help_me_carry_manager
+  rclcpp
+  std_msgs
+  std_srvs
+)
+install(TARGETS help_me_carry_manager DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS src/help_me_carry_hri.py DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY behavior_trees/ DESTINATION share/${PROJECT_NAME}/behavior_trees)

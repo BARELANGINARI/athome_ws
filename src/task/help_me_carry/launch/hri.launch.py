@@ -54,7 +54,7 @@ def generate_launch_description():
         Node(
             package="help_me_carry",
             executable="help_me_carry_hri.py",
-            name="barelang_hri_node",
+            name="barelang_audio_bridge",
             output="screen",
             emulate_tty=True,
             parameters=[
@@ -68,7 +68,14 @@ def generate_launch_description():
                     "hangover_frames": LaunchConfiguration("hangover_frames"),
                     "min_speech_frames": LaunchConfiguration("min_speech_frames"),
                     "whisper_model": LaunchConfiguration("whisper_model"),
+                    "enable_task_manager": False,
                 }
             ],
+        ),
+        Node(
+            package="help_me_carry",
+            executable="help_me_carry_manager",
+            name="help_me_carry_manager",
+            output="screen",
         ),
     ])
