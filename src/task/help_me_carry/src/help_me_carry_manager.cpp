@@ -171,47 +171,95 @@ private:
   }
 
 
-  // Wakeword sebelum mengoperasikan robot
-  static bool matchWakeword(const std::string & text)
+  // -------------------------------------------------------------------
+  // NLU (Natural Language Understanding) Engine
+  // -------------------------------------------------------------------
+  static double calculateSimilarity(const std::string & s1, const std::string & s2)
+  {
+    if (s1.empty() && s2.empty()) return 1.0;
+    if (s1.empty() || s2.empty()) return 0.0;
+    if (s1 == s2) return 1.0;
+
+    const size_t m = s1.size();
+    const size_t n = s2.size();
+    std::vector<std::vector<size_t>> dp(m + 1, std::vector<size_t>(n + 1, 0));
+
+    for (size_t i = 1; i <= m; ++i) {
+      for (size_t j = 1; j <= n; ++j) {
+        if (s1[i - 1] == s2[j - 1]) {
+          dp[i][j] = dp[i - 1][j - 1] + 1;
+        } else {
+          dp[i][j] = std::max(dp[i - 1][j], dp[i][j - 1]);
+        }
+      }
+    }
+
+    const size_t lcs = dp[m][n];
+    return (2.0 * static_cast<double>(lcs)) / static_cast<double>(m + n);
+  }
+
+  static double scoreIntent(const std::string & text, const std::vector<std::string> & candidates)
+  {
+    if (text.empty()) return 0.0;
+    double best_score = 0.0;
+
+    for (const auto & phrase : candidates) {
+      if (text.find(phrase) != std::string::npos) {
+        best_score = std::max(best_score, 0.95);
+      }
+      best_score = std::max(best_score, calculateSimilarity(text, phrase));
+
+      if (text.size() > phrase.size()) {
+        for (size_t i = 0; i + phrase.size() <= text.size(); ++i) {
+          best_score = std::max(best_score, calculateSimilarity(text.substr(i, phrase.size()), phrase));
+        }
+      }
+    }
+    return best_score;
+  }
+
+  bool matchIntent(const std::string & text, const std::string & target_intent,
+                   const std::vector<std::string> & candidates, double threshold = 0.68)
+  {
+    double score = scoreIntent(text, candidates);
+    RCLCPP_INFO(get_logger(), "[NLU] Input: '%s' | Target: %s | Similarity: %.2f",
+                text.c_str(), target_intent.c_str(), score);
+    return score >= threshold;
+  }
+
+  static const std::vector<std::string> & getWakewordCorpus()
   {
     static const std::vector<std::string> corpus = {
       "hello robot", "halo robot", "hey robot", "hello barelang", "hi robot", "robot"
     };
-    for (const auto & phrase : corpus) {
-      if (text.find(phrase) != std::string::npos) {
-        return true;
-      }
-    }
-    return false;
+    return corpus;
   }
 
-  static bool matchFollow(const std::string & text)
+  static const std::vector<std::string> & getFollowCorpus()
   {
     static const std::vector<std::string> corpus = {
       "follow me", "please follow me", "come with me", "lets go follow me",
-      "start following me", "guide me follow me", "following me", "follow"
+      "start following me", "guide me follow me", "following me"
     };
-    for (const auto & phrase : corpus) {
-      if (text.find(phrase) != std::string::npos) {
-        return true;
-      }
-    }
-    return false;
+    return corpus;
   }
 
-  static bool matchArrived(const std::string & text)
+  static const std::vector<std::string> & getArrivedCorpus()
   {
     static const std::vector<std::string> corpus = {
       "arrived at the location", "we have arrived", "this is the location",
       "reached the car", "arrived at the car", "stop here we arrived",
       "i have arrived", "we are here", "here is the car", "arrived"
     };
-    for (const auto & phrase : corpus) {
-      if (text.find(phrase) != std::string::npos) {
-        return true;
-      }
-    }
-    return false;
+    return corpus;
+  }
+
+  static const std::vector<std::string> & getStopCorpus()
+  {
+    static const std::vector<std::string> corpus = {
+      "stop", "stopping", "stop now", "stop please", "stop following", "emergency stop"
+    };
+    return corpus;
   }
 
   void onTranscript(const std_msgs::msg::String::SharedPtr message)
@@ -238,19 +286,32 @@ private:
     }
 
     const TaskState current_state = state_.load();
-    if (matchWakeword(command) && current_state == TaskState::WAIT_WAKEWORD) {
-      wakeword_requested_ = true;
-    }
-    if (matchFollow(command) && current_state == TaskState::WAIT_START_COMMAND) {
-      follow_requested_ = true;
-    }
-    if (matchArrived(command) && current_state == TaskState::FOLLOW_OPERATOR) {
-      arrived_requested_ = true;
-    }
-    if (command.find("stop") != std::string::npos &&
-      current_state == TaskState::FOLLOW_OPERATOR)
+    if (current_state == TaskState::WAIT_WAKEWORD &&
+        matchIntent(command, "WAKEWORD", getWakewordCorpus()))
     {
-      emergency_stop_requested_ = true;
+      if (!operator_seen_.load()) {
+        RCLCPP_WARN(get_logger(), "Wakeword terdeteksi, tapi operator belum terlihat di kamera.");
+      }
+      wakeword_requested_ = true;
+      return;
+    }
+
+    if (current_state == TaskState::WAIT_START_COMMAND &&
+        matchIntent(command, "FOLLOW_ME", getFollowCorpus()))
+    {
+      follow_requested_ = true;
+      return;
+    }
+
+    if (current_state == TaskState::FOLLOW_OPERATOR) {
+      if (matchIntent(command, "STOP", getStopCorpus())) {
+        emergency_stop_requested_ = true;
+        return;
+      }
+      if (matchIntent(command, "ARRIVED", getArrivedCorpus())) {
+        arrived_requested_ = true;
+        return;
+      }
     }
   }
 
