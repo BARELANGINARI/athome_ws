@@ -19,6 +19,7 @@
 #include "nav_msgs/msg/path.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
+#include "help_me_carry/action/follow_person.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/float64.hpp"
@@ -182,6 +183,8 @@ public:
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
   using GoalHandle = rclcpp_action::ClientGoalHandle<NavigateToPose>;
   using Trigger = std_srvs::srv::Trigger;
+  using FollowPerson = help_me_carry::action::FollowPerson;
+  using GoalHandleFollowPerson = rclcpp_action::ServerGoalHandle<FollowPerson>;
 
   explicit HelpMeCarryNode(const std::string & node_name = "help_me_carry_node")
   : Node(node_name)
@@ -345,6 +348,15 @@ public:
       rclcpp::ServicesQoS(),
       cb_group_);
 
+    follow_action_server_ = rclcpp_action::create_server<FollowPerson>(
+      this,
+      "/follow/person_action",
+      std::bind(&HelpMeCarryNode::handle_follow_goal, this, std::placeholders::_1, std::placeholders::_2),
+      std::bind(&HelpMeCarryNode::handle_follow_cancel, this, std::placeholders::_1),
+      std::bind(&HelpMeCarryNode::handle_follow_accepted, this, std::placeholders::_1),
+      rcl_action_server_get_default_options(),
+      cb_group_);
+
     watchdog_timer_ = create_wall_timer(
       std::chrono::milliseconds(500), [this]() { check_safety_watchdog(); });
 
@@ -357,6 +369,16 @@ public:
 private:
   void on_person_detected(const std_msgs::msg::String::SharedPtr msg)
   {
+    // Cek apakah ada permintaan cancel dari action client
+    {
+      std::lock_guard<std::mutex> lock(follow_action_mutex_);
+      if (active_follow_goal_ && active_follow_goal_->is_canceling()) {
+        auto dummy = std::make_shared<Trigger::Response>();
+        handle_stop_follow(dummy);
+        return;
+      }
+    }
+
     if (!is_following_) {
       return;
     }
@@ -809,6 +831,18 @@ private:
     // Kirim langsung ke base driver (/cmd_vel)
     cmd_vel_pub_->publish(twist);
 
+    // Kirim feedback berkala ke action client jika aktif
+    {
+      std::lock_guard<std::mutex> lock(follow_action_mutex_);
+      if (active_follow_goal_ && active_follow_goal_->is_active()) {
+        auto fb = std::make_shared<FollowPerson::Feedback>();
+        fb->current_distance = static_cast<float>(direct_dist);
+        fb->current_bearing = static_cast<float>(direct_bearing);
+        fb->tracking_status = is_predicting ? "OCCLUDED_PREDICTING" : status_str;
+        active_follow_goal_->publish_feedback(fb);
+      }
+    }
+
     // Print status debug teratur di terminal (2 Hz)
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 500,
@@ -871,6 +905,58 @@ private:
     action_client_->async_send_goal(goal, send_opts);
   }
 
+  rclcpp_action::GoalResponse handle_follow_goal(
+    const rclcpp_action::GoalUUID & /*uuid*/,
+    std::shared_ptr<const FollowPerson::Goal> goal)
+  {
+    RCLCPP_INFO(
+      get_logger(),
+      "[Action Server] Permintaan follow goal diterima (target_id: %d, distance: %.2f m)",
+      goal->target_id, goal->follow_distance);
+    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+  }
+
+  rclcpp_action::CancelResponse handle_follow_cancel(
+    const std::shared_ptr<GoalHandleFollowPerson> goal_handle)
+  {
+    (void)goal_handle;
+    RCLCPP_INFO(get_logger(), "[Action Server] Permintaan cancel goal follow diterima.");
+    return rclcpp_action::CancelResponse::ACCEPT;
+  }
+
+  void handle_follow_accepted(
+    const std::shared_ptr<GoalHandleFollowPerson> goal_handle)
+  {
+    std::lock_guard<std::mutex> lock(follow_action_mutex_);
+    if (active_follow_goal_ && active_follow_goal_->is_active()) {
+      RCLCPP_INFO(get_logger(), "[Action Server] Membatalkan goal follow lama untuk goal baru.");
+      auto preempt_res = std::make_shared<FollowPerson::Result>();
+      preempt_res->success = false;
+      preempt_res->message = "Preempted by a new follow goal.";
+      preempt_res->total_time = static_cast<float>((now() - follow_action_start_time_).seconds());
+      active_follow_goal_->abort(preempt_res);
+    }
+
+    active_follow_goal_ = goal_handle;
+    follow_action_start_time_ = now();
+
+    const auto goal = goal_handle->get_goal();
+    if (goal->follow_distance > 0.05f) {
+      stop_distance_ = goal->follow_distance;
+      start_distance_ = goal->follow_distance + 0.20;
+      RCLCPP_INFO(
+        get_logger(),
+        "[Action Server] Jarak follow diperbarui: stop_distance=%.2f m, start_distance=%.2f m",
+        stop_distance_, start_distance_);
+    }
+    if (goal->target_id >= 0) {
+      target_index_ = goal->target_id;
+    }
+
+    auto resp = std::make_shared<Trigger::Response>();
+    handle_start_follow(resp);
+  }
+
   void handle_start_follow(std::shared_ptr<Trigger::Response> resp)
   {
     if (is_following_) {
@@ -927,6 +1013,25 @@ private:
     geometry_msgs::msg::Twist stop_twist;
     cmd_vel_pub_->publish(stop_twist);
 
+    // Selesaikan action goal jika ada yang aktif
+    {
+      std::lock_guard<std::mutex> lock(follow_action_mutex_);
+      if (active_follow_goal_ && active_follow_goal_->is_active()) {
+        auto act_res = std::make_shared<FollowPerson::Result>();
+        act_res->total_time = static_cast<float>((now() - follow_action_start_time_).seconds());
+        if (active_follow_goal_->is_canceling()) {
+          act_res->success = true;
+          act_res->message = "Following stopped by cancel request.";
+          active_follow_goal_->canceled(act_res);
+        } else {
+          act_res->success = true;
+          act_res->message = "Following stopped via service or completion.";
+          active_follow_goal_->succeed(act_res);
+        }
+        active_follow_goal_.reset();
+      }
+    }
+
     resp->success = true;
     resp->message = "Person following stopped.";
     RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
@@ -935,6 +1040,16 @@ private:
 
   void check_safety_watchdog()
   {
+    // Cek apakah ada permintaan cancel dari action client
+    {
+      std::lock_guard<std::mutex> lock(follow_action_mutex_);
+      if (active_follow_goal_ && active_follow_goal_->is_canceling()) {
+        auto dummy = std::make_shared<Trigger::Response>();
+        handle_stop_follow(dummy);
+        return;
+      }
+    }
+
     if (!is_following_ || max_lost_time_ <= 0.0) {
       return;
     }
@@ -961,6 +1076,16 @@ private:
 
       geometry_msgs::msg::Twist stop_twist;
       cmd_vel_pub_->publish(stop_twist);
+
+      // Kirim feedback LOST ke action client jika aktif
+      std::lock_guard<std::mutex> lock(follow_action_mutex_);
+      if (active_follow_goal_ && active_follow_goal_->is_active()) {
+        auto fb = std::make_shared<FollowPerson::Feedback>();
+        fb->current_distance = -1.0f;
+        fb->current_bearing = 0.0f;
+        fb->tracking_status = "LOST";
+        active_follow_goal_->publish_feedback(fb);
+      }
     }
   }
 
@@ -1312,6 +1437,10 @@ private:
   rclcpp::Service<Trigger>::SharedPtr stop_follow_srv_alias_;
   rclcpp::Service<Trigger>::SharedPtr align_bag_srv_;
   rclcpp::Service<Trigger>::SharedPtr homing_srv_;
+  rclcpp_action::Server<FollowPerson>::SharedPtr follow_action_server_;
+  std::shared_ptr<GoalHandleFollowPerson> active_follow_goal_;
+  std::mutex follow_action_mutex_;
+  rclcpp::Time follow_action_start_time_{0, 0, RCL_ROS_TIME};
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
   rclcpp::CallbackGroup::SharedPtr cb_group_;
 };

@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -22,6 +23,11 @@ find_package(tf2_ros REQUIRED)
 find_package(Threads REQUIRED)
 
 include_directories(include)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/FollowPerson.action"
+)
+rosidl_get_typesupport_target(cpp_typesupport_target "${PROJECT_NAME}" "rosidl_typesupport_cpp")
 
 add_executable(help_me_carry_node src/help_me_carry_node.cpp)
 ament_target_dependencies(help_me_carry_node
@@ -37,7 +43,7 @@ ament_target_dependencies(help_me_carry_node
   tf2
   tf2_ros
 )
-target_link_libraries(help_me_carry_node Threads::Threads)
+target_link_libraries(help_me_carry_node Threads::Threads "${cpp_typesupport_target}")
 install(TARGETS help_me_carry_node DESTINATION lib/${PROJECT_NAME})
 
 add_executable(tracking_controller src/help_me_carry_node.cpp)
@@ -54,7 +60,7 @@ ament_target_dependencies(tracking_controller
   tf2
   tf2_ros
 )
-target_link_libraries(tracking_controller Threads::Threads)
+target_link_libraries(tracking_controller Threads::Threads "${cpp_typesupport_target}")
 install(TARGETS tracking_controller DESTINATION lib/${PROJECT_NAME})
 
 add_executable(return_to_origin src/return_to_origin.cpp)
@@ -73,4 +79,5 @@ install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 install(DIRECTORY rviz/ DESTINATION share/${PROJECT_NAME}/rviz)
 
+ament_export_dependencies(rosidl_default_runtime)
 ament_package()
