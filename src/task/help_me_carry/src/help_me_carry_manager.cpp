@@ -93,6 +93,7 @@ private:
   rclcpp::Time state_enter_time_;
   rclcpp::Time last_operator_seen_time_;
   rclcpp::Time tts_cooldown_until_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time tts_started_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_command_time_{0, 0, RCL_ROS_TIME};
 
   std::mutex data_mutex_;
@@ -134,11 +135,12 @@ private:
 
     speaking_ = true;
     busy_ = true;
+    tts_started_time_ = now();
     tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.5);
     pending_tts_done_ = std::move(on_done);
   }
 
-  void onTtsDone(const std_msgs::msg::String::SharedPtr)
+  void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
   {
     speaking_ = false;
     busy_ = false;
@@ -279,12 +281,22 @@ private:
       return;
     }
 
+    // Safety watchdog: jika /hri/tts_done tidak kunjung datang dalam 6 detik, lepas kuncian busy
+    if (speaking_.load() && (now() - tts_started_time_).seconds() > 6.0) {
+      RCLCPP_WARN(get_logger(), "TTS timeout (no /hri/tts_done received), resetting busy state.");
+      onTtsDone(nullptr);
+    }
+
     if (busy_.load()) {
       return;
     }
 
     switch (state_.load()) {
       case TaskState::INIT:
+        if (tts_pub_->get_subscription_count() == 0) {
+          // Tunggu sampai tts_engine_node siap mendengarkan sebelum berbicara
+          return;
+        }
         speakAsync(
           "I am ready for Help Me Carry. Please tell me to follow you.",
           [this]() { transitionTo(TaskState::WAIT_START_COMMAND, "Initial prompt"); });

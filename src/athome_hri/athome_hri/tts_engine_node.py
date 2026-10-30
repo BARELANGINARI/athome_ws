@@ -16,7 +16,7 @@ class TtsEngineNode(Node):
 
     def __init__(self) -> None:
         super().__init__("tts_engine")
-        self.declare_parameter("model", "en_US-lessac-medium.onnx")
+        self.declare_parameter("model", "en_US-lessac-medium.onnx") #model name
         self.declare_parameter("enable_local_speaker", True)
 
         self._tts = TextToSpeech(str(self.get_parameter("model").value))

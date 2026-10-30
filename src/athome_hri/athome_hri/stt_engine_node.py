@@ -2,6 +2,8 @@
 """Standalone ROS 2 speech-to-text engine."""
 
 import asyncio
+import contextlib
+import os
 import threading
 from typing import Union
 
@@ -10,7 +12,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from athome_hri.audio_io import LocalMicListener
+from athome_hri.audio_io import LocalMicListener, no_c_stderr
 from athome_hri.stt_engine import SpeechToText
 
 
@@ -18,14 +20,15 @@ def find_usb_mic_index() -> Union[int, None]:
     """Mencari indeks input audio PyAudio yang mengandung 'usb'."""
     try:
         import pyaudio
-        p = pyaudio.PyAudio()
-        dev_idx = None
-        for i in range(p.get_device_count()):
-            info = p.get_device_info_by_index(i)
-            if info.get("maxInputChannels", 0) > 0 and "usb" in info.get("name", "").lower():
-                dev_idx = i
-                break
-        p.terminate()
+        with no_c_stderr():
+            p = pyaudio.PyAudio()
+            dev_idx = None
+            for i in range(p.get_device_count()):
+                info = p.get_device_info_by_index(i)
+                if info.get("maxInputChannels", 0) > 0 and "usb" in info.get("name", "").lower():
+                    dev_idx = i
+                    break
+            p.terminate()
         return dev_idx
     except Exception:
         return None
