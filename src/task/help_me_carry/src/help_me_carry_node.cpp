@@ -367,6 +367,15 @@ public:
   }
 
 private:
+  double get_current_yaw_rad(bool has_map_tf, double ryaw)
+  {
+    if (has_map_tf) {
+      return ryaw;
+    }
+    std::lock_guard<std::mutex> lock(bag_mutex_);
+    return current_yaw_deg_ * M_PI / 180.0;
+  }
+
   void on_person_detected(const std_msgs::msg::String::SharedPtr msg)
   {
     // Cek apakah ada permintaan cancel dari action client
@@ -768,45 +777,57 @@ private:
     if (is_close_obstacle) {
       // -------------------------------------------------------------------
       // KASUS 1: TERHADANG TERLALU DEKAT (<38cm)
-      // Stop gerak maju, strafe ke arah kosong (kiri/kanan) keluar dari oklusi,
-      // sambil MEMPERTAHANKAN arah hadap ke posisi sudut terakhir terhadang.
+      // Stop gerak maju, strafe ke arah kosong (kiri/kanan).
+      // - Kosong kanan -> strafe kanan (-vy) + rotate sedikit kiri (10 deg / +0.1745 rad)
+      // - Kosong kiri  -> strafe kiri (+vy)  + rotate sedikit kanan (10 deg / -0.1745 rad)
       // -------------------------------------------------------------------
-      is_blocked_close_ = true;
-      target_vx = 0.0;  // Jangan maju menabrak rintangan
+      if (!is_blocked_close_) {
+        is_blocked_close_ = true;
 
-      // Tentukan arah kosong (kiri vs kanan)
-      double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
-      double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
-      double strafe_sign = 1.0;
-      if (std::abs(rep_y) >= 0.4) {
-        strafe_sign = (rep_y > 0.0) ? 1.0 : -1.0;
+        // Tentukan arah kosong (kiri vs kanan)
+        double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
+        double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
+        if (std::abs(rep_y) >= 0.4) {
+          blocked_strafe_sign_ = (rep_y > 0.0) ? 1.0 : -1.0;
+        } else {
+          blocked_strafe_sign_ = (avg_left >= avg_right) ? 1.0 : -1.0;
+        }
+
+        // Catat yaw awal saat mulai terhadang
+        blocked_start_yaw_rad_ = get_current_yaw_rad(has_map_tf, ryaw);
+
+        // Jika kosong dikanan (strafe_sign < 0): rotate sedikit ke kiri (+10 deg)
+        // Jika kosong dikiri  (strafe_sign > 0): rotate sedikit ke kanan (-10 deg)
+        const double yaw_offset_rad = (blocked_strafe_sign_ < 0.0)
+          ? (10.0 * M_PI / 180.0)
+          : (-10.0 * M_PI / 180.0);
+
+        blocked_target_yaw_rad_ = blocked_start_yaw_rad_ + yaw_offset_rad;
+        while (blocked_target_yaw_rad_ > M_PI) blocked_target_yaw_rad_ -= 2.0 * M_PI;
+        while (blocked_target_yaw_rad_ < -M_PI) blocked_target_yaw_rad_ += 2.0 * M_PI;
+      }
+
+      target_vx = 0.0;  // Berhenti maju agar tidak menabrak rintangan
+
+      // Kecepatan menyamping omni untuk keluar dari bayangan halangan
+      target_vy = std::clamp(0.24 * blocked_strafe_sign_, -max_vy_, max_vy_);
+
+      // Kontrol rotasi: hanya rotate 10 derajat lalu tahan sudut tersebut
+      const double current_yaw = get_current_yaw_rad(has_map_tf, ryaw);
+      double yaw_err = blocked_target_yaw_rad_ - current_yaw;
+      while (yaw_err > M_PI) yaw_err -= 2.0 * M_PI;
+      while (yaw_err < -M_PI) yaw_err += 2.0 * M_PI;
+
+      if (std::abs(yaw_err) < 0.025) {  // Toleransi ~1.4 derajat
+        target_wz = 0.0;
       } else {
-        strafe_sign = (avg_left >= avg_right) ? 1.0 : -1.0;
+        // Rotasi halus dibatasi rendah agar pandangan kamera tidak hilang
+        target_wz = std::clamp(1.0 * yaw_err, -0.18, 0.18);
       }
 
-      // Kecepatan menyamping omni untuk keluar dari bayangan orang yang menghadang
-      target_vy = std::clamp(0.24 * strafe_sign, -max_vy_, max_vy_);
-
-      // Kunci arah hadap (heading) ke posisi angle terakhir terhadang:
-      double desired_bearing = last_known_target_bearing_;
-      if (has_map_tf && has_known_target_global_) {
-        double angle_to_target = std::atan2(last_known_target_global_y_ - ry, last_known_target_global_x_ - rx);
-        desired_bearing = angle_to_target - ryaw;
-        while (desired_bearing > M_PI) desired_bearing -= 2.0 * M_PI;
-        while (desired_bearing < -M_PI) desired_bearing += 2.0 * M_PI;
-      }
-
-      double eff_bearing = 0.0;
-      if (desired_bearing > deadband_stop_) {
-        eff_bearing = desired_bearing - deadband_stop_;
-      } else if (desired_bearing < -deadband_stop_) {
-        eff_bearing = desired_bearing + deadband_stop_;
-      }
-      target_wz = std::clamp(kp_yaw_ * eff_bearing + kd_yaw_ * d_bearing, -max_wz_, max_wz_);
-
-      status_str = (strafe_sign > 0.0)
-        ? "CLOSE OBSTACLE (<38cm): STRAFING LEFT (LOCKING HEADING)"
-        : "CLOSE OBSTACLE (<38cm): STRAFING RIGHT (LOCKING HEADING)";
+      status_str = (blocked_strafe_sign_ < 0.0)
+        ? "CLOSE OBSTACLE (<38cm): STRAFE RIGHT + ROTATE LEFT 10 DEG"
+        : "CLOSE OBSTACLE (<38cm): STRAFE LEFT + ROTATE RIGHT 10 DEG";
     } else {
       // -------------------------------------------------------------------
       // KASUS 2: NORMAL FOLLOWING & RECOVERY
@@ -1024,6 +1045,9 @@ private:
     filtered_bearing_ = 0.0;
     has_prev_bearing_ = false;
     is_blocked_close_ = false;
+    blocked_start_yaw_rad_ = 0.0;
+    blocked_target_yaw_rad_ = 0.0;
+    blocked_strafe_sign_ = -1.0;
     last_known_target_bearing_ = 0.0;
     has_known_target_global_ = false;
     last_seen_sec_ = now().seconds();
@@ -1047,6 +1071,9 @@ private:
     filtered_bearing_ = 0.0;
     has_prev_bearing_ = false;
     is_blocked_close_ = false;
+    blocked_start_yaw_rad_ = 0.0;
+    blocked_target_yaw_rad_ = 0.0;
+    blocked_strafe_sign_ = -1.0;
     last_known_target_bearing_ = 0.0;
     has_known_target_global_ = false;
     kf_.reset();
@@ -1441,6 +1468,9 @@ private:
   double corridor_width_{0.32};
 
   bool is_blocked_close_{false};
+  double blocked_start_yaw_rad_{0.0};
+  double blocked_target_yaw_rad_{0.0};
+  double blocked_strafe_sign_{-1.0};
   double last_known_target_bearing_{0.0};
   double last_known_target_global_x_{0.0};
   double last_known_target_global_y_{0.0};
