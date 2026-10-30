@@ -729,9 +729,8 @@ private:
           }
 
           // 4. FILTER OPERATOR: Jangan anggap kaki operator sebagai halangan
-          // (Kecuali sedang terhadang orang lain di jarak sangat dekat)
-          if (!is_blocked_close_ && !is_predicting &&
-              std::abs(angle_base - direct_bearing) < 0.30 && std::abs(r - direct_dist) < 0.40) {
+          if (person_matched && !is_predicting &&
+              std::abs(angle_base - direct_bearing) < 0.35 && std::abs(r - direct_dist) < 0.45) {
             continue;
           }
 
@@ -771,8 +770,23 @@ private:
     double target_wz = 0.0;
     std::string status_str = "STOP";
 
+    // Operator terverifikasi jika person_matched = true dan bukan sedang prediksi Kalman (occlusion)
+    const bool operator_found = (person_matched && !is_predicting);
+
+    if (operator_found) {
+      // Jika saat manuver belok/menghindar sudah ketemu operator asli,
+      // langsung hentikan manuver menghindar dan lanjut ke follow person
+      if (is_blocked_close_) {
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[92m[FOLLOW] Operator asli terdeteksi kembali! Menghentikan manuver belok, melanjutkan following.\033[0m");
+      }
+      is_blocked_close_ = false;
+    }
+
     // Cek apakah ada rintangan/orang yang menghadang terlalu dekat (< min_stop_x_ / 38cm)
-    const bool is_close_obstacle = (obstacle_detected && min_front_x <= min_stop_x_);
+    // Manuver belok hanya aktif saat operator sedang terhalang/belum ketemu
+    const bool is_close_obstacle = (obstacle_detected && min_front_x <= min_stop_x_ && !operator_found);
 
     if (is_close_obstacle) {
       // -------------------------------------------------------------------
