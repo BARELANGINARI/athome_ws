@@ -16,6 +16,7 @@ using namespace std::chrono_literals;
 enum class TaskState {
   INIT,
   WAIT_WAKEWORD,
+  CHECK_OPERATOR_PRESENCE,
   WAIT_START_COMMAND,
   FOLLOW_OPERATOR,
   RECOVER_OPERATOR,
@@ -93,7 +94,8 @@ private:
 
   rclcpp::Time task_start_time_;
   rclcpp::Time state_enter_time_;
-  rclcpp::Time last_operator_seen_time_;
+  rclcpp::Time last_operator_seen_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_operator_warn_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time tts_cooldown_until_{0, 0, RCL_ROS_TIME};
   rclcpp::Time tts_started_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_command_time_{0, 0, RCL_ROS_TIME};
@@ -104,6 +106,7 @@ private:
   bool bag_prompt_sent_{false};
   bool recovery_prompt_sent_{false};
 
+  // publisher
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::TimerBase::SharedPtr fsm_timer_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tts_pub_;
@@ -117,6 +120,11 @@ private:
   TriggerClient::SharedPtr grab_bag_client_;
   TriggerClient::SharedPtr homing_client_;
 
+  bool isOperatorInFront() const
+  {
+    return operator_seen_.load() && (now() - last_operator_seen_time_).seconds() < 2.5;
+  }
+
   void transitionTo(TaskState next_state, const std::string & reason)
   {
     RCLCPP_INFO(
@@ -125,6 +133,9 @@ private:
     state_enter_time_ = now();
     bag_prompt_sent_ = false;
     recovery_prompt_sent_ = false;
+    if (next_state == TaskState::CHECK_OPERATOR_PRESENCE) {
+      last_operator_warn_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    }
     state_ = next_state;
   }
 
@@ -173,6 +184,7 @@ private:
 
   // -------------------------------------------------------------------
   // NLU (Natural Language Understanding) Engine
+  // Menghitung nilai kemiripan kata
   // -------------------------------------------------------------------
   static double calculateSimilarity(const std::string & s1, const std::string & s2)
   {
@@ -230,7 +242,7 @@ private:
   static const std::vector<std::string> & getWakewordCorpus()
   {
     static const std::vector<std::string> corpus = {
-      "hello robot", "halo robot", "hey robot", "hello barelang", "hi robot", "robot"
+      "hello robot", "halo robot", "hey robot", "hello barelang", "hi robot", "robot", "hallo",
     };
     return corpus;
   }
@@ -317,9 +329,10 @@ private:
 
   void onPersonLabel(const std_msgs::msg::String::SharedPtr message)
   {
-    if (message->data.find("NO_PERSON") == std::string::npos &&
-      (message->data.find("person:") != std::string::npos ||
-      message->data.find("operator:") != std::string::npos))
+    if (message->data.find("NO_PERSON") != std::string::npos) {
+      operator_seen_ = false;
+    } else if (message->data.find("person:") != std::string::npos ||
+               message->data.find("operator:") != std::string::npos)
     {
       operator_seen_ = true;
       last_operator_seen_time_ = now();
@@ -408,9 +421,25 @@ private:
       case TaskState::WAIT_WAKEWORD:
         if (wakeword_requested_.exchange(false)) {
           speakAsync(
-            "Hello, I'm Barelang Inari, I want to help you to carry the luggage. "
+            "Hello, I'm Barelang Inari, I want to help you to carry the luggage.",
+            [this]() {
+              transitionTo(TaskState::CHECK_OPERATOR_PRESENCE, "Greeting completed, checking operator");
+            });
+        }
+        break;
+
+      case TaskState::CHECK_OPERATOR_PRESENCE:
+        if (isOperatorInFront()) {
+          speakAsync(
             "If you are ready, please guide me to the place, and say follow me.",
-            [this]() { transitionTo(TaskState::WAIT_START_COMMAND, "Wakeword acknowledged"); });
+            [this]() {
+              transitionTo(TaskState::WAIT_START_COMMAND, "Operator in front confirmed");
+            });
+        } else {
+          if ((now() - last_operator_warn_time_).seconds() > 4.0) {
+            last_operator_warn_time_ = now();
+            speakAsync("i cant see you, please stand in front of me");
+          }
         }
         break;
 
