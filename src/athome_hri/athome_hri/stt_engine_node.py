@@ -12,7 +12,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from athome_hri.audio_io import LocalMicListener, no_c_stderr
+from athome_hri.audio_io import LocalMicListener, VadFrameMetrics, no_c_stderr
 from athome_hri.stt_engine import SpeechToText
 
 
@@ -42,7 +42,7 @@ class SttEngineNode(Node):
         self.declare_parameter("model", SpeechToText.DEFAULT_MODEL_SIZE)
         self.declare_parameter("language", "en")
         self.declare_parameter("device_index", -1)
-        self.declare_parameter("threshold_dbfs", -30.0)
+        self.declare_parameter("threshold_dbfs", -40.0)
         self.declare_parameter("threshold_flatness", 0.40)
         self.declare_parameter("pre_roll_frames", 10)
         self.declare_parameter("hangover_frames", 25)
@@ -79,6 +79,7 @@ class SttEngineNode(Node):
             loop=self._loop,
             on_audio_captured=self._on_audio,
             is_paused_fn=lambda: False,
+            on_frame_metrics=self._on_metrics,
             device_index=resolved_index,
             threshold_dbfs=float(self.get_parameter("threshold_dbfs").value),
             threshold_flatness=float(self.get_parameter("threshold_flatness").value),
@@ -88,6 +89,27 @@ class SttEngineNode(Node):
         )
         self._listener.start()
         self.get_logger().info("Standalone STT engine ready.")
+
+    def _on_metrics(self, m: VadFrameMetrics) -> None:
+        thresh_dbfs = float(self.get_parameter("threshold_dbfs").value)
+        thresh_flatness = float(self.get_parameter("threshold_flatness").value)
+        is_voice = (m.dbfs_speech > thresh_dbfs) and (m.flatness < thresh_flatness)
+
+        bars = int(max(0, min(15, (m.dbfs_speech + 60) / 3.33)))
+        bar_str = "#" * bars + "-" * (15 - bars)
+
+        if is_voice:
+            status = "\033[1;32m[VOICE DETECTED]\033[0m"
+        elif m.is_speaking:
+            status = "\033[1;33m[HOLD / HANGOVER]\033[0m"
+        else:
+            status = "\033[2m[SILENCE / NOISE]\033[0m"
+
+        self.get_logger().info(
+            f"[VAD METER] [{bar_str}] {m.dbfs_speech:5.1f} dBFS (min: {thresh_dbfs:.1f}) | "
+            f"Flatness: {m.flatness:.2f} (max: {thresh_flatness:.2f}) | {status}",
+            throttle_duration_sec=0.25,
+        )
 
     async def _transcribe(self, audio_input: Union[np.ndarray, bytes]) -> None:
         transcript = await asyncio.to_thread(self._stt.transcribe, audio_input)
