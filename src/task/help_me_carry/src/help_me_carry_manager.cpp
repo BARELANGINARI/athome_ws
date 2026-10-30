@@ -28,6 +28,24 @@ enum class TaskState {
   ABORTED
 };
 
+static std::string stateToString(TaskState state)
+{
+  switch (state) {
+    case TaskState::INIT: return "INIT";
+    case TaskState::WAIT_WAKEWORD: return "WAIT_WAKEWORD";
+    case TaskState::CHECK_OPERATOR_PRESENCE: return "CHECK_OPERATOR_PRESENCE";
+    case TaskState::WAIT_START_COMMAND: return "WAIT_START_COMMAND";
+    case TaskState::FOLLOW_OPERATOR: return "FOLLOW_OPERATOR";
+    case TaskState::RECOVER_OPERATOR: return "RECOVER_OPERATOR";
+    case TaskState::WAIT_BAG_POINTING: return "WAIT_BAG_POINTING";
+    case TaskState::GRASP_BAG: return "GRASP_BAG";
+    case TaskState::RETURN_TO_START: return "RETURN_TO_START";
+    case TaskState::COMPLETED: return "COMPLETED";
+    case TaskState::ABORTED: return "ABORTED";
+    default: return "UNKNOWN";
+  }
+}
+
 class HelpMeCarryOrchestrator : public rclcpp::Node {
 public:
   using Trigger = std_srvs::srv::Trigger;
@@ -77,7 +95,12 @@ public:
 
     task_start_time_ = now();
     state_enter_time_ = now();
-    RCLCPP_INFO(get_logger(), "Help Me Carry orchestrator ready.");
+    RCLCPP_INFO(get_logger(),
+      "\n============================================================\n"
+      "  \033[1;32m[SYSTEM]\033[0m Help Me Carry Orchestrator Started\n"
+      "  \033[1;36m[STATE]\033[0m  INIT\n"
+      "  \033[1;33m[MIC]\033[0m    LISTENING\n"
+      "============================================================");
   }
 
 private:
@@ -129,8 +152,11 @@ private:
   void transitionTo(TaskState next_state, const std::string & reason)
   {
     RCLCPP_INFO(
-      get_logger(), "[FSM] %d -> %d: %s",
-      static_cast<int>(state_.load()), static_cast<int>(next_state), reason.c_str());
+      get_logger(),
+      "\033[1;36m[FSM STATE]\033[0m %s \033[1;33m->\033[0m \033[1;32m%s\033[0m | Reason: %s",
+      stateToString(state_.load()).c_str(),
+      stateToString(next_state).c_str(),
+      reason.c_str());
     state_enter_time_ = now();
     bag_prompt_sent_ = false;
     recovery_prompt_sent_ = false;
@@ -145,7 +171,7 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
-    RCLCPP_INFO(get_logger(), "[TTS] %s", text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;35m[TTS SAY]\033[0m \"%s\" | Mic: \033[1;31m[MUTED]\033[0m", text.c_str());
 
     speaking_ = true;
     busy_ = true;
@@ -159,6 +185,11 @@ private:
     speaking_ = false;
     busy_ = false;
     tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.4);
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;32m[TTS FINISHED]\033[0m Playback complete | Mic: \033[1;32m[LISTENING]\033[0m | State: \033[1;36m%s\033[0m",
+      stateToString(state_.load()).c_str());
 
     auto callback = std::move(pending_tts_done_);
     pending_tts_done_ = nullptr;
@@ -235,9 +266,19 @@ private:
                    const std::vector<std::string> & candidates, double threshold = 0.68)
   {
     double score = scoreIntent(text, candidates);
-    RCLCPP_INFO(get_logger(), "[NLU] Input: '%s' | Target: %s | Similarity: %.2f",
-                text.c_str(), target_intent.c_str(), score);
-    return score >= threshold;
+    if (score >= threshold) {
+      RCLCPP_INFO(
+        get_logger(),
+        "  \033[1;32m[NLU MATCH]\033[0m Intent: \033[1m%s\033[0m | Score: \033[1;32m%.2f\033[0m (thresh: %.2f)",
+        target_intent.c_str(), score, threshold);
+      return true;
+    } else {
+      RCLCPP_INFO(
+        get_logger(),
+        "  \033[2m[NLU CHECK]\033[0m Target: %s | Score: %.2f (< %.2f)",
+        target_intent.c_str(), score, threshold);
+      return false;
+    }
   }
 
   static const std::vector<std::string> & getWakewordCorpus()
@@ -278,6 +319,7 @@ private:
   void onTranscript(const std_msgs::msg::String::SharedPtr message)
   {
     if (!canListen()) {
+      RCLCPP_DEBUG(get_logger(), "[STT IGNORED] Mic MUTED: \"%s\"", message->data.c_str());
       return;
     }
 
@@ -299,6 +341,11 @@ private:
     }
 
     const TaskState current_state = state_.load();
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;33m[STT HEARD]\033[0m \"%s\" | Mic: \033[1;32m[LISTENING]\033[0m | State: \033[1;36m%s\033[0m",
+      message->data.c_str(),
+      stateToString(current_state).c_str());
     if (current_state == TaskState::WAIT_WAKEWORD &&
         matchIntent(command, "WAKEWORD", getWakewordCorpus()))
     {
@@ -441,6 +488,7 @@ private:
 
       case TaskState::CHECK_OPERATOR_PRESENCE:
         if (isOperatorInFront()) {
+          RCLCPP_INFO(get_logger(), "\033[1;32m[ZED VISION]\033[0m Operator terdeteksi di depan.");
           speakAsync(
             "If you are ready, please guide me to the place, and say follow me.",
             [this]() {
@@ -449,6 +497,7 @@ private:
         } else {
           if ((now() - last_operator_warn_time_).seconds() > 4.0) {
             last_operator_warn_time_ = now();
+            RCLCPP_WARN(get_logger(), "\033[1;33m[ZED VISION]\033[0m Operator belum terlihat di depan.");
             speakAsync("i cant see you, please stand in front of me");
           }
         }
