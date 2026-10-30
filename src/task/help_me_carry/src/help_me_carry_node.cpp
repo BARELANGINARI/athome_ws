@@ -227,6 +227,9 @@ public:
     alpha_v_ = declare_parameter<double>("alpha_v", 0.35);
     alpha_w_ = declare_parameter<double>("alpha_w", 0.40);
     bearing_beta_ = declare_parameter<double>("bearing_beta", 0.35);
+    max_accel_x_ = declare_parameter<double>("max_accel_x", 0.65);
+    max_accel_y_ = declare_parameter<double>("max_accel_y", 0.45);
+    max_accel_w_ = declare_parameter<double>("max_accel_w", 0.55);
 
     // Obstacle Avoidance & Safety Corridor
     enable_avoidance_ = declare_parameter<bool>("enable_avoidance", true);
@@ -832,11 +835,14 @@ private:
       while (yaw_err > M_PI) yaw_err -= 2.0 * M_PI;
       while (yaw_err < -M_PI) yaw_err += 2.0 * M_PI;
 
-      if (std::abs(yaw_err) < 0.025) {  // Toleransi ~1.4 derajat
+      // S-curve profile untuk rotasi 10 derajat yang sangat halus (ease-in ease-out)
+      if (std::abs(yaw_err) < 0.015) {  // Toleransi ~0.9 derajat
         target_wz = 0.0;
       } else {
-        // Rotasi halus dibatasi rendah agar pandangan kamera tidak hilang
-        target_wz = std::clamp(1.0 * yaw_err, -0.18, 0.18);
+        const double target_10deg = 10.0 * M_PI / 180.0;
+        double norm_err = std::clamp(yaw_err / target_10deg, -1.0, 1.0);
+        // Sinusoidal ease-in ease-out: gerakan melambat lembut saat mendekati 10 derajat
+        target_wz = 0.14 * std::sin(norm_err * M_PI * 0.5);
       }
 
       status_str = (blocked_strafe_sign_ < 0.0)
@@ -874,17 +880,23 @@ private:
           double brake_ratio = (min_front_x - min_stop_x_) / (obstacle_distance_ - min_stop_x_);
           target_vx *= std::clamp(brake_ratio, 0.0, 1.0);
 
-          if (std::abs(rep_y) < 0.4) {
+          // Filter low-pass rep_y agar gaya tolak rintangan tidak bergetar (anti-jitter)
+          filtered_rep_y_ = 0.70 * filtered_rep_y_ + 0.30 * rep_y;
+
+          if (std::abs(filtered_rep_y_) < 0.35) {
             double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
             double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
-            rep_y = (avg_left >= avg_right) ? 1.5 : -1.5;
+            filtered_rep_y_ = (avg_left >= avg_right) ? 1.2 : -1.2;
           }
-          target_vy = std::clamp(0.22 * rep_y, -max_vy_, max_vy_);
+          target_vy = std::clamp(0.20 * filtered_rep_y_, -max_vy_, max_vy_);
           status_str = "AVOIDING WALL/OBSTACLE";
+        } else {
+          filtered_rep_y_ *= 0.75;
         }
       } else {
         target_vx = 0.0;
         target_vy = 0.0;
+        filtered_rep_y_ *= 0.50;
         status_str = (std::abs(target_wz) > 0.03) ? "ALIGNING HEADING (STATIONARY)" : "STOPPED (Distance < 0.5m)";
       }
     }
@@ -895,9 +907,25 @@ private:
     // ---------------------------------------------------------------------
     // 3. LOW-PASS FILTER / SMOOTHING (Mencegah Hentakan & Menjaga Responsif)
     // ---------------------------------------------------------------------
-    current_cmd_vx_ = (1.0 - alpha_v_) * current_cmd_vx_ + alpha_v_ * target_vx;
-    current_cmd_vy_ = (1.0 - alpha_v_) * current_cmd_vy_ + alpha_v_ * target_vy;
-    current_cmd_wz_ = (1.0 - alpha_w_) * current_cmd_wz_ + alpha_w_ * target_wz;
+    // Slew-Rate Limiter (Akselerasi Mulus):
+    // Batasi perubahan kecepatan per step (dt) agar motor tidak menghentak,
+    // terutama saat transisi masuk/keluar avoidance rintangan.
+    const double effective_accel_x = (is_close_obstacle || obstacle_detected) ? (max_accel_x_ * 0.85) : max_accel_x_;
+    const double effective_accel_y = max_accel_y_;
+    const double effective_accel_w = is_close_obstacle ? (max_accel_w_ * 0.75) : max_accel_w_;
+
+    const double max_dvx = std::max(0.01, effective_accel_x * dt);
+    const double max_dvy = std::max(0.01, effective_accel_y * dt);
+    const double max_dwz = std::max(0.01, effective_accel_w * dt);
+
+    double ramped_vx = std::clamp(target_vx, current_cmd_vx_ - max_dvx, current_cmd_vx_ + max_dvx);
+    double ramped_vy = std::clamp(target_vy, current_cmd_vy_ - max_dvy, current_cmd_vy_ + max_dvy);
+    double ramped_wz = std::clamp(target_wz, current_cmd_wz_ - max_dwz, current_cmd_wz_ + max_dwz);
+
+    // Filter eksponensial (IIR) untuk menghaluskan discretization noise
+    current_cmd_vx_ = (1.0 - alpha_v_) * current_cmd_vx_ + alpha_v_ * ramped_vx;
+    current_cmd_vy_ = (1.0 - alpha_v_) * current_cmd_vy_ + alpha_v_ * ramped_vy;
+    current_cmd_wz_ = (1.0 - alpha_w_) * current_cmd_wz_ + alpha_w_ * ramped_wz;
 
     // Bersihkan noise angka sangat kecil mendekati nol
     if (std::abs(current_cmd_vx_) < 0.015) current_cmd_vx_ = 0.0;
@@ -1064,6 +1092,7 @@ private:
     blocked_strafe_sign_ = -1.0;
     last_known_target_bearing_ = 0.0;
     has_known_target_global_ = false;
+    filtered_rep_y_ = 0.0;
     last_seen_sec_ = now().seconds();
 
     resp->success = true;
@@ -1090,6 +1119,7 @@ private:
     blocked_strafe_sign_ = -1.0;
     last_known_target_bearing_ = 0.0;
     has_known_target_global_ = false;
+    filtered_rep_y_ = 0.0;
     kf_.reset();
     has_last_filter_time_ = false;
 
@@ -1474,6 +1504,10 @@ private:
   double alpha_v_{0.35};
   double alpha_w_{0.40};
   double bearing_beta_{0.35};
+  double max_accel_x_{0.65};
+  double max_accel_y_{0.45};
+  double max_accel_w_{0.55};
+  double filtered_rep_y_{0.0};
 
   bool enable_avoidance_{true};
   double obstacle_distance_{0.75};

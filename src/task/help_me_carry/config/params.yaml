@@ -45,6 +45,9 @@ help_me_carry_node:
     alpha_v: 0.35                             # Slew-rate smoothing factor for linear velocities (0-1)
     alpha_w: 0.40                             # Slew-rate smoothing factor for angular velocity (0-1)
     bearing_beta: 0.35                        # Low-pass filter weight for raw vision bearing (0-1)
+    max_accel_x: 0.65                         # Maximum linear X acceleration ramp (m/s^2)
+    max_accel_y: 0.45                         # Maximum lateral Y acceleration ramp (m/s^2)
+    max_accel_w: 0.55                         # Maximum angular acceleration ramp (rad/s^2)
 
     # -------------------------------------------------------------
     # 5. LIDAR OBSTACLE & SAFETY CORRIDOR
