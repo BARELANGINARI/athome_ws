@@ -47,6 +47,7 @@ class SttEngineNode(Node):
         self.declare_parameter("pre_roll_frames", 10)
         self.declare_parameter("hangover_frames", 25)
         self.declare_parameter("min_speech_frames", 15)
+        self.declare_parameter("enable_live_meter", True)
 
         self.transcript_pub = self.create_publisher(
             String, "/hri/stt_transcript", 10
@@ -91,6 +92,9 @@ class SttEngineNode(Node):
         self.get_logger().info("Standalone STT engine ready.")
 
     def _on_metrics(self, m: VadFrameMetrics) -> None:
+        if not bool(self.get_parameter("enable_live_meter").value):
+            return
+
         thresh_dbfs = float(self.get_parameter("threshold_dbfs").value)
         thresh_flatness = float(self.get_parameter("threshold_flatness").value)
         is_voice = (m.dbfs_speech > thresh_dbfs) and (m.flatness < thresh_flatness)
