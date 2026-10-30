@@ -39,8 +39,8 @@ logger = logging.getLogger("athome_hri.coordinator")
 ENABLE_LOCAL_MIC: bool = True
 ENABLE_WS_AUDIO: bool = True
 ENABLE_VISUALIZER: bool = True
-MIC_DEVICE_INDEX: Optional[int] = 4 # ganti USB MIC disini
-THRESHOLD_DBFS: float = -30.0
+MIC_DEVICE_INDEX: Optional[int] = 9 # USB AUDIO (hw:2,0)
+THRESHOLD_DBFS: float = -40.0
 THRESHOLD_FLATNESS: float = 0.40
 PRE_ROLL_FRAMES: int = 10      # 300 ms sebelum suara terdeteksi
 HANGOVER_FRAMES: int = 25      # 750 ms tunggu hening sebelum potong kalimat
@@ -49,6 +49,23 @@ WHISPER_MODEL_SIZE: str = "deepdml/faster-whisper-large-v3-turbo-ct2"
 HTTP_PORT: int = 8000
 WS_PORT: int = 8765
 WS_MAX_SIZE_BYTES: int = 10 * 1024 * 1024
+
+
+def find_usb_mic_index() -> Optional[int]:
+    """Mencari indeks input audio PyAudio yang mengandung 'usb'."""
+    try:
+        import pyaudio
+        p = pyaudio.PyAudio()
+        dev_idx = None
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+            if info.get("maxInputChannels", 0) > 0 and "usb" in info.get("name", "").lower():
+                dev_idx = i
+                break
+        p.terminate()
+        return dev_idx
+    except Exception:
+        return None
 
 
 # =====================================================================
@@ -114,6 +131,7 @@ class BarelangHriNode(Node):
         self.declare_parameter("enable_local_mic", ENABLE_LOCAL_MIC)
         self.declare_parameter("enable_ws_audio", ENABLE_WS_AUDIO)
         self.declare_parameter("enable_visualizer", ENABLE_VISUALIZER)
+        self.declare_parameter("mic_device_index", MIC_DEVICE_INDEX if MIC_DEVICE_INDEX is not None else -1)
         self.declare_parameter("threshold_dbfs", THRESHOLD_DBFS)
         self.declare_parameter("threshold_flatness", THRESHOLD_FLATNESS)
         self.declare_parameter("pre_roll_frames", PRE_ROLL_FRAMES)
@@ -129,6 +147,14 @@ class BarelangHriNode(Node):
         self.enable_visualizer: bool = bool(
             self.get_parameter("enable_visualizer").value
         )
+        raw_mic_idx = self.get_parameter("mic_device_index").value
+        if raw_mic_idx is not None and int(raw_mic_idx) >= 0:
+            self.mic_device_index: Optional[int] = int(raw_mic_idx)
+        else:
+            self.mic_device_index = find_usb_mic_index()
+            if self.mic_device_index is not None:
+                self.get_logger().info(f"Otomatis mendeteksi USB Mic pada index {self.mic_device_index}")
+
         self.threshold_dbfs: float = float(
             self.get_parameter("threshold_dbfs").value
         )
@@ -339,7 +365,7 @@ class HriCoordinator:
             loop=loop,
             on_audio_captured=self.handle_local_mic_audio,
             is_paused_fn=self._is_mic_paused,
-            device_index=MIC_DEVICE_INDEX,
+            device_index=self.ros_node.mic_device_index,
             threshold_dbfs=self.ros_node.threshold_dbfs,
             threshold_flatness=self.ros_node.threshold_flatness,
             pre_roll_frames=self.ros_node.pre_roll_frames,

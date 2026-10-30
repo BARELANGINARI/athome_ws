@@ -59,15 +59,15 @@ public:
       options);
 
     follow_start_client_ = create_client<Trigger>(
-      "/follow/person", rmw_qos_profile_services_default, callback_group_);
+      "/follow/person", rclcpp::ServicesQoS(), callback_group_);
     follow_stop_client_ = create_client<Trigger>(
-      "/follow/stop", rmw_qos_profile_services_default, callback_group_);
+      "/follow/stop", rclcpp::ServicesQoS(), callback_group_);
     align_bag_client_ = create_client<Trigger>(
-      "/task/align_bag", rmw_qos_profile_services_default, callback_group_);
+      "/task/align_bag", rclcpp::ServicesQoS(), callback_group_);
     grab_bag_client_ = create_client<Trigger>(
-      "/arm/ambil_tas", rmw_qos_profile_services_default, callback_group_);
+      "/arm/ambil_tas", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
-      "/homing", rmw_qos_profile_services_default, callback_group_);
+      "/homing", rclcpp::ServicesQoS(), callback_group_);
 
     fsm_timer_ = create_wall_timer(
       100ms, std::bind(&HelpMeCarryOrchestrator::fsmTick, this), callback_group_);

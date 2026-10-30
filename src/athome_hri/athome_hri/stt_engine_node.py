@@ -14,6 +14,23 @@ from athome_hri.audio_io import LocalMicListener
 from athome_hri.stt_engine import SpeechToText
 
 
+def find_usb_mic_index() -> Union[int, None]:
+    """Mencari indeks input audio PyAudio yang mengandung 'usb'."""
+    try:
+        import pyaudio
+        p = pyaudio.PyAudio()
+        dev_idx = None
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+            if info.get("maxInputChannels", 0) > 0 and "usb" in info.get("name", "").lower():
+                dev_idx = i
+                break
+        p.terminate()
+        return dev_idx
+    except Exception:
+        return None
+
+
 class SttEngineNode(Node):
     """Capture local microphone audio and publish transcript text."""
 
@@ -43,12 +60,23 @@ class SttEngineNode(Node):
             model_size=str(self.get_parameter("model").value),
             language=str(self.get_parameter("language").value),
         )
-        device_index = int(self.get_parameter("device_index").value)
+        raw_device_index = int(self.get_parameter("device_index").value)
+        if raw_device_index < 0:
+            resolved_index = find_usb_mic_index()
+            if resolved_index is not None:
+                self.get_logger().info(
+                    f"Otomatis mendeteksi USB Mic pada index {resolved_index}"
+                )
+            else:
+                resolved_index = None
+        else:
+            resolved_index = raw_device_index
+
         self._listener = LocalMicListener(
             loop=self._loop,
             on_audio_captured=self._on_audio,
             is_paused_fn=lambda: False,
-            device_index=None if device_index < 0 else device_index,
+            device_index=resolved_index,
             threshold_dbfs=float(self.get_parameter("threshold_dbfs").value),
             threshold_flatness=float(self.get_parameter("threshold_flatness").value),
             pre_roll_frames=int(self.get_parameter("pre_roll_frames").value),
