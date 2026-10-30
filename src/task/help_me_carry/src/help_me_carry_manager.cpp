@@ -41,6 +41,10 @@ public:
     options.callback_group = callback_group_;
 
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
+    tts_done_sub_ = create_subscription<std_msgs::msg::String>(
+      "/hri/tts_done", 10,
+      std::bind(&HelpMeCarryOrchestrator::onTtsDone, this, std::placeholders::_1),
+      options);
     stt_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/stt_transcript", 10,
       std::bind(&HelpMeCarryOrchestrator::onTranscript, this, std::placeholders::_1),
@@ -93,12 +97,14 @@ private:
 
   std::mutex data_mutex_;
   std::string last_command_;
+  std::function<void()> pending_tts_done_;
   bool bag_prompt_sent_{false};
   bool recovery_prompt_sent_{false};
 
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::TimerBase::SharedPtr fsm_timer_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tts_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr emergency_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
@@ -129,13 +135,19 @@ private:
     speaking_ = true;
     busy_ = true;
     tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.5);
+    pending_tts_done_ = std::move(on_done);
+  }
 
-    // The current audio bridge has no completion topic. The cooldown prevents
-    // immediate echo input; add /hri/tts_done later for exact synchronization.
+  void onTtsDone(const std_msgs::msg::String::SharedPtr)
+  {
     speaking_ = false;
     busy_ = false;
-    if (on_done) {
-      on_done();
+    tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.4);
+
+    auto callback = std::move(pending_tts_done_);
+    pending_tts_done_ = nullptr;
+    if (callback) {
+      callback();
     }
   }
 

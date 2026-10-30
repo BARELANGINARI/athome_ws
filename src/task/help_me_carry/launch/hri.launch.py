@@ -52,25 +52,29 @@ def generate_launch_description():
             description="Model Faster-Whisper untuk transkripsi STT",
         ),
         Node(
-            package="help_me_carry",
-            executable="help_me_carry_hri.py",
-            name="barelang_audio_bridge",
+            package="athome_hri",
+            executable="stt_engine_node",
+            name="stt_engine",
             output="screen",
             emulate_tty=True,
             parameters=[
                 {
-                    "enable_local_mic": LaunchConfiguration("enable_local_mic"),
-                    "enable_ws_audio": LaunchConfiguration("enable_ws_audio"),
-                    "enable_visualizer": LaunchConfiguration("enable_visualizer"),
+                    "device_index": -1,
                     "threshold_dbfs": LaunchConfiguration("threshold_dbfs"),
                     "threshold_flatness": LaunchConfiguration("threshold_flatness"),
                     "pre_roll_frames": LaunchConfiguration("pre_roll_frames"),
                     "hangover_frames": LaunchConfiguration("hangover_frames"),
                     "min_speech_frames": LaunchConfiguration("min_speech_frames"),
-                    "whisper_model": LaunchConfiguration("whisper_model"),
-                    "enable_task_manager": False,
+                    "model": LaunchConfiguration("whisper_model"),
                 }
             ],
+        ),
+        Node(
+            package="athome_hri",
+            executable="tts_engine_node",
+            name="tts_engine",
+            output="screen",
+            emulate_tty=True,
         ),
         Node(
             package="help_me_carry",

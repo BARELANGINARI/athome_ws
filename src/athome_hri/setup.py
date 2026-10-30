@@ -28,6 +28,8 @@ setup(
         'console_scripts': [
             'help_me_carry_hri = athome_hri.help_me_carry_hri:main_entry',
             'barelang_hri = athome_hri.help_me_carry_hri:main_entry',
+            'stt_engine_node = athome_hri.stt_engine_node:main',
+            'tts_engine_node = athome_hri.tts_engine_node:main',
         ],
     },
 )
