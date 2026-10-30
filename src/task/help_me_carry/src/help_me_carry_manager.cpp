@@ -15,6 +15,7 @@ using namespace std::chrono_literals;
 
 enum class TaskState {
   INIT,
+  WAIT_WAKEWORD,
   WAIT_START_COMMAND,
   FOLLOW_OPERATOR,
   RECOVER_OPERATOR,
@@ -84,6 +85,7 @@ private:
   std::atomic<TaskState> state_{TaskState::INIT};
   std::atomic<bool> busy_{false};
   std::atomic<bool> speaking_{false};
+  std::atomic<bool> wakeword_requested_{false};
   std::atomic<bool> follow_requested_{false};
   std::atomic<bool> arrived_requested_{false};
   std::atomic<bool> emergency_stop_requested_{false};
@@ -168,6 +170,50 @@ private:
     return text;
   }
 
+
+  // Wakeword sebelum mengoperasikan robot
+  static bool matchWakeword(const std::string & text)
+  {
+    static const std::vector<std::string> corpus = {
+      "hello robot", "halo robot", "hey robot", "hello barelang", "hi robot", "robot"
+    };
+    for (const auto & phrase : corpus) {
+      if (text.find(phrase) != std::string::npos) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool matchFollow(const std::string & text)
+  {
+    static const std::vector<std::string> corpus = {
+      "follow me", "please follow me", "come with me", "lets go follow me",
+      "start following me", "guide me follow me", "following me", "follow"
+    };
+    for (const auto & phrase : corpus) {
+      if (text.find(phrase) != std::string::npos) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool matchArrived(const std::string & text)
+  {
+    static const std::vector<std::string> corpus = {
+      "arrived at the location", "we have arrived", "this is the location",
+      "reached the car", "arrived at the car", "stop here we arrived",
+      "i have arrived", "we are here", "here is the car", "arrived"
+    };
+    for (const auto & phrase : corpus) {
+      if (text.find(phrase) != std::string::npos) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void onTranscript(const std_msgs::msg::String::SharedPtr message)
   {
     if (!canListen()) {
@@ -192,15 +238,13 @@ private:
     }
 
     const TaskState current_state = state_.load();
-    if (command.find("follow") != std::string::npos &&
-      current_state == TaskState::WAIT_START_COMMAND)
-    {
+    if (matchWakeword(command) && current_state == TaskState::WAIT_WAKEWORD) {
+      wakeword_requested_ = true;
+    }
+    if (matchFollow(command) && current_state == TaskState::WAIT_START_COMMAND) {
       follow_requested_ = true;
     }
-    if ((command.find("arrived") != std::string::npos ||
-      command.find("here is the car") != std::string::npos) &&
-      current_state == TaskState::FOLLOW_OPERATOR)
-    {
+    if (matchArrived(command) && current_state == TaskState::FOLLOW_OPERATOR) {
       arrived_requested_ = true;
     }
     if (command.find("stop") != std::string::npos &&
@@ -294,12 +338,19 @@ private:
     switch (state_.load()) {
       case TaskState::INIT:
         if (tts_pub_->get_subscription_count() == 0) {
-          // Tunggu sampai tts_engine_node siap mendengarkan sebelum berbicara
+          // Tunggu sampai tts_engine_node siap mendengarkan sebelum aktif
           return;
         }
-        speakAsync(
-          "I am ready for Help Me Carry. Please tell me to follow you.",
-          [this]() { transitionTo(TaskState::WAIT_START_COMMAND, "Initial prompt"); });
+        transitionTo(TaskState::WAIT_WAKEWORD, "TTS ready, waiting for wakeword");
+        break;
+
+      case TaskState::WAIT_WAKEWORD:
+        if (wakeword_requested_.exchange(false)) {
+          speakAsync(
+            "Hello, I'm Barelang Inari, I want to help you to carry the luggage. "
+            "If you are ready, please guide me to the place, and say follow me.",
+            [this]() { transitionTo(TaskState::WAIT_START_COMMAND, "Wakeword acknowledged"); });
+        }
         break;
 
       case TaskState::WAIT_START_COMMAND:
