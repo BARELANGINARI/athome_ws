@@ -80,6 +80,9 @@ class TextToSpeech:
                 wav_file.setframerate(self.piper.config.sample_rate)
                 for chunk in self.piper.synthesize(text):
                     wav_file.writeframes(chunk.audio_int16_bytes)
+                # Tambahkan trailing silence (300 ms) agar suku kata terakhir tidak terpotong hardware buffer
+                trailing_silence = b"\x00" * int(self.piper.config.sample_rate * 2 * 0.3)
+                wav_file.writeframes(trailing_silence)
 
             return base64.b64encode(buffer.getvalue()).decode("utf-8")
         except Exception as exc:

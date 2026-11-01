@@ -22,6 +22,7 @@ namespace fs = std::filesystem;
 // ---------------- REGISTER AX-18A (PROTOCOL 1.0) ----------------
 #define ADDR_MODEL_NUMBER       0
 #define ADDR_FIRMWARE           2
+#define ADDR_RETURN_DELAY_TIME  5
 #define ADDR_CW_ANGLE_LIMIT     6
 #define ADDR_CCW_ANGLE_LIMIT    8
 #define ADDR_TORQUE_ENABLE      24
@@ -41,7 +42,7 @@ namespace fs = std::filesystem;
 #define LEN_GOAL_POSITION       2
 #define PROTOCOL_VERSION        1.0
 #define BAUDRATE                1000000
-#define DEVICENAME              "/dev/ttyUSB1"
+#define DEVICENAME              "/dev/ttyUSB0"
 
 #define MAX_ANGLE               300.0
 #define MAX_TICKS               1023
@@ -70,16 +71,16 @@ namespace fs = std::filesystem;
 #define GRASP_COMPLIANCE_SLOPE  50      // Soft compliance during grasp
 #define GRASP_CLOSING_SPEED     60      // Closing speed (~6.8 RPM)
 #define MAX_OPEN_DEG            80.0    // Full open angle (~780 ticks, covers physical opening of 753 ticks)
-#define DEFAULT_RELEASE_DEG     65.0    // Default open angle
+#define DEFAULT_RELEASE_DEG     80.0    // Default open angle
 
 const std::string MOTION_DIR = "motions";
 const uint8_t ARM_CORE_IDS[] = {4, 5, 1};
-const uint8_t ALL_IDS[]      = {4, 5, 1, 2};
+const uint8_t ALL_IDS[]      = {4, 5, 1, 6};
 
 struct Servo { uint8_t id; bool inverted; };
 const Servo JOINT1[] = { {4, false}, {5, true} };
 const Servo JOINT2[] = { {1, false} };
-const Servo JOINT3[] = { {2, false} };
+const Servo JOINT3[] = { {6, false} };
 
 enum class FrameAction {
     MOVE,           // Normal waypoint / motion sample
@@ -145,6 +146,7 @@ bool g_gripper_online = false;
 // Anti-jump deadzone filter state & background monitor for free mode
 static std::map<uint8_t, uint16_t> g_last_valid_raw;
 static std::map<uint8_t, bool>     g_in_deadzone;
+static std::map<uint8_t, bool>     g_wall_active;
 static std::map<uint8_t, bool>     g_servo_is_free;
 static std::atomic<bool>           g_free_monitor_active{false};
 static std::thread                 g_free_monitor_thread;
@@ -207,6 +209,7 @@ void resetDeadzoneFilter() {
         }
         g_last_valid_raw[id] = pos;
         g_in_deadzone[id]    = false;
+        g_wall_active[id]    = false;
     }
 }
 
@@ -248,20 +251,27 @@ uint16_t readFilteredRawPos(uint8_t id, bool enable_haptic_wall = false) {
     uint16_t clamped = std::clamp<uint16_t>(raw, min_lim, max_lim);
     g_last_valid_raw[id] = clamped;
 
-    // Active Haptic Wall only for servos currently in free / record mode
+    // Active Haptic Wall only for servos currently in free / record mode (Stateful: write only on state change)
     if (enable_haptic_wall && g_servo_is_free[id]) {
         uint8_t err = 0;
-        if (clamped >= max_lim - HAPTIC_WALL_MARGIN || clamped <= min_lim + HAPTIC_WALL_MARGIN || g_in_deadzone[id]) {
-            uint16_t wall_pos = (clamped >= max_lim - HAPTIC_WALL_MARGIN)
-                                    ? (max_lim - HAPTIC_WALL_MARGIN)
-                                    : (min_lim + HAPTIC_WALL_MARGIN);
-            packetHandler->write2ByteTxRx(portHandler, id, ADDR_TORQUE_LIMIT, 500, &err);
-            packetHandler->write2ByteTxRx(portHandler, id, ADDR_GOAL_POSITION, wall_pos, &err);
-            packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 1, &err);
-            packetHandler->write1ByteTxRx(portHandler, id, ADDR_LED, 1, &err);
+        bool in_wall = (clamped >= max_lim - HAPTIC_WALL_MARGIN || clamped <= min_lim + HAPTIC_WALL_MARGIN || g_in_deadzone[id]);
+        if (in_wall) {
+            if (!g_wall_active[id]) {
+                uint16_t wall_pos = (clamped >= max_lim - HAPTIC_WALL_MARGIN)
+                                        ? (max_lim - HAPTIC_WALL_MARGIN)
+                                        : (min_lim + HAPTIC_WALL_MARGIN);
+                packetHandler->write2ByteTxRx(portHandler, id, ADDR_TORQUE_LIMIT, 500, &err);
+                packetHandler->write2ByteTxRx(portHandler, id, ADDR_GOAL_POSITION, wall_pos, &err);
+                packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 1, &err);
+                packetHandler->write1ByteTxRx(portHandler, id, ADDR_LED, 1, &err);
+                g_wall_active[id] = true;
+            }
         } else {
-            packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 0, &err);
-            packetHandler->write1ByteTxRx(portHandler, id, ADDR_LED, 0, &err);
+            if (g_wall_active[id]) {
+                packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 0, &err);
+                packetHandler->write1ByteTxRx(portHandler, id, ADDR_LED, 0, &err);
+                g_wall_active[id] = false;
+            }
         }
     }
 
@@ -424,6 +434,7 @@ bool initServos() {
             return false;
         }
         g_servo_is_free[id] = false;
+        packetHandler->write1ByteTxRx(portHandler, id, ADDR_RETURN_DELAY_TIME, 10, &err);
         packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 0, &err);
         if (const auto *c = getCalib(id)) {
             packetHandler->write2ByteTxRx(portHandler, id, ADDR_CW_ANGLE_LIMIT,  c->cw_limit,  &err);
@@ -435,6 +446,7 @@ bool initServos() {
     if (packetHandler->ping(portHandler, GRIPPER_ID, &grip_model, &err) == COMM_SUCCESS) {
         g_gripper_online = true;
         g_servo_is_free[GRIPPER_ID] = false;
+        packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_RETURN_DELAY_TIME, 10, &err);
         packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_ENABLE, 0, &err);
         if (const auto *c = getCalib(GRIPPER_ID)) {
             packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_CW_ANGLE_LIMIT,  c->cw_limit,  &err);
@@ -497,9 +509,17 @@ bool adaptiveGrasp(double &cur_grip_deg, int load_threshold = DEFAULT_GRASP_LOAD
     if (static_cast<int>(start_pos) <= closed_tick + 10) {
         uint16_t open_tick = relAngleToPosition(GRIPPER_ID, 80.0, false);
         std::cout << "  [PRE-OPEN] Jaws closed, opening to +80.0 deg (tick=" << open_tick << ")...\n";
+        packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_MOVING_SPEED, 200, &err);
         packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_GOAL_POSITION, open_tick, &err);
-        std::this_thread::sleep_for(std::chrono::milliseconds(650));
-        readRawPos(GRIPPER_ID, start_pos);
+
+        auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 1.5) {
+            readRawPos(GRIPPER_ID, start_pos);
+            if (start_pos >= open_tick - 15) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+
+        packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_MOVING_SPEED, GRASP_CLOSING_SPEED, &err);
     }
 
     std::cout << "\n================ ADAPTIVE GRASPING PROCESS (ID 6) ================\n";
@@ -665,6 +685,7 @@ void releaseGripper(dynamixel::GroupSyncWrite &gsw, double cur[3], double open_d
         packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_CCW_SLOPE, COMPLIANCE_SLOPE, &err);
         packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_MOVING_SPEED, 0, &err);
         packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_LIMIT, DEFAULT_TORQUE_LIM, &err);
+        packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_ENABLE, 1, &err);
     }
     double target[3] = { cur[0], cur[1], open_deg };
     std::cout << "  [RELEASE] Opening gripper to +" << open_deg << " deg...\n";
@@ -754,19 +775,20 @@ void executeMotion(dynamixel::GroupSyncWrite &gsw, double cur[3], const MotionDa
 
 // ---------------- INTERACTIVE CONTINUOUS RECORDING (PAUSE-AND-LOCK) ----------------
 void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
-                             MotionData &buffer, double max_secs) {
+                             MotionData &buffer, double max_secs, bool keep_gripper = false) {
     stopFreeMonitor();
 
-    // 1. Open gripper to ready position (+65 deg) and keep ID 6 locked,
-    //    while J1 & J2 (ID 4, 5, 1) are free.
+    // 1. If keep_gripper is false, open gripper to ready position (+80 deg) and keep ID 6 locked.
+    //    If keep_gripper is true, keep current gripper angle & hold, while J1 & J2 are free.
     readCurrentPose(cur, false);
-    if (g_gripper_online) {
+    if (!keep_gripper && g_gripper_online) {
         openGripperOnly(cur[2], DEFAULT_RELEASE_DEG);
     }
     setArmOnlyTorque(gsw, cur, false);
 
     std::cout << "\n================ INTERACTIVE RECORD MODE (50 Hz) ================\n"
-              << "  - Arm torque (J1 & J2) DISABLED; Gripper ready at +" << cur[2] << " deg.\n"
+              << "  - Arm torque (J1 & J2) DISABLED; Gripper "
+              << (keep_gripper ? "HOLDING current pose at +" : "ready at +") << cur[2] << " deg.\n"
               << "  - Real-time Key Controls (no need to press ENTER):\n"
               << "      [g]         -> PAUSE & LOCK Arm + Run Adaptive Grasp\n"
               << "      [r]         -> PAUSE & LOCK Arm + Open Gripper (Release)\n"
@@ -782,18 +804,19 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
 
     int max_steps = static_cast<int>(std::ceil(max_secs * UPDATE_RATE_HZ));
     const auto period = std::chrono::microseconds(1000000 / UPDATE_RATE_HZ);
-    bool holding_object = false;
+    bool holding_object = keep_gripper;
 
     std::cout << "\n  [REC] Recording motion (Max " << max_secs << "s)... "
               << "Press [g]=Grasp, [r]=Release, [q]=Stop\n";
 
     {
         RawTerminalGuard raw_term;
-        auto next = std::chrono::steady_clock::now();
+        auto start_time = std::chrono::steady_clock::now();
+        auto next = start_time;
 
         for (int k = 0; k < max_steps; k++) {
             double p[3] = {cur[0], cur[1], cur[2]};
-            readCurrentPose(p, true);
+            readCurrentPose(p, false);
             if (holding_object) {
                 p[2] = cur[2];
             }
@@ -804,7 +827,7 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
             });
 
             if (k % 5 == 0) {
-                double elapsed = static_cast<double>(k) / UPDATE_RATE_HZ;
+                double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
                 std::cout << "\r  [REC " << std::fixed << std::setprecision(1)
                           << std::setw(4) << elapsed << "s / " << max_secs << "s] "
                           << "J1=" << std::setw(6) << p[0] << " deg | "
@@ -816,6 +839,7 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
             int key = readKeyNonBlocking();
             if (key == 'g' || key == 'G') {
                 std::cout << "\n\n  >>> [TRIGGER 'g'] PAUSE & LOCK Arm for Adaptive Grasp...\n";
+                auto pause_start = std::chrono::steady_clock::now();
                 setArmOnlyTorque(gsw, cur, true);
 
                 holding_object = adaptiveGrasp(cur[2], DEFAULT_GRASP_LOAD);
@@ -827,9 +851,11 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
                 setArmOnlyTorque(gsw, cur, false);
                 std::cout << "  <<< [RESUME REC] Arm J1 & J2 freed (Gripper holding object). "
                           << "Move the object now!\n";
+                start_time += (std::chrono::steady_clock::now() - pause_start);
                 next = std::chrono::steady_clock::now();
             } else if (key == 'r' || key == 'R') {
                 std::cout << "\n\n  >>> [TRIGGER 'r'] PAUSE & LOCK Arm for Gripper Release...\n";
+                auto pause_start = std::chrono::steady_clock::now();
                 setArmOnlyTorque(gsw, cur, true);
 
                 openGripperOnly(cur[2], DEFAULT_RELEASE_DEG);
@@ -841,6 +867,7 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
 
                 setArmOnlyTorque(gsw, cur, false);
                 std::cout << "  <<< [RESUME REC] Object released, arm J1 & J2 freed.\n";
+                start_time += (std::chrono::steady_clock::now() - pause_start);
                 next = std::chrono::steady_clock::now();
             } else if (key == 'q' || key == 'Q' || key == ' ') {
                 std::cout << "\n\n  >>> [STOP] Recording stopped by user.\n";
@@ -848,7 +875,12 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
             }
 
             next += period;
-            std::this_thread::sleep_until(next);
+            auto now = std::chrono::steady_clock::now();
+            if (next < now) {
+                next = now;
+            } else {
+                std::this_thread::sleep_until(next);
+            }
         }
     }
 
@@ -970,8 +1002,9 @@ void printHelp() {
               << "     grasp [load_thresh]  -> Grasp object adaptively (default load=" << DEFAULT_GRASP_LOAD << ")\n"
               << "     release [deg]        -> Open gripper jaws (default +" << DEFAULT_RELEASE_DEG << " deg)\n\n"
               << "  3. Full Motion Recording (Stream & Waypoint):\n"
-              << "     record [seconds]     -> Record 50 Hz continuous motion (default 20s) with live keys:\n"
-              << "                             [g]=Pause & Grasp, [r]=Pause & Release, [q]/SPACE=Stop\n"
+              << "     record [seconds]     -> Record 50 Hz motion starting with gripper open (ready)\n"
+              << "     record_hold [secs]   -> Record 50 Hz motion keeping gripper hold (e.g. for letakkan_tas)\n"
+              << "                             Live keys: [g]=Pause & Grasp, [r]=Pause & Release, [q]/SPACE=Stop\n"
               << "     add [duration_sec]   -> Record current arm position as waypoint\n"
               << "     add grasp [load]     -> Run & record Adaptive Grasping at current position\n"
               << "     add release [deg]    -> Run & record gripper open at current position\n"
@@ -1103,11 +1136,12 @@ int main() {
             std::cout << "  [ADD] Waypoint #" << buffer.frames.size() << " recorded: "
                       << "J1=" << cur[0] << " deg, J2=" << cur[1] << " deg, Grip=" << cur[2] << " deg\n";
             if (was_free) startFreeMonitor();
-        } else if (cmd == "record") {
+        } else if (cmd == "record" || cmd == "record_hold" || cmd == "record_continue") {
+            bool keep_grip = (cmd == "record_hold" || cmd == "record_continue");
             double secs = 20.0;
             ss >> secs;
             secs = std::clamp(secs, 1.0, 120.0);
-            recordInteractiveStream(gsw, cur, buffer, secs);
+            recordInteractiveStream(gsw, cur, buffer, secs, keep_grip);
         } else if (cmd == "move") {
             double j1, j2, gr;
             if (ss >> j1 >> j2 >> gr) {

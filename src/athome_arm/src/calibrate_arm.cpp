@@ -44,9 +44,9 @@
 #define LOW_TORQUE_VAL          600     // ~58% max torque to support arm against gravity
 #define INITIAL_SAFE_DEG        15.0    // Initial conservative limit (+/- 15 deg)
 #define FULL_WORK_RANGE_DEG     260.0   // Max work range (J1 & J2)
-#define FULL_GRIP_OPEN_DEG      80.0    // Full open range Gripper ID 2 (~780 ticks)
+#define FULL_GRIP_OPEN_DEG      80.0    // Full open range Gripper ID 6 (~780 ticks)
 
-const uint8_t SERVO_IDS[] = {1, 4, 5, 2};
+const uint8_t SERVO_IDS[] = {1, 4, 5, 6};
 
 struct ServoCalib {
     uint8_t  id;
@@ -98,7 +98,7 @@ bool read2Byte(uint8_t id, uint16_t addr, uint16_t &val) {
 void setTorqueAll(bool enable) {
     if (!enable) {
         // Ensure inactive servos are also torque disabled if connected
-        const uint8_t all_possible[] = {1, 4, 5, 2};
+        const uint8_t all_possible[] = {1, 4, 5, 6};
         for (uint8_t id : all_possible) {
             write1Byte(id, ADDR_TORQUE_ENABLE, 0);
         }
@@ -135,7 +135,7 @@ void waitEnter(const std::string &prompt) {
 
 // ---------------- VERIFY CONNECTION ----------------
 bool checkServos() {
-    std::cout << "Checking servo connection ID 1, 4, 5, 2 on " << DEVICENAME
+    std::cout << "Checking servo connection ID 1, 4, 5, 6 on " << DEVICENAME
               << " @ " << BAUDRATE << " bps...\n";
     bool all_ok = true;
     for (uint8_t id : SERVO_IDS) {
@@ -157,7 +157,7 @@ void step1And2_DisableTorqueAndPlaceZero() {
     std::cout << "STEP 1 & 2: DISABLE TORQUE & POSITION ARM AT ZERO\n";
     std::cout << "========================================================\n";
     setTorqueAll(false);
-    std::cout << "[INFO] Torque on ID 1, 4, 5, 2 DISABLED.\n";
+    std::cout << "[INFO] Torque on ID 1, 4, 5, 6 DISABLED.\n";
     std::cout << "[INSTRUCTION] Manually place the arm at the desired zero position.\n";
     std::cout << "            Do not rely solely on center value 512 (150 deg) from Dynamixel Wizard.\n\n";
 
@@ -182,7 +182,7 @@ void step1And2_DisableTorqueAndPlaceZero() {
 // ---------------- STEP 3 & 4: READ & RECORD ACTUAL CENTER ----------------
 void step3And4_ReadAndRecordCenters(std::map<uint8_t, ServoCalib> &calib) {
     std::cout << "\n========================================================\n";
-    std::cout << "STEP 3 & 4: READ & RECORD ACTUAL CENTER (ID 1, 4, 5, 2)\n";
+    std::cout << "STEP 3 & 4: READ & RECORD ACTUAL CENTER (ID 1, 4, 5, 6)\n";
     std::cout << "========================================================\n";
     std::cout << std::left
               << std::setw(6)  << "ID"
@@ -289,10 +289,10 @@ void applyAngleLimitsDeg(std::map<uint8_t, ServoCalib> &calib,
         calib[1].cw_limit  = clampTicks(calib[1].effectiveCenter() - d2);
         calib[1].ccw_limit = clampTicks(calib[1].effectiveCenter() + d2);
     }
-    if (calib.count(2)) {
-        // ID 2 (Gripper): center (~506) is fully closed, opening direction is +ticks (up to ~753+)
-        calib[2].cw_limit  = clampTicks(calib[2].effectiveCenter() - 15);
-        calib[2].ccw_limit = clampTicks(calib[2].effectiveCenter() + dg);
+    if (calib.count(6)) {
+        // ID 6 (Gripper): center (~506) is fully closed, opening direction is +ticks (up to ~753+)
+        calib[6].cw_limit  = clampTicks(calib[6].effectiveCenter() - 15);
+        calib[6].ccw_limit = clampTicks(calib[6].effectiveCenter() + dg);
     }
 
     std::cout << "\nWriting CW/CCW limits to EEPROM:\n";
@@ -343,7 +343,7 @@ void moveJoint1Rel(dynamixel::GroupSyncWrite &gsw,
               << " deg (ID4=" << g4 << ", ID5=" << g5 << ")\n";
 }
 
-// Move single servo (ID 1 or ID 2) relative to its center
+// Move single servo (ID 1 or ID 6) relative to its center
 // Positive delta_deg = CCW (+ticks), negative delta_deg = CW (-ticks)
 void moveSingleRel(const std::map<uint8_t, ServoCalib> &calib,
                    uint8_t id, double delta_deg) {
@@ -379,11 +379,11 @@ void step7And8_TestAndExpandRange(dynamixel::GroupSyncWrite &gsw,
         std::cout << "\n--- Test & Range Expansion Menu (Speed=" << LOW_SPEED_VAL
                   << ", TorqueLimit=" << LOW_TORQUE_VAL << ") ---\n"
                   << "  Active limits : J1(ID4&5)=+/-" << max_j1 << " deg | "
-                  << "J2(ID1)=+/-" << max_j2 << " deg | Gripper(ID2)=0..+" << max_grip << " deg\n"
+                  << "J2(ID1)=+/-" << max_j2 << " deg | Gripper(ID6)=0..+" << max_grip << " deg\n"
                   << "  Commands:\n"
                   << "    j1 <deg>     -> Test Joint 1 (+/-deg, e.g.: j1 -10, j1 -90, j1 0)\n"
                   << "    j2 <deg>     -> Test Joint 2 (ID 1, -deg=lift up, +deg=bend down)\n"
-                  << "    grip <deg>   -> Test Gripper (ID 2, 0=closed to +75=fully open)\n"
+                  << "    grip <deg>   -> Test Gripper (ID 6, 0=closed to +75=fully open)\n"
                   << "    zero         -> Move all active servos to calibrated zero position\n"
                   << "    expand <d1> [d2] [dg] -> Expand degree limits (max 260), e.g.: expand 260 260 80\n"
                   << "    status       -> Read current position & load for all active servos\n"
@@ -412,12 +412,12 @@ void step7And8_TestAndExpandRange(dynamixel::GroupSyncWrite &gsw,
             double deg = 0;
             if (ss >> deg) {
                 deg = std::clamp(deg, 0.0, max_grip);
-                moveSingleRel(calib, 2, deg);
+                moveSingleRel(calib, 6, deg);
             }
         } else if (cmd == "zero") {
             if (calib.count(4) && calib.count(5)) moveJoint1Rel(gsw, calib, 0.0);
             if (calib.count(1)) moveSingleRel(calib, 1, 0.0);
-            if (calib.count(2)) moveSingleRel(calib, 2, 0.0);
+            if (calib.count(6)) moveSingleRel(calib, 6, 0.0);
         } else if (cmd == "expand") {
             double d1 = max_j1, d2 = max_j2, dg = max_grip;
             if (ss >> d1) {
@@ -515,7 +515,7 @@ int main() {
     // Step 1 & 2: Disable torque & position arm manually to point 0
     step1And2_DisableTorqueAndPlaceZero();
 
-    // Step 3 & 4: Read and record actual center for ID 1, 4, 5, and 2
+    // Step 3 & 4: Read and record actual center for ID 1, 4, 5, and 6
     step3And4_ReadAndRecordCenters(calib);
 
     // Step 5: Fine tuning for ID 4 and 5 alignment

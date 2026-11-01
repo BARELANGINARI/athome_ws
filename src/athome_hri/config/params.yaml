@@ -1,0 +1,52 @@
+# ==============================================================================
+# Barelang Inari - Human-Robot Interaction (HRI) Configuration
+# Package: athome_hri
+# Nodes: barelang_hri_node / barelang_audio_bridge / stt_engine / tts_engine
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Konfigurasi Master / All-in-One HRI Node (help_me_carry_hri.py)
+# ------------------------------------------------------------------------------
+barelang_hri_node: &hri_params
+  ros__parameters:
+    # Index perangkat input PyAudio (-1 untuk auto-detect USB mic)
+    mic_device_index: -1
+    enable_local_mic: true
+    enable_ws_audio: true
+    enable_visualizer: true
+    enable_live_meter: true
+    threshold_dbfs: -40.0
+    threshold_flatness: 0.40
+    pre_roll_frames: 10
+    hangover_frames: 25
+    min_speech_frames: 15
+    whisper_model: "deepdml/faster-whisper-large-v3-turbo-ct2"
+    http_port: 8000
+    ws_port: 8765
+
+barelang_audio_bridge:
+  <<: *hri_params
+
+# ------------------------------------------------------------------------------
+# 2. Konfigurasi Modular STT Engine Node (stt_engine_node.py)
+# ------------------------------------------------------------------------------
+stt_engine:
+  ros__parameters:
+    # Index perangkat input PyAudio (-1 untuk auto-detect USB mic)
+    device_index: -1
+    enable_live_meter: true
+    threshold_dbfs: -40.0
+    threshold_flatness: 0.40
+    pre_roll_frames: 10
+    hangover_frames: 25
+    min_speech_frames: 15
+    model: "deepdml/faster-whisper-large-v3-turbo-ct2"
+    language: "en"
+
+# ------------------------------------------------------------------------------
+# 3. Konfigurasi Modular TTS Engine Node (tts_engine_node.py)
+# ------------------------------------------------------------------------------
+tts_engine:
+  ros__parameters:
+    model: "en_US-lessac-medium.onnx"
+    enable_local_speaker: true

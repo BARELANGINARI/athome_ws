@@ -3,6 +3,7 @@
 import asyncio
 import base64
 from collections import deque
+import contextlib
 from dataclasses import dataclass
 import io
 import logging
@@ -19,6 +20,23 @@ import numpy as np
 from athome_hri.tts_engine import TextToSpeech
 
 logger = logging.getLogger("athome_hri.audio_io")
+
+
+@contextlib.contextmanager
+def no_c_stderr():
+    """Membungkam output stderr di level C (ALSA & JACK)."""
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        old_stderr_fd = os.dup(2)
+        os.dup2(devnull_fd, 2)
+        os.close(devnull_fd)
+        try:
+            yield
+        finally:
+            os.dup2(old_stderr_fd, 2)
+            os.close(old_stderr_fd)
+    except Exception:
+        yield
 
 try:
     from scipy.signal import butter, lfilter, resample_poly
@@ -136,27 +154,30 @@ class AudioSpeechQueue:
                     )
                     sd.play(audio_np, samplerate=rate)
                     sd.wait()
+                    time.sleep(0.1)
                     return True
                 elif HAS_PYAUDIO:
-                    pa = pyaudio.PyAudio()
-                    try:
-                        chunk = 4096
-                        stream = pa.open(
-                            format=pa.get_format_from_width(wf.getsampwidth()),
-                            channels=wf.getnchannels(),
-                            rate=wf.getframerate(),
-                            output=True,
-                            frames_per_buffer=chunk,
-                        )
-                        data = wf.readframes(chunk)
-                        while data:
-                            stream.write(data)
+                    with no_c_stderr():
+                        pa = pyaudio.PyAudio()
+                        try:
+                            chunk = 4096
+                            stream = pa.open(
+                                format=pa.get_format_from_width(wf.getsampwidth()),
+                                channels=wf.getnchannels(),
+                                rate=wf.getframerate(),
+                                output=True,
+                                frames_per_buffer=chunk,
+                            )
                             data = wf.readframes(chunk)
-                        stream.stop_stream()
-                        stream.close()
-                        return True
-                    finally:
-                        pa.terminate()
+                            while data:
+                                stream.write(data)
+                                data = wf.readframes(chunk)
+                            time.sleep(0.25)
+                            stream.stop_stream()
+                            stream.close()
+                            return True
+                        finally:
+                            pa.terminate()
         except Exception as exc:
             logger.debug("Gagal memutar audio ke speaker lokal: %s", exc)
         return False
@@ -446,27 +467,42 @@ class LocalMicListener:
             logger.info("Mikrofon lokal dinonaktifkan.")
 
     def _listen_with_pyaudio(self) -> None:
-        pa = pyaudio.PyAudio()
         stream = None
         hw_rate = self.sample_rate
         hw_block = self.block_size
+        pa = None
         try:
-            for cand_rate in (self.sample_rate, 48000, 44100):
-                try:
-                    cand_block = int(cand_rate * self.BLOCK_DURATION)
-                    stream = pa.open(
-                        format=pyaudio.paInt16,
-                        channels=1,
-                        rate=cand_rate,
-                        input=True,
-                        input_device_index=self.device_index,
-                        frames_per_buffer=cand_block,
-                    )
-                    hw_rate = cand_rate
-                    hw_block = cand_block
-                    break
-                except Exception:
-                    continue
+            with no_c_stderr():
+                pa = pyaudio.PyAudio()
+                cand_rates = []
+                if self.device_index is not None:
+                    try:
+                        dev_info = pa.get_device_info_by_index(self.device_index)
+                        def_rate = int(dev_info.get("defaultSampleRate", 0))
+                        if def_rate > 0:
+                            cand_rates.append(def_rate)
+                    except Exception:
+                        pass
+                for r in (48000, 44100, self.sample_rate):
+                    if r not in cand_rates:
+                        cand_rates.append(r)
+
+                for cand_rate in cand_rates:
+                    try:
+                        cand_block = int(cand_rate * self.BLOCK_DURATION)
+                        stream = pa.open(
+                            format=pyaudio.paInt16,
+                            channels=1,
+                            rate=cand_rate,
+                            input=True,
+                            input_device_index=self.device_index,
+                            frames_per_buffer=cand_block,
+                        )
+                        hw_rate = cand_rate
+                        hw_block = cand_block
+                        break
+                    except Exception:
+                        continue
 
             if stream is None:
                 logger.error("Gagal membuka mikrofon lokal via PyAudio pada semua sample rate.")
@@ -513,7 +549,12 @@ class LocalMicListener:
                     stream.close()
                 except Exception:
                     pass
-            pa.terminate()
+            if pa is not None:
+                try:
+                    with no_c_stderr():
+                        pa.terminate()
+                except Exception:
+                    pass
             logger.info("Mikrofon lokal dinonaktifkan.")
 
     def _init_vad_state(self) -> None:
