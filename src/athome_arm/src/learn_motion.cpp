@@ -71,7 +71,7 @@ namespace fs = std::filesystem;
 #define GRASP_COMPLIANCE_SLOPE  50      // Soft compliance during grasp
 #define GRASP_CLOSING_SPEED     60      // Closing speed (~6.8 RPM)
 #define MAX_OPEN_DEG            80.0    // Full open angle (~780 ticks, covers physical opening of 753 ticks)
-#define DEFAULT_RELEASE_DEG     65.0    // Default open angle
+#define DEFAULT_RELEASE_DEG     80.0    // Default open angle
 
 const std::string MOTION_DIR = "motions";
 const uint8_t ARM_CORE_IDS[] = {4, 5, 1};
