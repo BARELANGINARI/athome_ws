@@ -23,14 +23,14 @@ help_me_carry_node:
     bag_stop_distance: 0.45                   # Distance to stop in front of bag (meters)
     max_follow_range: 3.0                     # Max detection range to follow (meters)
     max_lost_time: 3.0                        # Watchdog safety timeout before reset (seconds)
-    occlusion_timeout: 3.5                    # Kalman dead-reckoning window on occlusion (seconds)
+    occlusion_timeout: 1.5                    # Kalman dead-reckoning window on occlusion (seconds)
 
     # -------------------------------------------------------------
     # 3. VELOCITY LIMITS & PID GAINS
     # -------------------------------------------------------------
     min_vx: 0.08                              # Minimum forward speed when moving (m/s)
     max_vx: 0.32                              # Maximum forward speed (m/s)
-    max_vy: 0.28                              # Maximum lateral strafe speed (m/s)
+    max_vy: 0.22                              # Maximum lateral strafe speed (m/s)
     max_wz: 0.40                              # Maximum angular rotation speed (rad/s)
     occlusion_max_vx: 0.22                    # Capped forward speed during Kalman dead-reckoning (m/s)
     kp_dist: 0.45                             # Proportional gain for forward distance error
@@ -45,16 +45,13 @@ help_me_carry_node:
     alpha_v: 0.35                             # Slew-rate smoothing factor for linear velocities (0-1)
     alpha_w: 0.40                             # Slew-rate smoothing factor for angular velocity (0-1)
     bearing_beta: 0.35                        # Low-pass filter weight for raw vision bearing (0-1)
-    max_accel_x: 0.65                         # Maximum linear X acceleration ramp (m/s^2)
-    max_accel_y: 0.45                         # Maximum lateral Y acceleration ramp (m/s^2)
-    max_accel_w: 0.55                         # Maximum angular acceleration ramp (rad/s^2)
 
     # -------------------------------------------------------------
     # 5. LIDAR OBSTACLE & SAFETY CORRIDOR
     # -------------------------------------------------------------
     enable_avoidance: true                    # Enable real-time LiDAR obstacle avoidance
     obstacle_distance: 0.75                   # Distance threshold to start slowing down (meters)
-    footprint_radius: 0.24                    # Robot self-footprint radius filter (meters)
+    footprint_radius: 0.40                    # Robot self-footprint radius filter (meters)
     min_stop_x: 0.38                          # Hard safety braking distance from robot center (meters)
     corridor_width: 0.32                      # Front danger corridor half-width (|y| in meters)
 

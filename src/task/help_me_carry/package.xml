@@ -7,7 +7,6 @@
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
   <depend>ament_index_cpp</depend>
   <depend>geometry_msgs</depend>
@@ -21,13 +20,11 @@
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <exec_depend>action_msgs</exec_depend>
-  <exec_depend>rosidl_default_runtime</exec_depend>
   <exec_depend>rclpy</exec_depend>
-
-  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <exec_depend>rviz2</exec_depend>
   <exec_depend>athome_navigation</exec_depend>
+  <exec_depend>athome_hri</exec_depend>
   <exec_depend>athome_bringup</exec_depend>
   <exec_depend>athome_base</exec_depend>
   <exec_depend>athome_vision</exec_depend>

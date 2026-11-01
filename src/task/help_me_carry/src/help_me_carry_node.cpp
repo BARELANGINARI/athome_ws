@@ -19,7 +19,6 @@
 #include "nav_msgs/msg/path.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
-#include "help_me_carry/action/follow_person.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/float64.hpp"
@@ -183,8 +182,6 @@ public:
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
   using GoalHandle = rclcpp_action::ClientGoalHandle<NavigateToPose>;
   using Trigger = std_srvs::srv::Trigger;
-  using FollowPerson = help_me_carry::action::FollowPerson;
-  using GoalHandleFollowPerson = rclcpp_action::ServerGoalHandle<FollowPerson>;
 
   explicit HelpMeCarryNode(const std::string & node_name = "help_me_carry_node")
   : Node(node_name)
@@ -209,12 +206,12 @@ public:
     bag_stop_distance_ = declare_parameter<double>("bag_stop_distance", 0.45);
     max_range_ = declare_parameter<double>("max_follow_range", 3.0);
     max_lost_time_ = declare_parameter<double>("max_lost_time", 3.0);
-    occlusion_timeout_ = declare_parameter<double>("occlusion_timeout", 3.5);
+    occlusion_timeout_ = declare_parameter<double>("occlusion_timeout", 1.5);
 
     // Speed Limits & PID Gains
     min_vx_ = declare_parameter<double>("min_vx", 0.08);
     max_vx_ = declare_parameter<double>("max_vx", 0.32);
-    max_vy_ = declare_parameter<double>("max_vy", 0.28);
+    max_vy_ = declare_parameter<double>("max_vy", 0.22);
     max_wz_ = declare_parameter<double>("max_wz", 0.40);
     occlusion_max_vx_ = declare_parameter<double>("occlusion_max_vx", 0.22);
     kp_dist_ = declare_parameter<double>("kp_dist", 0.45);
@@ -227,14 +224,11 @@ public:
     alpha_v_ = declare_parameter<double>("alpha_v", 0.35);
     alpha_w_ = declare_parameter<double>("alpha_w", 0.40);
     bearing_beta_ = declare_parameter<double>("bearing_beta", 0.35);
-    max_accel_x_ = declare_parameter<double>("max_accel_x", 0.65);
-    max_accel_y_ = declare_parameter<double>("max_accel_y", 0.45);
-    max_accel_w_ = declare_parameter<double>("max_accel_w", 0.55);
 
     // Obstacle Avoidance & Safety Corridor
     enable_avoidance_ = declare_parameter<bool>("enable_avoidance", true);
     obstacle_distance_ = declare_parameter<double>("obstacle_distance", 0.75);
-    footprint_radius_ = declare_parameter<double>("footprint_radius", 0.24);
+    footprint_radius_ = declare_parameter<double>("footprint_radius", 0.40);
     min_stop_x_ = declare_parameter<double>("min_stop_x", 0.38);
     corridor_width_ = declare_parameter<double>("corridor_width", 0.32);
 
@@ -351,15 +345,6 @@ public:
       rclcpp::ServicesQoS(),
       cb_group_);
 
-    follow_action_server_ = rclcpp_action::create_server<FollowPerson>(
-      this,
-      "/follow/person_action",
-      std::bind(&HelpMeCarryNode::handle_follow_goal, this, std::placeholders::_1, std::placeholders::_2),
-      std::bind(&HelpMeCarryNode::handle_follow_cancel, this, std::placeholders::_1),
-      std::bind(&HelpMeCarryNode::handle_follow_accepted, this, std::placeholders::_1),
-      rcl_action_server_get_default_options(),
-      cb_group_);
-
     watchdog_timer_ = create_wall_timer(
       std::chrono::milliseconds(500), [this]() { check_safety_watchdog(); });
 
@@ -370,27 +355,8 @@ public:
   }
 
 private:
-  double get_current_yaw_rad(bool has_map_tf, double ryaw)
-  {
-    if (has_map_tf) {
-      return ryaw;
-    }
-    std::lock_guard<std::mutex> lock(bag_mutex_);
-    return current_yaw_deg_ * M_PI / 180.0;
-  }
-
   void on_person_detected(const std_msgs::msg::String::SharedPtr msg)
   {
-    // Cek apakah ada permintaan cancel dari action client
-    {
-      std::lock_guard<std::mutex> lock(follow_action_mutex_);
-      if (active_follow_goal_ && active_follow_goal_->is_canceling()) {
-        auto dummy = std::make_shared<Trigger::Response>();
-        handle_stop_follow(dummy);
-        return;
-      }
-    }
-
     if (!is_following_) {
       return;
     }
@@ -557,18 +523,15 @@ private:
     if (!person_matched) {
       const double elapsed = now().seconds() - last_seen_sec_;
       // DEAD-RECKONING: Track Kalman Filter prediction during short occlusion!
-      // Batas diperpanjang jika robot sedang bermanuver menghindari rintangan dekat (<38cm)
-      const double effective_timeout = is_blocked_close_ ? 4.5 : occlusion_timeout_;
-      if (kf_.is_initialized() && elapsed <= effective_timeout) {
+      if (kf_.is_initialized() && elapsed <= occlusion_timeout_) {
         person_matched = true;
         is_predicting = true;
         rel_x = kf_.x();
         rel_y = kf_.y();
-        raw_dist = std::max(0.6, std::hypot(rel_x, rel_y));
+        raw_dist = std::hypot(rel_x, rel_y);
         raw_bearing = std::atan2(rel_y, rel_x);
       } else {
         // Target lost beyond timeout: decelerate and stop safely
-        is_blocked_close_ = false;
         current_cmd_vx_ *= 0.70;
         current_cmd_vy_ *= 0.70;
         current_cmd_wz_ *= 0.70;
@@ -650,119 +613,17 @@ private:
     }
     path_pub_->publish(path_msg);
 
-    // Update posisi dan sudut terakhir operator sebelum terhalang
-    if (!is_blocked_close_) {
-      last_known_target_bearing_ = direct_bearing;
-      if (has_map_tf) {
-        const double target_yaw = ryaw + direct_bearing;
-        last_known_target_global_x_ = rx + direct_dist * std::cos(target_yaw);
-        last_known_target_global_y_ = ry + direct_dist * std::sin(target_yaw);
-        has_known_target_global_ = true;
-      }
-    }
-
     // =====================================================================
-    // 2. ROBUST LIDAR OBSTACLE & SAFETY CORRIDOR EVALUATION
-    // =====================================================================
-    bool obstacle_detected = false;
-    double min_front_x = 999.0;
-    double rep_y = 0.0;
-    double left_clearance = 0.0;
-    double right_clearance = 0.0;
-    int left_count = 0;
-    int right_count = 0;
-
-    if (enable_avoidance_) {
-      sensor_msgs::msg::LaserScan::SharedPtr scan;
-      {
-        std::lock_guard<std::mutex> lock(scan_mutex_);
-        scan = latest_scan_;
-      }
-
-      if (scan && !scan->ranges.empty()) {
-        double laser_tx = 0.0;
-        double laser_ty = 0.0;
-        double laser_yaw = 3.1415926535;
-        try {
-          auto tf_laser = tf_buffer_->lookupTransform(
-            frame_base_, scan->header.frame_id, tf2::TimePointZero);
-          laser_tx = tf_laser.transform.translation.x;
-          laser_ty = tf_laser.transform.translation.y;
-          const auto & rq = tf_laser.transform.rotation;
-          const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
-          const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
-          laser_yaw = std::atan2(siny, cosy);
-        } catch (const tf2::TransformException &) {
-          laser_yaw = 3.1415926535;
-        }
-
-        const int num_readings = static_cast<int>(scan->ranges.size());
-        for (int i = 0; i < num_readings; ++i) {
-          const float r = scan->ranges[i];
-          if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) {
-            continue;
-          }
-
-          // Hitung sudut sinar di frame base_link
-          const double angle_laser = scan->angle_min + i * scan->angle_increment;
-          double angle_base = angle_laser + laser_yaw;
-          angle_base = std::atan2(std::sin(angle_base), std::cos(angle_base));
-
-          // Koordinat rintangan di base_link
-          const double obs_x = laser_tx + r * std::cos(angle_base);
-          const double obs_y = laser_ty + r * std::sin(angle_base);
-
-          // 1. FILTER ROBOT FOOTPRINT
-          if (std::hypot(obs_x, obs_y) < footprint_radius_) {
-            continue;
-          }
-
-          // 2. Evaluasi HANYA sektor depan (-75 deg s/d +75 deg)
-          if (angle_base < -1.30 || angle_base > 1.30) {
-            continue;
-          }
-
-          // 3. Evaluasi clearance ruang kosong sisi kiri vs kanan
-          if (angle_base > 0.15 && angle_base < 1.20) {
-            left_clearance += std::min(r, 2.0f);
-            left_count++;
-          } else if (angle_base < -0.15 && angle_base > -1.20) {
-            right_clearance += std::min(r, 2.0f);
-            right_count++;
-          }
-
-          // 4. FILTER OPERATOR: Jangan anggap kaki operator sebagai halangan
-          if (person_matched && !is_predicting &&
-              std::abs(angle_base - direct_bearing) < 0.35 && std::abs(r - direct_dist) < 0.45) {
-            continue;
-          }
-
-          // 5. Koridor bahaya di depan robot
-          if (obs_x > footprint_radius_ && obs_x < obstacle_distance_ && std::abs(obs_y) < corridor_width_) {
-            obstacle_detected = true;
-            if (obs_x < min_front_x) {
-              min_front_x = obs_x;
-            }
-          }
-
-          // Gaya repulsif lateral (Y) untuk menghindar
-          if (obs_x > footprint_radius_ * 0.8 && r < obstacle_distance_) {
-            const double weight = (1.0 / std::max(0.20f, r)) - (1.0 / obstacle_distance_);
-            rep_y -= weight * std::sin(angle_base);
-          }
-        }
-      }
-    }
-
-    // =====================================================================
-    // 3. DIRECT MOTION & OBSTACLE AVOIDANCE CONTROL
+    // 2. DIRECT CONTINUOUS MOTION CONTROL: DRIVE FORWARD FACING OPERATOR
     // =====================================================================
     // Forward distance hysteresis:
     if (!is_moving_) {
+      // Stationary: start forward if person distance exceeds start_distance (0.7m)
       if (direct_dist > start_distance_) {
         is_moving_ = true;
       }
     } else {
+      // Moving: continue until person distance < stop_distance (0.5m)
       if (direct_dist < stop_distance_) {
         is_moving_ = false;
       }
@@ -773,159 +634,167 @@ private:
     double target_wz = 0.0;
     std::string status_str = "STOP";
 
-    // Operator terverifikasi jika person_matched = true dan bukan sedang prediksi Kalman (occlusion)
-    const bool operator_found = (person_matched && !is_predicting);
-
-    if (operator_found) {
-      // Jika saat manuver belok/menghindar sudah ketemu operator asli,
-      // langsung hentikan manuver menghindar dan lanjut ke follow person
-      if (is_blocked_close_) {
-        RCLCPP_INFO(
-          get_logger(),
-          "\033[92m[FOLLOW] Operator asli terdeteksi kembali! Menghentikan manuver belok, melanjutkan following.\033[0m");
-      }
-      is_blocked_close_ = false;
+    // ---------------------------------------------------------------------
+    // A. ANGULAR ROTATION CONTROL: LOCK HEADING TO OPERATOR (ANTI-HUNTING)
+    // ---------------------------------------------------------------------
+    // Continuous smooth deadband:
+    const double deadband = is_moving_ ? deadband_moving_ : deadband_stop_;
+    double eff_bearing = 0.0;
+    if (direct_bearing > deadband) {
+      eff_bearing = direct_bearing - deadband;
+    } else if (direct_bearing < -deadband) {
+      eff_bearing = direct_bearing + deadband;
     }
 
-    // Cek apakah ada rintangan/orang yang menghadang terlalu dekat (< min_stop_x_ / 38cm)
-    // Manuver belok hanya aktif saat operator sedang terhalang/belum ketemu
-    const bool is_close_obstacle = (obstacle_detected && min_front_x <= min_stop_x_ && !operator_found);
+    // PD Controller for yaw:
+    target_wz = std::clamp(kp_yaw_ * eff_bearing + kd_yaw_ * d_bearing, -max_wz_, max_wz_);
 
-    if (is_close_obstacle) {
-      // -------------------------------------------------------------------
-      // KASUS 1: TERHADANG TERLALU DEKAT (<38cm)
-      // Stop gerak maju, strafe ke arah kosong (kiri/kanan).
-      // - Kosong kanan -> strafe kanan (-vy) + rotate sedikit kiri (10 deg / +0.1745 rad)
-      // - Kosong kiri  -> strafe kiri (+vy)  + rotate sedikit kanan (10 deg / -0.1745 rad)
-      // -------------------------------------------------------------------
-      if (!is_blocked_close_) {
-        is_blocked_close_ = true;
+    // ---------------------------------------------------------------------
+    // B. LINEAR TRANSLATION CONTROL: SIMULTANEOUS FORWARD AND ROTATION
+    // ---------------------------------------------------------------------
+    if (is_moving_) {
+      // Forward speed proportional to distance error
+      double v_desired = kp_dist_ * (direct_dist - stop_distance_);
+      v_desired = std::clamp(v_desired, min_vx_, max_vx_);
 
-        // Tentukan arah kosong (kiri vs kanan)
-        double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
-        double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
-        if (std::abs(rep_y) >= 0.4) {
-          blocked_strafe_sign_ = (rep_y > 0.0) ? 1.0 : -1.0;
-        } else {
-          blocked_strafe_sign_ = (avg_left >= avg_right) ? 1.0 : -1.0;
+      // Limit speed during dead-reckoning occlusion
+      if (is_predicting) {
+        v_desired = std::min(v_desired, occlusion_max_vx_);
+      }
+
+      // Target vx simultaneously with turning towards operator
+      target_vx = v_desired * std::max(0.20, std::cos(direct_bearing));
+      target_vy = 0.0;
+      status_str = is_predicting ? "KALMAN PREDICTING (OCCLUDED)" : "FOLLOWING OPERATOR";
+
+      // --- ROBUST LIDAR OBSTACLE & WALL AVOIDANCE ---
+      bool obstacle_detected = false;
+      if (enable_avoidance_) {
+        sensor_msgs::msg::LaserScan::SharedPtr scan;
+        {
+          std::lock_guard<std::mutex> lock(scan_mutex_);
+          scan = latest_scan_;
         }
 
-        // Catat yaw awal saat mulai terhadang
-        blocked_start_yaw_rad_ = get_current_yaw_rad(has_map_tf, ryaw);
-
-        // Jika kosong dikanan (strafe_sign < 0): rotate sedikit ke kiri (+10 deg)
-        // Jika kosong dikiri  (strafe_sign > 0): rotate sedikit ke kanan (-10 deg)
-        const double yaw_offset_rad = (blocked_strafe_sign_ < 0.0)
-          ? (10.0 * M_PI / 180.0)
-          : (-10.0 * M_PI / 180.0);
-
-        blocked_target_yaw_rad_ = blocked_start_yaw_rad_ + yaw_offset_rad;
-        while (blocked_target_yaw_rad_ > M_PI) blocked_target_yaw_rad_ -= 2.0 * M_PI;
-        while (blocked_target_yaw_rad_ < -M_PI) blocked_target_yaw_rad_ += 2.0 * M_PI;
-      }
-
-      target_vx = 0.0;  // Berhenti maju agar tidak menabrak rintangan
-
-      // Kecepatan menyamping omni untuk keluar dari bayangan halangan
-      target_vy = std::clamp(0.24 * blocked_strafe_sign_, -max_vy_, max_vy_);
-
-      // Kontrol rotasi: hanya rotate 10 derajat lalu tahan sudut tersebut
-      const double current_yaw = get_current_yaw_rad(has_map_tf, ryaw);
-      double yaw_err = blocked_target_yaw_rad_ - current_yaw;
-      while (yaw_err > M_PI) yaw_err -= 2.0 * M_PI;
-      while (yaw_err < -M_PI) yaw_err += 2.0 * M_PI;
-
-      // S-curve profile untuk rotasi 10 derajat yang sangat halus (ease-in ease-out)
-      if (std::abs(yaw_err) < 0.015) {  // Toleransi ~0.9 derajat
-        target_wz = 0.0;
-      } else {
-        const double target_10deg = 10.0 * M_PI / 180.0;
-        double norm_err = std::clamp(yaw_err / target_10deg, -1.0, 1.0);
-        // Sinusoidal ease-in ease-out: gerakan melambat lembut saat mendekati 10 derajat
-        target_wz = 0.14 * std::sin(norm_err * M_PI * 0.5);
-      }
-
-      status_str = (blocked_strafe_sign_ < 0.0)
-        ? "CLOSE OBSTACLE (<38cm): STRAFE RIGHT + ROTATE LEFT 10 DEG"
-        : "CLOSE OBSTACLE (<38cm): STRAFE LEFT + ROTATE RIGHT 10 DEG";
-    } else {
-      // -------------------------------------------------------------------
-      // KASUS 2: NORMAL FOLLOWING & RECOVERY
-      // -------------------------------------------------------------------
-      is_blocked_close_ = false;
-
-      // A. KONTROL ROTASI HEADING: Mengunci hadap ke operator
-      const double deadband = is_moving_ ? deadband_moving_ : deadband_stop_;
-      double eff_bearing = 0.0;
-      if (direct_bearing > deadband) {
-        eff_bearing = direct_bearing - deadband;
-      } else if (direct_bearing < -deadband) {
-        eff_bearing = direct_bearing + deadband;
-      }
-      target_wz = std::clamp(kp_yaw_ * eff_bearing + kd_yaw_ * d_bearing, -max_wz_, max_wz_);
-
-      // B. KONTROL TRANSLASI LINEAR
-      if (is_moving_) {
-        double v_desired = kp_dist_ * (direct_dist - stop_distance_);
-        v_desired = std::clamp(v_desired, min_vx_, max_vx_);
-        if (is_predicting) {
-          v_desired = std::min(v_desired, occlusion_max_vx_);
-        }
-        target_vx = v_desired * std::max(0.20, std::cos(direct_bearing));
-        target_vy = 0.0;
-        status_str = is_predicting ? "KALMAN PREDICTING (OCCLUDED)" : "FOLLOWING OPERATOR";
-
-        if (obstacle_detected) {
-          // Pengereman progresif saat mendekati rintangan dari jarak 0.75m sampai 0.38m
-          double brake_ratio = (min_front_x - min_stop_x_) / (obstacle_distance_ - min_stop_x_);
-          target_vx *= std::clamp(brake_ratio, 0.0, 1.0);
-
-          // Filter low-pass rep_y agar gaya tolak rintangan tidak bergetar (anti-jitter)
-          filtered_rep_y_ = 0.70 * filtered_rep_y_ + 0.30 * rep_y;
-
-          if (std::abs(filtered_rep_y_) < 0.35) {
-            double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
-            double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
-            filtered_rep_y_ = (avg_left >= avg_right) ? 1.2 : -1.2;
+        if (scan && !scan->ranges.empty()) {
+          // Lookup transform from base_link to lidar sensor frame
+          // Default yaw = 3.14159 rad because Lidar is mounted backwards (180 deg)
+          double laser_tx = 0.0;
+          double laser_ty = 0.0;
+          double laser_yaw = 3.1415926535;
+          try {
+            auto tf_laser = tf_buffer_->lookupTransform(
+              frame_base_, scan->header.frame_id, tf2::TimePointZero);
+            laser_tx = tf_laser.transform.translation.x;
+            laser_ty = tf_laser.transform.translation.y;
+            const auto & rq = tf_laser.transform.rotation;
+            const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+            const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+            laser_yaw = std::atan2(siny, cosy);
+          } catch (const tf2::TransformException &) {
+            laser_yaw = 3.1415926535;
           }
-          target_vy = std::clamp(0.20 * filtered_rep_y_, -max_vy_, max_vy_);
-          status_str = "AVOIDING WALL/OBSTACLE";
-        } else {
-          filtered_rep_y_ *= 0.75;
-        }
-      } else {
-        target_vx = 0.0;
-        target_vy = 0.0;
-        filtered_rep_y_ *= 0.50;
-        status_str = (std::abs(target_wz) > 0.03) ? "ALIGNING HEADING (STATIONARY)" : "STOPPED (Distance < 0.5m)";
-      }
-    }
 
-    target_vx = std::clamp(target_vx, 0.0, max_vx_);
-    target_vy = std::clamp(target_vy, -max_vy_, max_vy_);
+          double rep_y = 0.0;
+          double min_front_x = 999.0;
+          double left_clearance = 0.0;
+          double right_clearance = 0.0;
+          int left_count = 0;
+          int right_count = 0;
+
+          const int num_readings = static_cast<int>(scan->ranges.size());
+          for (int i = 0; i < num_readings; ++i) {
+            const float r = scan->ranges[i];
+            if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) {
+              continue;
+            }
+
+            // Calculate beam angle in robot frame (base_link)
+            const double angle_laser = scan->angle_min + i * scan->angle_increment;
+            double angle_base = angle_laser + laser_yaw;
+            angle_base = std::atan2(std::sin(angle_base), std::cos(angle_base));
+
+            // Obstacle coordinate in base_link
+            const double obs_x = laser_tx + r * std::cos(angle_base);
+            const double obs_y = laser_ty + r * std::sin(angle_base);
+
+            // 1. FILTER ROBOT FOOTPRINT: Ignore robot body reflections
+            if (std::hypot(obs_x, obs_y) < footprint_radius_) {
+              continue;
+            }
+
+            // 2. Evaluate ONLY front sector in base_link (-75 deg to +75 deg)
+            if (angle_base < -1.30 || angle_base > 1.30) {
+              continue;
+            }
+
+            // 3. Evaluate left vs right front clearance
+            if (angle_base > 0.15 && angle_base < 1.20) {
+              left_clearance += std::min(r, 2.0f);
+              left_count++;
+            } else if (angle_base < -0.15 && angle_base > -1.20) {
+              right_clearance += std::min(r, 2.0f);
+              right_count++;
+            }
+
+            // 4. FILTER OPERATOR: Do not treat operator's legs as obstacle
+            if (std::abs(angle_base - direct_bearing) < 0.30 && std::abs(r - direct_dist) < 0.40) {
+              continue;
+            }
+
+            // 5. Danger corridor in front of robot
+            if (obs_x > footprint_radius_ && obs_x < obstacle_distance_ && std::abs(obs_y) < corridor_width_) {
+              obstacle_detected = true;
+              if (obs_x < min_front_x) {
+                min_front_x = obs_x;
+              }
+            }
+
+            // Lateral repulsive force (Y) for obstacle avoidance
+            if (obs_x > footprint_radius_ * 0.8 && r < obstacle_distance_) {
+              const double weight = (1.0 / std::max(0.20f, r)) - (1.0 / obstacle_distance_);
+              rep_y -= weight * std::sin(angle_base);
+            }
+          }
+
+          if (obstacle_detected) {
+            // 1. HARD SAFETY STOP / BRAKING:
+            if (min_front_x <= min_stop_x_) {
+              target_vx = 0.0;
+            } else if (min_front_x < obstacle_distance_) {
+              // Progressive braking approaching obstacle
+              double brake_ratio = (min_front_x - min_stop_x_) / (obstacle_distance_ - min_stop_x_);
+              target_vx *= std::clamp(brake_ratio, 0.0, 1.0);
+            }
+
+            // 2. TANGENTIAL STRAFE VIA OMNI (Avoid towards open space):
+            if (std::abs(rep_y) < 0.4) {
+              double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
+              double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
+              rep_y = (avg_left >= avg_right) ? 1.5 : -1.5;
+            }
+
+            double avoid_vy = std::clamp(0.22 * rep_y, -max_vy_, max_vy_);
+            target_vy = avoid_vy;
+            status_str = "AVOIDING WALL/OBSTACLE";
+          }
+        }
+      }
+
+      target_vx = std::clamp(target_vx, 0.0, max_vx_);
+      target_vy = std::clamp(target_vy, -max_vy_, max_vy_);
+    } else {
+      target_vx = 0.0;
+      target_vy = 0.0;
+      status_str = (std::abs(target_wz) > 0.03) ? "ALIGNING HEADING (STATIONARY)" : "STOPPED (Distance < 0.5m)";
+    }
 
     // ---------------------------------------------------------------------
     // 3. LOW-PASS FILTER / SMOOTHING (Mencegah Hentakan & Menjaga Responsif)
     // ---------------------------------------------------------------------
-    // Slew-Rate Limiter (Akselerasi Mulus):
-    // Batasi perubahan kecepatan per step (dt) agar motor tidak menghentak,
-    // terutama saat transisi masuk/keluar avoidance rintangan.
-    const double effective_accel_x = (is_close_obstacle || obstacle_detected) ? (max_accel_x_ * 0.85) : max_accel_x_;
-    const double effective_accel_y = max_accel_y_;
-    const double effective_accel_w = is_close_obstacle ? (max_accel_w_ * 0.75) : max_accel_w_;
-
-    const double max_dvx = std::max(0.01, effective_accel_x * dt);
-    const double max_dvy = std::max(0.01, effective_accel_y * dt);
-    const double max_dwz = std::max(0.01, effective_accel_w * dt);
-
-    double ramped_vx = std::clamp(target_vx, current_cmd_vx_ - max_dvx, current_cmd_vx_ + max_dvx);
-    double ramped_vy = std::clamp(target_vy, current_cmd_vy_ - max_dvy, current_cmd_vy_ + max_dvy);
-    double ramped_wz = std::clamp(target_wz, current_cmd_wz_ - max_dwz, current_cmd_wz_ + max_dwz);
-
-    // Filter eksponensial (IIR) untuk menghaluskan discretization noise
-    current_cmd_vx_ = (1.0 - alpha_v_) * current_cmd_vx_ + alpha_v_ * ramped_vx;
-    current_cmd_vy_ = (1.0 - alpha_v_) * current_cmd_vy_ + alpha_v_ * ramped_vy;
-    current_cmd_wz_ = (1.0 - alpha_w_) * current_cmd_wz_ + alpha_w_ * ramped_wz;
+    current_cmd_vx_ = (1.0 - alpha_v_) * current_cmd_vx_ + alpha_v_ * target_vx;
+    current_cmd_vy_ = (1.0 - alpha_v_) * current_cmd_vy_ + alpha_v_ * target_vy;
+    current_cmd_wz_ = (1.0 - alpha_w_) * current_cmd_wz_ + alpha_w_ * target_wz;
 
     // Bersihkan noise angka sangat kecil mendekati nol
     if (std::abs(current_cmd_vx_) < 0.015) current_cmd_vx_ = 0.0;
@@ -939,18 +808,6 @@ private:
 
     // Kirim langsung ke base driver (/cmd_vel)
     cmd_vel_pub_->publish(twist);
-
-    // Kirim feedback berkala ke action client jika aktif
-    {
-      std::lock_guard<std::mutex> lock(follow_action_mutex_);
-      if (active_follow_goal_ && active_follow_goal_->is_active()) {
-        auto fb = std::make_shared<FollowPerson::Feedback>();
-        fb->current_distance = static_cast<float>(direct_dist);
-        fb->current_bearing = static_cast<float>(direct_bearing);
-        fb->tracking_status = is_predicting ? "OCCLUDED_PREDICTING" : status_str;
-        active_follow_goal_->publish_feedback(fb);
-      }
-    }
 
     // Print status debug teratur di terminal (2 Hz)
     RCLCPP_INFO_THROTTLE(
@@ -1014,58 +871,6 @@ private:
     action_client_->async_send_goal(goal, send_opts);
   }
 
-  rclcpp_action::GoalResponse handle_follow_goal(
-    const rclcpp_action::GoalUUID & /*uuid*/,
-    std::shared_ptr<const FollowPerson::Goal> goal)
-  {
-    RCLCPP_INFO(
-      get_logger(),
-      "[Action Server] Permintaan follow goal diterima (target_id: %d, distance: %.2f m)",
-      goal->target_id, goal->follow_distance);
-    return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
-  }
-
-  rclcpp_action::CancelResponse handle_follow_cancel(
-    const std::shared_ptr<GoalHandleFollowPerson> goal_handle)
-  {
-    (void)goal_handle;
-    RCLCPP_INFO(get_logger(), "[Action Server] Permintaan cancel goal follow diterima.");
-    return rclcpp_action::CancelResponse::ACCEPT;
-  }
-
-  void handle_follow_accepted(
-    const std::shared_ptr<GoalHandleFollowPerson> goal_handle)
-  {
-    std::lock_guard<std::mutex> lock(follow_action_mutex_);
-    if (active_follow_goal_ && active_follow_goal_->is_active()) {
-      RCLCPP_INFO(get_logger(), "[Action Server] Membatalkan goal follow lama untuk goal baru.");
-      auto preempt_res = std::make_shared<FollowPerson::Result>();
-      preempt_res->success = false;
-      preempt_res->message = "Preempted by a new follow goal.";
-      preempt_res->total_time = static_cast<float>((now() - follow_action_start_time_).seconds());
-      active_follow_goal_->abort(preempt_res);
-    }
-
-    active_follow_goal_ = goal_handle;
-    follow_action_start_time_ = now();
-
-    const auto goal = goal_handle->get_goal();
-    if (goal->follow_distance > 0.05f) {
-      stop_distance_ = goal->follow_distance;
-      start_distance_ = goal->follow_distance + 0.20;
-      RCLCPP_INFO(
-        get_logger(),
-        "[Action Server] Jarak follow diperbarui: stop_distance=%.2f m, start_distance=%.2f m",
-        stop_distance_, start_distance_);
-    }
-    if (goal->target_id >= 0) {
-      target_index_ = goal->target_id;
-    }
-
-    auto resp = std::make_shared<Trigger::Response>();
-    handle_start_follow(resp);
-  }
-
   void handle_start_follow(std::shared_ptr<Trigger::Response> resp)
   {
     if (is_following_) {
@@ -1086,13 +891,6 @@ private:
     prev_bearing_ = 0.0;
     filtered_bearing_ = 0.0;
     has_prev_bearing_ = false;
-    is_blocked_close_ = false;
-    blocked_start_yaw_rad_ = 0.0;
-    blocked_target_yaw_rad_ = 0.0;
-    blocked_strafe_sign_ = -1.0;
-    last_known_target_bearing_ = 0.0;
-    has_known_target_global_ = false;
-    filtered_rep_y_ = 0.0;
     last_seen_sec_ = now().seconds();
 
     resp->success = true;
@@ -1113,13 +911,6 @@ private:
     prev_bearing_ = 0.0;
     filtered_bearing_ = 0.0;
     has_prev_bearing_ = false;
-    is_blocked_close_ = false;
-    blocked_start_yaw_rad_ = 0.0;
-    blocked_target_yaw_rad_ = 0.0;
-    blocked_strafe_sign_ = -1.0;
-    last_known_target_bearing_ = 0.0;
-    has_known_target_global_ = false;
-    filtered_rep_y_ = 0.0;
     kf_.reset();
     has_last_filter_time_ = false;
 
@@ -1136,25 +927,6 @@ private:
     geometry_msgs::msg::Twist stop_twist;
     cmd_vel_pub_->publish(stop_twist);
 
-    // Selesaikan action goal jika ada yang aktif
-    {
-      std::lock_guard<std::mutex> lock(follow_action_mutex_);
-      if (active_follow_goal_ && active_follow_goal_->is_active()) {
-        auto act_res = std::make_shared<FollowPerson::Result>();
-        act_res->total_time = static_cast<float>((now() - follow_action_start_time_).seconds());
-        if (active_follow_goal_->is_canceling()) {
-          act_res->success = true;
-          act_res->message = "Following stopped by cancel request.";
-          active_follow_goal_->canceled(act_res);
-        } else {
-          act_res->success = true;
-          act_res->message = "Following stopped via service or completion.";
-          active_follow_goal_->succeed(act_res);
-        }
-        active_follow_goal_.reset();
-      }
-    }
-
     resp->success = true;
     resp->message = "Person following stopped.";
     RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
@@ -1163,16 +935,6 @@ private:
 
   void check_safety_watchdog()
   {
-    // Cek apakah ada permintaan cancel dari action client
-    {
-      std::lock_guard<std::mutex> lock(follow_action_mutex_);
-      if (active_follow_goal_ && active_follow_goal_->is_canceling()) {
-        auto dummy = std::make_shared<Trigger::Response>();
-        handle_stop_follow(dummy);
-        return;
-      }
-    }
-
     if (!is_following_ || max_lost_time_ <= 0.0) {
       return;
     }
@@ -1199,16 +961,6 @@ private:
 
       geometry_msgs::msg::Twist stop_twist;
       cmd_vel_pub_->publish(stop_twist);
-
-      // Kirim feedback LOST ke action client jika aktif
-      std::lock_guard<std::mutex> lock(follow_action_mutex_);
-      if (active_follow_goal_ && active_follow_goal_->is_active()) {
-        auto fb = std::make_shared<FollowPerson::Feedback>();
-        fb->current_distance = -1.0f;
-        fb->current_bearing = 0.0f;
-        fb->tracking_status = "LOST";
-        active_follow_goal_->publish_feedback(fb);
-      }
     }
   }
 
@@ -1504,25 +1256,12 @@ private:
   double alpha_v_{0.35};
   double alpha_w_{0.40};
   double bearing_beta_{0.35};
-  double max_accel_x_{0.65};
-  double max_accel_y_{0.45};
-  double max_accel_w_{0.55};
-  double filtered_rep_y_{0.0};
 
   bool enable_avoidance_{true};
   double obstacle_distance_{0.75};
-  double footprint_radius_{0.24};
+  double footprint_radius_{0.40};
   double min_stop_x_{0.38};
   double corridor_width_{0.32};
-
-  bool is_blocked_close_{false};
-  double blocked_start_yaw_rad_{0.0};
-  double blocked_target_yaw_rad_{0.0};
-  double blocked_strafe_sign_{-1.0};
-  double last_known_target_bearing_{0.0};
-  double last_known_target_global_x_{0.0};
-  double last_known_target_global_y_{0.0};
-  bool has_known_target_global_{false};
 
   double kf_process_noise_{1.2};
   double kf_measurement_noise_{0.15};
@@ -1573,10 +1312,6 @@ private:
   rclcpp::Service<Trigger>::SharedPtr stop_follow_srv_alias_;
   rclcpp::Service<Trigger>::SharedPtr align_bag_srv_;
   rclcpp::Service<Trigger>::SharedPtr homing_srv_;
-  rclcpp_action::Server<FollowPerson>::SharedPtr follow_action_server_;
-  std::shared_ptr<GoalHandleFollowPerson> active_follow_goal_;
-  std::mutex follow_action_mutex_;
-  rclcpp::Time follow_action_start_time_{0, 0, RCL_ROS_TIME};
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
   rclcpp::CallbackGroup::SharedPtr cb_group_;
 };

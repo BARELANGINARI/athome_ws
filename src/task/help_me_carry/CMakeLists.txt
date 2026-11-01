@@ -10,7 +10,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -23,11 +22,6 @@ find_package(tf2_ros REQUIRED)
 find_package(Threads REQUIRED)
 
 include_directories(include)
-
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "action/FollowPerson.action"
-)
-rosidl_get_typesupport_target(cpp_typesupport_target "${PROJECT_NAME}" "rosidl_typesupport_cpp")
 
 add_executable(help_me_carry_node src/help_me_carry_node.cpp)
 ament_target_dependencies(help_me_carry_node
@@ -43,7 +37,7 @@ ament_target_dependencies(help_me_carry_node
   tf2
   tf2_ros
 )
-target_link_libraries(help_me_carry_node Threads::Threads "${cpp_typesupport_target}")
+target_link_libraries(help_me_carry_node Threads::Threads)
 install(TARGETS help_me_carry_node DESTINATION lib/${PROJECT_NAME})
 
 add_executable(tracking_controller src/help_me_carry_node.cpp)
@@ -60,10 +54,11 @@ ament_target_dependencies(tracking_controller
   tf2
   tf2_ros
 )
-target_link_libraries(tracking_controller Threads::Threads "${cpp_typesupport_target}")
+target_link_libraries(tracking_controller Threads::Threads)
 install(TARGETS tracking_controller DESTINATION lib/${PROJECT_NAME})
 
 add_executable(return_to_origin src/return_to_origin.cpp)
+add_executable(help_me_carry_manager src/help_me_carry_manager.cpp)
 ament_target_dependencies(return_to_origin
   rclcpp
   rclcpp_action
@@ -72,6 +67,12 @@ ament_target_dependencies(return_to_origin
   nav2_msgs
 )
 install(TARGETS return_to_origin DESTINATION lib/${PROJECT_NAME})
+ament_target_dependencies(help_me_carry_manager
+  rclcpp
+  std_msgs
+  std_srvs
+)
+install(TARGETS help_me_carry_manager DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS src/help_me_carry_hri.py DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY behavior_trees/ DESTINATION share/${PROJECT_NAME}/behavior_trees)
@@ -79,5 +80,4 @@ install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 install(DIRECTORY rviz/ DESTINATION share/${PROJECT_NAME}/rviz)
 
-ament_export_dependencies(rosidl_default_runtime)
 ament_package()

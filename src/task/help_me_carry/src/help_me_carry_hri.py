@@ -39,8 +39,8 @@ logger = logging.getLogger("athome_hri.coordinator")
 ENABLE_LOCAL_MIC: bool = True
 ENABLE_WS_AUDIO: bool = True
 ENABLE_VISUALIZER: bool = True
-MIC_DEVICE_INDEX: Optional[int] = 4 # ganti USB MIC disini
-THRESHOLD_DBFS: float = -30.0
+MIC_DEVICE_INDEX: Optional[int] = 9 # USB AUDIO (hw:2,0)
+THRESHOLD_DBFS: float = -40.0
 THRESHOLD_FLATNESS: float = 0.40
 PRE_ROLL_FRAMES: int = 10      # 300 ms sebelum suara terdeteksi
 HANGOVER_FRAMES: int = 25      # 750 ms tunggu hening sebelum potong kalimat
@@ -49,6 +49,23 @@ WHISPER_MODEL_SIZE: str = "deepdml/faster-whisper-large-v3-turbo-ct2"
 HTTP_PORT: int = 8000
 WS_PORT: int = 8765
 WS_MAX_SIZE_BYTES: int = 10 * 1024 * 1024
+
+
+def find_usb_mic_index() -> Optional[int]:
+    """Mencari indeks input audio PyAudio yang mengandung 'usb'."""
+    try:
+        import pyaudio
+        p = pyaudio.PyAudio()
+        dev_idx = None
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+            if info.get("maxInputChannels", 0) > 0 and "usb" in info.get("name", "").lower():
+                dev_idx = i
+                break
+        p.terminate()
+        return dev_idx
+    except Exception:
+        return None
 
 
 # =====================================================================
@@ -82,6 +99,7 @@ class BarelangHriNode(Node):
     """Node ROS 2 yang menjembatani komunikasi topik/service robot dengan event loop HRI."""
 
     TOPIC_HRI_EVENT = "/hri/event"
+    TOPIC_STT_TRANSCRIPT = "/hri/stt_transcript"
     TOPIC_CMD_VEL = "cmd_vel"
     TOPIC_TTS_SAY = "/hri/tts_say"
     TOPIC_PERSON_LABEL = "/zed/person_label"
@@ -113,12 +131,14 @@ class BarelangHriNode(Node):
         self.declare_parameter("enable_local_mic", ENABLE_LOCAL_MIC)
         self.declare_parameter("enable_ws_audio", ENABLE_WS_AUDIO)
         self.declare_parameter("enable_visualizer", ENABLE_VISUALIZER)
+        self.declare_parameter("mic_device_index", MIC_DEVICE_INDEX if MIC_DEVICE_INDEX is not None else -1)
         self.declare_parameter("threshold_dbfs", THRESHOLD_DBFS)
         self.declare_parameter("threshold_flatness", THRESHOLD_FLATNESS)
         self.declare_parameter("pre_roll_frames", PRE_ROLL_FRAMES)
         self.declare_parameter("hangover_frames", HANGOVER_FRAMES)
         self.declare_parameter("min_speech_frames", MIN_SPEECH_FRAMES)
         self.declare_parameter("whisper_model", WHISPER_MODEL_SIZE)
+        self.declare_parameter("enable_task_manager", True)
 
         self.enable_local_mic: bool = bool(
             self.get_parameter("enable_local_mic").value
@@ -127,6 +147,14 @@ class BarelangHriNode(Node):
         self.enable_visualizer: bool = bool(
             self.get_parameter("enable_visualizer").value
         )
+        raw_mic_idx = self.get_parameter("mic_device_index").value
+        if raw_mic_idx is not None and int(raw_mic_idx) >= 0:
+            self.mic_device_index: Optional[int] = int(raw_mic_idx)
+        else:
+            self.mic_device_index = find_usb_mic_index()
+            if self.mic_device_index is not None:
+                self.get_logger().info(f"Otomatis mendeteksi USB Mic pada index {self.mic_device_index}")
+
         self.threshold_dbfs: float = float(
             self.get_parameter("threshold_dbfs").value
         )
@@ -145,6 +173,9 @@ class BarelangHriNode(Node):
         self.whisper_model: str = str(
             self.get_parameter("whisper_model").value
         )
+        self.enable_task_manager: bool = bool(
+            self.get_parameter("enable_task_manager").value
+        )
 
         # Vision & Gesture State
         self._person_topic_received: bool = False
@@ -157,6 +188,9 @@ class BarelangHriNode(Node):
 
         # Publishers & Subscribers
         self.event_pub = self.create_publisher(String, self.TOPIC_HRI_EVENT, 10)
+        self.transcript_pub = self.create_publisher(
+            String, self.TOPIC_STT_TRANSCRIPT, 10
+        )
         self.cmd_vel_pub = self.create_publisher(Twist, self.TOPIC_CMD_VEL, 10)
 
         self.create_subscription(String, self.TOPIC_TTS_SAY, self._on_tts_say, 10)
@@ -182,6 +216,11 @@ class BarelangHriNode(Node):
         msg.data = event_name
         self.event_pub.publish(msg)
         self.get_logger().info(f"[HRI Event] {event_name}")
+
+    def publish_transcript(self, text: str) -> None:
+        msg = String()
+        msg.data = text
+        self.transcript_pub.publish(msg)
 
     def _on_tts_say(self, msg: String) -> None:
         text = msg.data.strip()
@@ -326,7 +365,7 @@ class HriCoordinator:
             loop=loop,
             on_audio_captured=self.handle_local_mic_audio,
             is_paused_fn=self._is_mic_paused,
-            device_index=MIC_DEVICE_INDEX,
+            device_index=self.ros_node.mic_device_index,
             threshold_dbfs=self.ros_node.threshold_dbfs,
             threshold_flatness=self.ros_node.threshold_flatness,
             pre_roll_frames=self.ros_node.pre_roll_frames,
@@ -410,14 +449,20 @@ class HriCoordinator:
             logger.info('[STT TRANSCRIPT] "%s"', transcript)
         await self.web.broadcast_ui({"type": "TRANSCRIPT", "transcript": transcript})
         if transcript:
+            self.ros_node.publish_transcript(transcript)
+        if transcript:
             await self.process_intent(transcript)
 
     async def handle_text(self, text: str) -> None:
         await self.web.broadcast_ui({"type": "TRANSCRIPT", "transcript": text})
+        if text.strip():
+            self.ros_node.publish_transcript(text)
         await self.process_intent(text)
 
     async def process_intent(self, text: str) -> None:
         """Mengevaluasi teks transkripsi terhadap NLU dan memicu transisi state yang sesuai."""
+        if not self.ros_node.enable_task_manager:
+            return
         if self.state in BUSY_TASK_STATES:
             return
 
