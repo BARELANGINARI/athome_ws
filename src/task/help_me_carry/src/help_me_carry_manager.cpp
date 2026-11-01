@@ -24,6 +24,7 @@ enum class TaskState {
   WAIT_BAG_POINTING,
   GRASP_BAG,
   RETURN_TO_START,
+  PUT_DOWN_BAG,
   COMPLETED,
   ABORTED
 };
@@ -40,6 +41,7 @@ static std::string stateToString(TaskState state)
     case TaskState::WAIT_BAG_POINTING: return "WAIT_BAG_POINTING";
     case TaskState::GRASP_BAG: return "GRASP_BAG";
     case TaskState::RETURN_TO_START: return "RETURN_TO_START";
+    case TaskState::PUT_DOWN_BAG: return "PUT_DOWN_BAG";
     case TaskState::COMPLETED: return "COMPLETED";
     case TaskState::ABORTED: return "ABORTED";
     default: return "UNKNOWN";
@@ -91,6 +93,8 @@ public:
       "/task/align_bag", rclcpp::ServicesQoS(), callback_group_);
     grab_bag_client_ = create_client<Trigger>(
       "/arm/ambil_tas", rclcpp::ServicesQoS(), callback_group_);
+    put_down_bag_client_ = create_client<Trigger>(
+      "/arm/letakkan_tas", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
       "/homing", rclcpp::ServicesQoS(), callback_group_);
 
@@ -150,6 +154,7 @@ private:
   TriggerClient::SharedPtr follow_stop_client_;
   TriggerClient::SharedPtr align_bag_client_;
   TriggerClient::SharedPtr grab_bag_client_;
+  TriggerClient::SharedPtr put_down_bag_client_;
   TriggerClient::SharedPtr homing_client_;
 
   bool isOperatorInFront() const
@@ -657,11 +662,28 @@ private:
           [this](bool success, const std::string & message) {
             busy_ = false;
             if (success) {
-              transitionTo(TaskState::COMPLETED, "Homing completed");
-              speakAsync("I have returned to the starting point. Task completed.");
+              transitionTo(TaskState::PUT_DOWN_BAG, "Homing completed, placing bag down");
+              speakAsync("I have returned to the starting point. I will put down the bag now.");
             } else {
               RCLCPP_ERROR(get_logger(), "Homing gagal: %s", message.c_str());
               transitionTo(TaskState::ABORTED, "Homing failed");
+            }
+          });
+        break;
+
+      case TaskState::PUT_DOWN_BAG:
+        busy_ = true;
+        callTrigger(
+          put_down_bag_client_, "/arm/letakkan_tas",
+          [this](bool success, const std::string & message) {
+            busy_ = false;
+            if (success) {
+              transitionTo(TaskState::COMPLETED, "Bag placed down successfully");
+              speakAsync("I have placed the bag down. Task completed.");
+            } else {
+              RCLCPP_WARN(get_logger(), "Letakkan tas tidak berhasil: %s. Melanjutkan ke completed.", message.c_str());
+              transitionTo(TaskState::COMPLETED, "Task completed (fallback)");
+              speakAsync("Task completed.");
             }
           });
         break;

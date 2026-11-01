@@ -775,19 +775,20 @@ void executeMotion(dynamixel::GroupSyncWrite &gsw, double cur[3], const MotionDa
 
 // ---------------- INTERACTIVE CONTINUOUS RECORDING (PAUSE-AND-LOCK) ----------------
 void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
-                             MotionData &buffer, double max_secs) {
+                             MotionData &buffer, double max_secs, bool keep_gripper = false) {
     stopFreeMonitor();
 
-    // 1. Open gripper to ready position (+65 deg) and keep ID 6 locked,
-    //    while J1 & J2 (ID 4, 5, 1) are free.
+    // 1. If keep_gripper is false, open gripper to ready position (+80 deg) and keep ID 6 locked.
+    //    If keep_gripper is true, keep current gripper angle & hold, while J1 & J2 are free.
     readCurrentPose(cur, false);
-    if (g_gripper_online) {
+    if (!keep_gripper && g_gripper_online) {
         openGripperOnly(cur[2], DEFAULT_RELEASE_DEG);
     }
     setArmOnlyTorque(gsw, cur, false);
 
     std::cout << "\n================ INTERACTIVE RECORD MODE (50 Hz) ================\n"
-              << "  - Arm torque (J1 & J2) DISABLED; Gripper ready at +" << cur[2] << " deg.\n"
+              << "  - Arm torque (J1 & J2) DISABLED; Gripper "
+              << (keep_gripper ? "HOLDING current pose at +" : "ready at +") << cur[2] << " deg.\n"
               << "  - Real-time Key Controls (no need to press ENTER):\n"
               << "      [g]         -> PAUSE & LOCK Arm + Run Adaptive Grasp\n"
               << "      [r]         -> PAUSE & LOCK Arm + Open Gripper (Release)\n"
@@ -803,7 +804,7 @@ void recordInteractiveStream(dynamixel::GroupSyncWrite &gsw, double cur[3],
 
     int max_steps = static_cast<int>(std::ceil(max_secs * UPDATE_RATE_HZ));
     const auto period = std::chrono::microseconds(1000000 / UPDATE_RATE_HZ);
-    bool holding_object = false;
+    bool holding_object = keep_gripper;
 
     std::cout << "\n  [REC] Recording motion (Max " << max_secs << "s)... "
               << "Press [g]=Grasp, [r]=Release, [q]=Stop\n";
@@ -1001,8 +1002,9 @@ void printHelp() {
               << "     grasp [load_thresh]  -> Grasp object adaptively (default load=" << DEFAULT_GRASP_LOAD << ")\n"
               << "     release [deg]        -> Open gripper jaws (default +" << DEFAULT_RELEASE_DEG << " deg)\n\n"
               << "  3. Full Motion Recording (Stream & Waypoint):\n"
-              << "     record [seconds]     -> Record 50 Hz continuous motion (default 20s) with live keys:\n"
-              << "                             [g]=Pause & Grasp, [r]=Pause & Release, [q]/SPACE=Stop\n"
+              << "     record [seconds]     -> Record 50 Hz motion starting with gripper open (ready)\n"
+              << "     record_hold [secs]   -> Record 50 Hz motion keeping gripper hold (e.g. for letakkan_tas)\n"
+              << "                             Live keys: [g]=Pause & Grasp, [r]=Pause & Release, [q]/SPACE=Stop\n"
               << "     add [duration_sec]   -> Record current arm position as waypoint\n"
               << "     add grasp [load]     -> Run & record Adaptive Grasping at current position\n"
               << "     add release [deg]    -> Run & record gripper open at current position\n"
@@ -1134,11 +1136,12 @@ int main() {
             std::cout << "  [ADD] Waypoint #" << buffer.frames.size() << " recorded: "
                       << "J1=" << cur[0] << " deg, J2=" << cur[1] << " deg, Grip=" << cur[2] << " deg\n";
             if (was_free) startFreeMonitor();
-        } else if (cmd == "record") {
+        } else if (cmd == "record" || cmd == "record_hold" || cmd == "record_continue") {
+            bool keep_grip = (cmd == "record_hold" || cmd == "record_continue");
             double secs = 20.0;
             ss >> secs;
             secs = std::clamp(secs, 1.0, 120.0);
-            recordInteractiveStream(gsw, cur, buffer, secs);
+            recordInteractiveStream(gsw, cur, buffer, secs, keep_grip);
         } else if (cmd == "move") {
             double j1, j2, gr;
             if (ss >> j1 >> j2 >> gr) {

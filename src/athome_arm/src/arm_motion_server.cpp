@@ -117,6 +117,11 @@ public:
             std::bind(&ArmMotionServer::handleAmbilTas, this, std::placeholders::_1, std::placeholders::_2)
         );
 
+        letakkan_tas_srv_ = this->create_service<std_srvs::srv::Trigger>(
+            "/arm/letakkan_tas",
+            std::bind(&ArmMotionServer::handleLetakkanTas, this, std::placeholders::_1, std::placeholders::_2)
+        );
+
         play_motion_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "/arm/play_motion",
             std::bind(&ArmMotionServer::handleAmbilTas, this, std::placeholders::_1, std::placeholders::_2)
@@ -124,7 +129,7 @@ public:
 
         RCLCPP_INFO(this->get_logger(), "Arm Motion Server ready.");
         RCLCPP_INFO(this->get_logger(), "Port: %s, Baudrate: %d", port_name_.c_str(), baudrate_);
-        RCLCPP_INFO(this->get_logger(), "Services: /arm/ambil_tas, /arm/play_motion");
+        RCLCPP_INFO(this->get_logger(), "Services: /arm/ambil_tas, /arm/letakkan_tas, /arm/play_motion");
 
         // Initialize hardware connection
         if (initHardware()) {
@@ -145,6 +150,7 @@ private:
     std::mutex hardware_mutex_;
 
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_tas_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr letakkan_tas_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr play_motion_srv_;
 
     dynamixel::PortHandler   *portHandler   = nullptr;
@@ -666,27 +672,16 @@ private:
         is_connected_ = false;
     }
 
-    void handleAmbilTas(
-        const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
-        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
-    {
-        std::lock_guard<std::mutex> lock(hardware_mutex_);
-
-        RCLCPP_INFO(this->get_logger(), "[Service Call] Received trigger to execute motion 'ambil_tas'...");
-
+    bool runMotionByName(const std::string &name, std::string &error_msg) {
         if (!initHardware()) {
-            response->success = false;
-            response->message = "Failed to connect to Dynamixel hardware on port " + port_name_;
-            RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
-            return;
+            error_msg = "Failed to connect to Dynamixel hardware on port " + port_name_;
+            return false;
         }
 
         MotionData motion;
-        if (!loadMotionFromFile("ambil_tas", motion)) {
-            response->success = false;
-            response->message = "Failed to load motion file 'ambil_tas'";
-            RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
-            return;
+        if (!loadMotionFromFile(name, motion)) {
+            error_msg = "Failed to load motion file '" + name + "'";
+            return false;
         }
 
         try {
@@ -695,14 +690,48 @@ private:
             dynamixel::GroupSyncWrite gsw(portHandler, packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
 
             executeMotion(gsw, cur, motion, 1);
+            return true;
+        } catch (const std::exception &e) {
+            error_msg = std::string("Motion execution error: ") + e.what();
+            return false;
+        }
+    }
 
+    void handleAmbilTas(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        std::lock_guard<std::mutex> lock(hardware_mutex_);
+
+        RCLCPP_INFO(this->get_logger(), "[Service Call] Received trigger to execute motion 'ambil_tas'...");
+        std::string err;
+        if (runMotionByName("ambil_tas", err)) {
             response->success = true;
             response->message = "Motion ambil_tas executed successfully.";
             RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());
-        } catch (const std::exception &e) {
+        } else {
             response->success = false;
-            response->message = std::string("Motion execution error: ") + e.what();
-            RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
+            response->message = err;
+            RCLCPP_ERROR(this->get_logger(), "%s", err.c_str());
+        }
+    }
+
+    void handleLetakkanTas(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        std::lock_guard<std::mutex> lock(hardware_mutex_);
+
+        RCLCPP_INFO(this->get_logger(), "[Service Call] Received trigger to execute motion 'letakkan_tas'...");
+        std::string err;
+        if (runMotionByName("letakkan_tas", err)) {
+            response->success = true;
+            response->message = "Motion letakkan_tas executed successfully.";
+            RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());
+        } else {
+            response->success = false;
+            response->message = err;
+            RCLCPP_ERROR(this->get_logger(), "%s", err.c_str());
         }
     }
 };
