@@ -69,7 +69,7 @@ namespace fs = std::filesystem;
 #define GRASP_COMPLIANCE_SLOPE  50
 #define GRASP_CLOSING_SPEED     60
 #define MAX_OPEN_DEG            80.0
-#define DEFAULT_RELEASE_DEG     65.0
+#define DEFAULT_RELEASE_DEG     80.0
 
 const uint8_t ARM_CORE_IDS[] = {4, 5, 1};
 const uint8_t ALL_IDS[]      = {4, 5, 1, 6};

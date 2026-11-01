@@ -36,7 +36,7 @@
 #define MAX_ANGLE               300.0
 #define MAX_TICKS               1023
 #define MAX_OPEN_DEG            80.0    // Full open angle (~780 ticks, covers physical opening of 753 ticks)
-#define DEFAULT_RELEASE_DEG     65.0    // Default open angle
+#define DEFAULT_RELEASE_DEG     80.0    // Default open angle
 
 // Default Adaptive Grasping Parameters
 struct GraspConfig {
