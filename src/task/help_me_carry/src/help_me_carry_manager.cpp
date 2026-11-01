@@ -78,6 +78,10 @@ public:
       "/zed/person_label", rclcpp::SensorDataQoS(),
       std::bind(&HelpMeCarryOrchestrator::onPersonLabel, this, std::placeholders::_1),
       options);
+    gesture_sub_ = create_subscription<std_msgs::msg::String>(
+      "/zed/gesture", 10,
+      std::bind(&HelpMeCarryOrchestrator::onGesture, this, std::placeholders::_1),
+      options);
 
     follow_start_client_ = create_client<Trigger>(
       "/follow/person", rclcpp::ServicesQoS(), callback_group_);
@@ -106,6 +110,7 @@ public:
 private:
   static constexpr double GLOBAL_TIMEOUT_SEC = 300.0;
   static constexpr double OPERATOR_TIMEOUT_SEC = 3.0;
+  static constexpr double FOLLOW_GRACE_PERIOD_SEC = 2.0;
 
   std::atomic<TaskState> state_{TaskState::INIT};
   std::atomic<bool> busy_{false};
@@ -129,6 +134,8 @@ private:
   std::function<void()> pending_tts_done_;
   bool bag_prompt_sent_{false};
   bool recovery_prompt_sent_{false};
+  std::string detected_gesture_{"NONE"};
+  bool gesture_confirmed_{false};
 
   // publisher
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -138,6 +145,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr emergency_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
   TriggerClient::SharedPtr follow_start_client_;
   TriggerClient::SharedPtr follow_stop_client_;
   TriggerClient::SharedPtr align_bag_client_;
@@ -162,6 +170,10 @@ private:
     recovery_prompt_sent_ = false;
     if (next_state == TaskState::CHECK_OPERATOR_PRESENCE) {
       last_operator_warn_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+    }
+    if (next_state == TaskState::WAIT_BAG_POINTING) {
+      detected_gesture_ = "NONE";
+      gesture_confirmed_ = false;
     }
     state_ = next_state;
   }
@@ -364,12 +376,12 @@ private:
     }
 
     if (current_state == TaskState::FOLLOW_OPERATOR) {
-      if (matchIntent(command, "STOP", getStopCorpus())) {
-        emergency_stop_requested_ = true;
-        return;
-      }
       if (matchIntent(command, "ARRIVED", getArrivedCorpus())) {
         arrived_requested_ = true;
+        return;
+      }
+      if (matchIntent(command, "STOP", getStopCorpus())) {
+        emergency_stop_requested_ = true;
         return;
       }
     }
@@ -384,6 +396,19 @@ private:
     {
       operator_seen_ = true;
       last_operator_seen_time_ = now();
+    }
+  }
+
+  void onGesture(const std_msgs::msg::String::SharedPtr message)
+  {
+    if (state_.load() != TaskState::WAIT_BAG_POINTING || gesture_confirmed_) {
+      return;
+    }
+    const std::string gest = message->data;
+    if (gest.find("LEFT") != std::string::npos || gest.find("KIRI") != std::string::npos) {
+      detected_gesture_ = "LEFT";
+    } else if (gest.find("RIGHT") != std::string::npos || gest.find("KANAN") != std::string::npos) {
+      detected_gesture_ = "RIGHT";
     }
   }
 
@@ -440,11 +465,12 @@ private:
       return;
     }
 
-    if (current_state == TaskState::FOLLOW_OPERATOR && operator_seen_.load() &&
+    if (current_state == TaskState::FOLLOW_OPERATOR &&
+      (now() - state_enter_time_).seconds() > FOLLOW_GRACE_PERIOD_SEC &&
       (now() - last_operator_seen_time_).seconds() > OPERATOR_TIMEOUT_SEC)
     {
       operator_seen_ = false;
-      transitionTo(TaskState::RECOVER_OPERATOR, "Operator lost");
+      transitionTo(TaskState::RECOVER_OPERATOR, "Operator lost (timeout > 3s)");
     }
 
     if (emergency_stop_requested_.exchange(false)) {
@@ -515,6 +541,7 @@ private:
                 speakAsync("Person following is not ready.");
                 return;
               }
+              last_operator_seen_time_ = now();
               transitionTo(TaskState::FOLLOW_OPERATOR, "Follow started");
               speakAsync("Okay, I am following you.");
             });
@@ -539,15 +566,22 @@ private:
       case TaskState::RECOVER_OPERATOR:
         if (!recovery_prompt_sent_) {
           recovery_prompt_sent_ = true;
-          speakAsync("I lost sight of you. Please stand on front of me");
-        } else if (operator_seen_.load()) {
+          busy_ = true;
+          stopFollowing([this](bool) {
+            busy_ = false;
+            speakAsync("I lost sight of you. Please stand in front of me.");
+          });
+          break;
+        } else if (isOperatorInFront()) {
           busy_ = true;
           callTrigger(
             follow_start_client_, "/follow/person",
             [this](bool success, const std::string & message) {
               busy_ = false;
               if (success) {
+                last_operator_seen_time_ = now();
                 transitionTo(TaskState::FOLLOW_OPERATOR, "Operator reacquired");
+                speakAsync("I see you. Resuming follow.");
               } else {
                 RCLCPP_WARN(get_logger(), "Recovery follow gagal: %s", message.c_str());
               }
@@ -560,21 +594,44 @@ private:
       case TaskState::WAIT_BAG_POINTING:
         if (!bag_prompt_sent_) {
           bag_prompt_sent_ = true;
+          detected_gesture_ = "NONE";
+          gesture_confirmed_ = false;
           speakAsync("Which bag should I take?");
           break;
         }
-        busy_ = true;
-        callTrigger(
-          align_bag_client_, "/task/align_bag",
-          [this](bool success, const std::string & message) {
-            busy_ = false;
-            if (success) {
-              transitionTo(TaskState::GRASP_BAG, "Bag aligned");
-            } else {
-              RCLCPP_WARN(get_logger(), "Align bag gagal: %s", message.c_str());
-              bag_prompt_sent_ = false;
-            }
-          });
+
+        if (!gesture_confirmed_) {
+          if (detected_gesture_ != "NONE") {
+            gesture_confirmed_ = true;
+            const std::string side = (detected_gesture_ == "LEFT") ? "right" : "left";
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;32m[GESTURE]\033[0m Terdeteksi %s -> Menunjuk tas di sisi %s operator",
+              detected_gesture_.c_str(), side.c_str());
+            speakAsync(
+              "I already know which bag you are pointing to. You are pointing to the bag on your " + side + " side.",
+              [this]() {
+                busy_ = true;
+                callTrigger(
+                  align_bag_client_, "/task/align_bag",
+                  [this](bool success, const std::string & message) {
+                    busy_ = false;
+                    if (success) {
+                      transitionTo(TaskState::GRASP_BAG, "Bag aligned");
+                    } else {
+                      RCLCPP_WARN(get_logger(), "Align bag gagal: %s", message.c_str());
+                      bag_prompt_sent_ = false;
+                      gesture_confirmed_ = false;
+                      detected_gesture_ = "NONE";
+                    }
+                  });
+              });
+          } else if ((now() - state_enter_time_).seconds() > 30.0) {
+            state_enter_time_ = now();
+            RCLCPP_WARN(get_logger(), "Timeout menunggu gesture pointing operator.");
+            speakAsync("Please point to the bag you want me to carry.");
+          }
+        }
         break;
 
       case TaskState::GRASP_BAG:
