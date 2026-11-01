@@ -83,7 +83,7 @@ private:
   std::string test_topic{"test_vel"};
   std::string lifter_cmd_topic{"lifter_target"};
   std::string lifter_state_topic{"lifter_state"};
-  std::atomic<uint8_t> lifter_target_{0};
+  std::atomic<uint8_t> lifter_target_{1};
   double joy_timeout{0.05};
   double test_timeout{0.5};
   MotionTarget smoothed_;

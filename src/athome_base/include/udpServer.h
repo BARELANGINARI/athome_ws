@@ -38,7 +38,7 @@ struct STM32toPC {
 struct PCtoSTM32 {
   int16_t MKiri{0}, MKanan{0}, MBelakang{0};
   int16_t DKiri{0}, DKanan{0};
-  uint8_t lifter_target{0};
+  uint8_t lifter_target{1};
   uint8_t kickPower{0};
 };
 

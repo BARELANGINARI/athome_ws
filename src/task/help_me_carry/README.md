@@ -20,9 +20,16 @@ ros2 launch help_me_carry help_me_carry.launch.py
 
 ### CLI Examples
 ```bash
+# Person Following Services
 ros2 service call /follow/person std_srvs/srv/Trigger {}
 ros2 service call /follow/stop std_srvs/srv/Trigger {}
+ros2 action send_goal /follow/person_action help_me_carry/action/FollowPerson "{}"
+
+# Bag Alignment & Homing
 ros2 service call /task/align_bag std_srvs/srv/Trigger {}
 ros2 service call /homing std_srvs/srv/Trigger {}
-ros2 action send_goal /follow/person_action help_me_carry/action/FollowPerson "{}"
+
+# Lifter Services
+ros2 service call /lifter/naik std_srvs/srv/Trigger {}
+ros2 service call /lifter/turun std_srvs/srv/Trigger {}
 ```

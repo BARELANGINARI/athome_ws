@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Barelang Inari - Robot Face Expression</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Fullscreen Face Container -->
+  <div id="face-stage" class="stage">
+    
+    <!-- Status HUD (Subtle Header) -->
+    <div id="hud-bar" class="hud-bar">
+      <div class="hud-left">
+        <span id="ws-indicator" class="dot disconnected"></span>
+        <span id="ws-label" class="hud-text">STANDALONE PREVIEW</span>
+      </div>
+      <div class="hud-center">
+        <span id="current-emotion-label" class="hud-emotion">IDLE</span>
+      </div>
+      <div class="hud-right">
+        <button id="btn-toggle-toolbar" class="hud-btn" title="Toggle Testing Toolbar (T)">⚙️ Menu</button>
+      </div>
+    </div>
+
+    <!-- Emotion Embellishments (Question mark, exclamation, sweat drops, stars) -->
+    <div id="fx-layer" class="fx-layer">
+      <div id="fx-badge" class="fx-badge"></div>
+      <div id="fx-sparkles" class="fx-sparkles"></div>
+    </div>
+
+    <!-- Eyebrows Layer -->
+    <div class="eyebrows-wrap">
+      <div id="eyebrow-left" class="eyebrow left"></div>
+      <div id="eyebrow-right" class="eyebrow right"></div>
+    </div>
+
+    <!-- Eyes Container (SVG-driven for smooth vector scaling) -->
+    <div class="eyes-wrap" id="eyes-container">
+      
+      <!-- Left Eye -->
+      <div class="eye-socket" id="socket-left">
+        <svg class="eye-svg" id="eye-left" viewBox="0 0 160 220">
+          <defs>
+            <filter id="glow-cyan" x="-30%" y="-30%" width="160%" height="160%">
+              <feGaussianBlur stdDeviation="8" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+            <linearGradient id="grad-cyan" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#00f6ff" />
+              <stop offset="100%" stop-color="#0099ff" />
+            </linearGradient>
+            <linearGradient id="grad-happy" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#00ffd5" />
+              <stop offset="100%" stop-color="#00c8ff" />
+            </linearGradient>
+            <linearGradient id="grad-warning" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#ffb300" />
+              <stop offset="100%" stop-color="#ff3d00" />
+            </linearGradient>
+            <linearGradient id="grad-gold" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="#ffe600" />
+              <stop offset="100%" stop-color="#ff9100" />
+            </linearGradient>
+          </defs>
+
+          <!-- Outer Eye Shape -->
+          <g id="left-eye-group" filter="url(#glow-cyan)">
+            <!-- Base Eye Shape (Rounded Capsule) -->
+            <path id="left-eye-shape" class="eye-shape" d="M 30,50 C 30,20 130,20 130,50 L 130,170 C 130,200 30,200 30,170 Z" fill="url(#grad-cyan)" />
+            
+            <!-- Pupil Highlight / Glow -->
+            <ellipse id="left-pupil" class="pupil" cx="80" cy="110" rx="35" ry="45" fill="#ffffff" opacity="0.35" />
+            
+            <!-- Star Pupil (Hidden by default, used in SUCCESS) -->
+            <polygon id="left-star" class="pupil-star" points="80,75 87,97 110,97 92,110 99,132 80,119 61,132 68,110 50,97 73,97" fill="#ffffff" opacity="0" />
+
+            <!-- Scanline / Radar (Used in SEARCHING) -->
+            <line id="left-scanline" class="scanline" x1="20" y1="110" x2="140" y2="110" stroke="#ffffff" stroke-width="3" opacity="0" />
+          </g>
+
+          <!-- Eyelid Overlay for Natural Blinking (Dark curtain that clips down) -->
+          <rect id="left-eyelid-top" class="eyelid-top" x="0" y="0" width="160" height="0" fill="#06080e" />
+          <rect id="left-eyelid-bottom" class="eyelid-bottom" x="0" y="220" width="160" height="0" fill="#06080e" />
+        </svg>
+
+        <!-- Cheek Blush (soft pink glow in greeting/happy) -->
+        <div id="blush-left" class="cheek-blush"></div>
+      </div>
+
+      <!-- Right Eye -->
+      <div class="eye-socket" id="socket-right">
+        <svg class="eye-svg" id="eye-right" viewBox="0 0 160 220">
+          <!-- Outer Eye Shape -->
+          <g id="right-eye-group" filter="url(#glow-cyan)">
+            <path id="right-eye-shape" class="eye-shape" d="M 30,50 C 30,20 130,20 130,50 L 130,170 C 130,200 30,200 30,170 Z" fill="url(#grad-cyan)" />
+            <ellipse id="right-pupil" class="pupil" cx="80" cy="110" rx="35" ry="45" fill="#ffffff" opacity="0.35" />
+            <polygon id="right-star" class="pupil-star" points="80,75 87,97 110,97 92,110 99,132 80,119 61,132 68,110 50,97 73,97" fill="#ffffff" opacity="0" />
+            <line id="right-scanline" class="scanline" x1="20" y1="110" x2="140" y2="110" stroke="#ffffff" stroke-width="3" opacity="0" />
+          </g>
+
+          <rect id="right-eyelid-top" class="eyelid-top" x="0" y="0" width="160" height="0" fill="#06080e" />
+          <rect id="right-eyelid-bottom" class="eyelid-bottom" x="0" y="220" width="160" height="0" fill="#06080e" />
+        </svg>
+
+        <div id="blush-right" class="cheek-blush"></div>
+      </div>
+
+    </div>
+
+    <!-- Mouth / Waveform Sub-System (Below Eyes) -->
+    <div class="mouth-wrap">
+      <div id="mouth-wave" class="mouth-wave">
+        <span class="wave-bar"></span>
+        <span class="wave-bar"></span>
+        <span class="wave-bar"></span>
+        <span class="wave-bar"></span>
+        <span class="wave-bar"></span>
+      </div>
+      <div id="mouth-smile" class="mouth-smile"></div>
+    </div>
+
+    <!-- Speech Subtitle Overlay (if TTS / speech text is sent) -->
+    <div id="speech-bubble" class="speech-bubble">
+      <span id="speech-text"></span>
+    </div>
+
+  </div>
+
+  <!-- Interactive Testing & Demo Toolbar (Docked at bottom, collapsible) -->
+  <div id="test-toolbar" class="test-toolbar">
+    <div class="toolbar-header">
+      <span class="toolbar-title">🎮 Face Expression Controller</span>
+      <button id="btn-close-toolbar" class="btn-close" title="Hide Toolbar">✖</button>
+    </div>
+    <div class="toolbar-buttons">
+      <button class="btn-expr active" data-expr="IDLE" title="Key: 1">1. Normal / Idle</button>
+      <button class="btn-expr" data-expr="SEARCHING" title="Key: 2">2. Search Person</button>
+      <button class="btn-expr" data-expr="GREETING" title="Key: 3">3. Welcome (^_^)</button>
+      <button class="btn-expr" data-expr="LISTENING" title="Key: 4">4. Listening</button>
+      <button class="btn-expr" data-expr="SPEAKING" title="Key: 5">5. Speaking</button>
+      <button class="btn-expr" data-expr="FOLLOWING" title="Key: 6">6. Following</button>
+      <button class="btn-expr" data-expr="CURIOUS" title="Key: 7">7. Curious (?_?)</button>
+      <button class="btn-expr" data-expr="GRABBING" title="Key: 8">8. Grabbing Bag</button>
+      <button class="btn-expr" data-expr="SUCCESS" title="Key: 9">9. Done / Win (*_*)</button>
+      <button class="btn-expr" data-expr="LOST" title="Key: 0">0. Lost / Warning (!)</button>
+      <button id="btn-action-blink" class="btn-action" title="Key: Space">👁️ Blink</button>
+      <button id="btn-action-touch" class="btn-action">👋 Cute Wink</button>
+    </div>
+    <div class="toolbar-hint">
+      Hotkeys: <b>[1-0]</b> Ubah Ekspresi | <b>[Space]</b> Kedip | <b>[T]</b> Sembunyikan/Tampilkan Menu | Sentuh pipi/dahi untuk interaksi layar sentuh
+    </div>
+  </div>
+
+  <script src="face.js"></script>
+</body>
+</html>
+
