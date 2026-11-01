@@ -75,12 +75,12 @@ namespace fs = std::filesystem;
 
 const std::string MOTION_DIR = "motions";
 const uint8_t ARM_CORE_IDS[] = {4, 5, 1};
-const uint8_t ALL_IDS[]      = {4, 5, 1, 2};
+const uint8_t ALL_IDS[]      = {4, 5, 1, 6};
 
 struct Servo { uint8_t id; bool inverted; };
 const Servo JOINT1[] = { {4, false}, {5, true} };
 const Servo JOINT2[] = { {1, false} };
-const Servo JOINT3[] = { {2, false} };
+const Servo JOINT3[] = { {6, false} };
 
 enum class FrameAction {
     MOVE,           // Normal waypoint / motion sample
@@ -685,6 +685,7 @@ void releaseGripper(dynamixel::GroupSyncWrite &gsw, double cur[3], double open_d
         packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_CCW_SLOPE, COMPLIANCE_SLOPE, &err);
         packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_MOVING_SPEED, 0, &err);
         packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_LIMIT, DEFAULT_TORQUE_LIM, &err);
+        packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_ENABLE, 1, &err);
     }
     double target[3] = { cur[0], cur[1], open_deg };
     std::cout << "  [RELEASE] Opening gripper to +" << open_deg << " deg...\n";
