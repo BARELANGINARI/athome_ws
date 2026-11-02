@@ -1,0 +1,14 @@
+# Goal definition
+int32 target_id           # Indeks target orang (default 0: terdekat)
+float32 follow_distance   # Jarak aman mengikuti dalam meter (0 = gunakan default node)
+---
+# Result definition
+bool success
+string message
+float32 total_time        # Total durasi following dalam detik
+---
+# Feedback definition
+float32 current_distance  # Jarak robot ke orang saat ini (m)
+float32 current_bearing   # Sudut hadap orang relatif terhadap robot (rad)
+string tracking_status    # Status: "TRACKING", "LOST", "STOPPED"
+

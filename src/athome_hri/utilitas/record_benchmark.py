@@ -9,8 +9,8 @@ LOCAL_MODELS = {
     "base": os.path.expanduser("~/.cache/huggingface/hub/models--Systran--faster-whisper-base/snapshots/d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9"),
     "small": os.path.expanduser("~/.cache/huggingface/hub/models--Systran--faster-whisper-small/snapshots/f0525ff8f037671755ee14f9d45388656111f26a"),
 }
-# Teks referensi asli yang diputar dari speaker eksternal (Ground Truth)
-# Contoh:
+# Original reference text played from external speaker (Ground Truth)
+# Example:
 GROUND_TRUTH_TEXT = "robotika politeknik negeri batam mengembangkan sistem navigasi otonom berbasis kecerdasan buatan"
 
 MODELS_TO_TEST = ["tiny", "base", "small"]
@@ -38,18 +38,18 @@ def run_benchmarks(wav_folder="./"):
                 # model = WhisperModel(model_size, device=dev, compute_type=comp)
                 model = WhisperModel(model_size, device=dev, compute_type=comp)
             except Exception as e:
-                print(f"[SKIP] Gagal memuat {dev}: {e}")
+                print(f"[SKIP] Failed to load {dev}: {e}")
                 continue
 
             for wav_path in wav_files:
                 filename = os.path.basename(wav_path)
-                # Estimasi metadata dari nama file
+                # Estimate metadata from filename
                 parts = filename.replace(".wav", "").split("_")
                 mic = parts[1] if len(parts) > 1 else "Unknown"
                 condition = parts[2] if len(parts) > 2 else "Unknown"
                 distance = parts[3] if len(parts) > 3 else "Unknown"
                 
-                # Ukur Latensi & RTF
+                # Measure latency & RTF
                 start_t = time.perf_counter()
                 segments, info = model.transcribe(wav_path, beam_size=1, language="id")
                 pred_text = " ".join([seg.text for seg in segments])
@@ -76,7 +76,7 @@ def run_benchmarks(wav_folder="./"):
 
     df = pd.DataFrame(results)
     df.to_csv("benchmark_stt_results.csv", index=False)
-    print("\n--- HASIL BENCHMARK SELESAI ---")
+    print("\n--- BENCHMARK RESULTS COMPLETED ---")
     print(df[["mic", "model", "device", "wer", "rtf", "distance"]].to_markdown())
 
 if __name__ == "__main__":

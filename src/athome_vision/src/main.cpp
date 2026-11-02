@@ -6,7 +6,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64.hpp"
 #include "std_msgs/msg/string.hpp"
-#include "std_srvs/srv/trigger.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include <algorithm>
@@ -153,7 +152,29 @@ bool get3dCoordinatesWithOffset(
   return true;
 }
 
-}  
+// Ekstraksi warna dominan torso (HSV) untuk memori visual ringan
+cv::Scalar extractTorsoColor(const cv::Mat & bgr, const cv::Rect & bbox)
+{
+  if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) {
+    return cv::Scalar(0, 0, 0);
+  }
+  // Ambil area torso di sepertiga atas-tengah badan
+  int tw = std::max(4, bbox.width / 3);
+  int th = std::max(4, bbox.height / 4);
+  int tx = std::clamp(bbox.x + bbox.width / 3, 0, bgr.cols - tw);
+  int ty = std::clamp(bbox.y + bbox.height / 5, 0, bgr.rows - th);
+
+  cv::Rect torso_roi(tx, ty, tw, th);
+  torso_roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+  if (torso_roi.area() <= 0) return cv::Scalar(0, 0, 0);
+
+  cv::Mat crop = bgr(torso_roi);
+  cv::Mat hsv;
+  cv::cvtColor(crop, hsv, cv::COLOR_BGR2HSV);
+  return cv::mean(hsv);
+}
+
+}  // namespace zed_vision  
 
 struct YoloDetection
 {
@@ -403,12 +424,6 @@ private:
   void loop();
   void processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cloud);
   void showPreview(const cv::Mat & bgr);
-  void handleGetBagDetections(
-    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
-  void handleGetPersonDetections(
-    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
   // ---------- Deteksi Gestur (Opsi 1 & Opsi 2) ----------
   // Murni hanya menggunakan Bahu (Shoulder) dan Pergelangan Tangan (Wrist):
@@ -465,21 +480,13 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr persons_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr gesture_publisher_;  // publish gesture RIGHT/LEFT/NONE
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr bag_service_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr person_service_;
   rclcpp::TimerBase::SharedPtr timer_;
-
-  std::mutex data_mutex_;
-  std::string last_bag_data_;
-  std::string last_person_data_{"NO_PERSON"};
 
   bool publish_yaw_{true};
   bool publish_image_{true};
   int image_stride_{2};
   int image_frame_{0};
   double camera_fps_{30.0};
-  std::string depth_mode_{"ULTRA"};
-  std::string body_model_{"MEDIUM"};
   bool enable_body_tracking_{true};
   bool debug_window_{false};
   bool mirror_{true};
@@ -516,6 +523,19 @@ private:
   int yolo_stride_{2};
   int yolo_frame_{0};
   std::vector<YoloDetection> last_bag_dets_;
+
+  // Memori Operator (Stabilisasi ID & Re-ID saat hilang-timbul)
+  struct OperatorMemory {
+    bool active{false};
+    int stable_id{0};               // ID konsisten yang selalu dipublish untuk orang awal
+    double x{0.0};
+    double y{0.0};
+    double vx{0.0};                 // Estimasi kecepatan X (m/s)
+    double vy{0.0};                 // Estimasi kecepatan Y (m/s)
+    cv::Scalar torso_hsv{0, 0, 0};   // Karakteristik warna pakaian
+    bool has_color{false};
+    rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
+  } op_mem_;
 };
 
 ZedNode::ZedNode()
@@ -525,8 +545,6 @@ ZedNode::ZedNode()
   declare_parameter("publish_yaw", true);
   declare_parameter("publish_image", true);
   declare_parameter("image_stride", 2);
-  declare_parameter("depth_mode", std::string("ULTRA"));
-  declare_parameter("body_model", std::string("MEDIUM"));
   declare_parameter("enable_body_tracking", true);
   declare_parameter("depth_minimum_distance", 30.0);
   declare_parameter("enable_yolo", true);
@@ -548,8 +566,6 @@ ZedNode::ZedNode()
   publish_image_ = get_parameter("publish_image").as_bool();
   image_stride_ = static_cast<int>(get_parameter("image_stride").as_int());
   if (image_stride_ < 1) {image_stride_ = 1;}
-  depth_mode_ = get_parameter("depth_mode").as_string();
-  body_model_ = get_parameter("body_model").as_string();
   enable_body_tracking_ = get_parameter("enable_body_tracking").as_bool();
 
   if (camera_fps <= 0.0) {
@@ -562,13 +578,6 @@ ZedNode::ZedNode()
   gesture_publisher_ = create_publisher<std_msgs::msg::String>("/zed/gesture", 10);
   image_publisher_ = create_publisher<sensor_msgs::msg::Image>(
     "/zed/image", rclcpp::SensorDataQoS());
-
-  bag_service_ = create_service<std_srvs::srv::Trigger>(
-    "/zed/get_bag_detections",
-    std::bind(&ZedNode::handleGetBagDetections, this, std::placeholders::_1, std::placeholders::_2));
-  person_service_ = create_service<std_srvs::srv::Trigger>(
-    "/zed/get_person_detections",
-    std::bind(&ZedNode::handleGetPersonDetections, this, std::placeholders::_1, std::placeholders::_2));
 
   sl::InitParameters init_parameters;
   init_parameters.depth_mode = sl::DEPTH_MODE::ULTRA;
@@ -620,7 +629,7 @@ ZedNode::ZedNode()
     }
   }
 
-  body_runtime_parameters_.detection_confidence_threshold = 40;
+  body_runtime_parameters_.detection_confidence_threshold = 25;
 
   enable_yolo_   = get_parameter("enable_yolo").as_bool();
   debug_window_  = get_parameter("debug_window").as_bool();
@@ -674,24 +683,6 @@ void ZedNode::publishYaw()
   std_msgs::msg::Float64 message;
   message.data = static_cast<double>(zed_vision::wrap180(yaw * 180.0f / zed_vision::PI_F));
   yaw_publisher_->publish(message);
-}
-
-void ZedNode::handleGetBagDetections(
-  const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
-  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
-{
-  std::lock_guard<std::mutex> lock(data_mutex_);
-  response->success = !last_bag_data_.empty();
-  response->message = last_bag_data_.empty() ? "NO_BAG" : last_bag_data_;
-}
-
-void ZedNode::handleGetPersonDetections(
-  const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
-  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
-{
-  std::lock_guard<std::mutex> lock(data_mutex_);
-  response->success = (!last_person_data_.empty() && last_person_data_ != "NO_PERSON");
-  response->message = last_person_data_;
 }
 
 void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cloud)
@@ -768,6 +759,98 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       return a.range_m < b.range_m;
     });
 
+    const auto current_time = now();
+
+    // Logika Memori Operator: Menjaga ID orang awal tetap stabil meskipun hilang-timbul
+    int op_match_idx = -1;
+    if (op_mem_.active) {
+      const double dt = (current_time - op_mem_.last_seen).seconds();
+      // Toleransi hilang-timbul hingga 4.0 detik
+      if (dt <= 4.0) {
+        // Prediksi posisi berdasarkan kecepatan (Kalman / Constant Velocity model)
+        const double pred_x = op_mem_.x + op_mem_.vx * std::min(dt, 2.0);
+        const double pred_y = op_mem_.y + op_mem_.vy * std::min(dt, 2.0);
+        // Radius pencarian melebar bertahap seiring durasi hilang
+        const double max_match_dist = 1.0 + 0.8 * dt;
+
+        double best_cost = std::numeric_limits<double>::infinity();
+        for (size_t i = 0; i < entries.size(); ++i) {
+          const auto & cand = entries[i];
+          if (!cand.has_depth) continue;
+
+          const double dist_diff = std::hypot(cand.x - pred_x, cand.y - pred_y);
+          if (dist_diff > max_match_dist) continue;
+
+          // Hitung penalti warna pakaian torso jika tersedia
+          double color_penalty = 0.0;
+          if (op_mem_.has_color) {
+            const cv::Scalar cand_hsv = zed_vision::extractTorsoColor(bgr, cand.bbox);
+            // Selisih nilai Hue & Saturation
+            const double dh = std::abs(cand_hsv[0] - op_mem_.torso_hsv[0]);
+            const double ds = std::abs(cand_hsv[1] - op_mem_.torso_hsv[1]);
+            color_penalty = (dh / 180.0) * 0.5 + (ds / 255.0) * 0.3;
+          }
+
+          const double total_cost = dist_diff + color_penalty;
+          if (total_cost < best_cost) {
+            best_cost = total_cost;
+            op_match_idx = static_cast<int>(i);
+          }
+        }
+      } else {
+        // Timeout > 4 detik: reset memori agar bisa mengunci operator baru
+        op_mem_.active = false;
+        op_mem_.has_color = false;
+      }
+    }
+
+    // Jika belum ada operator yang dikunci atau match ditemukan
+    if (!op_mem_.active && !entries.empty()) {
+      // Kunci orang terdekat pertama kali sebagai operator
+      op_match_idx = 0;
+      op_mem_.active = true;
+      op_mem_.stable_id = 0;  // Tetapkan ID stabil selalu 0
+      op_mem_.vx = 0.0;
+      op_mem_.vy = 0.0;
+      if (entries[0].has_depth) {
+        op_mem_.x = entries[0].x;
+        op_mem_.y = entries[0].y;
+      }
+      op_mem_.torso_hsv = zed_vision::extractTorsoColor(bgr, entries[0].bbox);
+      op_mem_.has_color = true;
+      op_mem_.last_seen = current_time;
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[92m[OperatorMemory] Operator awal berhasil dikunci (ID Stabil: %d, Posisi: %.2f, %.2f)\033[0m",
+        op_mem_.stable_id, op_mem_.x, op_mem_.y);
+    }
+
+    // Jika kandidat operator cocok dengan memori, update posisinya & jadikan urutan pertama (operator)
+    if (op_match_idx >= 0 && op_match_idx < static_cast<int>(entries.size())) {
+      if (op_match_idx > 0) {
+        std::swap(entries[0], entries[static_cast<size_t>(op_match_idx)]);
+      }
+      auto & op = entries.front();
+      op.id = op_mem_.stable_id;  // Paksa ID ZED kembali ke ID stabil orang awal!
+      op.label = "operator";
+
+      if (op.has_depth) {
+        const double dt = std::max(0.01, (current_time - op_mem_.last_seen).seconds());
+        if (dt < 1.0) {
+          // Update estimasi kecepatan dengan low-pass filter
+          op_mem_.vx = 0.7 * op_mem_.vx + 0.3 * ((op.x - op_mem_.x) / dt);
+          op_mem_.vy = 0.7 * op_mem_.vy + 0.3 * ((op.y - op_mem_.y) / dt);
+        }
+        op_mem_.x = op.x;
+        op_mem_.y = op.y;
+      }
+      op_mem_.last_seen = current_time;
+      // Perbarui warna torso secara adaptif (moving average)
+      const cv::Scalar new_hsv = zed_vision::extractTorsoColor(bgr, op.bbox);
+      op_mem_.torso_hsv = 0.85 * op_mem_.torso_hsv + 0.15 * new_hsv;
+      op_mem_.has_color = true;
+    }
+
     if (!entries.empty()) {
       entries.front().label = "operator";
       if (entries.front().has_depth) {
@@ -824,12 +907,6 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     std_msgs::msg::String m;
     m.data = person_str;
     persons_publisher_->publish(m);
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(data_mutex_);
-    last_bag_data_ = bag_str;
-    last_person_data_ = person_str;
   }
 
   showPreview(bgr);

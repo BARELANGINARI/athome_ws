@@ -1,26 +1,59 @@
+# help_me_carry
+
+RoboCup@Home **Help Me Carry** task package for Barelang Inari robot.
+
+Features Kalman Filter person tracking with occlusion dead-reckoning, spatial gating, pointing gesture alignment, robotic arm pickup, and autonomous homing.
+
+## Launch Options
+
+### Modular Stack (Recommended for Testing)
+Run across 4 terminals:
 ```bash
-# Terminal 1 — Hardware Base STM32 Nucleo & RPLiDAR (/dev/ttyUSB2):
+# Terminal 1 — STM32 Nucleo motor base & RPLiDAR
 ros2 launch help_me_carry hardware.launch.py
 
-# Terminal 2 — Penglihatan Kamera ZED (Orang & Tas):
+# Terminal 2 — ZED camera (person tracking, bag YOLO, pointing gesture)
 ros2 launch help_me_carry camera.launch.py
 
-# Terminal 3 — Navigasi (Online SLAM, Nav2, Person Following, RViz):
+# Terminal 3 — Online SLAM, Nav2, follower node & RViz
 ros2 launch help_me_carry motion.launch.py
 
-# Terminal 4 — HRI Antarmuka Suara & Web Dashboard:
+# Terminal 4 — HRI speech interaction & Web dashboard
 ros2 launch help_me_carry hri.launch.py
+```
 
+### All-in-One
+```bash
+ros2 launch help_me_carry help_me_carry.launch.py
+```
 
-# CARA PEMANGGILAN SERVICE VIA CLI:
- 1. Person Following (Mulai mengikuti operator):
-   ros2 service call /follow/person std_srvs/srv/Trigger {}
+## ROS 2 Services
 
- 2. Person Stop (Hentikan following):
-   ros2 service call /follow/stop std_srvs/srv/Trigger {}
+| Service | Type | Description |
+|---|---|---|
+| `/follow/person` | `std_srvs/srv/Trigger` | Start following the locked operator |
+| `/follow/stop` | `std_srvs/srv/Trigger` | Stop following |
+| `/task/align_bag` | `std_srvs/srv/Trigger` | Align robot towards the bag indicated by gesture (`LEFT`/`RIGHT`) |
+| `/task/step_back` | `std_srvs/srv/Trigger` | Move backward until person distance reaches 2.0m or a bag is detected |
+| `/arm/ambil_tas` | `std_srvs/srv/Trigger` | Trigger arm trajectory to pick up bag |
+| `/homing` | `std_srvs/srv/Trigger` | Return robot autonomously to starting pose `(0, 0)` |
 
- 3. Align to Bag (Sejajarkan hadap robot ke tas sesuai gesture vision lalu stop)
-   ros2 service call /task/align_bag std_srvs/srv/Trigger {}
+### CLI Examples
+```bash
+ros2 service call /follow/person std_srvs/srv/Trigger {}
+ros2 service call /follow/stop std_srvs/srv/Trigger {}
+ros2 service call /task/step_back std_srvs/srv/Trigger {}
+# Alias: ros2 service call /help_me_carry/step_back std_srvs/srv/Trigger {}
+ros2 service call /task/align_bag std_srvs/srv/Trigger {}
+ros2 service call /homing std_srvs/srv/Trigger {}
+```
 
- 4. Homing (Kembali ke titik awal 0,0 Nav2):
-   ros2 service call /homing std_srvs/srv/Trigger {}
+## Configuration
+
+Parameters can be adjusted in [config/params.yaml](config/params.yaml) without rebuilding:
+* `stop_distance`: Following distance behind operator (default: `1.0` m).
+* `occlusion_timeout`: Dead-reckoning duration during target occlusion (default: `1.5` s).
+* `gating_threshold`: Distance validation gate for target re-lock (default: `1.2` m).
+* `step_back_person_distance`: Target separation to person before stopping backward motion (default: `2.0` m).
+* `step_back_speed`: Backward linear speed magnitude (default: `0.15` m/s).
+* `step_back_timeout`: Maximum duration before stopping backward motion (default: `15.0` s).

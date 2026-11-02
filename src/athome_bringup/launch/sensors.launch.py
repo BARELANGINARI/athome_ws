@@ -9,7 +9,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Generate launch description: lidar + filter + TF + ZED yaw."""
+    """Launch LiDAR (RPLiDAR), laser filters, static TF, and ZED camera."""
     lidar_yaml = PathJoinSubstitution(
         [FindPackageShare('athome_bringup'), 'config', 'lidar.yaml'])
 
@@ -17,13 +17,16 @@ def generate_launch_description():
         DeclareLaunchArgument('lidar_x', default_value='0.0', description='LiDAR X offset from base_link (m)'),
         DeclareLaunchArgument('lidar_y', default_value='0.0', description='LiDAR Y offset from base_link (m)'),
         DeclareLaunchArgument('lidar_z', default_value='0.3', description='LiDAR Z offset from base_link (m)'),
-        DeclareLaunchArgument('lidar_yaw', default_value='3.14159', description='LiDAR yaw offset (rad)'),
-        DeclareLaunchArgument('camera_fps', default_value='30.0', description='ZED camera framerate (FPS)'),
-        DeclareLaunchArgument(
-            'use_scan_filter',
-            default_value='false',
-            description='Enable 180 deg angular laser filter',
-        ),
+        DeclareLaunchArgument('lidar_yaw', default_value='3.14159', description='LiDAR yaw offset from base_link (rad)'),
+        DeclareLaunchArgument('camera_fps', default_value='30.0', description='ZED camera frame rate (FPS)'),
+        DeclareLaunchArgument('use_scan_filter', default_value='false', description='Enable laser scan angular filter'),
+        DeclareLaunchArgument('enable_body_tracking', default_value='true', description='Enable ZED body tracking'),
+        DeclareLaunchArgument('depth_minimum_distance', default_value='30.0', description='Minimum depth sensing distance (cm)'),
+        DeclareLaunchArgument('image_stride', default_value='2', description='Publish preview image every N frames'),
+        DeclareLaunchArgument('enable_yolo', default_value='true', description='Enable YOLO object detection'),
+        DeclareLaunchArgument('debug_window', default_value='false', description='Show OpenCV preview window'),
+        DeclareLaunchArgument('mirror', default_value='true', description='Mirror display preview horizontally'),
+
         Node(
             package='rplidar_ros',
             executable='rplidar_composition',
@@ -84,9 +87,13 @@ def generate_launch_description():
                 PathJoinSubstitution([FindPackageShare('athome_vision'), 'launch', 'zed.launch.py'])),
             launch_arguments={
                 'camera_fps': LaunchConfiguration('camera_fps'),
-                'publish_annotated': 'false',
-                'preview': 'false',
                 'publish_yaw': 'true',
+                'enable_body_tracking': LaunchConfiguration('enable_body_tracking'),
+                'depth_minimum_distance': LaunchConfiguration('depth_minimum_distance'),
+                'image_stride': LaunchConfiguration('image_stride'),
+                'enable_yolo': LaunchConfiguration('enable_yolo'),
+                'debug_window': LaunchConfiguration('debug_window'),
+                'mirror': LaunchConfiguration('mirror'),
             }.items(),
         ),
     ])
