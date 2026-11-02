@@ -166,6 +166,9 @@ private:
   static constexpr double OPERATOR_TIMEOUT_SEC     = 5.0;    // Toleransi oklusi rintangan sebelum masuk recovery
   static constexpr double FOLLOW_GRACE_PERIOD_SEC  = 2.0;    // Masa tenggang deteksi hilang saat awal follow
   static constexpr double ARRIVED_GRACE_PERIOD_SEC = 5.0;    // Jeda abaikan perintah arrived saat awal follow
+  static constexpr double TTS_MIN_TIMEOUT_SEC      = 6.0;    // Batas minimal watchdog TTS
+  static constexpr double TTS_SEC_PER_WORD         = 0.5;    // Estimasi durasi ucapan per kata
+  static constexpr double TTS_TIMEOUT_MARGIN_SEC   = 3.0;    // Margin sintesis + latensi playback
 
   // ----------------------------------------------------------------------------
   // Status Variabel Atomic & Waktu
@@ -191,6 +194,8 @@ private:
   rclcpp::Time last_command_time_{0, 0, RCL_ROS_TIME};
 
   std::mutex data_mutex_;
+  std::mutex tts_mutex_;              // Proteksi state TTS (ditulis dari thread callback service)
+  double tts_timeout_sec_{TTS_MIN_TIMEOUT_SEC};
   std::string last_command_;
   std::function<void()> pending_tts_done_;
   bool bag_prompt_sent_{false};
@@ -272,33 +277,63 @@ private:
   // ----------------------------------------------------------------------------
   // Helper: Text-to-Speech (TTS) Asinkron
   // ----------------------------------------------------------------------------
+  // Estimasi batas waktu TTS berdasarkan jumlah kata (~0.5 s/kata + margin 3 s, minimal 6 s)
+  static double estimateTtsTimeout(const std::string & text)
+  {
+    size_t words = 0;
+    bool in_word = false;
+    for (const char c : text) {
+      if (std::isspace(static_cast<unsigned char>(c))) {
+        in_word = false;
+      } else if (!in_word) {
+        in_word = true;
+        ++words;
+      }
+    }
+    return std::max(TTS_MIN_TIMEOUT_SEC, static_cast<double>(words) * TTS_SEC_PER_WORD + TTS_TIMEOUT_MARGIN_SEC);
+  }
+
+  // Mengucapkan teks; FSM terkunci (busy_) sampai /hri/tts_done diterima.
+  // Aksi lanjutan WAJIB diletakkan di on_done agar dieksekusi setelah TTS selesai.
   void speakAsync(const std::string & text, std::function<void()> on_done = nullptr)
   {
+    {
+      std::lock_guard<std::mutex> lock(tts_mutex_);
+      // Kunci FSM sebelum publish agar tidak ada celah race dengan fsmTick
+      speaking_ = true;
+      busy_ = true;
+      tts_started_time_ = now();
+      tts_timeout_sec_ = estimateTtsTimeout(text);
+      tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.5);
+      pending_tts_done_ = std::move(on_done);
+    }
+
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
     RCLCPP_INFO(get_logger(), "\033[1;35m[TTS SAY]\033[0m \"%s\" | Mic: \033[1;31m[MUTED]\033[0m", text.c_str());
-
-    speaking_ = true;
-    busy_ = true;
-    tts_started_time_ = now();
-    tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.5);
-    pending_tts_done_ = std::move(on_done);
   }
 
   void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
   {
-    speaking_ = false;
-    busy_ = false;
-    tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.4);
+    std::function<void()> callback;
+    {
+      std::lock_guard<std::mutex> lock(tts_mutex_);
+      if (!speaking_.load()) {
+        return;  // Abaikan tts_done ganda / yang tidak diminta orchestrator
+      }
+      speaking_ = false;
+      busy_ = false;
+      tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.4);
+      callback = std::move(pending_tts_done_);
+      pending_tts_done_ = nullptr;
+    }
 
     RCLCPP_INFO(
       get_logger(),
       "\033[1;32m[TTS FINISHED]\033[0m Playback complete | Mic: \033[1;32m[LISTENING]\033[0m | State: \033[1;36m%s\033[0m",
       stateToString(state_.load()).c_str());
 
-    auto callback = std::move(pending_tts_done_);
-    pending_tts_done_ = nullptr;
     if (callback) {
       callback();
     }
@@ -457,7 +492,7 @@ private:
   static const std::vector<std::string> & getArrivedCorpus()
   {
     static const std::vector<std::string> corpus = {
-      "arrived at the location", "we have arrived", "this is the location",
+      "arrived at the location", "we have arrived", "this is the location", "this is the location",
       "reached the car", "arrived at the car", "stop here we arrived",
       "i have arrived", "we are here", "here is the car", "arrived",
     };
@@ -677,16 +712,26 @@ private:
     if (emergency_stop_requested_.exchange(false)) {
       busy_ = true;
       stopFollowing([this](bool) {
-        busy_ = false;
-        speakAsync("Okay, stopping.");
-        transitionTo(TaskState::WAIT_START_COMMAND, "Emergency stop");
+        // busy_ tetap terkunci; transisi dilakukan setelah TTS selesai
+        speakAsync("Okay, stopping.", [this]() {
+          transitionTo(TaskState::WAIT_START_COMMAND, "Emergency stop");
+        });
       });
       return;
     }
 
-    // Safety watchdog: Lepas kuncian busy jika tts_done hilang lebih dari 6 detik
-    if (speaking_.load() && (now() - tts_started_time_).seconds() > 6.0) {
-      RCLCPP_WARN(get_logger(), "TTS timeout (no /hri/tts_done received), resetting busy state.");
+    // Safety watchdog: Lepas kuncian busy jika tts_done tidak diterima dalam estimasi durasi kalimat
+    bool tts_timed_out = false;
+    double tts_timeout = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(tts_mutex_);
+      tts_timeout = tts_timeout_sec_;
+      tts_timed_out = speaking_.load() && (now() - tts_started_time_).seconds() > tts_timeout_sec_;
+    }
+    if (tts_timed_out) {
+      RCLCPP_WARN(
+        get_logger(),
+        "TTS timeout (> %.1f s, no /hri/tts_done received), resetting busy state.", tts_timeout);
       onTtsDone(nullptr);
     }
 
@@ -746,20 +791,22 @@ private:
       // ------------------------------------------------------------------------
       case TaskState::WAIT_START_COMMAND:
         if (follow_requested_.exchange(false)) {
-          busy_ = true;
-          callTrigger(
-            follow_start_client_, "/follow/person",
-            [this](bool success, const std::string & message) {
-              busy_ = false;
-              if (!success) {
-                RCLCPP_ERROR(get_logger(), "Follow gagal: %s", message.c_str());
-                speakAsync("Person following is not ready.");
-                return;
-              }
-              last_operator_seen_time_ = now();
-              transitionTo(TaskState::FOLLOW_OPERATOR, "Follow started");
-              speakAsync("Okay, I am following you.");
-            });
+          // Ucapkan konfirmasi DULU, baru robot mulai bergerak setelah TTS selesai
+          speakAsync("Okay, I am following you.", [this]() {
+            busy_ = true;
+            callTrigger(
+              follow_start_client_, "/follow/person",
+              [this](bool success, const std::string & message) {
+                if (!success) {
+                  RCLCPP_ERROR(get_logger(), "Follow gagal: %s", message.c_str());
+                  speakAsync("Person following is not ready.");
+                  return;
+                }
+                last_operator_seen_time_ = now();
+                transitionTo(TaskState::FOLLOW_OPERATOR, "Follow started");
+                busy_ = false;
+              });
+          });
         }
         break;
 
@@ -772,12 +819,13 @@ private:
         {
           busy_ = true;
           stopFollowing([this](bool success) {
-            busy_ = false;
             if (!success) {
               transitionTo(TaskState::ABORTED, "Could not stop following");
+              busy_ = false;
               return;
             }
             transitionTo(TaskState::ARRIVED, "Arrival command");
+            busy_ = false;
           });
         }
         break;
@@ -793,8 +841,9 @@ private:
           RCLCPP_INFO(
             get_logger(),
             "\033[1;32m[ARRIVED]\033[0m Operator dan tas sudah terdeteksi di depan robot. Langsung menuju penunjukan tas.");
-          transitionTo(TaskState::WAIT_BAG_POINTING, "Operator & bag visible");
-          speakAsync("We have arrived. Please point to the bag you want me to carry.");
+          speakAsync("We have arrived. Please point to the bag you want me to carry.", [this]() {
+            transitionTo(TaskState::WAIT_BAG_POINTING, "Operator & bag visible");
+          });
         } else {
           RCLCPP_INFO(
             get_logger(),
@@ -802,19 +851,19 @@ private:
             operator_detected ? "terdeteksi" : "tidak",
             bag_detected ? "terdeteksi" : "tidak");
 
-          busy_ = true;
+          // Robot baru mundur setelah kalimat selesai diucapkan
           speakAsync("We have arrived. Stepping back to find you and the bag.", [this]() {
             busy_ = true;
             callTrigger(
               step_back_client_, "/task/step_back",
               [this](bool success, const std::string & message) {
-                busy_ = false;
                 RCLCPP_INFO(
                   get_logger(),
                   "[ARRIVED] Selesai /task/step_back: %s (success=%s)",
                   message.c_str(), success ? "true" : "false");
-                transitionTo(TaskState::WAIT_BAG_POINTING, "Step back finished");
-                speakAsync("Please point to the bag you want me to carry.");
+                speakAsync("Please point to the bag you want me to carry.", [this]() {
+                  transitionTo(TaskState::WAIT_BAG_POINTING, "Step back finished");
+                });
               },
               20s);
           });
@@ -830,24 +879,26 @@ private:
           recovery_prompt_sent_ = true;
           busy_ = true;
           stopFollowing([this](bool) {
-            busy_ = false;
+            // busy_ tetap terkunci sampai prompt selesai diucapkan
             speakAsync("I lost sight of you. Please stand in front of me.");
           });
           break;
         } else if (isOperatorInFront()) {
-          busy_ = true;
-          callTrigger(
-            follow_start_client_, "/follow/person",
-            [this](bool success, const std::string & message) {
-              busy_ = false;
-              if (success) {
-                last_operator_seen_time_ = now();
-                transitionTo(TaskState::FOLLOW_OPERATOR, "Operator reacquired");
-                speakAsync("I see you. Resuming follow.");
-              } else {
-                RCLCPP_WARN(get_logger(), "Recovery follow gagal: %s", message.c_str());
-              }
-            });
+          // Ucapkan konfirmasi DULU, baru lanjut follow setelah TTS selesai
+          speakAsync("I see you. Resuming follow.", [this]() {
+            busy_ = true;
+            callTrigger(
+              follow_start_client_, "/follow/person",
+              [this](bool success, const std::string & message) {
+                if (success) {
+                  last_operator_seen_time_ = now();
+                  transitionTo(TaskState::FOLLOW_OPERATOR, "Operator reacquired");
+                } else {
+                  RCLCPP_WARN(get_logger(), "Recovery follow gagal: %s", message.c_str());
+                }
+                busy_ = false;
+              });
+          });
         } else if ((now() - state_enter_time_).seconds() > 15.0) {
           transitionTo(TaskState::ABORTED, "Operator recovery timeout");
         }
@@ -881,7 +932,6 @@ private:
                 callTrigger(
                   align_bag_client_, "/task/align_bag",
                   [this](bool success, const std::string & message) {
-                    busy_ = false;
                     if (success) {
                       transitionTo(TaskState::GRASP_BAG, "Bag aligned");
                     } else {
@@ -890,6 +940,7 @@ private:
                       gesture_confirmed_ = false;
                       detected_gesture_ = "NONE";
                     }
+                    busy_ = false;  // Lepas kunci FSM setelah state baru siap
                   });
               });
           } else if ((now() - state_enter_time_).seconds() > 30.0) {
@@ -908,10 +959,12 @@ private:
         callTrigger(
           grab_bag_client_, "/arm/ambil_tas",
           [this](bool success, const std::string & message) {
-            busy_ = false;
+            // busy_ TIDAK dilepas di sini: speakAsync menjaga kunci sampai TTS selesai,
+            // lalu transisi state (dan aksi berikutnya) dieksekusi di callback on_done.
             if (success) {
-              transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
-              speakAsync("I have the bag. I am returning to the starting point.");
+              speakAsync("I have the bag. I am returning to the starting point.", [this]() {
+                transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
+              });
             } else {
               RCLCPP_WARN(
                 get_logger(),
@@ -934,20 +987,22 @@ private:
         callTrigger(
           homing_client_, "/homing",
           [this](bool success, const std::string & message) {
-            busy_ = false;
             if (success) {
-              transitionTo(TaskState::PUT_DOWN_BAG, "Homing completed, placing bag down");
-              speakAsync("I have returned to the starting point. I will put down the bag now.");
+              speakAsync("I have returned to the starting point. I will put down the bag now.", [this]() {
+                transitionTo(TaskState::PUT_DOWN_BAG, "Homing completed, placing bag down");
+              });
             } else if (homing_retry_count_ < 2) {
               homing_retry_count_++;
               RCLCPP_WARN(
                 get_logger(),
                 "Homing gagal (%s). Mencoba ulang (%d/2)...",
                 message.c_str(), homing_retry_count_);
+              // Retry homing baru dijalankan setelah kalimat selesai (busy_ dilepas oleh onTtsDone)
               speakAsync("Path is blocked, retrying navigation to the starting point.");
             } else {
               RCLCPP_ERROR(get_logger(), "Homing gagal setelah retry: %s", message.c_str());
               transitionTo(TaskState::ABORTED, "Homing failed after retries");
+              busy_ = false;
             }
           },
           125s);
@@ -961,14 +1016,15 @@ private:
         callTrigger(
           put_down_bag_client_, "/arm/letakkan_tas",
           [this](bool success, const std::string & message) {
-            busy_ = false;
             if (success) {
-              transitionTo(TaskState::COMPLETED, "Bag placed down successfully");
-              speakAsync("I have placed the bag down. Task completed.");
+              speakAsync("I have placed the bag down. Task completed.", [this]() {
+                transitionTo(TaskState::COMPLETED, "Bag placed down successfully");
+              });
             } else {
               RCLCPP_WARN(get_logger(), "Letakkan tas tidak berhasil: %s. Melanjutkan ke completed.", message.c_str());
-              transitionTo(TaskState::COMPLETED, "Task completed (fallback)");
-              speakAsync("Task completed.");
+              speakAsync("Task completed.", [this]() {
+                transitionTo(TaskState::COMPLETED, "Task completed (fallback)");
+              });
             }
           });
         break;
