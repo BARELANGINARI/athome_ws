@@ -112,6 +112,11 @@ public:
       std::bind(&HelpMeCarryOrchestrator::onGesture, this, std::placeholders::_1),
       options);
 
+    follow_status_sub_ = create_subscription<std_msgs::msg::String>(
+      "/follow/status", 10,
+      std::bind(&HelpMeCarryOrchestrator::onFollowStatus, this, std::placeholders::_1),
+      options);
+
     // --------------------------------------------------------------------------
     // Service Clients (Following, Vision Alignment, Arm, & Navigation)
     // --------------------------------------------------------------------------
@@ -148,7 +153,7 @@ private:
   // Konstanta Timeout & Grace Period
   // ----------------------------------------------------------------------------
   static constexpr double GLOBAL_TIMEOUT_SEC       = 300.0;  // Batas waktu total tugas (5 menit)
-  static constexpr double OPERATOR_TIMEOUT_SEC     = 3.0;    // Batas hilang operator sebelum masuk recovery
+  static constexpr double OPERATOR_TIMEOUT_SEC     = 5.0;    // Toleransi oklusi rintangan sebelum masuk recovery
   static constexpr double FOLLOW_GRACE_PERIOD_SEC  = 2.0;    // Masa tenggang deteksi hilang saat awal follow
   static constexpr double ARRIVED_GRACE_PERIOD_SEC = 5.0;    // Jeda abaikan perintah arrived saat awal follow
 
@@ -163,6 +168,7 @@ private:
   std::atomic<bool> arrived_requested_{false};
   std::atomic<bool> emergency_stop_requested_{false};
   std::atomic<bool> operator_seen_{false};
+  std::atomic<bool> tracker_lost_{false};
 
   rclcpp::Time task_start_time_;
   rclcpp::Time state_enter_time_;
@@ -179,6 +185,7 @@ private:
   bool recovery_prompt_sent_{false};
   std::string detected_gesture_{"NONE"};
   bool gesture_confirmed_{false};
+  int homing_retry_count_{0};
 
   // ----------------------------------------------------------------------------
   // Node Interfaces (Pub, Sub, Clients)
@@ -191,6 +198,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr emergency_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr follow_status_sub_;
 
   TriggerClient::SharedPtr follow_start_client_;
   TriggerClient::SharedPtr follow_stop_client_;
@@ -226,6 +234,7 @@ private:
     // Reset flag penting saat berpindah ke state tertentu
     if (next_state == TaskState::FOLLOW_OPERATOR) {
       arrived_requested_ = false;
+      tracker_lost_ = false;
     }
     if (next_state == TaskState::CHECK_OPERATOR_PRESENCE) {
       last_operator_warn_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
@@ -233,6 +242,9 @@ private:
     if (next_state == TaskState::WAIT_BAG_POINTING) {
       detected_gesture_ = "NONE";
       gesture_confirmed_ = false;
+    }
+    if (next_state == TaskState::RETURN_TO_START && state_.load() != TaskState::RETURN_TO_START) {
+      homing_retry_count_ = 0;
     }
 
     state_ = next_state;
@@ -476,11 +488,26 @@ private:
   {
     if (message->data.find("NO_PERSON") != std::string::npos) {
       operator_seen_ = false;
-    } else if (message->data.find("person:") != std::string::npos ||
-               message->data.find("operator:") != std::string::npos)
+    } else if (message->data.find("operator:") != std::string::npos ||
+               (state_.load() != TaskState::FOLLOW_OPERATOR &&
+                message->data.find("person:") != std::string::npos) ||
+               (!tracker_lost_.load() && message->data.find("person:") != std::string::npos))
     {
       operator_seen_ = true;
       last_operator_seen_time_ = now();
+    }
+  }
+
+  // Callback sinkronisasi status pelacakan dari help_me_carry_node
+  void onFollowStatus(const std_msgs::msg::String::SharedPtr message)
+  {
+    if (message->data == "TRACKING" || message->data == "PREDICTING") {
+      tracker_lost_ = false;
+      operator_seen_ = true;
+      last_operator_seen_time_ = now();
+    } else if (message->data == "LOST") {
+      tracker_lost_ = true;
+      operator_seen_ = false;
     }
   }
 
@@ -560,13 +587,13 @@ private:
       return;
     }
 
-    // Watchdog: Deteksi operator hilang saat following
+    // Watchdog: Deteksi operator hilang saat following (berdasarkan timeout / status tracker LOST)
     if (current_state == TaskState::FOLLOW_OPERATOR &&
       (now() - state_enter_time_).seconds() > FOLLOW_GRACE_PERIOD_SEC &&
-      (now() - last_operator_seen_time_).seconds() > OPERATOR_TIMEOUT_SEC)
+      (tracker_lost_.load() || (now() - last_operator_seen_time_).seconds() > OPERATOR_TIMEOUT_SEC))
     {
       operator_seen_ = false;
-      transitionTo(TaskState::RECOVER_OPERATOR, "Operator lost (timeout > 3s)");
+      transitionTo(TaskState::RECOVER_OPERATOR, "Operator lost (timeout > 5s or tracker lost)");
     }
 
     // Emergency Stop jika diucapkan perintah berhenti darurat
@@ -758,7 +785,7 @@ private:
         break;
 
       // ------------------------------------------------------------------------
-      // State 7: GRASP_BAG - Pengambilan tas via Lengan Robot
+      // State 7: GRASP_BAG - Pengambilan tas via Lengan Robot (+ Human Fallback)
       // ------------------------------------------------------------------------
       case TaskState::GRASP_BAG:
         busy_ = true;
@@ -770,8 +797,15 @@ private:
               transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
               speakAsync("I have the bag. I am returning to the starting point.");
             } else {
-              RCLCPP_ERROR(get_logger(), "Grasp gagal: %s", message.c_str());
-              transitionTo(TaskState::ABORTED, "Bag grasp failed");
+              RCLCPP_WARN(
+                get_logger(),
+                "Grasp otonom gagal (%s). Mengaktifkan fallback bantuan operator...",
+                message.c_str());
+              speakAsync(
+                "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
+                [this]() {
+                  transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
+                });
             }
           });
         break;
@@ -788,11 +822,19 @@ private:
             if (success) {
               transitionTo(TaskState::PUT_DOWN_BAG, "Homing completed, placing bag down");
               speakAsync("I have returned to the starting point. I will put down the bag now.");
+            } else if (homing_retry_count_ < 2) {
+              homing_retry_count_++;
+              RCLCPP_WARN(
+                get_logger(),
+                "Homing gagal (%s). Mencoba ulang (%d/2)...",
+                message.c_str(), homing_retry_count_);
+              speakAsync("Path is blocked, retrying navigation to the starting point.");
             } else {
-              RCLCPP_ERROR(get_logger(), "Homing gagal: %s", message.c_str());
-              transitionTo(TaskState::ABORTED, "Homing failed");
+              RCLCPP_ERROR(get_logger(), "Homing gagal setelah retry: %s", message.c_str());
+              transitionTo(TaskState::ABORTED, "Homing failed after retries");
             }
-          });
+          },
+          125s);
         break;
 
       // ------------------------------------------------------------------------

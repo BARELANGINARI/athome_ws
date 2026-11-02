@@ -251,6 +251,8 @@ public:
       cmd_vel_topic_, rclcpp::QoS(10));
     path_pub_ = create_publisher<nav_msgs::msg::Path>(
       path_topic_, rclcpp::QoS(10));
+    follow_status_pub_ = create_publisher<std_msgs::msg::String>(
+      "/follow/status", rclcpp::QoS(10));
 
     cb_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     rclcpp::SubscriptionOptions sub_options;
@@ -267,7 +269,11 @@ public:
       gesture_topic_, rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::String::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(bag_mutex_);
-        if (msg->data.find("LEFT") != std::string::npos || msg->data.find("RIGHT") != std::string::npos){
+        if (msg->data.find("LEFT") != std::string::npos ||
+            msg->data.find("RIGHT") != std::string::npos ||
+            msg->data.find("KIRI") != std::string::npos ||
+            msg->data.find("KANAN") != std::string::npos)
+        {
           latest_gesture_ = msg->data;
         }
       },
@@ -516,6 +522,9 @@ private:
         raw_dist = std::hypot(rel_x, rel_y);
         raw_bearing = std::atan2(rel_y, rel_x);
         last_seen_sec_ = now().seconds();
+        std_msgs::msg::String status_msg;
+        status_msg.data = "TRACKING";
+        follow_status_pub_->publish(status_msg);
       }
     }
 
@@ -530,6 +539,9 @@ private:
         rel_y = kf_.y();
         raw_dist = std::hypot(rel_x, rel_y);
         raw_bearing = std::atan2(rel_y, rel_x);
+        std_msgs::msg::String status_msg;
+        status_msg.data = "PREDICTING";
+        follow_status_pub_->publish(status_msg);
       } else {
         // Target lost beyond timeout: decelerate and stop safely
         current_cmd_vx_ *= 0.70;
@@ -879,6 +891,28 @@ private:
       return;
     }
 
+    if (!origin_recorded_) {
+      try {
+        auto trans = tf_buffer_->lookupTransform(frame_map_, frame_base_, tf2::TimePointZero);
+        origin_x_ = trans.transform.translation.x;
+        origin_y_ = trans.transform.translation.y;
+        origin_qz_ = trans.transform.rotation.z;
+        origin_qw_ = trans.transform.rotation.w;
+        origin_recorded_ = true;
+        RCLCPP_INFO(
+          get_logger(),
+          "[FOLLOW] Starting pose recorded for homing: (%.2f, %.2f)",
+          origin_x_, origin_y_);
+      } catch (const tf2::TransformException &) {
+        RCLCPP_WARN(get_logger(), "[FOLLOW] Map TF not ready yet, fallback origin (0.0, 0.0) active.");
+      }
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(bag_mutex_);
+      latest_gesture_ = "NONE";
+    }
+
     kf_.reset();
     has_last_filter_time_ = false;
     locked_person_id_ = -1;
@@ -927,6 +961,11 @@ private:
     geometry_msgs::msg::Twist stop_twist;
     cmd_vel_pub_->publish(stop_twist);
 
+    {
+      std::lock_guard<std::mutex> lock(bag_mutex_);
+      latest_gesture_ = "NONE";
+    }
+
     resp->success = true;
     resp->message = "Person following stopped.";
     RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
@@ -961,6 +1000,10 @@ private:
 
       geometry_msgs::msg::Twist stop_twist;
       cmd_vel_pub_->publish(stop_twist);
+
+      std_msgs::msg::String status_msg;
+      status_msg.data = "LOST";
+      follow_status_pub_->publish(status_msg);
     }
   }
 
@@ -1165,18 +1208,18 @@ private:
       return;
     }
 
-    // 3. Goal origin point (x=0, y=0, w=1) on map frame with standard BT replanning & recovery
+    // 3. Goal recorded origin point on map frame with standard BT replanning & recovery
     NavigateToPose::Goal goal;
     goal.behavior_tree = "/opt/ros/jazzy/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml";
     goal.pose.header.frame_id = frame_map_;
     goal.pose.header.stamp = now();
-    goal.pose.pose.position.x = 0.0;
-    goal.pose.pose.position.y = 0.0;
+    goal.pose.pose.position.x = origin_x_;
+    goal.pose.pose.position.y = origin_y_;
     goal.pose.pose.position.z = 0.0;
     goal.pose.pose.orientation.x = 0.0;
     goal.pose.pose.orientation.y = 0.0;
-    goal.pose.pose.orientation.z = 0.0;
-    goal.pose.pose.orientation.w = 1.0;
+    goal.pose.pose.orientation.z = origin_qz_;
+    goal.pose.pose.orientation.w = origin_qw_;
 
     auto promise = std::make_shared<std::promise<rclcpp_action::ResultCode>>();
     auto future = promise->get_future();
@@ -1292,6 +1335,12 @@ private:
   double filtered_bearing_{0.0};
   bool has_prev_bearing_{false};
 
+  bool origin_recorded_{false};
+  double origin_x_{0.0};
+  double origin_y_{0.0};
+  double origin_qz_{0.0};
+  double origin_qw_{1.0};
+
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp_action::Client<NavigateToPose>::SharedPtr action_client_;
@@ -1301,6 +1350,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr goal_update_pub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr follow_status_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr bag_sub_;
