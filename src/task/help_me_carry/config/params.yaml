@@ -18,8 +18,8 @@ help_me_carry_node:
     # -------------------------------------------------------------
     # 2. FOLLOWING DISTANCES & TIMEOUTS
     # -------------------------------------------------------------
-    follow_stop_distance: 0.5                 # Distance to stop following (meters)
-    follow_start_distance: 0.7                # Distance to start moving forward (meters)
+    follow_stop_distance: 1.0                 # Distance to stop following (meters)
+    follow_start_distance: 1.2                # Distance to start moving forward (meters)
     bag_stop_distance: 0.45                   # Distance to stop in front of bag (meters)
     max_follow_range: 3.0                     # Max detection range to follow (meters)
     max_lost_time: 3.0                        # Watchdog safety timeout before reset (seconds)
