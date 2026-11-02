@@ -36,6 +36,7 @@ enum class TaskState {
   WAIT_START_COMMAND,       // Menunggu perintah suara "follow me"
   FOLLOW_OPERATOR,          // Mengikuti operator berjalan ke lokasi tujuan
   RECOVER_OPERATOR,         // Mode pemulihan jika operator hilang dari pandangan
+  ARRIVED,                  // Robot tiba di tujuan; periksa operator & tas atau mundur
   WAIT_BAG_POINTING,        // Menunggu operator menunjuk tas yang ingin dibawa
   GRASP_BAG,                // Memanggil service lengan robot untuk mengambil tas
   RETURN_TO_START,          // Autonomous homing kembali ke koordinat awal
@@ -54,6 +55,7 @@ static std::string stateToString(TaskState state)
     case TaskState::WAIT_START_COMMAND:      return "WAIT_START_COMMAND";
     case TaskState::FOLLOW_OPERATOR:         return "FOLLOW_OPERATOR";
     case TaskState::RECOVER_OPERATOR:        return "RECOVER_OPERATOR";
+    case TaskState::ARRIVED:                 return "ARRIVED";
     case TaskState::WAIT_BAG_POINTING:       return "WAIT_BAG_POINTING";
     case TaskState::GRASP_BAG:               return "GRASP_BAG";
     case TaskState::RETURN_TO_START:         return "RETURN_TO_START";
@@ -118,6 +120,11 @@ public:
       std::bind(&HelpMeCarryOrchestrator::onFollowStatus, this, std::placeholders::_1),
       options);
 
+    bag_sub_ = create_subscription<std_msgs::msg::String>(
+      "/zed/bag_detections", rclcpp::SensorDataQoS(),
+      std::bind(&HelpMeCarryOrchestrator::onBagDetections, this, std::placeholders::_1),
+      options);
+
     // --------------------------------------------------------------------------
     // Service Clients (Following, Vision Alignment, Arm, & Navigation)
     // --------------------------------------------------------------------------
@@ -125,6 +132,8 @@ public:
       "/follow/person", rclcpp::ServicesQoS(), callback_group_);
     follow_stop_client_ = create_client<Trigger>(
       "/follow/stop", rclcpp::ServicesQoS(), callback_group_);
+    step_back_client_ = create_client<Trigger>(
+      "/task/step_back", rclcpp::ServicesQoS(), callback_group_);
     align_bag_client_ = create_client<Trigger>(
       "/task/align_bag", rclcpp::ServicesQoS(), callback_group_);
     grab_bag_client_ = create_client<Trigger>(
@@ -169,11 +178,13 @@ private:
   std::atomic<bool> arrived_requested_{false};
   std::atomic<bool> emergency_stop_requested_{false};
   std::atomic<bool> operator_seen_{false};
+  std::atomic<bool> bag_seen_{false};
   std::atomic<bool> tracker_lost_{false};
 
   rclcpp::Time task_start_time_;
   rclcpp::Time state_enter_time_;
   rclcpp::Time last_operator_seen_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_bag_seen_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_operator_warn_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time tts_cooldown_until_{0, 0, RCL_ROS_TIME};
   rclcpp::Time tts_started_time_{0, 0, RCL_ROS_TIME};
@@ -200,20 +211,27 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr follow_status_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr bag_sub_;
 
   TriggerClient::SharedPtr follow_start_client_;
   TriggerClient::SharedPtr follow_stop_client_;
+  TriggerClient::SharedPtr step_back_client_;
   TriggerClient::SharedPtr align_bag_client_;
   TriggerClient::SharedPtr grab_bag_client_;
   TriggerClient::SharedPtr put_down_bag_client_;
   TriggerClient::SharedPtr homing_client_;
 
   // ----------------------------------------------------------------------------
-  // Helper: Deteksi Operator di Depan Robot
+  // Helper: Deteksi Operator & Tas di Depan Robot
   // ----------------------------------------------------------------------------
   bool isOperatorInFront() const
   {
     return operator_seen_.load() && (now() - last_operator_seen_time_).seconds() < 2.5;
+  }
+
+  bool isBagInFront() const
+  {
+    return bag_seen_.load() && (now() - last_bag_seen_time_).seconds() < 2.5;
   }
 
   // ----------------------------------------------------------------------------
@@ -571,6 +589,19 @@ private:
     }
   }
 
+  // Callback deteksi tas dari kamera ZED YOLO (/zed/bag_detections)
+  void onBagDetections(const std_msgs::msg::String::SharedPtr message)
+  {
+    if (!message || message->data.empty()) {
+      return;
+    }
+    // Format YOLO ZED: "bag|x,y,z;bag|x,y,z;..."
+    if (message->data.find(',') != std::string::npos) {
+      bag_seen_ = true;
+      last_bag_seen_time_ = now();
+    }
+  }
+
   // ============================================================================
   // 5. HELPER SERVICE CLIENT
   // ============================================================================
@@ -746,11 +777,50 @@ private:
               transitionTo(TaskState::ABORTED, "Could not stop following");
               return;
             }
-            transitionTo(TaskState::WAIT_BAG_POINTING, "Arrival command");
-            speakAsync("Please point to the bag you want me to carry.");
+            transitionTo(TaskState::ARRIVED, "Arrival command");
           });
         }
         break;
+
+      // ------------------------------------------------------------------------
+      // State 5: ARRIVED - Cek operator & tas; panggil /task/step_back jika belum terdeteksi
+      // ------------------------------------------------------------------------
+      case TaskState::ARRIVED: {
+        const bool operator_detected = isOperatorInFront();
+        const bool bag_detected = isBagInFront();
+
+        if (operator_detected && bag_detected) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[ARRIVED]\033[0m Operator dan tas sudah terdeteksi di depan robot. Langsung menuju penunjukan tas.");
+          transitionTo(TaskState::WAIT_BAG_POINTING, "Operator & bag visible");
+          speakAsync("We have arrived. Please point to the bag you want me to carry.");
+        } else {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;33m[ARRIVED]\033[0m Operator (%s) atau tas (%s) belum terdeteksi lengkap. Memanggil service /task/step_back...",
+            operator_detected ? "terdeteksi" : "tidak",
+            bag_detected ? "terdeteksi" : "tidak");
+
+          busy_ = true;
+          speakAsync("We have arrived. Stepping back to find you and the bag.", [this]() {
+            busy_ = true;
+            callTrigger(
+              step_back_client_, "/task/step_back",
+              [this](bool success, const std::string & message) {
+                busy_ = false;
+                RCLCPP_INFO(
+                  get_logger(),
+                  "[ARRIVED] Selesai /task/step_back: %s (success=%s)",
+                  message.c_str(), success ? "true" : "false");
+                transitionTo(TaskState::WAIT_BAG_POINTING, "Step back finished");
+                speakAsync("Please point to the bag you want me to carry.");
+              },
+              20s);
+          });
+        }
+        break;
+      }
 
       // ------------------------------------------------------------------------
       // State 5: RECOVER_OPERATOR - Meminta operator kembali ke depan robot
