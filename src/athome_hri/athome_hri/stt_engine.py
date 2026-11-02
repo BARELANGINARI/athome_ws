@@ -175,30 +175,42 @@ class SpeechToText:
                     temp_path = tmp_file.name
                 audio_source = temp_path
 
+            transcribe_kwargs = {
+                "beam_size": self.DEFAULT_BEAM_SIZE,
+                "language": self.language,
+                "initial_prompt": self.COMMAND_INITIAL_PROMPT,
+                "condition_on_previous_text": False,
+                "no_speech_threshold": self.DEFAULT_NO_SPEECH_THRESHOLD,
+                "log_prob_threshold": self.DEFAULT_LOG_PROB_THRESHOLD,
+                "compression_ratio_threshold": self.DEFAULT_COMPRESSION_RATIO_THRESHOLD,
+                "vad_filter": True,
+                "vad_parameters": {
+                    "min_silence_duration_ms": self.DEFAULT_VAD_SILENCE_MS,
+                    "speech_pad_ms": self.DEFAULT_VAD_SPEECH_PAD_MS,
+                },
+            }
+            try:
+                import inspect
+                if "hotwords" in inspect.signature(self.whisper.transcribe).parameters:
+                    transcribe_kwargs["hotwords"] = (
+                        "hello robot halo robot follow me arrived we are here stop berhenti"
+                    )
+            except Exception:
+                pass
+
             with self._lock:
                 segments, _ = self.whisper.transcribe(
                     audio_source,
-                    beam_size=self.DEFAULT_BEAM_SIZE,
-                    language=self.language,
-                    initial_prompt=self.COMMAND_INITIAL_PROMPT,
-                    condition_on_previous_text=False,
-                    no_speech_threshold=self.DEFAULT_NO_SPEECH_THRESHOLD,
-                    log_prob_threshold=self.DEFAULT_LOG_PROB_THRESHOLD,
-                    compression_ratio_threshold=self.DEFAULT_COMPRESSION_RATIO_THRESHOLD,
-                    vad_filter=True,
-                    vad_parameters={
-                        "min_silence_duration_ms": self.DEFAULT_VAD_SILENCE_MS,
-                        "speech_pad_ms": self.DEFAULT_VAD_SPEECH_PAD_MS,
-                    },
+                    **transcribe_kwargs,
                 )
 
-                # Terima segmen selama confidence log_prob memadai atau no_speech_prob rendah
+                # Filter ketat: segmen diterima jika no_speech rendah DAN rata-rata logprob memadai
                 valid_text = [
                     seg.text.strip()
                     for seg in segments
                     if (
                         seg.no_speech_prob < self.DEFAULT_NO_SPEECH_THRESHOLD
-                        or seg.avg_logprob >= self.DEFAULT_LOG_PROB_THRESHOLD
+                        and seg.avg_logprob >= self.DEFAULT_LOG_PROB_THRESHOLD
                     )
                 ]
 
