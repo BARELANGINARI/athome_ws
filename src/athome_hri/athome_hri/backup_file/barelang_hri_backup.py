@@ -174,7 +174,7 @@ class BarelangHriNode(Node):
         self.follow_stop_client = self.create_client(Trigger, "/follow/stop")
         self.align_bag_client = self.create_client(Trigger, "/task/align_bag")
         self.homing_client = self.create_client(Trigger, "/homing")
-        self.arm_ambil_tas_client = self.create_client(Trigger, "/arm/ambil_tas")
+        self.arm_ambil_tas_client = self.create_client(Trigger, "/arm/ambil_tas_simple")
 
         self.get_logger().info("BarelangHriNode Task Manager aktif.")
 

@@ -207,6 +207,9 @@ public:
     max_range_ = declare_parameter<double>("max_follow_range", 3.0);
     max_lost_time_ = declare_parameter<double>("max_lost_time", 3.0);
     occlusion_timeout_ = declare_parameter<double>("occlusion_timeout", 1.5);
+    step_back_person_distance_ = declare_parameter<double>("step_back_person_distance", 2.0);
+    step_back_speed_ = declare_parameter<double>("step_back_speed", 0.15);
+    step_back_timeout_ = declare_parameter<double>("step_back_timeout", 15.0);
 
     // Speed Limits & PID Gains
     min_vx_ = declare_parameter<double>("min_vx", 0.08);
@@ -261,6 +264,11 @@ public:
     person_sub_ = create_subscription<std_msgs::msg::String>(
       person_topic_, rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::String::SharedPtr msg) {
+        {
+          std::lock_guard<std::mutex> lock(person_mutex_);
+          latest_persons_ = parse_persons(msg->data);
+          latest_person_time_ = now();
+        }
         on_person_detected(msg);
       },
       sub_options);
@@ -284,6 +292,7 @@ public:
       [this](const std_msgs::msg::String::SharedPtr msg) {
         std::lock_guard<std::mutex> lock(bag_mutex_);
         latest_bags_ = parse_bags(msg->data);
+        latest_bag_time_ = now();
       },
       sub_options);
 
@@ -339,6 +348,22 @@ public:
       "/task/align_bag",
       [this](const std::shared_ptr<Trigger::Request> req, std::shared_ptr<Trigger::Response> resp) {
         handle_align_bag(req, resp);
+      },
+      rclcpp::ServicesQoS(),
+      cb_group_);
+
+    step_back_srv_ = create_service<Trigger>(
+      "/task/step_back",
+      [this](const std::shared_ptr<Trigger::Request> req, std::shared_ptr<Trigger::Response> resp) {
+        handle_step_back(req, resp);
+      },
+      rclcpp::ServicesQoS(),
+      cb_group_);
+
+    step_back_srv_alias_ = create_service<Trigger>(
+      "/help_me_carry/step_back",
+      [this](const std::shared_ptr<Trigger::Request> req, std::shared_ptr<Trigger::Response> resp) {
+        handle_step_back(req, resp);
       },
       rclcpp::ServicesQoS(),
       cb_group_);
@@ -1188,6 +1213,196 @@ private:
     IC(resp->success, resp->message);
   }
 
+  void handle_step_back(
+    const std::shared_ptr<Trigger::Request> /*req*/,
+    std::shared_ptr<Trigger::Response> resp)
+  {
+    RCLCPP_INFO(get_logger(), "\033[1;36m[Step Back]\033[0m Menerima perintah service mundur...");
+
+    // 1. Stop person following jika sedang aktif
+    if (is_following_) {
+      auto dummy = std::make_shared<Trigger::Response>();
+      handle_stop_follow(dummy);
+    }
+
+    // 2. Clear deteksi tas lama sebelum mulai mundur
+    {
+      std::lock_guard<std::mutex> lock(bag_mutex_);
+      latest_bags_.clear();
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    const auto t_start = now();
+    bool bag_detected = false;
+    bool person_dist_reached = false;
+    bool obstacle_detected = false;
+    double last_person_dist = 0.0;
+    double last_bag_dist = 0.0;
+
+    RCLCPP_INFO(
+      get_logger(),
+      "[Step Back] Robot mulai bergerak mundur (speed: -%.2f m/s, target person dist: %.2f m, timeout: %.1f s)",
+      std::abs(step_back_speed_), step_back_person_distance_, step_back_timeout_);
+
+    while (rclcpp::ok()) {
+      const double elapsed = (now() - t_start).seconds();
+      if (elapsed > step_back_timeout_) {
+        RCLCPP_WARN(get_logger(), "[Step Back] Timeout (%.1f s) tercapai.", step_back_timeout_);
+        break;
+      }
+
+      // Check 1: Deteksi Tas dari ZED YOLO (/zed/bag_detections)
+      {
+        std::lock_guard<std::mutex> lock(bag_mutex_);
+        if ((now() - latest_bag_time_).seconds() < 1.0) {
+          for (const auto & b : latest_bags_) {
+            if (b.x > 0.05) {
+              bag_detected = true;
+              last_bag_dist = std::hypot(b.x, b.y);
+              break;
+            }
+          }
+        }
+      }
+      if (bag_detected) {
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;32m[Step Back]\033[0m Tas terdeteksi pada jarak %.2f m! Berhenti mundur.",
+          last_bag_dist);
+        break;
+      }
+
+      // Check 2: Deteksi jarak orang target dari ZED (/zed/person_label) >= step_back_person_distance_ (2.0 m)
+      {
+        std::lock_guard<std::mutex> lock(person_mutex_);
+        if ((now() - latest_person_time_).seconds() < 1.0) {
+          const Person * target_person = nullptr;
+          double min_target_dist = 1e9;
+
+          // Cari orang target di depan robot (utamakan yang berlabel operator, atau orang terdekat di depan)
+          for (const auto & p : latest_persons_) {
+            if (p.x <= 0.10) continue;
+            const double d = std::hypot(p.x, p.y);
+
+            if (p.is_operator) {
+              target_person = &p;
+              min_target_dist = d;
+              break;
+            }
+
+            if (d < min_target_dist) {
+              min_target_dist = d;
+              target_person = &p;
+            }
+          }
+
+          // Hanya evaluasi jarak orang target (bukan orang di latar belakang / background)
+          if (target_person != nullptr && min_target_dist < 1e8) {
+            if (min_target_dist >= step_back_person_distance_) {
+              person_dist_reached = true;
+              last_person_dist = min_target_dist;
+            }
+          }
+        }
+      }
+      if (person_dist_reached) {
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;32m[Step Back]\033[0m Jarak orang target mencapai %.2f m (>= %.2f m)! Berhenti mundur.",
+          last_person_dist, step_back_person_distance_);
+        break;
+      }
+
+      // Check 3: Safety check obstacle di belakang robot via LiDAR (/scan)
+      if (enable_avoidance_) {
+        sensor_msgs::msg::LaserScan::SharedPtr scan;
+        {
+          std::lock_guard<std::mutex> lock(scan_mutex_);
+          scan = latest_scan_;
+        }
+        if (scan && !scan->ranges.empty()) {
+          double laser_tx = 0.0, laser_ty = 0.0, laser_yaw = 3.1415926535;
+          try {
+            auto tf_laser = tf_buffer_->lookupTransform(
+              frame_base_, scan->header.frame_id, tf2::TimePointZero);
+            laser_tx = tf_laser.transform.translation.x;
+            laser_ty = tf_laser.transform.translation.y;
+            const auto & rq = tf_laser.transform.rotation;
+            const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+            const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+            laser_yaw = std::atan2(siny, cosy);
+          } catch (const tf2::TransformException &) {
+            laser_yaw = 3.1415926535;
+          }
+
+          const int num_readings = static_cast<int>(scan->ranges.size());
+          for (int i = 0; i < num_readings; ++i) {
+            const float r = scan->ranges[i];
+            if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) continue;
+            const double angle_laser = scan->angle_min + i * scan->angle_increment;
+            double angle_base = angle_laser + laser_yaw;
+            angle_base = std::atan2(std::sin(angle_base), std::cos(angle_base));
+            const double obs_x = laser_tx + r * std::cos(angle_base);
+            const double obs_y = laser_ty + r * std::sin(angle_base);
+
+            // Obstacle tepat di belakang robot (zona bahaya tabrakan mundur)
+            if (obs_x < -footprint_radius_ && obs_x > -(footprint_radius_ + 0.15) &&
+                std::abs(obs_y) < corridor_width_) {
+              obstacle_detected = true;
+              break;
+            }
+          }
+        }
+      }
+      if (obstacle_detected) {
+        RCLCPP_WARN(
+          get_logger(),
+          "\033[1;33m[Step Back]\033[0m Terdeteksi rintangan di belakang robot! Berhenti mundur demi keselamatan.");
+        break;
+      }
+
+      // Kirim perintah mundur
+      geometry_msgs::msg::Twist twist;
+      twist.linear.x = -std::abs(step_back_speed_);
+      twist.linear.y = 0.0;
+      twist.angular.z = 0.0;
+      cmd_vel_pub_->publish(twist);
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    // Stop total pergerakan robot
+    geometry_msgs::msg::Twist stop_twist;
+    cmd_vel_pub_->publish(stop_twist);
+
+    char dist_buf[32];
+    if (bag_detected) {
+      std::snprintf(dist_buf, sizeof(dist_buf), "%.2f", last_bag_dist);
+      resp->success = true;
+      resp->message = std::string("Mundur selesai: tas terdeteksi pada jarak ") + dist_buf + " m.";
+    } else if (person_dist_reached) {
+      std::snprintf(dist_buf, sizeof(dist_buf), "%.2f", last_person_dist);
+      char target_buf[32];
+      std::snprintf(target_buf, sizeof(target_buf), "%.2f", step_back_person_distance_);
+      resp->success = true;
+      resp->message = std::string("Mundur selesai: jarak orang mencapai ") + dist_buf +
+                      " m (target: " + target_buf + " m).";
+    } else if (obstacle_detected) {
+      resp->success = false;
+      resp->message = "Mundur dihentikan: terdeteksi rintangan di belakang robot.";
+    } else {
+      char timeout_buf[32];
+      std::snprintf(timeout_buf, sizeof(timeout_buf), "%.1f", step_back_timeout_);
+      resp->success = false;
+      resp->message = std::string("Mundur timeout (") + timeout_buf +
+                      " s) sebelum mendeteksi tas atau jarak orang 2m.";
+    }
+
+    RCLCPP_INFO(get_logger(), "[Step Back] %s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
+    IC(resp->success, resp->message);
+  }
+
   void handle_homming(
     const std::shared_ptr<Trigger::Request> /*req*/,
     std::shared_ptr<Trigger::Response> resp)
@@ -1327,6 +1542,15 @@ private:
   std::string latest_gesture_{"NONE"};
   std::vector<Bag> latest_bags_;
   double current_yaw_deg_{0.0};
+  rclcpp::Time latest_bag_time_{0, 0, RCL_ROS_TIME};
+
+  std::mutex person_mutex_;
+  std::vector<Person> latest_persons_;
+  rclcpp::Time latest_person_time_{0, 0, RCL_ROS_TIME};
+
+  double step_back_person_distance_{2.0};
+  double step_back_speed_{0.15};
+  double step_back_timeout_{15.0};
 
   rclcpp::Time last_filter_time_;
   bool has_last_filter_time_{false};
@@ -1361,6 +1585,8 @@ private:
   rclcpp::Service<Trigger>::SharedPtr stop_srv_;
   rclcpp::Service<Trigger>::SharedPtr stop_follow_srv_alias_;
   rclcpp::Service<Trigger>::SharedPtr align_bag_srv_;
+  rclcpp::Service<Trigger>::SharedPtr step_back_srv_;
+  rclcpp::Service<Trigger>::SharedPtr step_back_srv_alias_;
   rclcpp::Service<Trigger>::SharedPtr homing_srv_;
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
   rclcpp::CallbackGroup::SharedPtr cb_group_;

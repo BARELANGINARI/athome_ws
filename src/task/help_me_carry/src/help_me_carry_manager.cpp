@@ -127,7 +127,7 @@ public:
     align_bag_client_ = create_client<Trigger>(
       "/task/align_bag", rclcpp::ServicesQoS(), callback_group_);
     grab_bag_client_ = create_client<Trigger>(
-      "/arm/ambil_tas", rclcpp::ServicesQoS(), callback_group_);
+      "/arm/ambil_tas_simple", rclcpp::ServicesQoS(), callback_group_);
     put_down_bag_client_ = create_client<Trigger>(
       "/arm/letakkan_tas", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
@@ -396,7 +396,6 @@ private:
       "arrived at the location", "we have arrived", "this is the location",
       "reached the car", "arrived at the car", "stop here we arrived",
       "i have arrived", "we are here", "here is the car", "arrived",
-      "berhenti", "berhenti sekarang"
     };
     return corpus;
   }

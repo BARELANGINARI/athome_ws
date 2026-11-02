@@ -60,3 +60,10 @@ help_me_carry_node:
     # -------------------------------------------------------------
     kf_process_noise: 1.2                     # Kalman process noise covariance (motion uncertainty)
     kf_measurement_noise: 0.15                # Kalman measurement noise standard deviation (meters)
+
+    # -------------------------------------------------------------
+    # 7. STEP BACK (MUNDUR) PARAMETERS
+    # -------------------------------------------------------------
+    step_back_person_distance: 2.0            # Target distance to person to stop moving back (meters)
+    step_back_speed: 0.15                     # Backward speed magnitude (m/s)
+    step_back_timeout: 15.0                   # Max duration for step back motion (seconds)

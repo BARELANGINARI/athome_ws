@@ -25,13 +25,9 @@ DEFAULT_INTENT_CORPUS: Dict[str, Tuple[str, ...]] = {
         "following me",
     ),
     "STOP": (
-        "arrived",
+        "stop",
     ),
     "ARRIVED": (
-        "stop",
-        "stopping",
-        "stop now",
-        "stop please",
         "arrived at the location",
         "we have arrived",
         "this is the location",

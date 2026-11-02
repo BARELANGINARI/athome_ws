@@ -72,6 +72,12 @@ html, body {
   gap: 8px;
 }
 
+.hud-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .dot {
   width: 8px;
   height: 8px;

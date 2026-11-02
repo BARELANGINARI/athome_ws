@@ -6,7 +6,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64.hpp"
 #include "std_msgs/msg/string.hpp"
-#include "std_srvs/srv/trigger.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include <algorithm>
@@ -425,12 +424,6 @@ private:
   void loop();
   void processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cloud);
   void showPreview(const cv::Mat & bgr);
-  void handleGetBagDetections(
-    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
-  void handleGetPersonDetections(
-    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-    std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
   // ---------- Deteksi Gestur (Opsi 1 & Opsi 2) ----------
   // Murni hanya menggunakan Bahu (Shoulder) dan Pergelangan Tangan (Wrist):
@@ -487,22 +480,13 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr persons_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr gesture_publisher_;  // publish gesture RIGHT/LEFT/NONE
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr bag_service_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr person_service_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_operator_service_;
   rclcpp::TimerBase::SharedPtr timer_;
-
-  std::mutex data_mutex_;
-  std::string last_bag_data_;
-  std::string last_person_data_{"NO_PERSON"};
 
   bool publish_yaw_{true};
   bool publish_image_{true};
   int image_stride_{2};
   int image_frame_{0};
   double camera_fps_{30.0};
-  std::string depth_mode_{"ULTRA"};
-  std::string body_model_{"MEDIUM"};
   bool enable_body_tracking_{true};
   bool debug_window_{false};
   bool mirror_{true};
@@ -561,8 +545,6 @@ ZedNode::ZedNode()
   declare_parameter("publish_yaw", true);
   declare_parameter("publish_image", true);
   declare_parameter("image_stride", 2);
-  declare_parameter("depth_mode", std::string("ULTRA"));
-  declare_parameter("body_model", std::string("MEDIUM"));
   declare_parameter("enable_body_tracking", true);
   declare_parameter("depth_minimum_distance", 30.0);
   declare_parameter("enable_yolo", true);
@@ -584,8 +566,6 @@ ZedNode::ZedNode()
   publish_image_ = get_parameter("publish_image").as_bool();
   image_stride_ = static_cast<int>(get_parameter("image_stride").as_int());
   if (image_stride_ < 1) {image_stride_ = 1;}
-  depth_mode_ = get_parameter("depth_mode").as_string();
-  body_model_ = get_parameter("body_model").as_string();
   enable_body_tracking_ = get_parameter("enable_body_tracking").as_bool();
 
   if (camera_fps <= 0.0) {
@@ -598,25 +578,6 @@ ZedNode::ZedNode()
   gesture_publisher_ = create_publisher<std_msgs::msg::String>("/zed/gesture", 10);
   image_publisher_ = create_publisher<sensor_msgs::msg::Image>(
     "/zed/image", rclcpp::SensorDataQoS());
-
-  bag_service_ = create_service<std_srvs::srv::Trigger>(
-    "/zed/get_bag_detections",
-    std::bind(&ZedNode::handleGetBagDetections, this, std::placeholders::_1, std::placeholders::_2));
-  person_service_ = create_service<std_srvs::srv::Trigger>(
-    "/zed/get_person_detections",
-    std::bind(&ZedNode::handleGetPersonDetections, this, std::placeholders::_1, std::placeholders::_2));
-  reset_operator_service_ = create_service<std_srvs::srv::Trigger>(
-    "/zed/reset_operator",
-    [this](
-      const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
-      std::shared_ptr<std_srvs::srv::Trigger::Response> res)
-    {
-      op_mem_.active = false;
-      op_mem_.has_color = false;
-      res->success = true;
-      res->message = "Memori operator berhasil di-reset.";
-      RCLCPP_INFO(get_logger(), "\033[93m[OperatorMemory] Memori operator di-reset via service.\033[0m");
-    });
 
   sl::InitParameters init_parameters;
   init_parameters.depth_mode = sl::DEPTH_MODE::ULTRA;
@@ -722,24 +683,6 @@ void ZedNode::publishYaw()
   std_msgs::msg::Float64 message;
   message.data = static_cast<double>(zed_vision::wrap180(yaw * 180.0f / zed_vision::PI_F));
   yaw_publisher_->publish(message);
-}
-
-void ZedNode::handleGetBagDetections(
-  const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
-  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
-{
-  std::lock_guard<std::mutex> lock(data_mutex_);
-  response->success = !last_bag_data_.empty();
-  response->message = last_bag_data_.empty() ? "NO_BAG" : last_bag_data_;
-}
-
-void ZedNode::handleGetPersonDetections(
-  const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
-  std::shared_ptr<std_srvs::srv::Trigger::Response> response)
-{
-  std::lock_guard<std::mutex> lock(data_mutex_);
-  response->success = (!last_person_data_.empty() && last_person_data_ != "NO_PERSON");
-  response->message = last_person_data_;
 }
 
 void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cloud)
@@ -964,12 +907,6 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     std_msgs::msg::String m;
     m.data = person_str;
     persons_publisher_->publish(m);
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(data_mutex_);
-    last_bag_data_ = bag_str;
-    last_person_data_ = person_str;
   }
 
   showPreview(bgr);

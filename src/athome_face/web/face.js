@@ -42,6 +42,7 @@
   const testToolbar = document.getElementById("test-toolbar");
   const btnToggleToolbar = document.getElementById("btn-toggle-toolbar");
   const btnCloseToolbar = document.getElementById("btn-close-toolbar");
+  const btnFullscreen = document.getElementById("btn-fullscreen");
   const wsDot = document.getElementById("ws-indicator");
   const wsLabel = document.getElementById("ws-label");
 
@@ -463,6 +464,35 @@
   // =====================================================================
   // 5. TOOLBAR, KEYBOARD & CONTROLS
   // =====================================================================
+  function toggleFullscreen() {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else if (document.documentElement.webkitRequestFullscreen) {
+        document.documentElement.webkitRequestFullscreen();
+      }
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      }
+    }
+  }
+
+  if (btnFullscreen) {
+    btnFullscreen.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleFullscreen();
+    });
+  }
+
+  // Double click or double tap on stage to toggle fullscreen
+  stage.addEventListener("dblclick", (e) => {
+    if (e.target.closest("#hud-bar") || e.target.closest("#test-toolbar")) return;
+    toggleFullscreen();
+  });
+
   function toggleToolbar() {
     testToolbar.classList.toggle("hidden");
   }
@@ -510,6 +540,7 @@
       case "0": setEmotion("LOST"); break;
       case " ": triggerBlink(120); e.preventDefault(); break;
       case "T": toggleToolbar(); break;
+      case "F": toggleFullscreen(); break;
       case "W": triggerCuteWink(); break;
     }
   });

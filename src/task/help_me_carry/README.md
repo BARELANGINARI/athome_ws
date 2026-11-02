@@ -34,6 +34,7 @@ ros2 launch help_me_carry help_me_carry.launch.py
 | `/follow/person` | `std_srvs/srv/Trigger` | Start following the locked operator |
 | `/follow/stop` | `std_srvs/srv/Trigger` | Stop following |
 | `/task/align_bag` | `std_srvs/srv/Trigger` | Align robot towards the bag indicated by gesture (`LEFT`/`RIGHT`) |
+| `/task/step_back` | `std_srvs/srv/Trigger` | Move backward until person distance reaches 2.0m or a bag is detected |
 | `/arm/ambil_tas` | `std_srvs/srv/Trigger` | Trigger arm trajectory to pick up bag |
 | `/homing` | `std_srvs/srv/Trigger` | Return robot autonomously to starting pose `(0, 0)` |
 
@@ -41,6 +42,8 @@ ros2 launch help_me_carry help_me_carry.launch.py
 ```bash
 ros2 service call /follow/person std_srvs/srv/Trigger {}
 ros2 service call /follow/stop std_srvs/srv/Trigger {}
+ros2 service call /task/step_back std_srvs/srv/Trigger {}
+# Alias: ros2 service call /help_me_carry/step_back std_srvs/srv/Trigger {}
 ros2 service call /task/align_bag std_srvs/srv/Trigger {}
 ros2 service call /homing std_srvs/srv/Trigger {}
 ```
@@ -51,3 +54,6 @@ Parameters can be adjusted in [config/params.yaml](config/params.yaml) without r
 * `stop_distance`: Following distance behind operator (default: `1.0` m).
 * `occlusion_timeout`: Dead-reckoning duration during target occlusion (default: `1.5` s).
 * `gating_threshold`: Distance validation gate for target re-lock (default: `1.2` m).
+* `step_back_person_distance`: Target separation to person before stopping backward motion (default: `2.0` m).
+* `step_back_speed`: Backward linear speed magnitude (default: `0.15` m/s).
+* `step_back_timeout`: Maximum duration before stopping backward motion (default: `15.0` s).

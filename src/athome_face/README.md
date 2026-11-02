@@ -51,6 +51,7 @@ firefox src/athome_face/web/index.html
 * **`0`** : LOST (Orang Hilang / Peringatan)
 * **`Space`** : Kedip manual
 * **`T`** : Sembunyikan / Tampilkan panel menu testing di bawah
+* **`F`** : Mode Fullscreen (atau tekan tombol **⛶ Fullscreen** / double-tap layar)
 
 ---
 
@@ -70,8 +71,11 @@ Jalankan node antarmuka wajah:
 # Mode server biasa (bisa dibuka di browser http://localhost:8080)
 ros2 launch athome_face face.launch.py
 
-# Atau langsung otomatis buka browser full-screen kiosk di layar HDMI:
+# Atau langsung otomatis buka browser full-screen kiosk di layar HDMI (otomatis mendeteksi Firefox / Chromium / Chrome):
 ros2 launch athome_face face.launch.py browser:=true
+
+# Bisa juga menentukan browser secara spesifik:
+ros2 launch athome_face face.launch.py browser:=true browser_type:=firefox
 ```
 
 ---

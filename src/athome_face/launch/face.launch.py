@@ -26,6 +26,11 @@ def generate_launch_description():
             default_value="true",
             description="Run browser in borderless full-screen kiosk mode",
         ),
+        DeclareLaunchArgument(
+            "browser_type",
+            default_value="auto",
+            description="Browser binary to launch: auto, firefox, chromium, google-chrome",
+        ),
         Node(
             package="athome_face",
             executable="face_node",
@@ -38,6 +43,7 @@ def generate_launch_description():
                     "ws_port": LaunchConfiguration("ws_port"),
                     "launch_browser": LaunchConfiguration("browser"),
                     "kiosk_mode": LaunchConfiguration("kiosk"),
+                    "browser_type": LaunchConfiguration("browser_type"),
                 }
             ],
         ),

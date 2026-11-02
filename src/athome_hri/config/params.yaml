@@ -15,7 +15,7 @@ barelang_hri_node:
     enable_ws_audio: true
     enable_visualizer: true
     enable_live_meter: true
-    threshold_dbfs: -40.0
+    threshold_dbfs: -30.0
     threshold_flatness: 0.40
     pre_roll_frames: 10
     hangover_frames: 25
@@ -31,7 +31,7 @@ barelang_audio_bridge:
     enable_ws_audio: true
     enable_visualizer: true
     enable_live_meter: true
-    threshold_dbfs: -40.0
+    threshold_dbfs: -30.0
     threshold_flatness: 0.40
     pre_roll_frames: 10
     hangover_frames: 25
@@ -48,7 +48,7 @@ stt_engine:
     # Index perangkat input PyAudio (-1 untuk auto-detect USB mic)
     device_index: -1
     enable_live_meter: true
-    threshold_dbfs: -40.0
+    threshold_dbfs: -30.0
     threshold_flatness: 0.40
     pre_roll_frames: 10
     hangover_frames: 25

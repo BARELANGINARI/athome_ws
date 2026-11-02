@@ -9,6 +9,7 @@ import http.server
 import json
 import logging
 from pathlib import Path
+import shutil
 import socketserver
 import subprocess
 import threading
@@ -45,11 +46,13 @@ class RobotFaceNode(Node):
         self.declare_parameter("ws_port", 8766)
         self.declare_parameter("launch_browser", False)
         self.declare_parameter("kiosk_mode", True)
+        self.declare_parameter("browser_type", "auto")
 
         self.http_port: int = int(self.get_parameter("http_port").value)
         self.ws_port: int = int(self.get_parameter("ws_port").value)
         self.launch_browser: bool = bool(self.get_parameter("launch_browser").value)
         self.kiosk_mode: bool = bool(self.get_parameter("kiosk_mode").value)
+        self.browser_type: str = str(self.get_parameter("browser_type").value).strip()
 
         # Web Directory Discovery
         self.web_dir: Path = self._find_web_dir()
@@ -174,30 +177,57 @@ class RobotFaceNode(Node):
             self.broadcast({"type": "TTS_PLAY", "text": text})
 
     def launch_kiosk_browser(self) -> None:
-        """Launch Chromium browser in full-screen kiosk mode for 7-inch HDMI LCD."""
+        """Launch browser (Firefox / Chromium / Chrome) in full-screen kiosk mode for 7-inch HDMI LCD."""
         if not self.launch_browser:
             return
 
         url = f"http://localhost:{self.http_port}"
-        cmd = [
-            "chromium",
-            "--kiosk" if self.kiosk_mode else "--app=" + url,
-            "--noerrdialogs",
-            "--disable-infobars",
-            "--check-for-update-interval=31536000",
-            url,
-        ]
+
+        # Determine browser binary
+        browser_bin = None
+        if self.browser_type and self.browser_type != "auto":
+            browser_bin = shutil.which(self.browser_type) or self.browser_type
+        else:
+            candidates = [
+                "firefox",
+                "chromium",
+                "google-chrome",
+                "chromium-browser",
+                "google-chrome-stable",
+            ]
+            for cand in candidates:
+                if shutil.which(cand):
+                    browser_bin = cand
+                    break
+
+        if not browser_bin:
+            logger.warning(
+                "Could not find any supported browser (firefox, chromium, google-chrome) in PATH."
+            )
+            return
+
+        # Build command based on browser family
+        if "firefox" in browser_bin.lower():
+            if self.kiosk_mode:
+                cmd = [browser_bin, "--kiosk", url]
+            else:
+                cmd = [browser_bin, "--new-window", url]
+        else:
+            # Chromium / Chrome
+            cmd = [
+                browser_bin,
+                "--kiosk" if self.kiosk_mode else f"--app={url}",
+                "--noerrdialogs",
+                "--disable-infobars",
+                "--check-for-update-interval=31536000",
+                url,
+            ]
+
         try:
             subprocess.Popen(cmd)
-            logger.info("Launched Kiosk Browser pointing to %s", url)
-        except FileNotFoundError:
-            try:
-                # Try google-chrome if chromium not found
-                cmd[0] = "google-chrome"
-                subprocess.Popen(cmd)
-                logger.info("Launched Chrome Kiosk pointing to %s", url)
-            except Exception as e:
-                logger.warning("Could not automatically launch browser: %s", e)
+            logger.info("Launched browser '%s' (kiosk=%s) pointing to %s", browser_bin, self.kiosk_mode, url)
+        except Exception as e:
+            logger.warning("Could not launch browser '%s': %s", browser_bin, e)
 
 
 async def main_async() -> None:
