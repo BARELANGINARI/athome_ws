@@ -6,6 +6,7 @@
 //            Mengatur interaksi HRI (TTS/STT), deteksi operator (ZED camera),
 //            following person via Nav2, deteksi gesture tas, manipulasi lengan,
 //            dan autonomous homing.
+// edit : 2 nov 2026 22.02
 // ==============================================================================
 
 #include <algorithm>
@@ -166,9 +167,9 @@ private:
   static constexpr double OPERATOR_TIMEOUT_SEC     = 5.0;    // Toleransi oklusi rintangan sebelum masuk recovery
   static constexpr double FOLLOW_GRACE_PERIOD_SEC  = 2.0;    // Masa tenggang deteksi hilang saat awal follow
   static constexpr double ARRIVED_GRACE_PERIOD_SEC = 5.0;    // Jeda abaikan perintah arrived saat awal follow
-  static constexpr double TTS_MIN_TIMEOUT_SEC      = 6.0;    // Batas minimal watchdog TTS
+  static constexpr double TTS_MIN_TIMEOUT_SEC      = 4.0;    // Batas minimal watchdog TTS
   static constexpr double TTS_SEC_PER_WORD         = 0.5;    // Estimasi durasi ucapan per kata
-  static constexpr double TTS_TIMEOUT_MARGIN_SEC   = 3.0;    // Margin sintesis + latensi playback
+  static constexpr double TTS_TIMEOUT_MARGIN_SEC   = 2.0;    // Margin sintesis + latensi playback
 
   // ----------------------------------------------------------------------------
   // Status Variabel Atomic & Waktu
@@ -451,7 +452,7 @@ private:
 
   // Evaluasi kecocokan intent berdasarkan batas ambang (threshold)
   bool matchIntent(const std::string & text, const std::string & target_intent,
-                   const std::vector<std::string> & candidates, double threshold = 0.85)
+                   const std::vector<std::string> & candidates, double threshold = 0.75)
   {
     double score = scoreIntent(text, candidates);
     if (score >= threshold) {
@@ -474,7 +475,7 @@ private:
   {
     static const std::vector<std::string> corpus = {
       "hello robot", "halo robot", "hey robot", "hello barelang", "hi robot",
-      "robot", "hallo", "helo robot", "hai robot", "hey barelang", "halo barelang"
+      "robot", "hallo", "hai", "hello", "helo", "helo robot", "hai robot", "hey barelang", "halo barelang"
     };
     return corpus;
   }
@@ -759,7 +760,7 @@ private:
       case TaskState::WAIT_WAKEWORD:
         if (wakeword_requested_.exchange(false)) {
           speakAsync(
-            "Hello, I'm Barelang Inari, I want to help you to carry the luggage.",
+            "Hello, I'm Barelang Inari from Batam State Polytechnic, I want to help you to carry the luggage.",
             [this]() {
               transitionTo(TaskState::CHECK_OPERATOR_PRESENCE, "Greeting completed, checking operator");
             });

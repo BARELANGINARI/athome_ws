@@ -1,4 +1,6 @@
-"""Speech-to-Text (STT) engine module powered by Faster-Whisper."""
+"""Speech-to-Text (STT) engine module powered by Faster-Whisper.
+edit : 2 nov 2026 22.02
+"""
 
 import logging
 import os
@@ -46,7 +48,7 @@ class SpeechToText:
     SAMPLE_RATE: int = 16000
     DEFAULT_BEAM_SIZE: int = 2
     DEFAULT_NO_SPEECH_THRESHOLD: float = 0.6
-    DEFAULT_LOG_PROB_THRESHOLD: float = -0.8
+    DEFAULT_LOG_PROB_THRESHOLD: float = -1.0
     DEFAULT_COMPRESSION_RATIO_THRESHOLD: float = 1.8
     DEFAULT_VAD_SILENCE_MS: int = 400
     DEFAULT_VAD_SPEECH_PAD_MS: int = 200
