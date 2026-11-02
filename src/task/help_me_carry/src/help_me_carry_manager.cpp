@@ -1,3 +1,13 @@
+// ==============================================================================
+// Barelang Inari - RoboCup@Home
+// Package  : help_me_carry
+// Node     : help_me_carry_manager (HelpMeCarryOrchestrator)
+// Deskripsi: State Machine (FSM) utama untuk tugas Help Me Carry.
+//            Mengatur interaksi HRI (TTS/STT), deteksi operator (ZED camera),
+//            following person via Nav2, deteksi gesture tas, manipulasi lengan,
+//            dan autonomous homing.
+// ==============================================================================
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -6,7 +16,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <thread> //mengatur timeout
+#include <thread>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -14,40 +25,47 @@
 
 using namespace std::chrono_literals;
 
+// ==============================================================================
+// 1. DEFINISI STATE FINITE STATE MACHINE (FSM)
+// ==============================================================================
 enum class TaskState {
-  INIT,
-  WAIT_WAKEWORD,
-  CHECK_OPERATOR_PRESENCE,
-  WAIT_START_COMMAND,
-  FOLLOW_OPERATOR,
-  RECOVER_OPERATOR,
-  WAIT_BAG_POINTING,
-  GRASP_BAG,
-  RETURN_TO_START,
-  PUT_DOWN_BAG,
-  COMPLETED,
-  ABORTED
+  INIT,                     // Inisialisasi node & menunggu TTS engine siap
+  WAIT_WAKEWORD,            // Menunggu perintah sapaan/wakeword ("hello robot")
+  CHECK_OPERATOR_PRESENCE,  // Memastikan operator berdiri tepat di depan kamera
+  WAIT_START_COMMAND,       // Menunggu perintah suara "follow me"
+  FOLLOW_OPERATOR,          // Mengikuti operator berjalan ke lokasi tujuan
+  RECOVER_OPERATOR,         // Mode pemulihan jika operator hilang dari pandangan
+  WAIT_BAG_POINTING,        // Menunggu operator menunjuk tas yang ingin dibawa
+  GRASP_BAG,                // Memanggil service lengan robot untuk mengambil tas
+  RETURN_TO_START,          // Autonomous homing kembali ke koordinat awal
+  PUT_DOWN_BAG,             // Memanggil service lengan robot untuk meletakkan tas
+  COMPLETED,                // Tugas selesai seluruhnya
+  ABORTED                   // Tugas dibatalkan karena timeout / error kritis
 };
 
+// Konversi enum state ke representasi teks string untuk logging
 static std::string stateToString(TaskState state)
 {
   switch (state) {
-    case TaskState::INIT: return "INIT";
-    case TaskState::WAIT_WAKEWORD: return "WAIT_WAKEWORD";
+    case TaskState::INIT:                    return "INIT";
+    case TaskState::WAIT_WAKEWORD:           return "WAIT_WAKEWORD";
     case TaskState::CHECK_OPERATOR_PRESENCE: return "CHECK_OPERATOR_PRESENCE";
-    case TaskState::WAIT_START_COMMAND: return "WAIT_START_COMMAND";
-    case TaskState::FOLLOW_OPERATOR: return "FOLLOW_OPERATOR";
-    case TaskState::RECOVER_OPERATOR: return "RECOVER_OPERATOR";
-    case TaskState::WAIT_BAG_POINTING: return "WAIT_BAG_POINTING";
-    case TaskState::GRASP_BAG: return "GRASP_BAG";
-    case TaskState::RETURN_TO_START: return "RETURN_TO_START";
-    case TaskState::PUT_DOWN_BAG: return "PUT_DOWN_BAG";
-    case TaskState::COMPLETED: return "COMPLETED";
-    case TaskState::ABORTED: return "ABORTED";
-    default: return "UNKNOWN";
+    case TaskState::WAIT_START_COMMAND:      return "WAIT_START_COMMAND";
+    case TaskState::FOLLOW_OPERATOR:         return "FOLLOW_OPERATOR";
+    case TaskState::RECOVER_OPERATOR:        return "RECOVER_OPERATOR";
+    case TaskState::WAIT_BAG_POINTING:       return "WAIT_BAG_POINTING";
+    case TaskState::GRASP_BAG:               return "GRASP_BAG";
+    case TaskState::RETURN_TO_START:         return "RETURN_TO_START";
+    case TaskState::PUT_DOWN_BAG:            return "PUT_DOWN_BAG";
+    case TaskState::COMPLETED:               return "COMPLETED";
+    case TaskState::ABORTED:                 return "ABORTED";
+    default:                                 return "UNKNOWN";
   }
 }
 
+// ==============================================================================
+// 2. KELAS UTAMA: HelpMeCarryOrchestrator
+// ==============================================================================
 class HelpMeCarryOrchestrator : public rclcpp::Node {
 public:
   using Trigger = std_srvs::srv::Trigger;
@@ -57,34 +75,46 @@ public:
   HelpMeCarryOrchestrator()
   : Node("help_me_carry_orchestrator")
   {
+    // Callback group eksklusif untuk mencegah race condition antar callback
     callback_group_ = create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
 
     rclcpp::SubscriptionOptions options;
     options.callback_group = callback_group_;
 
+    // --------------------------------------------------------------------------
+    // Publisher & Subscriber HRI / Vision
+    // --------------------------------------------------------------------------
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
+
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
       std::bind(&HelpMeCarryOrchestrator::onTtsDone, this, std::placeholders::_1),
       options);
+
     stt_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/stt_transcript", 10,
       std::bind(&HelpMeCarryOrchestrator::onTranscript, this, std::placeholders::_1),
       options);
+
     emergency_sub_ = create_subscription<std_msgs::msg::String>(
       "/stt/keyword_interrupt", 10,
       std::bind(&HelpMeCarryOrchestrator::onTranscript, this, std::placeholders::_1),
       options);
+
     person_sub_ = create_subscription<std_msgs::msg::String>(
       "/zed/person_label", rclcpp::SensorDataQoS(),
       std::bind(&HelpMeCarryOrchestrator::onPersonLabel, this, std::placeholders::_1),
       options);
+
     gesture_sub_ = create_subscription<std_msgs::msg::String>(
       "/zed/gesture", 10,
       std::bind(&HelpMeCarryOrchestrator::onGesture, this, std::placeholders::_1),
       options);
 
+    // --------------------------------------------------------------------------
+    // Service Clients (Following, Vision Alignment, Arm, & Navigation)
+    // --------------------------------------------------------------------------
     follow_start_client_ = create_client<Trigger>(
       "/follow/person", rclcpp::ServicesQoS(), callback_group_);
     follow_stop_client_ = create_client<Trigger>(
@@ -98,11 +128,13 @@ public:
     homing_client_ = create_client<Trigger>(
       "/homing", rclcpp::ServicesQoS(), callback_group_);
 
+    // Timer siklus FSM (10 Hz / 100 ms)
     fsm_timer_ = create_wall_timer(
       100ms, std::bind(&HelpMeCarryOrchestrator::fsmTick, this), callback_group_);
 
     task_start_time_ = now();
     state_enter_time_ = now();
+
     RCLCPP_INFO(get_logger(),
       "\n============================================================\n"
       "  \033[1;32m[SYSTEM]\033[0m Help Me Carry Orchestrator Started\n"
@@ -112,10 +144,17 @@ public:
   }
 
 private:
-  static constexpr double GLOBAL_TIMEOUT_SEC = 300.0;
-  static constexpr double OPERATOR_TIMEOUT_SEC = 3.0;
-  static constexpr double FOLLOW_GRACE_PERIOD_SEC = 2.0;
+  // ----------------------------------------------------------------------------
+  // Konstanta Timeout & Grace Period
+  // ----------------------------------------------------------------------------
+  static constexpr double GLOBAL_TIMEOUT_SEC       = 300.0;  // Batas waktu total tugas (5 menit)
+  static constexpr double OPERATOR_TIMEOUT_SEC     = 3.0;    // Batas hilang operator sebelum masuk recovery
+  static constexpr double FOLLOW_GRACE_PERIOD_SEC  = 2.0;    // Masa tenggang deteksi hilang saat awal follow
+  static constexpr double ARRIVED_GRACE_PERIOD_SEC = 5.0;    // Jeda abaikan perintah arrived saat awal follow
 
+  // ----------------------------------------------------------------------------
+  // Status Variabel Atomic & Waktu
+  // ----------------------------------------------------------------------------
   std::atomic<TaskState> state_{TaskState::INIT};
   std::atomic<bool> busy_{false};
   std::atomic<bool> speaking_{false};
@@ -141,7 +180,9 @@ private:
   std::string detected_gesture_{"NONE"};
   bool gesture_confirmed_{false};
 
-  // publisher
+  // ----------------------------------------------------------------------------
+  // Node Interfaces (Pub, Sub, Clients)
+  // ----------------------------------------------------------------------------
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::TimerBase::SharedPtr fsm_timer_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tts_pub_;
@@ -150,6 +191,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr emergency_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
+
   TriggerClient::SharedPtr follow_start_client_;
   TriggerClient::SharedPtr follow_stop_client_;
   TriggerClient::SharedPtr align_bag_client_;
@@ -157,11 +199,17 @@ private:
   TriggerClient::SharedPtr put_down_bag_client_;
   TriggerClient::SharedPtr homing_client_;
 
+  // ----------------------------------------------------------------------------
+  // Helper: Deteksi Operator di Depan Robot
+  // ----------------------------------------------------------------------------
   bool isOperatorInFront() const
   {
     return operator_seen_.load() && (now() - last_operator_seen_time_).seconds() < 2.5;
   }
 
+  // ----------------------------------------------------------------------------
+  // Helper: Transisi State FSM
+  // ----------------------------------------------------------------------------
   void transitionTo(TaskState next_state, const std::string & reason)
   {
     RCLCPP_INFO(
@@ -170,9 +218,15 @@ private:
       stateToString(state_.load()).c_str(),
       stateToString(next_state).c_str(),
       reason.c_str());
+
     state_enter_time_ = now();
     bag_prompt_sent_ = false;
     recovery_prompt_sent_ = false;
+
+    // Reset flag penting saat berpindah ke state tertentu
+    if (next_state == TaskState::FOLLOW_OPERATOR) {
+      arrived_requested_ = false;
+    }
     if (next_state == TaskState::CHECK_OPERATOR_PRESENCE) {
       last_operator_warn_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
     }
@@ -180,9 +234,13 @@ private:
       detected_gesture_ = "NONE";
       gesture_confirmed_ = false;
     }
+
     state_ = next_state;
   }
 
+  // ----------------------------------------------------------------------------
+  // Helper: Text-to-Speech (TTS) Asinkron
+  // ----------------------------------------------------------------------------
   void speakAsync(const std::string & text, std::function<void()> on_done = nullptr)
   {
     std_msgs::msg::String message;
@@ -215,11 +273,13 @@ private:
     }
   }
 
+  // Cek apakah mic aktif mendengarkan (tidak sedang bicara & jeda cooldown terlewati)
   bool canListen() const
   {
     return !speaking_.load() && now() >= tts_cooldown_until_;
   }
 
+  // Normalisasi string ke huruf kecil
   static std::string normalize(std::string text)
   {
     std::transform(
@@ -230,11 +290,10 @@ private:
     return text;
   }
 
-
-  // -------------------------------------------------------------------
-  // NLU (Natural Language Understanding) Engine
-  // Menghitung nilai kemiripan kata
-  // -------------------------------------------------------------------
+  // ============================================================================
+  // 3. NLU (NATURAL LANGUAGE UNDERSTANDING) & INTENT MATCHING
+  // ============================================================================
+  // Menghitung kemiripan teks menggunakan Longest Common Subsequence (LCS)
   static double calculateSimilarity(const std::string & s1, const std::string & s2)
   {
     if (s1.empty() && s2.empty()) return 1.0;
@@ -259,6 +318,7 @@ private:
     return (2.0 * static_cast<double>(lcs)) / static_cast<double>(m + n);
   }
 
+  // Menghitung skor kecocokan string input terhadap daftar kandidat frasa
   static double scoreIntent(const std::string & text, const std::vector<std::string> & candidates)
   {
     if (text.empty()) return 0.0;
@@ -270,6 +330,7 @@ private:
       }
       best_score = std::max(best_score, calculateSimilarity(text, phrase));
 
+      // Sliding window jika teks input lebih panjang dari frasa kandidat
       if (text.size() > phrase.size()) {
         for (size_t i = 0; i + phrase.size() <= text.size(); ++i) {
           best_score = std::max(best_score, calculateSimilarity(text.substr(i, phrase.size()), phrase));
@@ -279,8 +340,9 @@ private:
     return best_score;
   }
 
+  // Evaluasi kecocokan intent berdasarkan batas ambang (threshold)
   bool matchIntent(const std::string & text, const std::string & target_intent,
-                   const std::vector<std::string> & candidates, double threshold = 0.68)
+                   const std::vector<std::string> & candidates, double threshold = 0.85)
   {
     double score = scoreIntent(text, candidates);
     if (score >= threshold) {
@@ -298,10 +360,11 @@ private:
     }
   }
 
+  // Daftar kamus frasa suara (Corpus)
   static const std::vector<std::string> & getWakewordCorpus()
   {
     static const std::vector<std::string> corpus = {
-      "hello robot", "halo robot", "hey robot", "hello barelang", "hi robot", "robot", "hallo",
+      "hello robot", "halo robot", "hey robot", "hello barelang", "hi robot", "robot", "hallo"
     };
     return corpus;
   }
@@ -320,7 +383,8 @@ private:
     static const std::vector<std::string> corpus = {
       "arrived at the location", "we have arrived", "this is the location",
       "reached the car", "arrived at the car", "stop here we arrived",
-      "i have arrived", "we are here", "here is the car", "arrived"
+      "i have arrived", "we are here", "here is the car", "arrived",
+      "berhenti", "berhenti sekarang"
     };
     return corpus;
   }
@@ -333,6 +397,10 @@ private:
     return corpus;
   }
 
+  // ============================================================================
+  // 4. CALLBACK SUBSCRIPTION ROS 2
+  // ============================================================================
+  // Callback hasil transkripsi suara STT
   void onTranscript(const std_msgs::msg::String::SharedPtr message)
   {
     if (!canListen()) {
@@ -345,12 +413,11 @@ private:
       return;
     }
 
+    // Debounce perintah berulang dalam rentang 2 detik
     const auto current_time = now();
     {
       std::lock_guard<std::mutex> lock(data_mutex_);
-      if (command == last_command_ &&
-        (current_time - last_command_time_).seconds() < 2.0)
-      {
+      if (command == last_command_ && (current_time - last_command_time_).seconds() < 2.0) {
         return;
       }
       last_command_ = command;
@@ -363,6 +430,8 @@ private:
       "\033[1;33m[STT HEARD]\033[0m \"%s\" | Mic: \033[1;32m[LISTENING]\033[0m | State: \033[1;36m%s\033[0m",
       message->data.c_str(),
       stateToString(current_state).c_str());
+
+    // 1. Sapaan di state WAIT_WAKEWORD
     if (current_state == TaskState::WAIT_WAKEWORD &&
         matchIntent(command, "WAKEWORD", getWakewordCorpus()))
     {
@@ -373,6 +442,7 @@ private:
       return;
     }
 
+    // 2. Perintah Follow di state WAIT_START_COMMAND
     if (current_state == TaskState::WAIT_START_COMMAND &&
         matchIntent(command, "FOLLOW_ME", getFollowCorpus()))
     {
@@ -380,8 +450,17 @@ private:
       return;
     }
 
+    // 3. Perintah Arrived & Emergency Stop di state FOLLOW_OPERATOR
     if (current_state == TaskState::FOLLOW_OPERATOR) {
       if (matchIntent(command, "ARRIVED", getArrivedCorpus())) {
+        // Abaikan perintah arrived jika masih dalam masa jeda awal follow
+        if ((now() - state_enter_time_).seconds() < ARRIVED_GRACE_PERIOD_SEC) {
+          RCLCPP_WARN(
+            get_logger(),
+            "[NLU IGNORED] Perintah ARRIVED diabaikan: masa tunggu follow aktif (< %.1f s).",
+            ARRIVED_GRACE_PERIOD_SEC);
+          return;
+        }
         arrived_requested_ = true;
         return;
       }
@@ -392,6 +471,7 @@ private:
     }
   }
 
+  // Callback label deteksi orang dari kamera ZED
   void onPersonLabel(const std_msgs::msg::String::SharedPtr message)
   {
     if (message->data.find("NO_PERSON") != std::string::npos) {
@@ -404,6 +484,7 @@ private:
     }
   }
 
+  // Callback deteksi gesture penunjukan tas dari kamera ZED
   void onGesture(const std_msgs::msg::String::SharedPtr message)
   {
     if (state_.load() != TaskState::WAIT_BAG_POINTING || gesture_confirmed_) {
@@ -417,6 +498,10 @@ private:
     }
   }
 
+  // ============================================================================
+  // 5. HELPER SERVICE CLIENT
+  // ============================================================================
+  // Memanggil service ROS 2 bertipe Trigger secara non-blocking di thread terpisah
   void callTrigger(
     const TriggerClient::SharedPtr & client,
     const std::string & service_name,
@@ -428,7 +513,6 @@ private:
         result(false, "Client is null");
         return;
       }
-    // mengatur timeout service
       if (!client->wait_for_service(timeout)) {
         RCLCPP_WARN(
           get_logger(), "Service %s belum siap setelah timeout %ld detik.",
@@ -451,6 +535,7 @@ private:
     }).detach();
   }
 
+  // Menghentikan tracking/following person
   void stopFollowing(std::function<void(bool)> on_done)
   {
     callTrigger(
@@ -458,9 +543,14 @@ private:
       [on_done](bool success, const std::string &) { on_done(success); });
   }
 
+  // ============================================================================
+  // 6. MAIN FINITE STATE MACHINE (FSM TICK)
+  // ============================================================================
   void fsmTick()
   {
     const TaskState current_state = state_.load();
+
+    // Watchdog: Cek batas waktu global seluruh task
     if ((now() - task_start_time_).seconds() > GLOBAL_TIMEOUT_SEC &&
       current_state != TaskState::COMPLETED && current_state != TaskState::ABORTED)
     {
@@ -470,6 +560,7 @@ private:
       return;
     }
 
+    // Watchdog: Deteksi operator hilang saat following
     if (current_state == TaskState::FOLLOW_OPERATOR &&
       (now() - state_enter_time_).seconds() > FOLLOW_GRACE_PERIOD_SEC &&
       (now() - last_operator_seen_time_).seconds() > OPERATOR_TIMEOUT_SEC)
@@ -478,6 +569,7 @@ private:
       transitionTo(TaskState::RECOVER_OPERATOR, "Operator lost (timeout > 3s)");
     }
 
+    // Emergency Stop jika diucapkan perintah berhenti darurat
     if (emergency_stop_requested_.exchange(false)) {
       busy_ = true;
       stopFollowing([this](bool) {
@@ -488,7 +580,7 @@ private:
       return;
     }
 
-    // Safety watchdog: jika /hri/tts_done tidak kunjung datang dalam 6 detik, lepas kuncian busy
+    // Safety watchdog: Lepas kuncian busy jika tts_done hilang lebih dari 6 detik
     if (speaking_.load() && (now() - tts_started_time_).seconds() > 6.0) {
       RCLCPP_WARN(get_logger(), "TTS timeout (no /hri/tts_done received), resetting busy state.");
       onTtsDone(nullptr);
@@ -498,15 +590,23 @@ private:
       return;
     }
 
+    // --------------------------------------------------------------------------
+    // Evaluasi State Aktif
+    // --------------------------------------------------------------------------
     switch (state_.load()) {
+      // ------------------------------------------------------------------------
+      // State 0: INIT - Menunggu TTS Engine siap
+      // ------------------------------------------------------------------------
       case TaskState::INIT:
         if (tts_pub_->get_subscription_count() == 0) {
-          // Tunggu sampai tts_engine_node siap mendengarkan sebelum aktif
           return;
         }
         transitionTo(TaskState::WAIT_WAKEWORD, "TTS ready, waiting for wakeword");
         break;
 
+      // ------------------------------------------------------------------------
+      // State 1: WAIT_WAKEWORD - Menunggu sapaan awal
+      // ------------------------------------------------------------------------
       case TaskState::WAIT_WAKEWORD:
         if (wakeword_requested_.exchange(false)) {
           speakAsync(
@@ -517,6 +617,9 @@ private:
         }
         break;
 
+      // ------------------------------------------------------------------------
+      // State 2: CHECK_OPERATOR_PRESENCE - Memastikan operator terlihat di depan
+      // ------------------------------------------------------------------------
       case TaskState::CHECK_OPERATOR_PRESENCE:
         if (isOperatorInFront()) {
           RCLCPP_INFO(get_logger(), "\033[1;32m[ZED VISION]\033[0m Operator terdeteksi di depan.");
@@ -534,6 +637,9 @@ private:
         }
         break;
 
+      // ------------------------------------------------------------------------
+      // State 3: WAIT_START_COMMAND - Menunggu instruksi "follow me"
+      // ------------------------------------------------------------------------
       case TaskState::WAIT_START_COMMAND:
         if (follow_requested_.exchange(false)) {
           busy_ = true;
@@ -553,8 +659,13 @@ private:
         }
         break;
 
+      // ------------------------------------------------------------------------
+      // State 4: FOLLOW_OPERATOR - Mengikuti operator (Grace period 5 detik aktif)
+      // ------------------------------------------------------------------------
       case TaskState::FOLLOW_OPERATOR:
-        if (arrived_requested_.exchange(false)) {
+        if ((now() - state_enter_time_).seconds() > ARRIVED_GRACE_PERIOD_SEC &&
+            arrived_requested_.exchange(false))
+        {
           busy_ = true;
           stopFollowing([this](bool success) {
             busy_ = false;
@@ -568,6 +679,9 @@ private:
         }
         break;
 
+      // ------------------------------------------------------------------------
+      // State 5: RECOVER_OPERATOR - Meminta operator kembali ke depan robot
+      // ------------------------------------------------------------------------
       case TaskState::RECOVER_OPERATOR:
         if (!recovery_prompt_sent_) {
           recovery_prompt_sent_ = true;
@@ -596,6 +710,9 @@ private:
         }
         break;
 
+      // ------------------------------------------------------------------------
+      // State 6: WAIT_BAG_POINTING - Menunggu gesture penunjukan tas
+      // ------------------------------------------------------------------------
       case TaskState::WAIT_BAG_POINTING:
         if (!bag_prompt_sent_) {
           bag_prompt_sent_ = true;
@@ -613,6 +730,7 @@ private:
               get_logger(),
               "\033[1;32m[GESTURE]\033[0m Terdeteksi %s -> Menunjuk tas di sisi %s operator",
               detected_gesture_.c_str(), side.c_str());
+
             speakAsync(
               "I already know which bag you are pointing to. You are pointing to the bag on your " + side + " side.",
               [this]() {
@@ -639,6 +757,9 @@ private:
         }
         break;
 
+      // ------------------------------------------------------------------------
+      // State 7: GRASP_BAG - Pengambilan tas via Lengan Robot
+      // ------------------------------------------------------------------------
       case TaskState::GRASP_BAG:
         busy_ = true;
         callTrigger(
@@ -655,6 +776,9 @@ private:
           });
         break;
 
+      // ------------------------------------------------------------------------
+      // State 8: RETURN_TO_START - Navigasi otonom kembali ke titik awal (Homing)
+      // ------------------------------------------------------------------------
       case TaskState::RETURN_TO_START:
         busy_ = true;
         callTrigger(
@@ -671,6 +795,9 @@ private:
           });
         break;
 
+      // ------------------------------------------------------------------------
+      // State 9: PUT_DOWN_BAG - Meletakkan tas di titik awal
+      // ------------------------------------------------------------------------
       case TaskState::PUT_DOWN_BAG:
         busy_ = true;
         callTrigger(
@@ -695,14 +822,20 @@ private:
   }
 };
 
+// ==============================================================================
+// 7. ENTRY POINT UTAMA
+// ==============================================================================
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   auto node = std::make_shared<HelpMeCarryOrchestrator>();
+
+  // MultiThreadedExecutor dengan 2 thread untuk callback non-blocking
   rclcpp::executors::MultiThreadedExecutor executor(
     rclcpp::ExecutorOptions(), 2);
   executor.add_node(node);
   executor.spin();
+
   rclcpp::shutdown();
   return 0;
 }
