@@ -52,6 +52,15 @@ class SttEngineNode(Node):
         self.transcript_pub = self.create_publisher(
             String, "/hri/stt_transcript", 10
         )
+
+        self._tts_speaking = False
+        self.tts_say_sub = self.create_subscription(
+            String, "/hri/tts_say", self._on_tts_say, 10
+        )
+        self.tts_done_sub = self.create_subscription(
+            String, "/hri/tts_done", self._on_tts_done, 10
+        )
+
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(
             target=self._loop.run_forever,
@@ -79,7 +88,7 @@ class SttEngineNode(Node):
         self._listener = LocalMicListener(
             loop=self._loop,
             on_audio_captured=self._on_audio,
-            is_paused_fn=lambda: False,
+            is_paused_fn=lambda: self._tts_speaking,
             on_frame_metrics=self._on_metrics,
             device_index=resolved_index,
             threshold_dbfs=float(self.get_parameter("threshold_dbfs").value),
@@ -90,6 +99,12 @@ class SttEngineNode(Node):
         )
         self._listener.start()
         self.get_logger().info("Standalone STT engine ready.")
+
+    def _on_tts_say(self, _msg: String) -> None:
+        self._tts_speaking = True
+
+    def _on_tts_done(self, _msg: String) -> None:
+        self._tts_speaking = False
 
     def _on_metrics(self, m: VadFrameMetrics) -> None:
         if not bool(self.get_parameter("enable_live_meter").value):

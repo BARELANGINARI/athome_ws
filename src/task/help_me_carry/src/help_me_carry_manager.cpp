@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -291,21 +292,43 @@ private:
     return !speaking_.load() && now() >= tts_cooldown_until_;
   }
 
-  // Normalisasi string ke huruf kecil
+  // Normalisasi string: ubah ke lowercase, hilangkan tanda baca, dan rapikan spasi
   static std::string normalize(std::string text)
   {
-    std::transform(
-      text.begin(), text.end(), text.begin(),
-      [](unsigned char character) {
-        return static_cast<char>(std::tolower(character));
-      });
-    return text;
+    std::string clean;
+    clean.reserve(text.size());
+    bool prev_space = true;
+    for (unsigned char c : text) {
+      if (std::isalnum(c)) {
+        clean.push_back(static_cast<char>(std::tolower(c)));
+        prev_space = false;
+      } else if (!prev_space) {
+        clean.push_back(' ');
+        prev_space = true;
+      }
+    }
+    if (!clean.empty() && clean.back() == ' ') {
+      clean.pop_back();
+    }
+    return clean;
+  }
+
+  // Helper memotong kalimat menjadi token kata
+  static std::vector<std::string> splitWords(const std::string & text)
+  {
+    std::vector<std::string> words;
+    std::istringstream iss(text);
+    std::string w;
+    while (iss >> w) {
+      words.push_back(w);
+    }
+    return words;
   }
 
   // ============================================================================
   // 3. NLU (NATURAL LANGUAGE UNDERSTANDING) & INTENT MATCHING
   // ============================================================================
-  // Menghitung kemiripan teks menggunakan Longest Common Subsequence (LCS)
+  // Menghitung kemiripan teks menggunakan Normalized Levenshtein Edit Distance [0.0 - 1.0]
   static double calculateSimilarity(const std::string & s1, const std::string & s2)
   {
     if (s1.empty() && s2.empty()) return 1.0;
@@ -316,37 +339,58 @@ private:
     const size_t n = s2.size();
     std::vector<std::vector<size_t>> dp(m + 1, std::vector<size_t>(n + 1, 0));
 
+    for (size_t i = 0; i <= m; ++i) dp[i][0] = i;
+    for (size_t j = 0; j <= n; ++j) dp[0][j] = j;
+
     for (size_t i = 1; i <= m; ++i) {
       for (size_t j = 1; j <= n; ++j) {
-        if (s1[i - 1] == s2[j - 1]) {
-          dp[i][j] = dp[i - 1][j - 1] + 1;
-        } else {
-          dp[i][j] = std::max(dp[i - 1][j], dp[i][j - 1]);
-        }
+        const size_t cost = (s1[i - 1] == s2[j - 1]) ? 0 : 1;
+        dp[i][j] = std::min({
+          dp[i - 1][j] + 1,         // Deletion
+          dp[i][j - 1] + 1,         // Insertion
+          dp[i - 1][j - 1] + cost   // Substitution
+        });
       }
     }
 
-    const size_t lcs = dp[m][n];
-    return (2.0 * static_cast<double>(lcs)) / static_cast<double>(m + n);
+    const size_t dist = dp[m][n];
+    const size_t max_len = std::max(m, n);
+    return 1.0 - (static_cast<double>(dist) / static_cast<double>(max_len));
   }
 
-  // Menghitung skor kecocokan string input terhadap daftar kandidat frasa
+  // Menghitung skor kecocokan string input terhadap daftar kandidat frasa (berbasis token kata)
   static double scoreIntent(const std::string & text, const std::vector<std::string> & candidates)
   {
     if (text.empty()) return 0.0;
     double best_score = 0.0;
 
-    for (const auto & phrase : candidates) {
-      if (text.find(phrase) != std::string::npos) {
-        best_score = std::max(best_score, 0.95);
-      }
-      best_score = std::max(best_score, calculateSimilarity(text, phrase));
+    const auto text_words = splitWords(text);
 
-      // Sliding window jika teks input lebih panjang dari frasa kandidat
-      if (text.size() > phrase.size()) {
-        for (size_t i = 0; i + phrase.size() <= text.size(); ++i) {
-          best_score = std::max(best_score, calculateSimilarity(text.substr(i, phrase.size()), phrase));
+    for (const auto & phrase : candidates) {
+      if (text == phrase) {
+        return 1.0;
+      }
+
+      const auto phrase_words = splitWords(phrase);
+      const size_t p_len = phrase_words.size();
+      const size_t t_len = text_words.size();
+
+      if (p_len == 0) continue;
+
+      if (t_len >= p_len) {
+        for (size_t i = 0; i + p_len <= t_len; ++i) {
+          std::string sub_phrase;
+          for (size_t j = 0; j < p_len; ++j) {
+            if (j > 0) sub_phrase += " ";
+            sub_phrase += text_words[i + j];
+          }
+          if (sub_phrase == phrase) {
+            best_score = std::max(best_score, 0.98);
+          }
+          best_score = std::max(best_score, calculateSimilarity(sub_phrase, phrase));
         }
+      } else {
+        best_score = std::max(best_score, calculateSimilarity(text, phrase));
       }
     }
     return best_score;
@@ -372,11 +416,12 @@ private:
     }
   }
 
-  // Daftar kamus frasa suara (Corpus)
+  // Daftar kamus frasa suara (Corpus) lengkap dengan variasi fonetik
   static const std::vector<std::string> & getWakewordCorpus()
   {
     static const std::vector<std::string> corpus = {
-      "hello robot", "halo robot", "hey robot", "hello barelang", "hi robot", "robot", "hallo"
+      "hello robot", "halo robot", "hey robot", "hello barelang", "hi robot",
+      "robot", "hallo", "helo robot", "hai robot", "hey barelang", "halo barelang"
     };
     return corpus;
   }
@@ -385,7 +430,8 @@ private:
   {
     static const std::vector<std::string> corpus = {
       "follow me", "please follow me", "come with me", "lets go follow me",
-      "start following me", "guide me follow me", "following me"
+      "start following me", "guide me follow me", "following me",
+      "fallow me", "follow mi", "folow me", "come on follow me", "ayo follow me"
     };
     return corpus;
   }
@@ -403,7 +449,8 @@ private:
   static const std::vector<std::string> & getStopCorpus()
   {
     static const std::vector<std::string> corpus = {
-      "stop", "stopping", "stop now", "stop please", "stop following", "emergency stop"
+      "stop", "stopping", "stop now", "stop please", "stop following",
+      "emergency stop", "berhenti", "berhenti dulu"
     };
     return corpus;
   }
