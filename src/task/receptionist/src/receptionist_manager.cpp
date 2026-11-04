@@ -40,6 +40,8 @@ enum class ReceptionistState {
   WAIT_NAME,
   ASK_INTEREST,
   WAIT_INTEREST,
+  CONFIRM_GUEST_INFO,
+  WAIT_CONFIRM_GUEST_INFO,
   NAV_TO_BEVERAGE,
   ASK_DRINK,
   WAIT_DRINK,
@@ -63,9 +65,11 @@ static std::string stateToString(ReceptionistState state)
     case ReceptionistState::WAIT_GUEST:          return "WAIT_GUEST";
     case ReceptionistState::ASK_NAME:            return "ASK_NAME";
     case ReceptionistState::WAIT_NAME:           return "WAIT_NAME";
-    case ReceptionistState::ASK_INTEREST:        return "ASK_INTEREST";
-    case ReceptionistState::WAIT_INTEREST:       return "WAIT_INTEREST";
-    case ReceptionistState::NAV_TO_BEVERAGE:     return "NAV_TO_BEVERAGE";
+    case ReceptionistState::ASK_INTEREST:            return "ASK_INTEREST";
+    case ReceptionistState::WAIT_INTEREST:           return "WAIT_INTEREST";
+    case ReceptionistState::CONFIRM_GUEST_INFO:      return "CONFIRM_GUEST_INFO";
+    case ReceptionistState::WAIT_CONFIRM_GUEST_INFO: return "WAIT_CONFIRM_GUEST_INFO";
+    case ReceptionistState::NAV_TO_BEVERAGE:         return "NAV_TO_BEVERAGE";
     case ReceptionistState::ASK_DRINK:           return "ASK_DRINK";
     case ReceptionistState::WAIT_DRINK:          return "WAIT_DRINK";
     case ReceptionistState::CHECK_BEVERAGE:      return "CHECK_BEVERAGE";
@@ -217,6 +221,7 @@ public:
     state_enter_time_ = now();
     last_wait_prompt_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
 
+    guests_.clear();
     initCurrentGuest(1);
 
     RCLCPP_INFO(get_logger(),
@@ -786,6 +791,32 @@ private:
     return "";
   }
 
+  // Pengenalan respon konfirmasi (Yes / No)
+  static int parseYesNoIntent(const std::string & raw_text)
+  {
+    const std::string norm = normalize(raw_text);
+    if (norm.empty()) return 0;
+
+    static const std::vector<std::string> kNoKeywords = {
+      "no", "nope", "not correct", "wrong", "false", "incorrect", "negative", "bukan", "tidak"
+    };
+    static const std::vector<std::string> kYesKeywords = {
+      "yes", "yeah", "yep", "correct", "right", "sure", "true", "exactly", "of course", "ya", "benar", "betul"
+    };
+
+    for (const auto & w : kNoKeywords) {
+      if (norm == w || norm.find(w) != std::string::npos) {
+        return -1;
+      }
+    }
+    for (const auto & w : kYesKeywords) {
+      if (norm == w || norm.find(w) != std::string::npos) {
+        return 1;
+      }
+    }
+    return 0;
+  }
+
   // ============================================================================
   // CALLBACK SUBSCRIPTION ROS 2
   // ============================================================================
@@ -1074,6 +1105,7 @@ private:
           return;
         }
         RCLCPP_INFO(get_logger(), "=== STARTING RECEPTIONIST TASK ===");
+        guests_.clear();
         initCurrentGuest(1);
         transitionTo(ReceptionistState::NAV_TO_DOOR, "Start cycle for Guest 1: navigating to door");
         break;
@@ -1160,7 +1192,7 @@ private:
             current_guest_.attributes = extractVisualAttributes(nearest_person_id_.load());
             RCLCPP_INFO(get_logger(), "[DIALOG] Guest %d Interest validated: %s",
               guest_idx_, current_guest_.interest.c_str());
-            transitionTo(ReceptionistState::NAV_TO_BEVERAGE, "Guest interest captured and stored");
+            transitionTo(ReceptionistState::CONFIRM_GUEST_INFO, "Guest interest captured; confirming info");
           } else {
             RCLCPP_WARN(get_logger(), "[DIALOG] Unrecognized interest input '%s', asking again.", raw.c_str());
             state_enter_time_ = now();
@@ -1169,6 +1201,46 @@ private:
         } else if ((now() - state_enter_time_).seconds() > DIALOG_REPROMPT_SEC) {
           state_enter_time_ = now();
           speakAsync("Could you please tell me your main interest or hobby?");
+        }
+        break;
+
+      case ReceptionistState::CONFIRM_GUEST_INFO: {
+        const std::string confirm_text =
+          "Hello " + current_guest_.name + ", you have an interest in " +
+          current_guest_.interest + "—is that correct? Please say 'yes' if it is, or 'no' if it isn't.";
+
+        speakAsync(confirm_text, [this]() {
+          transitionTo(ReceptionistState::WAIT_CONFIRM_GUEST_INFO, "Waiting for confirmation (yes/no)");
+        });
+        break;
+      }
+
+      case ReceptionistState::WAIT_CONFIRM_GUEST_INFO:
+        if (has_new_utterance_.exchange(false)) {
+          std::string raw;
+          {
+            std::lock_guard<std::mutex> lock(stt_mutex_);
+            raw = heard_utterance_;
+          }
+          const int ans = parseYesNoIntent(raw);
+          if (ans == 1) {
+            RCLCPP_INFO(get_logger(), "[DIALOG] Guest %d confirmed info: YES", guest_idx_);
+            transitionTo(ReceptionistState::NAV_TO_BEVERAGE, "Guest info confirmed, proceeding to beverage area");
+          } else if (ans == -1) {
+            RCLCPP_WARN(get_logger(), "[DIALOG] Guest %d confirmed info: NO. Asking for name and interest again.", guest_idx_);
+            current_guest_.name.clear();
+            current_guest_.interest.clear();
+            speakAsync("I am sorry. Let us start over. May I please have your name?", [this]() {
+              transitionTo(ReceptionistState::WAIT_NAME, "Restarted name and interest capture");
+            });
+          } else {
+            RCLCPP_WARN(get_logger(), "[DIALOG] Unrecognized confirmation '%s', reprompting.", raw.c_str());
+            state_enter_time_ = now();
+            speakAsync("Please say 'yes' if it is, or 'no' if it isn't.");
+          }
+        } else if ((now() - state_enter_time_).seconds() > DIALOG_REPROMPT_SEC) {
+          state_enter_time_ = now();
+          speakAsync("Please say 'yes' if it is, or 'no' if it isn't.");
         }
         break;
 
