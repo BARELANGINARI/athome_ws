@@ -921,10 +921,14 @@ private:
         break;
 
       case ReceptionistState::WAIT_GUEST:
-        if (isPersonInFront() || (now() - state_enter_time_).seconds() > 8.0) {
+        if (isPersonInFront()) {
           speakAsync("Hello! Welcome to the party. I am Barelang Inari from Batam State Polytechic, here im is your robot receptionist.", [this]() {
             transitionTo(ReceptionistState::ASK_NAME, "Guest greeted at entrance");
           });
+        } else {
+          RCLCPP_INFO_THROTTLE(
+            get_logger(), *get_clock(), 3000,
+            "\033[1;33m[VISION WAIT]\033[0m At entrance door, waiting for guest to be detected by vision...");
         }
         break;
 
