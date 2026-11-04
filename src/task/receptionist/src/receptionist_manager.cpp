@@ -328,6 +328,12 @@ private:
     return speaking_.load() || service_busy_.load() || in_callback_.load();
   }
 
+  bool isVisionActive() const
+  {
+    const ReceptionistState current = state_.load();
+    return current != ReceptionistState::INIT && current != ReceptionistState::NAV_TO_DOOR;
+  }
+
   void publishTaskStatus(const std::string & status_text)
   {
     if (status_pub_) {
@@ -816,7 +822,7 @@ private:
   // Callback deteksi orang dari person_det (/vision/detected_person)
   void onPersonDetected(const msgs::msg::PersonDetected::SharedPtr message)
   {
-    if (!message) return;
+    if (!message || !isVisionActive()) return;
     person_seen_ = true;
     last_person_seen_time_ = now();
 
@@ -859,7 +865,7 @@ private:
   // Format: "operator:x,y,w,h|x,y,z|id=0|kpt=...;person:..."
   void onPersonLabel(const std_msgs::msg::String::SharedPtr message)
   {
-    if (!message || message->data.empty() || message->data.find("NO_PERSON") != std::string::npos) {
+    if (!isVisionActive() || !message || message->data.empty() || message->data.find("NO_PERSON") != std::string::npos) {
       return;
     }
 
@@ -901,6 +907,8 @@ private:
   // Format yang didukung: "coke:x,y,w,h|X,Y,Z|score;sprite:x,y,w,h|..."
   void onDrinkDetections(const std_msgs::msg::String::SharedPtr message)
   {
+    if (!isVisionActive()) return;
+
     std::lock_guard<std::mutex> lock(vision_mutex_);
     latest_drinks_.clear();
     if (!message || message->data.empty()) {
@@ -937,7 +945,7 @@ private:
   // Callback atribut visual tamu (/zed/person_attributes, dipisahkan koma)
   void onPersonAttributes(const std_msgs::msg::String::SharedPtr message)
   {
-    if (!message || message->data.empty()) return;
+    if (!isVisionActive() || !message || message->data.empty()) return;
     std::lock_guard<std::mutex> lock(vision_mutex_);
     std::vector<std::string> parsed;
     std::stringstream ss(message->data);
@@ -955,7 +963,7 @@ private:
   // Callback deteksi kursi kosong (/zed/empty_seat: "left", "center", "right")
   void onEmptySeat(const std_msgs::msg::String::SharedPtr message)
   {
-    if (!message || message->data.empty()) return;
+    if (!isVisionActive() || !message || message->data.empty()) return;
     std::lock_guard<std::mutex> lock(vision_mutex_);
     empty_seat_position_ = message->data;
     has_explicit_empty_seat_ = true;
@@ -1066,7 +1074,6 @@ private:
           return;
         }
         RCLCPP_INFO(get_logger(), "=== STARTING RECEPTIONIST TASK ===");
-        triggerDoorbell();
         initCurrentGuest(1);
         transitionTo(ReceptionistState::NAV_TO_DOOR, "Start cycle for Guest 1: navigating to door");
         break;
