@@ -20,7 +20,7 @@ public:
   PersonDetNode()
   : Node("person_det_node")
   {
-    declare_parameter("camera_index", 2);
+    declare_parameter("camera_index", 0);
     declare_parameter("conf_threshold", 0.6);
     declare_parameter("debug_window", true);
     declare_parameter("models_dir", "");
@@ -58,15 +58,8 @@ public:
     det_pub_ = create_publisher<msgs::msg::PersonDetected>(
       "/vision/detected_person", 10);
 
-    cap_.open(cam_idx_, cv::CAP_V4L2);
-    cap_.set(cv::CAP_PROP_FRAME_WIDTH, 640);
-    cap_.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
-
-    if (!cap_.isOpened()) {
-      RCLCPP_ERROR(get_logger(), "Camera index %d not found or could not be opened.", cam_idx_);
-    } else {
-      RCLCPP_INFO(get_logger(), "Camera index %d opened successfully (640x480).", cam_idx_);
-    }
+    last_reconnect_attempt_ = std::chrono::steady_clock::now();
+    openCamera(cam_idx_);
 
     timer_ = create_wall_timer(
       100ms, std::bind(&PersonDetNode::timerCallback, this));
@@ -85,6 +78,44 @@ public:
   }
 
 private:
+  bool openCamera(int target_idx)
+  {
+    if (cap_.isOpened()) {
+      cap_.release();
+    }
+
+    // Try target index first
+    RCLCPP_INFO(get_logger(), "Attempting to open camera index %d...", target_idx);
+    cap_.open(target_idx, cv::CAP_V4L2);
+    if (cap_.isOpened()) {
+      cap_.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+      cap_.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+      active_cam_idx_ = target_idx;
+      RCLCPP_INFO(get_logger(), "Camera index %d opened successfully.", active_cam_idx_);
+      return true;
+    }
+
+    RCLCPP_WARN(get_logger(), "Camera index %d could not be opened. Scanning available /dev/video* devices...", target_idx);
+
+    // Fallback scan 0..9
+    for (int idx = 0; idx <= 9; ++idx) {
+      if (idx == target_idx) continue;
+      cap_.open(idx, cv::CAP_V4L2);
+      if (cap_.isOpened()) {
+        cap_.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+        cap_.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+        active_cam_idx_ = idx;
+        RCLCPP_INFO(get_logger(), "Auto-fallback: Successfully opened camera at index %d!", active_cam_idx_);
+        return true;
+      }
+    }
+
+    active_cam_idx_ = -1;
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      "No camera device available right now. Node will automatically retry every 2s until camera is plugged in.");
+    return false;
+  }
+
   void soundCallback(const std_msgs::msg::String::SharedPtr msg)
   {
     if (msg->data == "doorbell" && !detecting_) {
@@ -103,12 +134,25 @@ private:
   void timerCallback()
   {
     if (!cap_.isOpened()) {
+      auto now = std::chrono::steady_clock::now();
+      if (now - last_reconnect_attempt_ > 2s) {
+        last_reconnect_attempt_ = now;
+        openCamera(cam_idx_);
+      }
       return;
     }
 
     cv::Mat frame;
     if (!cap_.read(frame) || frame.empty()) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 4000,
+        "Failed to read frame from camera %d. Re-checking camera...", active_cam_idx_);
+      cap_.release();
       return;
+    }
+
+    // If stereo side-by-side frame (e.g. ZED 2i where width >= 2 * height), crop left perspective
+    if (frame.cols >= frame.rows * 2) {
+      frame = frame(cv::Rect(0, 0, frame.cols / 2, frame.rows)).clone();
     }
 
     if (detecting_) {
@@ -156,7 +200,9 @@ private:
     }
   }
 
-  int cam_idx_{2};
+  int cam_idx_{0};
+  int active_cam_idx_{-1};
+  std::chrono::steady_clock::time_point last_reconnect_attempt_;
   float conf_thresh_{0.6f};
   bool debug_window_{true};
   bool detecting_{false};

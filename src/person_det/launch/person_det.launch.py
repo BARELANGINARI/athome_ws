@@ -8,8 +8,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'camera_index',
-            default_value='2',
-            description='V4L2 camera device index (e.g. 0, 2)',
+            default_value='0',
+            description='V4L2 camera device index (0 for ZED/default webcam, or 2 for external USB webcam)',
         ),
         DeclareLaunchArgument(
             'conf_threshold',

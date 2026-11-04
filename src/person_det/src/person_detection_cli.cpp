@@ -7,7 +7,7 @@ namespace fs = std::filesystem;
 
 int main(int argc, char ** argv)
 {
-  int cam_idx = 2;
+  int cam_idx = 0;
   if (argc > 1) {
     try {
       cam_idx = std::stoi(argv[1]);
@@ -23,8 +23,8 @@ int main(int argc, char ** argv)
 
   std::cout << "========================================================\n"
             << "  Person Detection & Attribute Recognition (C++ Standalone)\n"
-            << "  Camera Index : " << cam_idx << "\n"
-            << "  Models Dir   : " << models_dir << "\n"
+            << "  Target Camera Index : " << cam_idx << "\n"
+            << "  Models Dir          : " << models_dir << "\n"
             << "========================================================\n";
 
   person_det::PersonDetector detector;
@@ -39,7 +39,22 @@ int main(int argc, char ** argv)
   cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
 
   if (!cap.isOpened()) {
-    std::cerr << "[ERROR] Failed to open camera device " << cam_idx << std::endl;
+    std::cerr << "[WARN] Failed to open camera device " << cam_idx << ", scanning fallback devices...\n";
+    for (int idx = 0; idx <= 9; ++idx) {
+      if (idx == cam_idx) continue;
+      cap.open(idx, cv::CAP_V4L2);
+      if (cap.isOpened()) {
+        cap.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+        cam_idx = idx;
+        std::cout << "[OK] Connected to fallback camera index " << cam_idx << "\n";
+        break;
+      }
+    }
+  }
+
+  if (!cap.isOpened()) {
+    std::cerr << "[ERROR] No camera device found (checked indices 0..9).\n";
     return -1;
   }
 
@@ -49,6 +64,11 @@ int main(int argc, char ** argv)
   while (true) {
     if (!cap.read(frame) || frame.empty()) {
       break;
+    }
+
+    // Crop left half if stereo side-by-side (e.g. ZED 2i)
+    if (frame.cols >= frame.rows * 2) {
+      frame = frame(cv::Rect(0, 0, frame.cols / 2, frame.rows)).clone();
     }
 
     auto candidates = detector.detect(frame, 0.6f);

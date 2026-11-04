@@ -77,38 +77,52 @@ source install/setup.bash
 
 ---
 
-## 4. Panduan Menjalankan Sistem
+## 4. Panduan Menjalankan Sistem (4 Terminal Modular Stack)
 
-Jalankan perintah berikut pada terminal terpisah:
+Jalankan perintah berikut pada 4 terminal terpisah (belum termasuk ekspresi wajah/face):
 
-### Terminal 1: Robot Core & Bringup (All-in-One)
-Menjalankan hardware motor base, RPLiDAR, Nav2 AMCL map localization, RViz2, `person_det`, dan `receptionist_manager` (langsung otomatis bernavigasi ke pintu saat startup):
+### Terminal 1: Hardware Bringup (Motor Base & RPLiDAR)
+Menjalankan komunikasi UDP motor base STM32 Nucleo dan sensor RPLiDAR:
 ```bash
-ros2 launch receptionist receptionist.launch.py
+source install/setup.bash
+ros2 launch receptionist hardware.launch.py
 ```
 
-> **Catatan Opsi Modular:**  
-> Jika ingin menjalankan modul secara terpisah:
-> * **Hardware Base & LiDAR:** `ros2 launch receptionist hardware.launch.py`
-> * **Navigasi & Task Node:** `ros2 launch receptionist navigation.launch.py`
-> * **Vision Deteksi Orang:** `ros2 launch person_det person_det.launch.py`
-
-### Terminal 2: Voice & HRI (Speech-to-Text & Text-to-Speech)
-Menjalankan engine suara Faster-Whisper dan Piper ONNX:
+### Terminal 2: Navigation Bringup (Nav2, AMCL, Map, RViz & Receptionist Node)
+Menjalankan stack navigasi Nav2 dengan peta statis, RViz visualisasi, dan service waypoint `/receptionist/go_to_door` & `/receptionist/go_to_living_room`:
 ```bash
+source install/setup.bash
+ros2 launch receptionist navigation.launch.py
+```
+
+### Terminal 3: HRI & Task Manager FSM (Voice Engine & State Machine)
+Menjalankan modul suara Faster-Whisper STT, Piper TTS, dan node FSM utama `receptionist_manager` yang mengatur alur percakapan serta koordinasi tugas:
+```bash
+source install/setup.bash
 ros2 launch receptionist hri.launch.py
 ```
 
-### Terminal 3: Layar Animasi Wajah Robot *(Opsional)*
-Menampilkan grafis ekspresi mata dan status interaksi pada layar LCD 7 inci:
+### Terminal 4: Vision & Person Detection (YOLO-Pose & Face Re-ID)
+Menjalankan deteksi orang, estimasi orientasi pose, klasifikasi gender & pakaian, serta Face Re-ID:
 ```bash
+source install/setup.bash
+ros2 launch person_det person_det.launch.py
+```
+
+---
+
+### Terminal 5 *(Opsional)*: Layar Animasi Wajah Robot (LCD 7 Inci)
+Menampilkan animasi ekspresi mata dan status interaksi pada layar HDMI 7 inci robot:
+```bash
+source install/setup.bash
 ros2 launch athome_face face.launch.py
 ```
 
-### Terminal 4: Kamera Objek Minuman & Kursi *(Opsional / ZED RGB-D)*
-Jika menggunakan kamera ZED untuk verifikasi kaleng/cangkir minuman dan kursi kosong:
+### Alternatif All-in-One:
+Jika ingin menjalankan seluruh sistem (hardware + nav2 + vision + fsm) dalam satu terminal:
 ```bash
-ros2 launch athome_vision zed.launch.py
+source install/setup.bash
+ros2 launch receptionist receptionist.launch.py hri:=true
 ```
 
 ---

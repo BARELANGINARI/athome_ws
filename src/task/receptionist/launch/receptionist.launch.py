@@ -51,7 +51,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'manager',
             default_value='true',
-            description='Launch receptionist task manager FSM node.',
+            description='Launch receptionist task manager FSM node in HRI launch.',
+        ),
+        DeclareLaunchArgument(
+            'hri',
+            default_value='false',
+            description='Launch HRI stack (Faster-Whisper STT + Piper TTS + FSM Task Manager).',
         ),
         DeclareLaunchArgument(
             'person_det',
@@ -60,7 +65,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'camera_index',
-            default_value='2',
+            default_value='0',
             description='Camera index for person_det.',
         ),
 
@@ -98,7 +103,6 @@ def generate_launch_description():
                 'rviz': LaunchConfiguration('rviz'),
                 'rviz_software': LaunchConfiguration('rviz_software'),
                 'task_node': 'true',
-                'manager_node': LaunchConfiguration('manager'),
             }.items(),
         ),
 
@@ -116,6 +120,23 @@ def generate_launch_description():
             ),
             launch_arguments={
                 'camera_index': LaunchConfiguration('camera_index'),
+            }.items(),
+        ),
+
+        # 4. HRI & Task Manager FSM Bringup (Speech + FSM)
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare('receptionist'),
+                    'launch',
+                    'hri.launch.py',
+                ])
+            ),
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('hri'), "' == 'true'"])
+            ),
+            launch_arguments={
+                'manager_node': LaunchConfiguration('manager'),
             }.items(),
         ),
     ])
