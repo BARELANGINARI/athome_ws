@@ -13,6 +13,18 @@ find_package(msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(OpenCV REQUIRED)
 
+# ZED SDK & CUDA Discovery
+if(EXISTS "/usr/local/cuda/bin/nvcc")
+  set(CUDA_TOOLKIT_ROOT_DIR "/usr/local/cuda" CACHE PATH "CUDA toolkit root" FORCE)
+  set(CUDAToolkit_ROOT "/usr/local/cuda" CACHE PATH "CUDAToolkit root" FORCE)
+endif()
+find_package(ZED 3 QUIET)
+find_package(CUDAToolkit QUIET)
+if(ZED_FOUND AND CUDAToolkit_FOUND)
+  add_definitions(-DHAVE_ZED=1)
+  message(STATUS "ZED SDK found! Enabling native ZED camera & IMU support in person_det.")
+endif()
+
 # ONNX Runtime Discovery
 if(DEFINED ENV{ONNXRUNTIME_ROOT} AND NOT ONNXRUNTIME_ROOT)
   set(ONNXRUNTIME_ROOT "$ENV{ONNXRUNTIME_ROOT}")
@@ -64,6 +76,16 @@ add_executable(person_det_node
 target_link_libraries(person_det_node
   person_det_lib
 )
+if(ZED_FOUND AND CUDAToolkit_FOUND)
+  target_include_directories(person_det_node PRIVATE
+    ${ZED_INCLUDE_DIRS}
+    ${CUDAToolkit_INCLUDE_DIRS}
+  )
+  target_link_libraries(person_det_node
+    ${ZED_LIBRARIES}
+    CUDA::cudart
+  )
+endif()
 ament_target_dependencies(person_det_node
   rclcpp
   std_msgs
