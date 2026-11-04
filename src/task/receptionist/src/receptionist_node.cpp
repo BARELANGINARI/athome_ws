@@ -51,10 +51,20 @@ public:
     declare_parameter<double>("door.y", 0.0);
     declare_parameter<double>("door.yaw", 0.0);
 
+    // Beverage area waypoint
+    declare_parameter<double>("beverage_area.x", 1.0);
+    declare_parameter<double>("beverage_area.y", 0.5);
+    declare_parameter<double>("beverage_area.yaw", 0.0);
+
     // Living room waypoint
     declare_parameter<double>("living_room.x", 1.5);
     declare_parameter<double>("living_room.y", 0.0);
     declare_parameter<double>("living_room.yaw", 0.0);
+
+    // Living room center waypoint
+    declare_parameter<double>("living_room_center.x", 2.0);
+    declare_parameter<double>("living_room_center.y", 0.0);
+    declare_parameter<double>("living_room_center.yaw", 0.0);
 
     global_frame_ = get_parameter("global_frame").as_string();
     std::string announce_topic = get_parameter("announce_topic").as_string();
@@ -70,6 +80,14 @@ public:
         handleGoTo("door", res);
       });
 
+    // Service: Go to Beverage Area
+    srv_go_beverage_area_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/go_to_beverage_area",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleGoTo("beverage_area", res);
+      });
+
     // Service: Go to Living Room
     srv_go_living_room_ = create_service<std_srvs::srv::Trigger>(
       "/receptionist/go_to_living_room",
@@ -78,9 +96,19 @@ public:
         handleGoTo("living_room", res);
       });
 
+    // Service: Go to Living Room Center
+    srv_go_living_room_center_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/go_to_living_room_center",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleGoTo("living_room_center", res);
+      });
+
     RCLCPP_INFO(get_logger(), "Receptionist Navigation Node ready. Services available:");
     RCLCPP_INFO(get_logger(), " - /receptionist/go_to_door");
+    RCLCPP_INFO(get_logger(), " - /receptionist/go_to_beverage_area");
     RCLCPP_INFO(get_logger(), " - /receptionist/go_to_living_room");
+    RCLCPP_INFO(get_logger(), " - /receptionist/go_to_living_room_center");
     publishStatus("Receptionist navigation node ready");
   }
 
@@ -170,7 +198,9 @@ private:
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
 
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_door_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_beverage_area_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_living_room_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_living_room_center_;
 };
 
 }  // namespace receptionist

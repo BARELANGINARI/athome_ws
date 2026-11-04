@@ -38,7 +38,20 @@ ament_target_dependencies(receptionist_node
   tf2_ros
 )
 target_link_libraries(receptionist_node Threads::Threads)
-install(TARGETS receptionist_node DESTINATION lib/${PROJECT_NAME})
+
+add_executable(receptionist_manager src/receptionist_manager.cpp)
+ament_target_dependencies(receptionist_manager
+  rclcpp
+  std_msgs
+  std_srvs
+)
+target_link_libraries(receptionist_manager Threads::Threads)
+
+install(TARGETS
+  receptionist_node
+  receptionist_manager
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 # Install directories
 install(DIRECTORY

@@ -5,11 +5,28 @@ receptionist_node:
       x: 0.0
       y: 0.0
       yaw: 0.0
+    beverage_area:
+      x: 1.0
+      y: 0.5
+      yaw: 0.0
     living_room:
       x: 1.5
+      y: 0.0
+      yaw: 0.0
+    living_room_center:
+      x: 2.0
       y: 0.0
       yaw: 0.0
 
     # Operational settings
     global_frame: "map"
     announce_topic: "/receptionist/status"
+
+receptionist_manager:
+  ros__parameters:
+    host:
+      name: "Alex"
+      drink: "Coke"
+      interest: "Robotics"
+    door_closed: true
+    camera_width: 672
