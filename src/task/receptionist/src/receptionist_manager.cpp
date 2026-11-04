@@ -419,10 +419,13 @@ private:
         if (!success) {
           RCLCPP_WARN(
             get_logger(),
-            "[NAV2] Navigation to '%s' reported failure (%s), continuing state machine.",
+            "\033[1;33m[NAV2]\033[0m Navigation to '%s' reported failure (%s), continuing state machine.",
             waypoint_name.c_str(), msg.c_str());
         } else {
-          RCLCPP_INFO(get_logger(), "[NAV2] Reached '%s': %s", waypoint_name.c_str(), msg.c_str());
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;34m[NAV2]\033[0m Reached '%s': %s",
+            waypoint_name.c_str(), msg.c_str());
         }
         if (on_finished) {
           on_finished(success);
@@ -446,17 +449,21 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;34m[ARM]\033[0m Actuating servo to indicate empty chair via %s...",
+      "\033[1;36m[ARM]\033[0m Actuating servo to indicate empty chair via %s...",
       srv_name.c_str());
 
     callTrigger(
       client, srv_name,
       [this, srv_name, on_finished](bool success, const std::string & msg) {
         if (success) {
-          RCLCPP_INFO(get_logger(), "[ARM] Servo actuation (%s) succeeded: %s",
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;36m[ARM]\033[0m Servo actuation (%s) succeeded: %s",
             srv_name.c_str(), msg.c_str());
         } else {
-          RCLCPP_WARN(get_logger(), "[ARM] Servo actuation (%s) finished with warning: %s",
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[ARM]\033[0m Servo actuation (%s) finished with warning: %s",
             srv_name.c_str(), msg.c_str());
         }
         if (on_finished) {
@@ -798,14 +805,28 @@ private:
     if (norm.empty()) return 0;
 
     static const std::vector<std::string> kNoKeywords = {
-      "no", "nope", "not correct", "wrong", "false", "incorrect", "negative", "bukan", "tidak"
+      "no", "nope", "nah", "not correct", "wrong", "false", "incorrect", "negative",
+      "not really", "it isn t", "it is not", "bukan", "tidak", "enggak", "ga"
     };
     static const std::vector<std::string> kYesKeywords = {
-      "yes", "yeah", "yep", "correct", "right", "sure", "true", "exactly", "of course", "ya", "benar", "betul"
+      "yes", "yeah", "yep", "correct", "right", "sure", "true", "exactly", "of course",
+      "that is right", "it is", "ya", "benar", "betul"
     };
 
+    // Evaluasi kata tunggal terlebih dahulu
+    std::stringstream ss(norm);
+    std::string word;
+    while (ss >> word) {
+      if (word == "no" || word == "nope" || word == "nah" || word == "tidak" || word == "bukan") {
+        return -1;
+      }
+      if (word == "yes" || word == "yeah" || word == "yep" || word == "ya" || word == "benar" || word == "betul") {
+        return 1;
+      }
+    }
+
     for (const auto & w : kNoKeywords) {
-      if (norm == w || norm.find(w) != std::string::npos) {
+      if (norm.find(w) != std::string::npos) {
         return -1;
       }
     }
@@ -1154,13 +1175,18 @@ private:
           const std::string parsed_name = parseSlotIntent(raw, "person_name");
           if (!parsed_name.empty()) {
             current_guest_.name = parsed_name;
-            RCLCPP_INFO(get_logger(), "[DIALOG] Guest %d Name validated: %s",
-              guest_idx_, current_guest_.name.c_str());
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;32m[DIALOG NAME]\033[0m Guest %d Name -> \033[1;32m\"%s\"\033[0m (from \"%s\")",
+              guest_idx_, current_guest_.name.c_str(), raw.c_str());
             registerGuestName(current_guest_.name);
             current_guest_.attributes = extractVisualAttributes(nearest_person_id_.load());
             transitionTo(ReceptionistState::ASK_INTEREST, "Guest name captured and stored");
           } else {
-            RCLCPP_WARN(get_logger(), "[DIALOG] Unrecognized name input '%s', asking again.", raw.c_str());
+            RCLCPP_WARN(
+              get_logger(),
+              "\033[1;33m[DIALOG NAME]\033[0m Unrecognized input \"%s\", asking again.",
+              raw.c_str());
             state_enter_time_ = now();
             speakAsync("I am sorry, I did not catch your name. May I please have your name?");
           }
@@ -1190,11 +1216,16 @@ private:
           if (!parsed_interest.empty()) {
             current_guest_.interest = parsed_interest;
             current_guest_.attributes = extractVisualAttributes(nearest_person_id_.load());
-            RCLCPP_INFO(get_logger(), "[DIALOG] Guest %d Interest validated: %s",
-              guest_idx_, current_guest_.interest.c_str());
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;32m[DIALOG INTEREST]\033[0m Guest %d Interest -> \033[1;32m\"%s\"\033[0m (from \"%s\")",
+              guest_idx_, current_guest_.interest.c_str(), raw.c_str());
             transitionTo(ReceptionistState::CONFIRM_GUEST_INFO, "Guest interest captured; confirming info");
           } else {
-            RCLCPP_WARN(get_logger(), "[DIALOG] Unrecognized interest input '%s', asking again.", raw.c_str());
+            RCLCPP_WARN(
+              get_logger(),
+              "\033[1;33m[DIALOG INTEREST]\033[0m Unrecognized input \"%s\", asking again.",
+              raw.c_str());
             state_enter_time_ = now();
             speakAsync("I am sorry, I did not catch that. What is your main interest or hobby?");
           }
@@ -1224,21 +1255,34 @@ private:
           }
           const int ans = parseYesNoIntent(raw);
           if (ans == 1) {
-            RCLCPP_INFO(get_logger(), "[DIALOG] Guest %d confirmed info: YES", guest_idx_);
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;32m[DIALOG CONFIRM]\033[0m Heard: \"%s\" | Decision: \033[1;32mYES\033[0m (proceeding to beverage area)",
+              raw.c_str());
             transitionTo(ReceptionistState::NAV_TO_BEVERAGE, "Guest info confirmed, proceeding to beverage area");
           } else if (ans == -1) {
-            RCLCPP_WARN(get_logger(), "[DIALOG] Guest %d confirmed info: NO. Asking for name and interest again.", guest_idx_);
+            RCLCPP_WARN(
+              get_logger(),
+              "\033[1;31m[DIALOG CONFIRM]\033[0m Heard: \"%s\" | Decision: \033[1;31mNO\033[0m (restarting name and interest)",
+              raw.c_str());
             current_guest_.name.clear();
             current_guest_.interest.clear();
             speakAsync("I am sorry. Let us start over. May I please have your name?", [this]() {
               transitionTo(ReceptionistState::WAIT_NAME, "Restarted name and interest capture");
             });
           } else {
-            RCLCPP_WARN(get_logger(), "[DIALOG] Unrecognized confirmation '%s', reprompting.", raw.c_str());
+            RCLCPP_WARN(
+              get_logger(),
+              "\033[1;33m[DIALOG CONFIRM]\033[0m Heard: \"%s\" | Decision: \033[1;33mUNRECOGNIZED\033[0m (reprompting yes/no)",
+              raw.c_str());
             state_enter_time_ = now();
             speakAsync("Please say 'yes' if it is, or 'no' if it isn't.");
           }
         } else if ((now() - state_enter_time_).seconds() > DIALOG_REPROMPT_SEC) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;33m[DIALOG CONFIRM]\033[0m Confirmation timeout (%.1fs without speech), reprompting.",
+            DIALOG_REPROMPT_SEC);
           state_enter_time_ = now();
           speakAsync("Please say 'yes' if it is, or 'no' if it isn't.");
         }
@@ -1279,8 +1323,10 @@ private:
           const std::string parsed_drink = parseSlotIntent(raw, "drink");
           if (!parsed_drink.empty()) {
             current_guest_.drink = parsed_drink;
-            RCLCPP_INFO(get_logger(), "[DIALOG] Guest %d Drink validated: %s",
-              guest_idx_, current_guest_.drink.c_str());
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;32m[DIALOG DRINK]\033[0m Guest %d Drink -> \033[1;32m\"%s\"\033[0m (from \"%s\")",
+              guest_idx_, current_guest_.drink.c_str(), raw.c_str());
 
             if (guests_.size() < static_cast<size_t>(guest_idx_)) {
               guests_.push_back(current_guest_);
@@ -1290,7 +1336,10 @@ private:
 
             transitionTo(ReceptionistState::CHECK_BEVERAGE, "Favorite drink captured and stored");
           } else {
-            RCLCPP_WARN(get_logger(), "[DIALOG] Unrecognized drink input '%s', asking again.", raw.c_str());
+            RCLCPP_WARN(
+              get_logger(),
+              "\033[1;33m[DIALOG DRINK]\033[0m Unrecognized input \"%s\", asking again.",
+              raw.c_str());
             state_enter_time_ = now();
             speakAsync("I am sorry, I did not catch that. What is your favorite drink?");
           }
