@@ -845,7 +845,7 @@ private:
 
       case ReceptionistState::WAIT_GUEST:
         if (isPersonInFront() || (now() - state_enter_time_).seconds() > 8.0) {
-          speakAsync("Hello! Welcome to the party. I am your robot receptionist.", [this]() {
+          speakAsync("Hello! Welcome to the party. I am Barelang Inari from Batam State Polytechic, here im is your robot receptionist.", [this]() {
             transitionTo(ReceptionistState::ASK_NAME, "Guest greeted at entrance");
           });
         }
