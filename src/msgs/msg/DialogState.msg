@@ -1,0 +1,2 @@
+string current_state
+string feedback_message
