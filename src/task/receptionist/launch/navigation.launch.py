@@ -73,6 +73,11 @@ def generate_launch_description():
             description='Launch receptionist navigation service node.',
         ),
         DeclareLaunchArgument(
+            'manager_node',
+            default_value='true',
+            description='Launch receptionist task manager FSM node.',
+        ),
+        DeclareLaunchArgument(
             'task_params_file',
             default_value=default_task_params,
             description='Path to receptionist task parameters file.',
@@ -112,6 +117,18 @@ def generate_launch_description():
             parameters=[LaunchConfiguration('task_params_file')],
             condition=IfCondition(
                 PythonExpression(["'", LaunchConfiguration('task_node'), "' == 'true'"])
+            ),
+        ),
+
+        # 3. Receptionist Task Manager FSM Node
+        Node(
+            package='receptionist',
+            executable='receptionist_manager',
+            name='receptionist_manager',
+            output='screen',
+            parameters=[LaunchConfiguration('task_params_file')],
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('manager_node'), "' == 'true'"])
             ),
         ),
     ])

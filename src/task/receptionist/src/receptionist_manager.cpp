@@ -818,17 +818,18 @@ private:
 
     switch (current_state) {
       // ------------------------------------------------------------------------
-      // INIT: Tunggu subscriber TTS siap sebelum memulai siklus Tamu 1
+      // INIT: Tunggu service /receptionist/go_to_door siap lalu langsung navigasi ke pintu
       // ------------------------------------------------------------------------
       case ReceptionistState::INIT:
-        if (tts_pub_->get_subscription_count() == 0 &&
-            (now() - state_enter_time_).seconds() < 5.0)
-        {
+        if (!nav_door_client_ || !nav_door_client_->service_is_ready()) {
+          RCLCPP_INFO_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Waiting for '/receptionist/go_to_door' service to be ready...");
           return;
         }
         RCLCPP_INFO(get_logger(), "=== STARTING RECEPTIONIST TASK ===");
         initCurrentGuest(1);
-        transitionTo(ReceptionistState::NAV_TO_DOOR, "Start cycle for Guest 1");
+        transitionTo(ReceptionistState::NAV_TO_DOOR, "Start cycle for Guest 1: navigating to door");
         break;
 
       // ------------------------------------------------------------------------
