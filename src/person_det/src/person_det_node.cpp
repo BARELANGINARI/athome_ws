@@ -1,5 +1,6 @@
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -35,6 +36,7 @@ public:
     declare_parameter("conf_threshold", 0.6);
     declare_parameter("debug_window", true);
     declare_parameter("models_dir", "");
+    declare_parameter("reset_memory", true);
 
     cam_type_ = get_parameter("camera_type").as_string();
     camera_fps_ = get_parameter("camera_fps").as_double();
@@ -44,6 +46,7 @@ public:
     cam_idx_ = get_parameter("camera_index").as_int();
     conf_thresh_ = static_cast<float>(get_parameter("conf_threshold").as_double());
     debug_window_ = get_parameter("debug_window").as_bool();
+    bool reset_memory = get_parameter("reset_memory").as_bool();
 
     std::string models_dir = get_parameter("models_dir").as_string();
     if (models_dir.empty()) {
@@ -62,6 +65,15 @@ public:
     }
 
     mem_path_ = (fs::path(models_dir) / "face_memory.json").string();
+    if (reset_memory) {
+      std::ofstream f(mem_path_, std::ios::trunc);
+      if (f.is_open()) {
+        f << "{\n}\n";
+      }
+      detector_.loadFaceMemory(mem_path_);
+      stored_names_.clear();
+      RCLCPP_INFO(get_logger(), "Face memory reset to empty for fresh session.");
+    }
 
     sound_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/sound_event", 10,
