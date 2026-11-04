@@ -53,6 +53,16 @@ def generate_launch_description():
             default_value='true',
             description='Launch receptionist task manager FSM node.',
         ),
+        DeclareLaunchArgument(
+            'person_det',
+            default_value='true',
+            description='Launch person detection and face recognition node.',
+        ),
+        DeclareLaunchArgument(
+            'camera_index',
+            default_value='2',
+            description='Camera index for person_det.',
+        ),
 
         # 1. Hardware Bringup (Motor + LiDAR)
         IncludeLaunchDescription(
@@ -89,6 +99,23 @@ def generate_launch_description():
                 'rviz_software': LaunchConfiguration('rviz_software'),
                 'task_node': 'true',
                 'manager_node': LaunchConfiguration('manager'),
+            }.items(),
+        ),
+
+        # 3. Person Detection & Face Recognition (person_det)
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare('person_det'),
+                    'launch',
+                    'person_det.launch.py',
+                ])
+            ),
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('person_det'), "' == 'true'"])
+            ),
+            launch_arguments={
+                'camera_index': LaunchConfiguration('camera_index'),
             }.items(),
         ),
     ])

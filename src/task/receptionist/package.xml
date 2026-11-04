@@ -13,6 +13,7 @@
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>nav2_msgs</depend>
+  <depend>msgs</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
   <depend>std_msgs</depend>
@@ -26,6 +27,7 @@
   <exec_depend>athome_navigation</exec_depend>
   <exec_depend>athome_bringup</exec_depend>
   <exec_depend>athome_base</exec_depend>
+  <exec_depend>person_det</exec_depend>
   <exec_depend>rplidar_ros</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>nav2_amcl</exec_depend>

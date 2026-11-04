@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "msgs/msg/person_detected.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 
@@ -138,6 +139,8 @@ public:
     // Publisher & Subscriber HRI (TTS & STT)
     // --------------------------------------------------------------------------
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
+    sound_event_pub_ = create_publisher<std_msgs::msg::String>("/hri/sound_event", 10);
+    guest_name_pub_ = create_publisher<std_msgs::msg::String>("/hri/guest_name", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -150,8 +153,13 @@ public:
       sub_opts);
 
     // --------------------------------------------------------------------------
-    // Subscriber Vision (Static RGB-D ZED Camera)
+    // Subscriber Vision (person_det C++ & Static RGB-D ZED Camera)
     // --------------------------------------------------------------------------
+    person_detected_sub_ = create_subscription<msgs::msg::PersonDetected>(
+      "/vision/detected_person", 10,
+      std::bind(&ReceptionistTaskNode::onPersonDetected, this, std::placeholders::_1),
+      sub_opts);
+
     person_sub_ = create_subscription<std_msgs::msg::String>(
       "/zed/person_label", rclcpp::SensorDataQoS(),
       std::bind(&ReceptionistTaskNode::onPersonLabel, this, std::placeholders::_1),
@@ -270,7 +278,15 @@ private:
   // Interfaces ROS 2
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::TimerBase::SharedPtr fsm_timer_;
+  // Data Persepsi person_det (Pose, Gender, Shirt Color, Re-ID)
+  std::string latest_person_name_{""};
+  std::string latest_person_gender_{"unknown"};
+  std::string latest_person_shirt_{"unknown"};
+
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tts_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr sound_event_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_name_pub_;
+  rclcpp::Subscription<msgs::msg::PersonDetected>::SharedPtr person_detected_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
@@ -406,15 +422,26 @@ private:
     std::lock_guard<std::mutex> lock(vision_mutex_);
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;32m[VISION]\033[0m Extracting 4 visual attributes for person_id=%d",
+      "\033[1;32m[VISION]\033[0m Extracting visual attributes for person_id=%d",
       person_id);
 
-    std::vector<std::string> attrs = latest_attributes_;
-    if (attrs.size() > 4) {
-      attrs.resize(4);
+    std::vector<std::string> attrs;
+    if (!latest_person_shirt_.empty() && latest_person_shirt_ != "unknown") {
+      attrs.push_back(latest_person_shirt_ + " shirt");
+    }
+    if (!latest_person_gender_.empty() && latest_person_gender_ != "unknown") {
+      attrs.push_back(latest_person_gender_);
+    }
+    for (const auto & a : latest_attributes_) {
+      if (std::find(attrs.begin(), attrs.end(), a) == attrs.end()) {
+        attrs.push_back(a);
+      }
     }
     while (attrs.size() < 4) {
       attrs.push_back("Casual attire");
+    }
+    if (attrs.size() > 4) {
+      attrs.resize(4);
     }
     return attrs;
   }
@@ -639,6 +666,42 @@ private:
       stateToString(state_.load()).c_str());
   }
 
+  // Callback deteksi orang dari person_det (/vision/detected_person)
+  void onPersonDetected(const msgs::msg::PersonDetected::SharedPtr message)
+  {
+    if (!message) return;
+    person_seen_ = true;
+    last_person_seen_time_ = now();
+
+    std::lock_guard<std::mutex> lock(vision_mutex_);
+    latest_person_name_ = message->name;
+    latest_person_gender_ = message->gender;
+    latest_person_shirt_ = message->shirt_color;
+
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "\033[1;35m[PERSON_DET]\033[0m Detected: name='%s', gender='%s', shirt='%s'",
+      message->name.c_str(), message->gender.c_str(), message->shirt_color.c_str());
+  }
+
+  void triggerDoorbell()
+  {
+    if (!sound_event_pub_) return;
+    std_msgs::msg::String msg;
+    msg.data = "doorbell";
+    sound_event_pub_->publish(msg);
+    RCLCPP_INFO(get_logger(), "\033[1;32m[HRI]\033[0m Triggered 'doorbell' on /hri/sound_event for person_det");
+  }
+
+  void registerGuestName(const std::string & name)
+  {
+    if (!guest_name_pub_ || name.empty()) return;
+    std_msgs::msg::String msg;
+    msg.data = name;
+    guest_name_pub_->publish(msg);
+    RCLCPP_INFO(get_logger(), "\033[1;32m[HRI]\033[0m Registered guest '%s' on /hri/guest_name for Face Re-ID", name.c_str());
+  }
+
   // Callback deteksi orang dari ZED (/zed/person_label)
   // Format: "operator:x,y,w,h|x,y,z|id=0|kpt=...;person:..."
   void onPersonLabel(const std_msgs::msg::String::SharedPtr message)
@@ -838,6 +901,7 @@ private:
       case ReceptionistState::NAV_TO_DOOR:
         busy_ = true;
         navigateTo("entrance_door", [this](bool) {
+          triggerDoorbell();
           transitionTo(ReceptionistState::WAIT_GUEST, "Arrived at entrance_door");
           busy_ = false;
         });
@@ -869,12 +933,14 @@ private:
             current_guest_.name = parsed_name;
             RCLCPP_INFO(get_logger(), "[DIALOG] Guest %d Name: %s",
               guest_idx_, current_guest_.name.c_str());
+            registerGuestName(current_guest_.name);
             transitionTo(ReceptionistState::ASK_INTEREST, "Guest name captured");
           }
         } else if ((now() - state_enter_time_).seconds() > DIALOG_TIMEOUT_SEC) {
           current_guest_.name = (guest_idx_ == 1) ? "Charlie" : "Robin";
           RCLCPP_WARN(get_logger(), "[DIALOG] Name timeout, fallback to %s",
             current_guest_.name.c_str());
+          registerGuestName(current_guest_.name);
           transitionTo(ReceptionistState::ASK_INTEREST, "Guest name fallback on timeout");
         }
         break;
