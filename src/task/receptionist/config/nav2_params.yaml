@@ -84,7 +84,7 @@ controller_server:
       stateful: True                     # Stateful goal checking
       plugin: "nav2_controller::SimpleGoalChecker" # Goal checker plugin
       xy_goal_tolerance: 0.15            # Goal XY position tolerance (m)
-      yaw_goal_tolerance: 0.35           # Goal yaw orientation tolerance (rad)
+      yaw_goal_tolerance: 0.15           # Goal yaw orientation tolerance (rad)
 
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner" # DWB local planner (omni)
@@ -163,7 +163,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Safety buffer layer around obstacles
         cost_scaling_factor: 10.0        # Exponential cost decay factor
-        inflation_radius: 0.35           # Inflation radius (m)
+        inflation_radius: 0.30           # Inflation radius (m)
       always_send_full_costmap: True     # Send full costmap on publish
 
 # ---------------------------------------------------------------------
@@ -203,7 +203,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
         cost_scaling_factor: 10.0        # Exponential cost decay factor
-        inflation_radius: 0.35           # Inflation radius (m)
+        inflation_radius: 0.30           # Inflation radius (m)
       always_send_full_costmap: True     # Send full costmap on publish
 
 # ---------------------------------------------------------------------

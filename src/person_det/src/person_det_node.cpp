@@ -207,8 +207,12 @@ private:
           const auto q = sensors_data.imu.pose.getOrientation();
           float yaw_rad = std::atan2(2.0f * (q.w * q.z + q.x * q.y), 1.0f - 2.0f * (q.y * q.y + q.z * q.z));
           float yaw_deg = yaw_rad * 180.0f / 3.141592653589793f;
-          while (yaw_deg > 180.0f) yaw_deg -= 360.0f;
-          while (yaw_deg < -180.0f) yaw_deg += 360.0f;
+          while (yaw_deg < 0.0f) {
+            yaw_deg += 360.0f;
+          }
+          while (yaw_deg >= 360.0f) {
+            yaw_deg -= 360.0f;
+          }
 
           std_msgs::msg::Float64 yaw_msg;
           yaw_msg.data = static_cast<double>(yaw_deg);
