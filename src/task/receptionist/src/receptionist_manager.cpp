@@ -881,13 +881,18 @@ private:
 
     switch (current_state) {
       // ------------------------------------------------------------------------
-      // INIT: Tunggu service /receptionist/go_to_door siap lalu langsung navigasi ke pintu
+      // INIT: Tunggu service /receptionist/go_to_door siap lalu mulai tugas
       // ------------------------------------------------------------------------
       case ReceptionistState::INIT:
         if (!nav_door_client_ || !nav_door_client_->service_is_ready()) {
           RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 2000,
             "Waiting for '/receptionist/go_to_door' service to be ready...");
+          return;
+        }
+        if (tts_pub_->get_subscription_count() == 0 &&
+            (now() - state_enter_time_).seconds() < 1.5)
+        {
           return;
         }
         RCLCPP_INFO(get_logger(), "=== STARTING RECEPTIONIST TASK ===");
@@ -899,12 +904,20 @@ private:
       // STATE 1: GREETING AT ENTRANCE DOOR
       // ------------------------------------------------------------------------
       case ReceptionistState::NAV_TO_DOOR:
-        busy_ = true;
-        navigateTo("entrance_door", [this](bool) {
-          triggerDoorbell();
-          transitionTo(ReceptionistState::WAIT_GUEST, "Arrived at entrance_door");
-          busy_ = false;
-        });
+        {
+          const std::string announce_text = (guest_idx_ == 1)
+            ? "Now i will go to door for wait the guest"
+            : "I will return to the door to wait for the next guest.";
+
+          speakAsync(announce_text, [this]() {
+            busy_ = true;
+            navigateTo("entrance_door", [this](bool) {
+              triggerDoorbell();
+              transitionTo(ReceptionistState::WAIT_GUEST, "Arrived at entrance_door");
+              busy_ = false;
+            });
+          });
+        }
         break;
 
       case ReceptionistState::WAIT_GUEST:
