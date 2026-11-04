@@ -162,6 +162,7 @@ public:
 private:
   // ----------------------------------------------------------------------------
   // Konstanta Timeout & Grace Period
+  // STATUS FSM
   // ----------------------------------------------------------------------------
   static constexpr double GLOBAL_TIMEOUT_SEC       = 300.0;  // Batas waktu total tugas (5 menit)
   static constexpr double OPERATOR_TIMEOUT_SEC     = 5.0;    // Toleransi oklusi rintangan sebelum masuk recovery
@@ -170,7 +171,7 @@ private:
   static constexpr double TTS_MIN_TIMEOUT_SEC      = 4.0;    // Batas minimal watchdog TTS
   static constexpr double TTS_SEC_PER_WORD         = 0.5;    // Estimasi durasi ucapan per kata
   static constexpr double TTS_TIMEOUT_MARGIN_SEC   = 2.0;    // Margin sintesis + latensi playback
-
+  static constexpr double FOLLOW_PROMPT_INTERVAL_SEC = 3.0;
   // ----------------------------------------------------------------------------
   // Status Variabel Atomic & Waktu
   // ----------------------------------------------------------------------------
@@ -204,6 +205,9 @@ private:
   std::string detected_gesture_{"NONE"};
   bool gesture_confirmed_{false};
   int homing_retry_count_{0};
+
+  int follow_prompt_count_{0};
+  rclcpp::Time follow_prompt_next_time_{0, 0, RCL_ROS_TIME};
 
   // ----------------------------------------------------------------------------
   // Node Interfaces (Pub, Sub, Clients)
@@ -260,6 +264,8 @@ private:
     if (next_state == TaskState::FOLLOW_OPERATOR) {
       arrived_requested_ = false;
       tracker_lost_ = false;
+      follow_prompt_count_ = 0;
+      follow_prompt_next_time_ = now();
     }
     if (next_state == TaskState::CHECK_OPERATOR_PRESENCE) {
       last_operator_warn_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
@@ -815,6 +821,21 @@ private:
       // State 4: FOLLOW_OPERATOR - Mengikuti operator (Grace period 5 detik aktif)
       // ------------------------------------------------------------------------
       case TaskState::FOLLOW_OPERATOR:
+        if (follow_prompt_count_ < 3 && !speaking_.load() && now() >= follow_prompt_next_time_) {
+          ++follow_prompt_count_;
+          speakAsync(
+            "Please walk slowly so that I can follow you from behind",
+            [this]() {
+              if (follow_prompt_count_ < 3 && state_.load() == TaskState::FOLLOW_OPERATOR)
+              {
+                follow_prompt_next_time_ = now() + rclcpp::Duration::from_seconds(
+                  FOLLOW_PROMPT_INTERVAL_SEC
+                );
+              }
+            }
+          );
+          break;
+        }
         if ((now() - state_enter_time_).seconds() > ARRIVED_GRACE_PERIOD_SEC &&
             arrived_requested_.exchange(false))
         {

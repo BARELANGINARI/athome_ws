@@ -28,5 +28,4 @@ receptionist_manager:
       name: "Alex"
       drink: "Coke"
       interest: "Robotics"
-    door_closed: true
     camera_width: 672

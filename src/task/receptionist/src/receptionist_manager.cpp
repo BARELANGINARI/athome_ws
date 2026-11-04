@@ -33,7 +33,6 @@ using namespace std::chrono_literals;
 enum class ReceptionistState {
   INIT,
   NAV_TO_DOOR,
-  OPEN_DOOR,
   WAIT_GUEST,
   ASK_NAME,
   WAIT_NAME,
@@ -60,7 +59,6 @@ static std::string stateToString(ReceptionistState state)
   switch (state) {
     case ReceptionistState::INIT:                      return "INIT";
     case ReceptionistState::NAV_TO_DOOR:               return "NAV_TO_DOOR";
-    case ReceptionistState::OPEN_DOOR:                 return "OPEN_DOOR";
     case ReceptionistState::WAIT_GUEST:                return "WAIT_GUEST";
     case ReceptionistState::ASK_NAME:                  return "ASK_NAME";
     case ReceptionistState::WAIT_NAME:                 return "WAIT_NAME";
@@ -122,14 +120,12 @@ public:
     declare_parameter<std::string>("host.name", "yesaya");
     declare_parameter<std::string>("host.drink", "coffee");
     declare_parameter<std::string>("host.interest", "Robotics");
-    declare_parameter<bool>("door_closed", true);
     declare_parameter<int>("camera_width", 672);
 
     host_.id = "host";
     host_.name = get_parameter("host.name").as_string();
     host_.drink = get_parameter("host.drink").as_string();
     host_.interest = get_parameter("host.interest").as_string();
-    door_closed_ = get_parameter("door_closed").as_bool();
     camera_width_ = get_parameter("camera_width").as_int();
 
     callback_group_ = create_callback_group(
@@ -194,8 +190,6 @@ public:
     nav_living_center_client_ = create_client<Trigger>(
       "/receptionist/go_to_living_room_center", rclcpp::ServicesQoS(), callback_group_);
 
-    arm_open_door_client_ = create_client<Trigger>(
-      "/arm/open_door", rclcpp::ServicesQoS(), callback_group_);
     arm_point_seat_client_ = create_client<Trigger>(
       "/arm/point_seat", rclcpp::ServicesQoS(), callback_group_);
     arm_play_motion_client_ = create_client<Trigger>(
@@ -243,7 +237,6 @@ private:
   std::vector<PersonProfile> guests_;
   PersonProfile current_guest_;
   int guest_idx_{1};
-  bool door_closed_{true};
   int camera_width_{672};
 
   // Data Persepsi Vision
@@ -291,7 +284,6 @@ private:
   TriggerClient::SharedPtr nav_living_room_client_;
   TriggerClient::SharedPtr nav_living_center_client_;
 
-  TriggerClient::SharedPtr arm_open_door_client_;
   TriggerClient::SharedPtr arm_point_seat_client_;
   TriggerClient::SharedPtr arm_play_motion_client_;
 
@@ -845,27 +837,8 @@ private:
       case ReceptionistState::NAV_TO_DOOR:
         busy_ = true;
         navigateTo("entrance_door", [this](bool) {
-          if (door_closed_) {
-            transitionTo(ReceptionistState::OPEN_DOOR, "Arrived at entrance_door (door closed)");
-          } else {
-            transitionTo(ReceptionistState::WAIT_GUEST, "Arrived at entrance_door");
-          }
+          transitionTo(ReceptionistState::WAIT_GUEST, "Arrived at entrance_door");
           busy_ = false;
-        });
-        break;
-
-      case ReceptionistState::OPEN_DOOR:
-        // [BONUS] Membukakan pintu masuk (+200 pts)
-        speakAsync("I hear someone at the door. Opening the door now.", [this]() {
-          busy_ = true;
-          callTrigger(
-            arm_open_door_client_, "/arm/open_door",
-            [this](bool, const std::string &) {
-              door_closed_ = false;
-              transitionTo(ReceptionistState::WAIT_GUEST, "Door open trajectory finished");
-              busy_ = false;
-            },
-            3s);
         });
         break;
 
