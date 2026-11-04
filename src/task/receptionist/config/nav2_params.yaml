@@ -143,7 +143,7 @@ local_costmap:
       width: 4                           # Costmap width (m)
       height: 4                          # Costmap height (m)
       resolution: 0.05                   # Grid resolution (m/cell)
-      robot_radius: 0.22                 # Robot footprint radius (m, diameter 0.44m)
+      robot_radius: 0.24                 # Robot footprint radius (m, diameter 0.44m)
       transform_tolerance: 0.3           # TF transform tolerance (s)
       plugins: ["obstacle_layer", "inflation_layer"] # Active costmap layers
       obstacle_layer:
@@ -177,7 +177,7 @@ global_costmap:
       global_frame: map                  # Global map frame
       robot_base_frame: base_link        # Robot base frame
       use_sim_time: False                # Real clock
-      robot_radius: 0.22                 # Robot footprint radius (m)
+      robot_radius: 0.24                 # Robot footprint radius (m)
       resolution: 0.05                   # Grid resolution (m/cell)
       track_unknown_space: false         # Allow traversal across unmapped space
       transform_tolerance: 0.5           # TF transform tolerance (s)
