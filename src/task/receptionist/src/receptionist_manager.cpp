@@ -5,7 +5,7 @@
 // Deskripsi: State Machine (FSM) utama untuk tugas Receptionist (Static Head).
 //            Subsystems: ASR/TTS (athome_hri), Vision (ZED Static RGB-D),
 //            Nav2 (receptionist_node / navigate_to_pose), Arm (athome_arm).
-// edit     : 5 november 2026 (Fixed Navigation Sync, Vision Settle, & Thread Safety)
+// edit     : 5 november 2026 pukul 21.00 (Fixed Navigation Sync, Vision Settle, & Thread Safety)
 // ==============================================================================
 
 #include <algorithm>
