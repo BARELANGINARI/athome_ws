@@ -27,10 +27,9 @@ def generate_launch_description():
                 ])
             ),
             launch_arguments={
+                'task': 'help_me_carry',
                 'camera_fps': LaunchConfiguration('camera_fps'),
                 'publish_yaw': 'true',
-                'publish_image': 'true',
-                'image_stride': LaunchConfiguration('image_stride'),
                 'enable_body_tracking': 'true',
                 'enable_yolo': 'true',
                 'yolo_conf': LaunchConfiguration('yolo_conf'),

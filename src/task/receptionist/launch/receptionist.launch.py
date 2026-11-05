@@ -58,16 +58,6 @@ def generate_launch_description():
             default_value='false',
             description='Launch HRI stack (Faster-Whisper STT + Piper TTS + FSM Task Manager).',
         ),
-        DeclareLaunchArgument(
-            'person_det',
-            default_value='true',
-            description='Launch person detection and face recognition node.',
-        ),
-        DeclareLaunchArgument(
-            'camera_index',
-            default_value='0',
-            description='Camera index for person_det.',
-        ),
 
         # 1. Hardware Bringup (Motor + LiDAR)
         IncludeLaunchDescription(
@@ -106,24 +96,7 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # 3. Person Detection & Face Recognition (person_det)
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                PathJoinSubstitution([
-                    FindPackageShare('person_det'),
-                    'launch',
-                    'person_det.launch.py',
-                ])
-            ),
-            condition=IfCondition(
-                PythonExpression(["'", LaunchConfiguration('person_det'), "' == 'true'"])
-            ),
-            launch_arguments={
-                'camera_index': LaunchConfiguration('camera_index'),
-            }.items(),
-        ),
-
-        # 4. HRI & Task Manager FSM Bringup (Speech + FSM)
+        # 3. HRI & Task Manager FSM Bringup (Speech + FSM)
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([

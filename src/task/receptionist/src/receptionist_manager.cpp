@@ -3,7 +3,7 @@
 // Package  : receptionist
 // Node     : receptionist_manager (ReceptionistTaskNode)
 // Deskripsi: State Machine (FSM) utama untuk tugas Receptionist (Static Head).
-//            Subsystems: ASR/TTS (athome_hri), Vision (person_det & ZED),
+//            Subsystems: ASR/TTS (athome_hri), Vision (ZED Static RGB-D),
 //            Nav2 (receptionist_node / navigate_to_pose), Arm (athome_arm).
 // edit     : 5 november 2026
 // ==============================================================================
@@ -23,7 +23,6 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
-#include "msgs/msg/person_detected.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 
@@ -94,6 +93,9 @@ struct PersonProfile {
   std::string name;
   std::string drink;
   std::string interest;
+  std::string gender{"unknown"};
+  std::string shirt_color{"casual attire"};
+  std::string hair_color{"dark hair"};
   std::vector<std::string> attributes;
 };
 
@@ -126,17 +128,20 @@ public:
     declare_parameter<std::string>("host.interest", "Robotics");
     declare_parameter<std::string>("host.gender", "male");
     declare_parameter<std::string>("host.shirt_color", "black");
+    declare_parameter<std::string>("host.hair_color", "black");
     declare_parameter<int>("camera_width", 672);
 
     host_.id = "host";
     host_.name = get_parameter("host.name").as_string();
     host_.drink = get_parameter("host.drink").as_string();
     host_.interest = get_parameter("host.interest").as_string();
-    const std::string host_gender = get_parameter("host.gender").as_string();
-    const std::string host_shirt = get_parameter("host.shirt_color").as_string();
+    host_.gender = get_parameter("host.gender").as_string();
+    host_.shirt_color = get_parameter("host.shirt_color").as_string();
+    host_.hair_color = get_parameter("host.hair_color").as_string();
     host_.attributes = {
-      host_gender,
-      host_shirt + " shirt"
+      host_.gender,
+      host_.shirt_color + " shirt",
+      host_.hair_color + " hair"
     };
     camera_width_ = get_parameter("camera_width").as_int();
 
@@ -150,8 +155,6 @@ public:
     // Publisher & Subscriber HRI (TTS, STT, & Task Status)
     // --------------------------------------------------------------------------
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
-    sound_event_pub_ = create_publisher<std_msgs::msg::String>("/hri/sound_event", 10);
-    guest_name_pub_ = create_publisher<std_msgs::msg::String>("/hri/guest_name", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/status", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
@@ -165,13 +168,8 @@ public:
       sub_opts);
 
     // --------------------------------------------------------------------------
-    // Subscriber Vision (person_det C++ & Static RGB-D ZED Camera)
+    // Subscriber Vision (Static RGB-D ZED Camera)
     // --------------------------------------------------------------------------
-    person_detected_sub_ = create_subscription<msgs::msg::PersonDetected>(
-      "/vision/detected_person", 10,
-      std::bind(&ReceptionistTaskNode::onPersonDetected, this, std::placeholders::_1),
-      sub_opts);
-
     person_sub_ = create_subscription<std_msgs::msg::String>(
       "/zed/person_label", rclcpp::SensorDataQoS(),
       std::bind(&ReceptionistTaskNode::onPersonLabel, this, std::placeholders::_1),
@@ -268,18 +266,13 @@ private:
   std::vector<DetectedObject> table_drinks_snapshot_;
   bool drinks_detected_on_arrival_{false};
   std::vector<std::string> latest_attributes_{
-    "Dark shirt", "Black hair", "Standing posture", "No glasses"
+    "male", "casual attire", "dark hair"
   };
   std::string empty_seat_position_{"center"};
   bool has_explicit_empty_seat_{false};
   int nearest_person_bbox_x_{0};
   int nearest_person_bbox_w_{0};
   int nearest_person_bbox_y_{0};
-
-  // Data Persepsi person_det (Pose, Gender, Shirt Color, Re-ID)
-  std::string latest_person_name_{""};
-  std::string latest_person_gender_{"unknown"};
-  std::string latest_person_shirt_{"unknown"};
 
   // Data STT / Dialog
   std::mutex stt_mutex_;
@@ -305,11 +298,8 @@ private:
   rclcpp::TimerBase::SharedPtr fsm_timer_;
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tts_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr sound_event_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_name_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
 
-  rclcpp::Subscription<msgs::msg::PersonDetected>::SharedPtr person_detected_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
@@ -364,9 +354,6 @@ private:
     {
       std::lock_guard<std::mutex> lock(vision_mutex_);
       table_drinks_snapshot_.clear();
-      latest_person_name_.clear();
-      latest_person_gender_ = "unknown";
-      latest_person_shirt_ = "unknown";
     }
   }
 
@@ -523,7 +510,7 @@ private:
     return "center";
   }
 
-  // Menentukan lokasi kursi kosong berdasarkan deteksi vision (@person_det / /zed/empty_seat)
+  // Menentukan lokasi kursi kosong berdasarkan deteksi vision (/zed/empty_seat)
   std::string detectEmptyChairSide()
   {
     std::lock_guard<std::mutex> lock(vision_mutex_);
@@ -545,7 +532,7 @@ private:
     return empty_seat_position_.empty() ? "center" : empty_seat_position_;
   }
 
-  // Mengekstrak atribut visual dari person_det (/vision/detected_person) & ZED
+  // Mengekstrak atribut visual dari ZED (/zed/person_attributes)
   std::vector<std::string> extractVisualAttributes(int person_id)
   {
     std::lock_guard<std::mutex> lock(vision_mutex_);
@@ -555,21 +542,54 @@ private:
       person_id);
 
     std::vector<std::string> attrs;
-    if (!latest_person_gender_.empty() && latest_person_gender_ != "unknown") {
-      attrs.push_back(latest_person_gender_);
-    }
-    if (!latest_person_shirt_.empty() && latest_person_shirt_ != "unknown") {
-      attrs.push_back(latest_person_shirt_ + " shirt");
-    }
     for (const auto & a : latest_attributes_) {
       if (std::find(attrs.begin(), attrs.end(), a) == attrs.end()) {
         attrs.push_back(a);
+      }
+
+      std::string lower_a = a;
+      std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
+      if (lower_a == "male" || lower_a == "female") {
+        current_guest_.gender = lower_a;
+      } else if (lower_a.find("shirt") != std::string::npos || lower_a.find("clothes") != std::string::npos) {
+        current_guest_.shirt_color = a;
+      } else if (lower_a.find("hair") != std::string::npos) {
+        current_guest_.hair_color = a;
       }
     }
     if (attrs.empty()) {
       attrs.push_back("casual attire");
     }
     return attrs;
+  }
+
+  static std::string formatPersonDescription(const PersonProfile & person)
+  {
+    std::string gender = person.gender.empty() ? "person" : person.gender;
+    std::string shirt = person.shirt_color.empty() ? "casual attire" : person.shirt_color;
+    std::string hair = person.hair_color.empty() ? "dark hair" : person.hair_color;
+
+    std::string pronoun = "They";
+    std::string verb = "are";
+    std::string has_verb = "have";
+    if (gender == "male") {
+      pronoun = "He";
+      verb = "is";
+      has_verb = "has";
+    } else if (gender == "female") {
+      pronoun = "She";
+      verb = "is";
+      has_verb = "has";
+    }
+
+    if (shirt.find("shirt") == std::string::npos && shirt.find("attire") == std::string::npos && shirt.find("clothes") == std::string::npos) {
+      shirt += " shirt";
+    }
+    if (hair.find("hair") == std::string::npos) {
+      hair += " hair";
+    }
+
+    return pronoun + " " + verb + " a " + gender + ", wearing a " + shirt + ", and " + has_verb + " " + hair;
   }
 
   static std::string joinAttributes(const std::vector<std::string> & attrs)
@@ -587,7 +607,7 @@ private:
     return out;
   }
 
-  // Deteksi orang terdekat di depan robot (dari person_det /vision/detected_person atau ZED)
+  // Deteksi orang terdekat di depan robot (dari ZED /zed/person_label)
   bool isPersonInFront() const
   {
     return person_seen_.load() &&
@@ -871,47 +891,6 @@ private:
       stateToString(state_.load()).c_str());
   }
 
-  // Callback deteksi orang dari person_det (/vision/detected_person)
-  void onPersonDetected(const msgs::msg::PersonDetected::SharedPtr message)
-  {
-    if (!message || !isVisionActive()) return;
-    person_seen_ = true;
-    last_person_seen_time_ = now();
-
-    std::lock_guard<std::mutex> lock(vision_mutex_);
-    if (!message->name.empty()) {
-      latest_person_name_ = message->name;
-    }
-    if (!message->gender.empty() && message->gender != "unknown") {
-      latest_person_gender_ = message->gender;
-    }
-    if (!message->shirt_color.empty() && message->shirt_color != "unknown") {
-      latest_person_shirt_ = message->shirt_color;
-    }
-
-    RCLCPP_INFO_THROTTLE(
-      get_logger(), *get_clock(), 2000,
-      "\033[1;35m[PERSON_DET]\033[0m Detected: name='%s', gender='%s', shirt='%s'",
-      message->name.c_str(), message->gender.c_str(), message->shirt_color.c_str());
-  }
-
-  void triggerDoorbell()
-  {
-    if (!sound_event_pub_) return;
-    std_msgs::msg::String msg;
-    msg.data = "doorbell";
-    sound_event_pub_->publish(msg);
-    RCLCPP_INFO(get_logger(), "\033[1;32m[HRI]\033[0m Triggered 'doorbell' on /hri/sound_event for person_det");
-  }
-
-  void registerGuestName(const std::string & name)
-  {
-    if (!guest_name_pub_ || name.empty()) return;
-    std_msgs::msg::String msg;
-    msg.data = name;
-    guest_name_pub_->publish(msg);
-    RCLCPP_INFO(get_logger(), "\033[1;32m[HRI]\033[0m Registered guest '%s' on /hri/guest_name for Face Re-ID", name.c_str());
-  }
 
   // Callback deteksi orang dari ZED (/zed/person_label)
   // Format: "operator:x,y,w,h|x,y,z|id=0|kpt=...;person:..."
@@ -1003,8 +982,10 @@ private:
     std::stringstream ss(message->data);
     std::string item;
     while (std::getline(ss, item, ',')) {
-      if (!item.empty()) {
-        parsed.push_back(item);
+      size_t first = item.find_first_not_of(" \t\r\n");
+      if (first != std::string::npos) {
+        size_t last = item.find_last_not_of(" \t\r\n");
+        parsed.push_back(item.substr(first, last - first + 1));
       }
     }
     if (!parsed.empty()) {
@@ -1137,7 +1118,6 @@ private:
       case ReceptionistState::NAV_TO_DOOR:
         speakAsync("Now I will go to the door to wait for the guest.", [this]() {
           navigateTo("entrance_door", [this](bool) {
-            triggerDoorbell();
             transitionTo(ReceptionistState::WAIT_GUEST, "Arrived at entrance_door");
           });
         });
@@ -1179,7 +1159,6 @@ private:
               get_logger(),
               "\033[1;32m[DIALOG NAME]\033[0m Guest %d Name -> \033[1;32m\"%s\"\033[0m (from \"%s\")",
               guest_idx_, current_guest_.name.c_str(), raw.c_str());
-            registerGuestName(current_guest_.name);
             current_guest_.attributes = extractVisualAttributes(nearest_person_id_.load());
             transitionTo(ReceptionistState::ASK_INTEREST, "Guest name captured and stored");
           } else {
@@ -1323,6 +1302,7 @@ private:
           const std::string parsed_drink = parseSlotIntent(raw, "drink");
           if (!parsed_drink.empty()) {
             current_guest_.drink = parsed_drink;
+            current_guest_.attributes = extractVisualAttributes(nearest_person_id_.load());
             RCLCPP_INFO(
               get_logger(),
               "\033[1;32m[DIALOG DRINK]\033[0m Guest %d Drink -> \033[1;32m\"%s\"\033[0m (from \"%s\")",
@@ -1373,14 +1353,14 @@ private:
 
         if (guest_idx_ == 1) {
           escort_msg +=
-            " The host, " + host_.name + ", is in the living room. Their favorite drink is " +
-            host_.drink + ", their interest is " + host_.interest +
-            ", and their visual description is: " + joinAttributes(host_.attributes) + ".";
+            " The host, " + host_.name + ", is in the living room. " +
+            formatPersonDescription(host_) + ". Their favorite drink is " +
+            host_.drink + ", and their interest is " + host_.interest + ".";
         } else if (guest_idx_ == 2 && !guests_.empty()) {
           escort_msg +=
             " The first guest, " + guests_[0].name +
-            ", is in the living room. Their visual description is: " +
-            joinAttributes(guests_[0].attributes) + ".";
+            ", is in the living room. " +
+            formatPersonDescription(guests_[0]) + ".";
         }
 
         speakAsync(escort_msg, [this]() {
@@ -1418,8 +1398,9 @@ private:
         const auto & guest1 = guests_[0];
         const auto & guest2 = guests_[1];
         const std::string text =
-          guest1.name + ", I would like to introduce " + guest2.name +
-          ". Their favorite drink is " + guest2.drink +
+          guest1.name + ", I would like to introduce " + guest2.name + ". " +
+          formatPersonDescription(guest2) + ". " +
+          "Their favorite drink is " + guest2.drink +
           ", and their interest is " + guest2.interest + ".";
 
         speakAsync(text, [this]() {
@@ -1439,8 +1420,9 @@ private:
         const auto & guest1 = guests_[0];
         const auto & guest2 = guests_[1];
         const std::string text =
-          guest2.name + ", this is " + guest1.name +
-          ". Their favorite drink is " + guest1.drink +
+          guest2.name + ", this is " + guest1.name + ". " +
+          formatPersonDescription(guest1) + ". " +
+          "Their favorite drink is " + guest1.drink +
           ", and their interest is " + guest1.interest + ".";
 
         speakAsync(text, [this]() {
@@ -1509,10 +1491,23 @@ private:
           seat_pos.c_str());
 
         pointToSeatWithArm([this, seat_pos](bool) {
+          std::string offer_msg;
+          if (guest_idx_ == 1) {
+            offer_msg =
+              host_.name + ", this is our guest, " + current_guest_.name + ". " +
+              formatPersonDescription(current_guest_) + ". Their favorite drink is " +
+              current_guest_.drink + ", and their interest is " + current_guest_.interest + ". " +
+              current_guest_.name + ", please take a seat in the empty chair on the " + seat_pos +
+              " side that I am indicating.";
+          } else {
+            offer_msg =
+              current_guest_.name +
+              ", please take a seat in the empty chair on the " + seat_pos +
+              " side that I am indicating.";
+          }
+
           speakAsync(
-            current_guest_.name +
-            ", please take a seat in the empty chair on the " + seat_pos +
-            " side that I am indicating.",
+            offer_msg,
             [this]() {
               transitionTo(
                 ReceptionistState::WAIT_GUEST_SIT,

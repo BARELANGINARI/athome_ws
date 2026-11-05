@@ -413,6 +413,22 @@ void YoloDetector::detect(
   }
 }
 
+static std::vector<std::string> loadLabels(const std::string & filepath)
+{
+  std::vector<std::string> labels;
+  std::ifstream f(filepath);
+  std::string line;
+  while (std::getline(f, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (!line.empty()) {
+      labels.push_back(line);
+    }
+  }
+  return labels;
+}
+
 class ZedNode : public rclcpp::Node
 {
 public:
@@ -469,6 +485,289 @@ private:
     return "NONE";
   }
 
+  // ---------- 1. Klasifikasi Warna Pakaian (Baju Torso) ----------
+  std::string classifyClothingColor(const cv::Mat & bgr, const cv::Rect & bbox)
+  {
+    if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return "casual attire";
+
+    // 1. Coba inferensi via Model AI ONNX jika tersedia
+    if (color_session_ && !color_labels_.empty()) {
+      int x1 = std::clamp(bbox.x, 0, bgr.cols);
+      int torso_y1 = std::clamp(static_cast<int>(bbox.y + bbox.height * 0.20), 0, bgr.rows);
+      int x2 = std::clamp(bbox.x + bbox.width, 0, bgr.cols);
+      int y2 = std::clamp(bbox.y + bbox.height, 0, bgr.rows);
+
+      if (y2 > torso_y1 && x2 > x1) {
+        cv::Mat crop = bgr(cv::Rect(x1, torso_y1, x2 - x1, y2 - torso_y1));
+        cv::Mat resized;
+        cv::resize(crop, resized, cv::Size(224, 224));
+        cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
+
+        cv::Mat blob = cv::dnn::blobFromImage(
+          resized, 1.0 / 255.0, cv::Size(224, 224), cv::Scalar(0, 0, 0), false, false);
+
+        std::array<int64_t, 4> input_shape{1, 3, 224, 224};
+        Ort::Value in_tensor = Ort::Value::CreateTensor<float>(
+          ort_attr_mem_info_, blob.ptr<float>(), blob.total(),
+          input_shape.data(), input_shape.size());
+
+        const char * in_names[] = {color_in_name_.c_str()};
+        const char * out_names[] = {color_out_name_.c_str()};
+
+        try {
+          auto outputs = color_session_->Run(
+            Ort::RunOptions{nullptr}, in_names, &in_tensor, 1, out_names, 1);
+          if (!outputs.empty()) {
+            const auto shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
+            int num_classes = (shape.size() >= 2) ? static_cast<int>(shape[1]) : static_cast<int>(color_labels_.size());
+            const float * logits = outputs.front().GetTensorData<float>();
+
+            float max_l = -1e9f;
+            for (int i = 0; i < num_classes; ++i) {
+              if (logits[i] > max_l) max_l = logits[i];
+            }
+            float sum_exp = 0.0f;
+            std::vector<float> probs(num_classes);
+            for (int i = 0; i < num_classes; ++i) {
+              probs[i] = std::exp(logits[i] - max_l);
+              sum_exp += probs[i];
+            }
+            int best_idx = 0;
+            float best_p = 0.0f;
+            for (int i = 0; i < num_classes; ++i) {
+              probs[i] /= sum_exp;
+              if (probs[i] > best_p) {
+                best_p = probs[i];
+                best_idx = i;
+              }
+            }
+            if (best_p > 0.30f && best_idx < static_cast<int>(color_labels_.size())) {
+              std::string res = color_labels_[best_idx];
+              std::transform(res.begin(), res.end(), res.begin(), ::tolower);
+              if (res.find("shirt") == std::string::npos && res.find("clothes") == std::string::npos) {
+                res += " shirt";
+              }
+              return res;
+            }
+          }
+        } catch (...) {
+          // Fallback ke HSV jika terjadi kegagalan inferensi runtime
+        }
+      }
+    }
+
+    // 2. Fallback: Analisis Ruang Warna HSV
+    int tw = std::max(4, static_cast<int>(bbox.width * 0.40));
+    int th = std::max(4, static_cast<int>(bbox.height * 0.30));
+    int tx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.30), 0, bgr.cols - tw);
+    int ty = std::clamp(bbox.y + static_cast<int>(bbox.height * 0.20), 0, bgr.rows - th);
+
+    cv::Rect torso_roi(tx, ty, tw, th);
+    torso_roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+    if (torso_roi.area() <= 0) return "casual attire";
+
+    cv::Mat crop = bgr(torso_roi);
+    cv::Mat hsv;
+    cv::cvtColor(crop, hsv, cv::COLOR_BGR2HSV);
+    cv::Scalar mean_hsv = cv::mean(hsv);
+
+    double h = mean_hsv[0]; // 0 - 180
+    double s = mean_hsv[1]; // 0 - 255
+    double v = mean_hsv[2]; // 0 - 255
+
+    std::string color = "dark";
+    if (v < 50.0) {
+      color = "black";
+    } else if (s < 35.0 && v > 180.0) {
+      color = "white";
+    } else if (s < 45.0) {
+      color = "gray";
+    } else if ((h >= 0.0 && h <= 10.0) || (h >= 170.0 && h <= 180.0)) {
+      color = "red";
+    } else if (h > 10.0 && h <= 25.0) {
+      color = "orange";
+    } else if (h > 25.0 && h <= 35.0) {
+      color = "yellow";
+    } else if (h > 35.0 && h <= 85.0) {
+      color = "green";
+    } else if (h > 85.0 && h <= 130.0) {
+      color = "blue";
+    } else if (h > 130.0 && h <= 155.0) {
+      color = "purple";
+    } else if (h > 155.0 && h < 170.0) {
+      color = "pink";
+    }
+    return color + " shirt";
+  }
+
+  // ---------- 2. Klasifikasi Warna Rambut ----------
+  std::string classifyHairColor(const cv::Mat & bgr, const cv::Rect & bbox)
+  {
+    if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return "dark hair";
+
+    // 1. Coba inferensi via Model AI ONNX jika tersedia
+    if (hair_session_ && !hair_labels_.empty()) {
+      int head_y1 = std::clamp(bbox.y, 0, bgr.rows);
+      int head_y2 = std::clamp(static_cast<int>(bbox.y + bbox.height * 0.20), 0, bgr.rows);
+      int head_x1 = std::clamp(static_cast<int>(bbox.x + bbox.width / 4), 0, bgr.cols);
+      int head_x2 = std::clamp(static_cast<int>(bbox.x + 3 * bbox.width / 4), 0, bgr.cols);
+
+      if (head_y2 > head_y1 && head_x2 > head_x1) {
+        cv::Mat crop = bgr(cv::Rect(head_x1, head_y1, head_x2 - head_x1, head_y2 - head_y1));
+        cv::Mat resized;
+        cv::resize(crop, resized, cv::Size(224, 224));
+        cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
+
+        cv::Mat blob = cv::dnn::blobFromImage(
+          resized, 1.0 / 255.0, cv::Size(224, 224), cv::Scalar(0, 0, 0), false, false);
+
+        std::array<int64_t, 4> input_shape{1, 3, 224, 224};
+        Ort::Value in_tensor = Ort::Value::CreateTensor<float>(
+          ort_attr_mem_info_, blob.ptr<float>(), blob.total(),
+          input_shape.data(), input_shape.size());
+
+        const char * in_names[] = {hair_in_name_.c_str()};
+        const char * out_names[] = {hair_out_name_.c_str()};
+
+        try {
+          auto outputs = hair_session_->Run(
+            Ort::RunOptions{nullptr}, in_names, &in_tensor, 1, out_names, 1);
+          if (!outputs.empty()) {
+            const auto shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
+            int num_classes = (shape.size() >= 2) ? static_cast<int>(shape[1]) : static_cast<int>(hair_labels_.size());
+            const float * logits = outputs.front().GetTensorData<float>();
+
+            float max_l = -1e9f;
+            for (int i = 0; i < num_classes; ++i) {
+              if (logits[i] > max_l) max_l = logits[i];
+            }
+            float sum_exp = 0.0f;
+            std::vector<float> probs(num_classes);
+            for (int i = 0; i < num_classes; ++i) {
+              probs[i] = std::exp(logits[i] - max_l);
+              sum_exp += probs[i];
+            }
+            int best_idx = 0;
+            float best_p = 0.0f;
+            for (int i = 0; i < num_classes; ++i) {
+              probs[i] /= sum_exp;
+              if (probs[i] > best_p) {
+                best_p = probs[i];
+                best_idx = i;
+              }
+            }
+            if (best_p > 0.35f && best_idx < static_cast<int>(hair_labels_.size())) {
+              std::string res = hair_labels_[best_idx];
+              std::transform(res.begin(), res.end(), res.begin(), ::tolower);
+              return res;
+            }
+          }
+        } catch (...) {
+          // Fallback ke HSV jika terjadi kegagalan inferensi runtime
+        }
+      }
+    }
+
+    // 2. Fallback: Analisis Ruang Warna HSV
+    int hw = std::max(4, static_cast<int>(bbox.width * 0.35));
+    int hh = std::max(4, static_cast<int>(bbox.height * 0.15));
+    int hx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.325), 0, bgr.cols - hw);
+    int hy = std::clamp(bbox.y, 0, bgr.rows - hh);
+
+    cv::Rect head_roi(hx, hy, hw, hh);
+    head_roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+    if (head_roi.area() <= 0) return "dark hair";
+
+    cv::Mat crop = bgr(head_roi);
+    cv::Mat hsv;
+    cv::cvtColor(crop, hsv, cv::COLOR_BGR2HSV);
+    cv::Scalar mean_hsv = cv::mean(hsv);
+
+    double h = mean_hsv[0];
+    double s = mean_hsv[1];
+    double v = mean_hsv[2];
+
+    if (v < 55.0) return "black hair";
+    if (s < 40.0 && v > 150.0) return "gray hair";
+    if (h >= 15.0 && h <= 35.0 && v > 130.0) return "blonde hair";
+    if (h >= 8.0 && h <= 30.0) return "brown hair";
+    return "dark hair";
+  }
+
+  // ---------- 3. Klasifikasi Gender ----------
+  std::string classifyGender(const std::vector<sl::float2> & kpt, const cv::Mat & bgr, const cv::Rect & bbox)
+  {
+    // 1. Coba inferensi via Model AI ONNX jika tersedia
+    if (gender_session_ && !bgr.empty() && bbox.width > 0 && bbox.height > 0) {
+      int x1 = std::clamp(bbox.x, 0, bgr.cols);
+      int y1 = std::clamp(bbox.y, 0, bgr.rows);
+      int x2 = std::clamp(bbox.x + bbox.width, 0, bgr.cols);
+      int upper_y2 = std::clamp(static_cast<int>(bbox.y + bbox.height * 0.55), 0, bgr.rows);
+
+      if (upper_y2 > y1 && x2 > x1) {
+        cv::Mat crop = bgr(cv::Rect(x1, y1, x2 - x1, upper_y2 - y1));
+        cv::Mat resized;
+        cv::resize(crop, resized, cv::Size(224, 224));
+        cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
+
+        cv::Mat blob = cv::dnn::blobFromImage(
+          resized, 1.0 / 255.0, cv::Size(224, 224), cv::Scalar(0, 0, 0), false, false);
+
+        std::array<int64_t, 4> input_shape{1, 3, 224, 224};
+        Ort::Value in_tensor = Ort::Value::CreateTensor<float>(
+          ort_attr_mem_info_, blob.ptr<float>(), blob.total(),
+          input_shape.data(), input_shape.size());
+
+        const char * in_names[] = {gender_in_name_.c_str()};
+        const char * out_names[] = {gender_out_name_.c_str()};
+
+        try {
+          auto outputs = gender_session_->Run(
+            Ort::RunOptions{nullptr}, in_names, &in_tensor, 1, out_names, 1);
+          if (!outputs.empty()) {
+            const float * logits = outputs.front().GetTensorData<float>();
+            float l0 = logits[0]; // female
+            float l1 = logits[1]; // male
+            float m = std::max(l0, l1);
+            float exp0 = std::exp(l0 - m);
+            float exp1 = std::exp(l1 - m);
+            float p0 = exp0 / (exp0 + exp1);
+            float p1 = exp1 / (exp0 + exp1);
+
+            if (p0 > 0.65f) return "female";
+            if (p1 > 0.65f) return "male";
+          }
+        } catch (...) {
+          // Fallback ke heuristik jika terjadi kesalahan inferensi
+        }
+      }
+    }
+
+    // 2. Fallback: Analisis Proporsi Bahu / Pinggul dari Keypoint ZED
+    if (kpt.size() >= 23) {
+      const auto & l_sh = kpt[5];
+      const auto & r_sh = kpt[12];
+      const auto & l_hip = kpt[18];
+      const auto & r_hip = kpt[22];
+
+      if (std::isfinite(l_sh.x) && std::isfinite(r_sh.x) &&
+          std::isfinite(l_hip.x) && std::isfinite(r_hip.x)) {
+        float shoulder_w = std::abs(l_sh.x - r_sh.x);
+        float hip_w = std::abs(l_hip.x - r_hip.x);
+        if (hip_w > 5.0f) {
+          float ratio = shoulder_w / hip_w;
+          if (ratio > 1.30f) return "male";
+          if (ratio < 1.10f) return "female";
+        }
+      }
+    }
+    if (bbox.height > 0 && bbox.width > 0) {
+      float aspect = static_cast<float>(bbox.height) / static_cast<float>(bbox.width);
+      if (aspect > 2.85f) return "male";
+    }
+    return "male";
+  }
+
   sl::Camera zed_;
   sl::Mat zed_image_;
   sl::Mat zed_point_cloud_;
@@ -479,13 +778,10 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr bag_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr persons_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr gesture_publisher_;  // publish gesture RIGHT/LEFT/NONE
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr attributes_publisher_; // publish /zed/person_attributes
   rclcpp::TimerBase::SharedPtr timer_;
 
   bool publish_yaw_{true};
-  bool publish_image_{true};
-  int image_stride_{2};
-  int image_frame_{0};
   double camera_fps_{30.0};
   bool enable_body_tracking_{true};
   bool debug_window_{false};
@@ -495,6 +791,25 @@ private:
   int preview_fps_{0};
   rclcpp::Time preview_fps_t_{0, 0, RCL_ROS_TIME};
 
+  // ONNX Runtime untuk Atribut Person (Gender, Clothing, Hair)
+  Ort::Env ort_attr_env_{ORT_LOGGING_LEVEL_WARNING, "zed_attributes"};
+  Ort::MemoryInfo ort_attr_mem_info_ = Ort::MemoryInfo::CreateCpu(
+    OrtArenaAllocator, OrtMemTypeDefault);
+
+  std::unique_ptr<Ort::Session> gender_session_;
+  std::string gender_in_name_;
+  std::string gender_out_name_;
+
+  std::unique_ptr<Ort::Session> color_session_;
+  std::string color_in_name_;
+  std::string color_out_name_;
+  std::vector<std::string> color_labels_;
+
+  std::unique_ptr<Ort::Session> hair_session_;
+  std::string hair_in_name_;
+  std::string hair_out_name_;
+  std::vector<std::string> hair_labels_;
+
   struct PrevPerson {
     int id{-1};
     cv::Rect bbox;
@@ -503,6 +818,9 @@ private:
     double y_m{0.0};
     double range_m{0.0};
     std::vector<cv::Point2f> kpt;
+    std::string clothing{"casual attire"};
+    std::string hair{"dark hair"};
+    std::string gender{"male"};
   };
   struct PrevBag {
     cv::Rect bbox;
@@ -510,16 +828,14 @@ private:
     double x_m{0.0};
     double y_m{0.0};
     double range_m{0.0};
-    double conf{0.0};
   };
   std::vector<PrevPerson> preview_persons_;
   std::vector<PrevBag> preview_bags_;
 
   YoloDetector yolo_;
-  bool enable_yolo_{true};
+  bool enable_yolo_{false};
   std::vector<std::string> bag_labels_;
   double yolo_min_area_{1500.0};
-  bool yolo_warned_{false};
   int yolo_stride_{2};
   int yolo_frame_{0};
   std::vector<YoloDetection> last_bag_dets_;
@@ -536,21 +852,24 @@ private:
     bool has_color{false};
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   } op_mem_;
+
+  std::string task_mode_{"all"};
+  bool is_help_me_carry_{true};
+  bool is_receptionist_{true};
 };
 
 ZedNode::ZedNode()
 : Node("zed")
 {
+  declare_parameter("task", "all");
   declare_parameter("camera_fps", 30.0);
   declare_parameter("publish_yaw", true);
-  declare_parameter("publish_image", true);
-  declare_parameter("image_stride", 2);
   declare_parameter("enable_body_tracking", true);
   declare_parameter("depth_minimum_distance", 30.0);
-  declare_parameter("enable_yolo", true);
+  declare_parameter("enable_yolo", false);
   declare_parameter("debug_window", false);
   declare_parameter("mirror", true);
-  declare_parameter("yolo_model", std::string("models/yolov8n_sim.onnx"));
+  declare_parameter("yolo_model", std::string(""));
   declare_parameter("yolo_classes", std::string("models/coco_names.txt"));
   declare_parameter("yolo_conf", 0.25);
   declare_parameter("yolo_nms", 0.45);
@@ -559,13 +878,32 @@ ZedNode::ZedNode()
   declare_parameter("bag_labels",std::vector<std::string>{"bag", "backpack", "handbag", "suitcase"});
   declare_parameter("yolo_min_area", 1500.0);
 
+  // Parameter Model AI untuk Atribut Orang (Gender, Warna Pakaian, Warna Rambut)
+  declare_parameter("gender_model", std::string("models/gender_cls.onnx"));
+  declare_parameter("color_model", std::string("models/color_model.onnx"));
+  declare_parameter("color_labels", std::string("models/color_names.txt"));
+  declare_parameter("hair_model", std::string("models/hair_model.onnx"));
+  declare_parameter("hair_labels", std::string("models/hair_names.txt"));
+
+  task_mode_ = get_parameter("task").as_string();
+  std::string t = task_mode_;
+  std::transform(t.begin(), t.end(), t.begin(), ::tolower);
+  if (t == "help_me_carry" || t == "hmc") {
+    is_help_me_carry_ = true;
+    is_receptionist_ = false;
+  } else if (t == "receptionist" || t == "rec") {
+    is_help_me_carry_ = false;
+    is_receptionist_ = true;
+  } else {
+    is_help_me_carry_ = true;
+    is_receptionist_ = true;
+  }
+  IC("Vision Task Mode", task_mode_);
+
   const double camera_fps = get_parameter("camera_fps").as_double();
   camera_fps_ = camera_fps;
 
   publish_yaw_ = get_parameter("publish_yaw").as_bool();
-  publish_image_ = get_parameter("publish_image").as_bool();
-  image_stride_ = static_cast<int>(get_parameter("image_stride").as_int());
-  if (image_stride_ < 1) {image_stride_ = 1;}
   enable_body_tracking_ = get_parameter("enable_body_tracking").as_bool();
 
   if (camera_fps <= 0.0) {
@@ -576,8 +914,7 @@ ZedNode::ZedNode()
   bag_dets_publisher_ = create_publisher<std_msgs::msg::String>("/zed/bag_detections", 10);
   persons_publisher_ = create_publisher<std_msgs::msg::String>("/zed/person_label", 10);
   gesture_publisher_ = create_publisher<std_msgs::msg::String>("/zed/gesture", 10);
-  image_publisher_ = create_publisher<sensor_msgs::msg::Image>(
-    "/zed/image", rclcpp::SensorDataQoS());
+  attributes_publisher_ = create_publisher<std_msgs::msg::String>("/zed/person_attributes", 10);
 
   sl::InitParameters init_parameters;
   init_parameters.depth_mode = sl::DEPTH_MODE::ULTRA;
@@ -588,23 +925,19 @@ ZedNode::ZedNode()
   init_parameters.depth_minimum_distance =
     static_cast<float>(get_parameter("depth_minimum_distance").as_double());
 
+  std::cout << "### STARTING CAMERA ###" << std::endl;
+
   sl::ERROR_CODE state = sl::ERROR_CODE::FAILURE;
   for (int attempt = 1; attempt <= 5; ++attempt) {
-    RCLCPP_INFO(get_logger(), "Membuka kamera ZED (percobaan %d/5)...", attempt);
     state = zed_.open(init_parameters);
     if (state == sl::ERROR_CODE::SUCCESS) {
-      RCLCPP_INFO(get_logger(), "Kamera ZED berhasil dibuka.");
       break;
     }
-    RCLCPP_WARN(
-      get_logger(),
-      "Percobaan %d gagal: %s. Menunggu 1 detik...",
-      attempt, sl::toString(state).c_str());
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 
   if (state != sl::ERROR_CODE::SUCCESS) {
-    RCLCPP_ERROR(get_logger(), "ZED open failed setelah 5 percobaan: %s", sl::toString(state).c_str());
+    IC("ZED open failed setelah 5 percobaan", sl::toString(state));
     throw std::runtime_error(std::string("ZED open failed: ") + sl::toString(state).c_str());
   }
 
@@ -638,22 +971,113 @@ ZedNode::ZedNode()
   yolo_min_area_ = get_parameter("yolo_min_area").as_double();
   yolo_stride_   = std::max(1, static_cast<int>(get_parameter("yolo_stride").as_int()));
 
+  auto resolve = [](const std::string & p) {
+    if (p.empty()) return std::string("");
+    if (std::filesystem::path(p).is_absolute()) return p;
+    try { return ament_index_cpp::get_package_share_directory("athome_vision") + "/" + p; }
+    catch (...) { return std::string("share/athome_vision/") + p; }
+  };
+
   if (enable_yolo_) {
-    auto resolve = [](const std::string & p) {
-      if (std::filesystem::path(p).is_absolute()) return p;
-      try { return ament_index_cpp::get_package_share_directory("athome_vision") + "/" + p; }
-      catch (...) { return std::string("share/athome_vision/") + p; }
-    };
-
-    std::string model_path   = resolve(get_parameter("yolo_model").as_string());
-    std::string classes_path = resolve(get_parameter("yolo_classes").as_string());
-    float conf = static_cast<float>(get_parameter("yolo_conf").as_double());
-    float nms  = static_cast<float>(get_parameter("yolo_nms").as_double());
-    int size   = static_cast<int>(get_parameter("yolo_size").as_int());
-
-    std::string err;
-    if (!yolo_.load(model_path, classes_path, conf, nms, size, &err)) {
+    std::string model_param = get_parameter("yolo_model").as_string();
+    if (model_param.empty()) {
       enable_yolo_ = false;
+    } else {
+      std::string model_path = resolve(model_param);
+      if (!std::filesystem::exists(model_path)) {
+        IC("YOLO model not found, YOLO disabled", model_path);
+        enable_yolo_ = false;
+      } else {
+        std::string classes_path = resolve(get_parameter("yolo_classes").as_string());
+        float conf = static_cast<float>(get_parameter("yolo_conf").as_double());
+        float nms  = static_cast<float>(get_parameter("yolo_nms").as_double());
+        int size   = static_cast<int>(get_parameter("yolo_size").as_int());
+
+        std::string err;
+        if (!yolo_.load(model_path, classes_path, conf, nms, size, &err)) {
+          IC("YOLO load error", err);
+          enable_yolo_ = false;
+        } else {
+          IC("YOLO loaded successfully", model_path);
+        }
+      }
+    }
+  }
+
+  // Load Model-model AI untuk Atribut Orang (Gender, Color, Hair)
+  Ort::SessionOptions attr_opts;
+  attr_opts.SetIntraOpNumThreads(2);
+  attr_opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+  Ort::AllocatorWithDefaultOptions alloc;
+
+  // 1. Gender Classification Model
+  const std::string gender_param = get_parameter("gender_model").as_string();
+  if (!gender_param.empty()) {
+    std::string gender_path = resolve(gender_param);
+    if (std::filesystem::exists(gender_path)) {
+      try {
+        gender_session_ = std::make_unique<Ort::Session>(ort_attr_env_, gender_path.c_str(), attr_opts);
+        gender_in_name_ = gender_session_->GetInputNameAllocated(0, alloc).get();
+        gender_out_name_ = gender_session_->GetOutputNameAllocated(0, alloc).get();
+        IC("Gender ONNX model loaded successfully", gender_path);
+      } catch (const std::exception & e) {
+        IC("Gender ONNX model load error", e.what());
+        gender_session_.reset();
+      }
+    } else {
+      IC("Gender ONNX model not found, fallback to heuristic", gender_path);
+    }
+  }
+
+  // 2. Clothing Color Classification Model & Labels
+  const std::string color_labels_param = get_parameter("color_labels").as_string();
+  if (!color_labels_param.empty()) {
+    std::string color_labels_path = resolve(color_labels_param);
+    if (std::filesystem::exists(color_labels_path)) {
+      color_labels_ = loadLabels(color_labels_path);
+    }
+  }
+  const std::string color_param = get_parameter("color_model").as_string();
+  if (!color_param.empty()) {
+    std::string color_path = resolve(color_param);
+    if (std::filesystem::exists(color_path)) {
+      try {
+        color_session_ = std::make_unique<Ort::Session>(ort_attr_env_, color_path.c_str(), attr_opts);
+        color_in_name_ = color_session_->GetInputNameAllocated(0, alloc).get();
+        color_out_name_ = color_session_->GetOutputNameAllocated(0, alloc).get();
+        IC("Clothing color ONNX model loaded successfully", color_path, color_labels_.size());
+      } catch (const std::exception & e) {
+        IC("Clothing color ONNX model load error", e.what());
+        color_session_.reset();
+      }
+    } else {
+      IC("Clothing color ONNX model not found, fallback to HSV", color_path);
+    }
+  }
+
+  // 3. Hair Classification Model & Labels
+  const std::string hair_labels_param = get_parameter("hair_labels").as_string();
+  if (!hair_labels_param.empty()) {
+    std::string hair_labels_path = resolve(hair_labels_param);
+    if (std::filesystem::exists(hair_labels_path)) {
+      hair_labels_ = loadLabels(hair_labels_path);
+    }
+  }
+  const std::string hair_param = get_parameter("hair_model").as_string();
+  if (!hair_param.empty()) {
+    std::string hair_path = resolve(hair_param);
+    if (std::filesystem::exists(hair_path)) {
+      try {
+        hair_session_ = std::make_unique<Ort::Session>(ort_attr_env_, hair_path.c_str(), attr_opts);
+        hair_in_name_ = hair_session_->GetInputNameAllocated(0, alloc).get();
+        hair_out_name_ = hair_session_->GetOutputNameAllocated(0, alloc).get();
+        IC("Hair ONNX model loaded successfully", hair_path, hair_labels_.size());
+      } catch (const std::exception & e) {
+        IC("Hair ONNX model load error", e.what());
+        hair_session_.reset();
+      }
+    } else {
+      IC("Hair ONNX model not found, fallback to HSV", hair_path);
     }
   }
 
@@ -704,9 +1128,9 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     double x = 0.0, y = 0.0, z = 0.0;
     const bool ok = get3dCoordinatesWithOffset(d.rect, point_cloud, x, y, z);
     const double dist = ok ? std::hypot(x, y) : 0.0;
-    preview_bags_.push_back({d.rect, ok, x, y, dist, d.score});
-    if (ok) {
-      IC(d.label, x, y, dist);
+    preview_bags_.push_back({d.rect, ok, x, y, dist});
+    if (is_help_me_carry_ && ok) {
+      IC("[HMC:BAG]", d.label, x, y, dist);
     }
 
     if (!bag_str.empty()) bag_str += ";";
@@ -727,6 +1151,10 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     std_msgs::msg::String g;
     g.data = "NONE";
     gesture_publisher_->publish(g);
+    // Atribut kosong
+    std_msgs::msg::String attr_msg;
+    attr_msg.data = "";
+    attributes_publisher_->publish(attr_msg);
   } else {
     struct PersonEntry {
       const sl::BodyData * body{nullptr};
@@ -819,10 +1247,9 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       op_mem_.torso_hsv = zed_vision::extractTorsoColor(bgr, entries[0].bbox);
       op_mem_.has_color = true;
       op_mem_.last_seen = current_time;
-      RCLCPP_INFO(
-        get_logger(),
-        "\033[92m[OperatorMemory] Operator awal berhasil dikunci (ID Stabil: %d, Posisi: %.2f, %.2f)\033[0m",
-        op_mem_.stable_id, op_mem_.x, op_mem_.y);
+      if (is_help_me_carry_) {
+        IC("[HMC:OPERATOR_LOCK]", op_mem_.stable_id, op_mem_.x, op_mem_.y);
+      }
     }
 
     // Jika kandidat operator cocok dengan memori, update posisinya & jadikan urutan pertama (operator)
@@ -853,9 +1280,9 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
 
     if (!entries.empty()) {
       entries.front().label = "operator";
-      if (entries.front().has_depth) {
+      if (is_help_me_carry_ && entries.front().has_depth) {
         const auto & person = entries.front();
-        IC(person.id, person.label, person.x, person.y, person.dist);
+        IC("[HMC:PERSON]", person.id, person.label, person.x, person.y, person.dist);
       }
     }
 
@@ -868,17 +1295,34 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       for (const auto & pt : points) {
         pp.kpt.emplace_back(std::isfinite(pt.x) ? pt.x : NAN, std::isfinite(pt.y) ? pt.y : NAN);
       }
-      preview_persons_.push_back(pp);
 
-      // Deteksi gesture dari operator (entry pertama = terdekat)
+      // Hitung 3 Atribut Visual Tamu (Baju, Rambut, Gender)
+      const std::string shirt = classifyClothingColor(bgr, e.bbox);
+      const std::string hair = classifyHairColor(bgr, e.bbox);
+      const std::string gender = classifyGender(points, bgr, e.bbox);
+
+      // Deteksi gesture & publish atribut dari orang terdekat (entry pertama)
       if (first_p) {
         gesture_result = detectGesture(points);
-        if (gesture_result != "NONE") {
-          RCLCPP_INFO_THROTTLE(
-            get_logger(), *get_clock(), 500,
-            "[GESTURE] Terdeteksi [ID %d]: %s", e.id, gesture_result.c_str());
+        if (is_help_me_carry_ && gesture_result != "NONE") {
+          IC("[HMC:GESTURE]", e.id, gesture_result);
+        }
+
+        // Publish ke /zed/person_attributes untuk task receptionist
+        std_msgs::msg::String attr_msg;
+        attr_msg.data = gender + ", " + shirt + ", " + hair;
+        attributes_publisher_->publish(attr_msg);
+
+        if (is_receptionist_) {
+          IC("[RECEPTIONIST:PERSON]", e.id, e.x, e.y, e.range_m);
+          IC("[RECEPTIONIST:ATTRIBUTES]", e.id, gender, shirt, hair);
         }
       }
+
+      pp.clothing = shirt;
+      pp.hair = hair;
+      pp.gender = gender;
+      preview_persons_.push_back(pp);
 
       if (!first_p) ss << ";";
       const std::string label = first_p ? "operator" : "person";
@@ -940,10 +1384,17 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       r &= cv::Rect(0, 0, W, H);
       if (r.width > 0 && r.height > 0) {
         cv::rectangle(canvas, r, cv::Scalar(0, 255, 0), 2);
+        std::string label_txt = "ID: " + std::to_string(p.id);
         cv::putText(
-          canvas, "ID: " + std::to_string(p.id),
+          canvas, label_txt,
           cv::Point(r.x, std::max(20, r.y - 6)),
-          cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
+          cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
+
+        std::string attr_txt = p.gender + " | " + p.clothing + " | " + p.hair;
+        cv::putText(
+          canvas, attr_txt,
+          cv::Point(r.x, std::min(H - 8, r.y + r.height + 18)),
+          cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
         const int center_x = r.x + r.width / 2;
         const int center_y = r.y + r.height / 2;
         cv::circle(canvas, cv::Point(center_x, center_y), 5, cv::Scalar(0, 255, 255), -1);
@@ -1039,20 +1490,6 @@ void ZedNode::loop()
     cv::cvtColor(bgra, bgr, cv::COLOR_BGRA2BGR);
     if (bgr.empty()) {
       return;
-    }
-
-    ++image_frame_;
-    if (publish_image_ && (image_frame_ % image_stride_ == 0)) {
-      sensor_msgs::msg::Image img_msg;
-      img_msg.header.stamp = now();
-      img_msg.header.frame_id = "zed_camera";
-      img_msg.height = static_cast<uint32_t>(bgr.rows);
-      img_msg.width = static_cast<uint32_t>(bgr.cols);
-      img_msg.encoding = "bgr8";
-      img_msg.is_bigendian = false;
-      img_msg.step = static_cast<uint32_t>(bgr.cols * 3);
-      img_msg.data.assign(bgr.datastart, bgr.dataend);
-      image_publisher_->publish(img_msg);
     }
 
     if (zed_.retrieveMeasure(zed_point_cloud_, sl::MEASURE::XYZ, sl::MEM::CPU) !=

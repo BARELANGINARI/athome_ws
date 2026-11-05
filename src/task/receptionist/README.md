@@ -16,16 +16,16 @@ Paket ini mengatur alur Finite State Machine (FSM) otonom untuk menyambut dua or
          |                     |                   |                     |
          v                     v                   v                     v
    [ Navigasi ]           [ Visual/Pose ]       [ Suara/HRI ]        [ Display/LCD ]
- receptionist_node         person_det          athome_hri            athome_face
-    (Nav2 AMCL)        (YOLO-Pose & Re-ID)    (Whisper & Piper)     (Animasi Wajah)
+ receptionist_node         athome_vision          athome_hri            athome_face
+    (Nav2 AMCL)             (ZED Camera)       (Whisper & Piper)     (Animasi Wajah)
 ```
 
 ### Tahapan Siklus FSM:
 1. **Startup & Navigasi ke Pintu Masuk:**
    * Node `receptionist_manager` otomatis menunggu service `/receptionist/go_to_door` siap, lalu robot langsung bernavigasi ke koordinat pintu masuk (`door`).
 2. **Siklus Tamu 1 (Guest 1):**
-   * **Greeting:** Robot tiba di pintu (`WAIT_GUEST`) dan otomatis memicu event `"doorbell"` ke `/hri/sound_event` agar `person_det` aktif.
-   * **Dialog Identitas:** Menanyakan nama tamu (`ASK_NAME` / `WAIT_NAME`). Nama yang ditangkap dipublikasikan ke `/hri/guest_name` untuk merekam embedding wajah tamu ke `face_memory.json`.
+   * **Greeting:** Robot tiba di pintu (`WAIT_GUEST`) dan menyambut tamu saat terdeteksi.
+   * **Dialog Identitas:** Menanyakan nama tamu (`ASK_NAME` / `WAIT_NAME`).
    * **Dialog Minat:** Menanyakan hobi/minat tamu (`ASK_INTEREST` / `WAIT_INTEREST`).
    * **Beverage Area:** Memandu tamu ke area minuman (`NAV_TO_BEVERAGE`), menanyakan minuman favorit (`ASK_DRINK`), dan mengecek ketersediaan minuman di meja.
    * **Living Room & Kursi:** Memandu ke ruang tamu (`NAV_TO_LIVING_ROOM`), mendeteksi kursi kosong via `/zed/empty_seat`, dan mempersilakan tamu duduk (`OFFER_SEAT`).
@@ -33,7 +33,7 @@ Paket ini mengatur alur Finite State Machine (FSM) otonom untuk menyambut dua or
    * Robot kembali ke pintu masuk (`NAV_TO_DOOR`) dan mengulangi proses penyambutan untuk Tamu 2.
 4. **Perkenalan & Evaluasi Kemiripan:**
    * Robot menuju tengah ruangan (`NAV_TO_LIVING_ROOM_CENTER`).
-   * **Perkenalan Tamu 1 ke Tamu 2:** Mengucapkan nama, ciri visual (warna pakaian & gender dari `person_det`), minuman favorit, dan hobi Tamu 1.
+   * **Perkenalan Tamu 1 ke Tamu 2:** Mengucapkan nama, ciri visual (warna pakaian & gender), minuman favorit, dan hobi Tamu 1.
    * **Perkenalan Tamu 2 ke Tamu 1:** Mengenalkan data Tamu 2 kepada Tamu 1.
    * **Similarity Check:** Mengevaluasi kesamaan minat antara kedua tamu atau host.
    * **Selesai:** Robot menyelesaikan seluruh rangkaian tugas (`COMPLETED`).
@@ -45,13 +45,13 @@ Paket ini mengatur alur Finite State Machine (FSM) otonom untuk menyambut dua or
 ```text
 src/task/receptionist/
 ├── CMakeLists.txt                    # Konfigurasi build ROS 2 C++
-├── package.xml                       # Dependensi paket (rclcpp, msgs, person_det, nav2, dll)
+├── package.xml                       # Dependensi paket (rclcpp, nav2, dll)
 ├── README.md                         # Dokumentasi panduan penggunaan
 ├── config/
 │   ├── receptionist_params.yaml      # Parameter koordinat waypoint & profil host
 │   └── nav2_params.yaml              # Konfigurasi Nav2 & costmaps
 ├── launch/
-│   ├── receptionist.launch.py        # Launch all-in-one (Hardware + Nav2 + Manager + Vision)
+│   ├── receptionist.launch.py        # Launch all-in-one (Hardware + Nav2 + Manager)
 │   ├── navigation.launch.py          # Launch stack Nav2 + receptionist_node + manager
 │   ├── hardware.launch.py            # Launch STM32 Nucleo motor driver + RPLiDAR
 │   └── hri.launch.py                 # Launch ASR (Faster-Whisper) & TTS (Piper)
@@ -66,20 +66,19 @@ src/task/receptionist/
 
 ## 3. Kompilasi (Build)
 
-Pastikan dependensi paket kustom `msgs`, `person_det`, dan `athome_hri` ikut dikompilasi:
+Pastikan dependensi paket kustom `athome_hri` dan `receptionist` ikut dikompilasi:
 
 ```bash
-cd ~/Documents/cluster_3/at-home-ws/athome_ws_v2/athome_ws
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select msgs person_det receptionist athome_hri
+colcon build --packages-select receptionist athome_hri
 source install/setup.bash
 ```
 
 ---
 
-## 4. Panduan Menjalankan Sistem (4 Terminal Modular Stack)
+## 4. Panduan Menjalankan Sistem (3 Terminal Modular Stack)
 
-Jalankan perintah berikut pada 4 terminal terpisah (belum termasuk ekspresi wajah/face):
+Jalankan perintah berikut pada terminal terpisah (belum termasuk ekspresi wajah/face):
 
 ### Terminal 1: Hardware Bringup (Motor Base & RPLiDAR)
 Menjalankan komunikasi UDP motor base STM32 Nucleo dan sensor RPLiDAR:
@@ -102,16 +101,9 @@ source install/setup.bash
 ros2 launch receptionist hri.launch.py
 ```
 
-### Terminal 4: Vision & Person Detection (YOLO-Pose & Face Re-ID)
-Menjalankan deteksi orang, estimasi orientasi pose, klasifikasi gender & pakaian, serta Face Re-ID:
-```bash
-source install/setup.bash
-ros2 launch person_det person_det.launch.py
-```
-
 ---
 
-### Terminal 5 *(Opsional)*: Layar Animasi Wajah Robot (LCD 7 Inci)
+### Terminal 4 *(Opsional)*: Layar Animasi Wajah Robot (LCD 7 Inci)
 Menampilkan animasi ekspresi mata dan status interaksi pada layar HDMI 7 inci robot:
 ```bash
 source install/setup.bash
@@ -174,13 +166,11 @@ receptionist_manager:
 
 ### Topik Publikasi:
 * `/hri/tts_say` (`std_msgs/msg/String`): Kalimat ucapan robot yang dikirim ke TTS engine.
-* `/hri/sound_event` (`std_msgs/msg/String`): Event pemicu deteksi (misal `"doorbell"` saat tiba di pintu).
-* `/hri/guest_name` (`std_msgs/msg/String`): Nama tamu untuk registrasi wajah di `person_det`.
 * `/receptionist/status` (`std_msgs/msg/String`): Broadcast status navigasi robot.
 
 ### Topik Berlangganan:
 * `/hri/stt_transcript` (`std_msgs/msg/String`): Teks transkripsi hasil ucapan tamu dari STT engine.
 * `/hri/tts_done` (`std_msgs/msg/String`): Konfirmasi selesai bicara dari TTS engine.
-* `/vision/detected_person` (`msgs/msg/PersonDetected`): Data deteksi orang terdekat (`name`, `gender`, `shirt_color`) dari `person_det`.
+* `/zed/person_label` (`std_msgs/msg/String`): Data deteksi orang dari kamera ZED.
 * `/zed/drink_detections` (`std_msgs/msg/String`): Data deteksi botol/minuman di meja.
 * `/zed/empty_seat` (`std_msgs/msg/String`): Posisi kursi kosong (`left`, `center`, `right`).

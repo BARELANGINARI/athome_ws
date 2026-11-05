@@ -17,7 +17,6 @@ find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
-find_package(msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(Threads REQUIRED)
@@ -45,7 +44,6 @@ ament_target_dependencies(receptionist_manager
   rclcpp
   std_msgs
   std_srvs
-  msgs
 )
 target_link_libraries(receptionist_manager Threads::Threads)
 
