@@ -91,39 +91,39 @@ controller_server:
 
       # DWB Local Planner Parameters (3-wheel omni)
       debug_trajectory_details: False    # Debug trajectory logging
-      min_vel_x: 0.0                     # Min forward velocity (m/s, prevent reverse)
+      min_vel_x: -0.08                   # Izinkan sedikit mundur (-0.08 m/s) agar tidak deadlock saat dekat obstacle/dinding
       max_vel_x: 0.30                    # Max forward velocity (m/s)
-      min_vel_y: -0.12                   # Min lateral strafe velocity (m/s)
-      max_vel_y: 0.12                    # Max lateral strafe velocity (m/s)
-      min_speed_xy: 0.0                  # Min translational speed (m/s)
+      min_vel_y: -0.20                   # Min lateral strafe velocity (m/s, diperluas agar bisa strafe menjauhi dinding)
+      max_vel_y: 0.20                    # Max lateral strafe velocity (m/s)
+      min_speed_xy: 0.05                 # Min translational speed (m/s, mencegah micro-speed di bawah deadband motor)
       max_speed_xy: 0.30                 # Max translational speed (m/s)
-      max_vel_theta: 0.8                 # Max angular velocity (rad/s)
-      min_speed_theta: 0.0               # Min angular velocity (rad/s)
+      max_vel_theta: 1.0                 # Max angular velocity (rad/s, responsif saat memutar haluan)
+      min_speed_theta: 0.15              # Min angular velocity (rad/s, mengatasi friksi motor saat rotasi in-place)
       acc_lim_x: 1.2                     # Translation X acceleration limit (m/s^2)
       acc_lim_y: 1.0                     # Translation Y acceleration limit (m/s^2)
-      acc_lim_theta: 1.2                 # Angular acceleration limit (rad/s^2)
+      acc_lim_theta: 1.5                 # Angular acceleration limit (rad/s^2)
       decel_lim_x: -1.2                  # Translation X deceleration limit (m/s^2)
       decel_lim_y: -1.0                  # Translation Y deceleration limit (m/s^2)
-      decel_lim_theta: -1.2              # Angular deceleration limit (rad/s^2)
+      decel_lim_theta: -1.5              # Angular deceleration limit (rad/s^2)
       vx_samples: 20                     # VX velocity samples
-      vy_samples: 5                      # VY velocity samples
+      vy_samples: 9                      # VY velocity samples (dinaikkan dari 5 ke 9 agar kemampuan strafe omni maksimal)
       vtheta_samples: 25                 # Vtheta velocity samples
-      sim_time: 2.0                      # Trajectory simulation time (s)
+      sim_time: 1.2                      # Trajectory simulation time (s, diturunkan dari 2.0 ke 1.2 agar tidak false collision di area dekat dinding)
       linear_granularity: 0.05           # Linear simulation step (m)
       angular_granularity: 0.025         # Angular simulation step (rad)
       transform_tolerance: 0.25          # TF transform tolerance (s)
       xy_goal_tolerance: 0.15            # Goal XY tolerance (m)
       trans_stopped_velocity: 0.05       # Stopped translational velocity threshold (m/s)
-      short_circuit_trajectory_evaluation: True # Skip evaluation if trajectory collides
+      short_circuit_trajectory_evaluation: False # Allow exploring alternative trajectories when rotating near obstacles
       stateful: True                     # Maintain state between iterations
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"] # Trajectory critics
-      BaseObstacle.scale: 0.25           # Obstacle proximity penalty weight
+      BaseObstacle.scale: 0.02           # Obstacle proximity penalty weight (standar Nav2 0.02; nilai 0.25 menyebabkan robot freeze)
       PathDist.scale: 32.0               # Global path following weight
       GoalDist.scale: 24.0               # Goal approach weight
-      PathAlign.scale: 16.0              # Path heading alignment weight
-      PathAlign.forward_point_distance: 0.20 # Forward evaluation point distance (m)
-      GoalAlign.scale: 20.0              # Goal heading alignment weight
-      GoalAlign.forward_point_distance: 0.20 # Goal evaluation point distance (m)
+      PathAlign.scale: 12.0              # Heading alignment weight
+      PathAlign.forward_point_distance: 0.10 # Forward evaluation point distance (m)
+      GoalAlign.scale: 0.0               # Dinonaktifkan selama transit agar tidak berantem dengan PathAlign
+      GoalAlign.forward_point_distance: 0.10 # Goal evaluation point distance (m)
       RotateToGoal.scale: 32.0           # Final goal rotation weight
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0
@@ -162,8 +162,8 @@ local_costmap:
           obstacle_min_range: 0.4        # Min obstacle marking range (m)
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Safety buffer layer around obstacles
-        cost_scaling_factor: 10.0        # Exponential cost decay factor
-        inflation_radius: 0.30           # Inflation radius (m)
+        cost_scaling_factor: 5.0         # Exponential cost decay factor
+        inflation_radius: 0.25           # Inflation radius (m)
       always_send_full_costmap: True     # Send full costmap on publish
 
 # ---------------------------------------------------------------------
@@ -202,8 +202,8 @@ global_costmap:
           obstacle_min_range: 0.4
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
-        cost_scaling_factor: 10.0        # Exponential cost decay factor
-        inflation_radius: 0.30           # Inflation radius (m)
+        cost_scaling_factor: 5.0         # Exponential cost decay factor
+        inflation_radius: 0.25           # Inflation radius (m)
       always_send_full_costmap: True     # Send full costmap on publish
 
 # ---------------------------------------------------------------------

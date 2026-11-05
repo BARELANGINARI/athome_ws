@@ -35,6 +35,18 @@ float wrap180(float angle)
   return angle;
 }
 
+float wrap360(float angle)
+{
+  angle = std::fmod(angle, 360.0f);
+  if (angle < 0.0f) {
+    angle += 360.0f;
+  }
+  if (angle >= 360.0f || std::abs(angle) < 1e-6f) {
+    angle = 0.0f;
+  }
+  return angle;
+}
+
 float quatToYaw(float x, float y, float z, float w)
 {
   return std::atan2(2.0f * (w * z + x * y), 1.0f - 2.0f * (y * y + z * z));
@@ -782,6 +794,7 @@ private:
   rclcpp::TimerBase::SharedPtr timer_;
 
   bool publish_yaw_{true};
+  bool yaw_360_{true};
   double camera_fps_{30.0};
   bool enable_body_tracking_{true};
   bool debug_window_{false};
@@ -864,6 +877,7 @@ ZedNode::ZedNode()
   declare_parameter("task", "all");
   declare_parameter("camera_fps", 30.0);
   declare_parameter("publish_yaw", true);
+  declare_parameter("yaw_360", true);
   declare_parameter("enable_body_tracking", true);
   declare_parameter("depth_minimum_distance", 30.0);
   declare_parameter("enable_yolo", false);
@@ -904,6 +918,7 @@ ZedNode::ZedNode()
   camera_fps_ = camera_fps;
 
   publish_yaw_ = get_parameter("publish_yaw").as_bool();
+  yaw_360_ = get_parameter("yaw_360").as_bool();
   enable_body_tracking_ = get_parameter("enable_body_tracking").as_bool();
 
   if (camera_fps <= 0.0) {
@@ -1103,9 +1118,11 @@ void ZedNode::publishYaw()
   }
   const auto q = sensors_data.imu.pose.getOrientation();
   float yaw = zed_vision::quatToYaw(q.x, q.y, q.z, q.w);
+  const float yaw_deg = yaw * 180.0f / zed_vision::PI_F;
 
   std_msgs::msg::Float64 message;
-  message.data = static_cast<double>(zed_vision::wrap180(yaw * 180.0f / zed_vision::PI_F));
+  message.data = static_cast<double>(
+    yaw_360_ ? zed_vision::wrap360(yaw_deg) : zed_vision::wrap180(yaw_deg));
   yaw_publisher_->publish(message);
 }
 

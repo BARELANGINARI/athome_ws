@@ -4,11 +4,11 @@ receptionist_node:
     door:
       x: 0.0
       y: 0.0
-      yaw: 0.0
-    beverage_area:
-      x: 1.0
-      y: 1.5
       yaw: 180.0
+    beverage_area:
+      x: 1.5
+      y: 1.5
+      yaw: 90.0
     living_room:
       x: 1.5
       y: 0.0
@@ -21,6 +21,10 @@ receptionist_node:
     # Operational settings
     global_frame: "map"
     announce_topic: "/receptionist/status"
+    wall_proximity_threshold: 0.48
+    escape_distance: 0.35
+    escape_speed: 0.12
+    enable_open_space_escape: true
 
 receptionist_manager:
   ros__parameters:
