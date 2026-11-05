@@ -14,7 +14,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     """Launch joystick teleop and STM32 Nucleo motor/lifter hardware driver."""
     return LaunchDescription([
-        DeclareLaunchArgument('launch_nucleo', default_value='true', description='Launch STM32 Nucleo hardware base and lifter driver'),
+        DeclareLaunchArgument('launch_nucleo', default_value='false', description='Launch STM32 Nucleo hardware base and lifter driver (default false to prevent collision with mapping/hardware)'),
         DeclareLaunchArgument('stm_ip', default_value='192.168.0.4', description='STM32 Nucleo IP address'),
         DeclareLaunchArgument('stm_port', default_value='2002', description='STM32 Nucleo UDP port'),
         DeclareLaunchArgument('use_yaw_topic', default_value='false', description='Use /zed/yaw_deg instead of internal IMU'),

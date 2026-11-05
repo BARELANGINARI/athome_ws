@@ -15,8 +15,8 @@ slam_toolbox:
     transform_timeout: 0.2
     tf_buffer_duration: 30.0
 
-    minimum_travel_distance: 0.05
-    minimum_travel_heading: 0.05
+    minimum_travel_distance: 0.0
+    minimum_travel_heading: 0.0
     scan_queue_size: 10
     throttle_scans: 1
 

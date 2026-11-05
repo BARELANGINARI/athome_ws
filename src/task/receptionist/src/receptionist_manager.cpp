@@ -1563,7 +1563,7 @@ private:
           } else {
             transitionTo(
               ReceptionistState::INTRODUCE_G1_TO_G2, "Arrived at living_room with Guest 2, starting introductions"
-            )
+            );
           }
         });
         break;
