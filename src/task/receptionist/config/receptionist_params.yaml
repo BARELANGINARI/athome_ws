@@ -6,9 +6,9 @@ receptionist_node:
       y: 0.0
       yaw: 0.0
     beverage_area:
-      x: 0.8
-      y: 0.3
-      yaw: 270.0
+      x: 1.0
+      y: 1.5
+      yaw: 180.0
     living_room:
       x: 1.5
       y: 0.0
