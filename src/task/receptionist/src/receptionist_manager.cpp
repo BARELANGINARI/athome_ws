@@ -1550,21 +1550,39 @@ private:
           }
         }
 
-        speakAsync(escort_msg, [this]() {
-          navigateTo("living_room", [this](bool success) {
-            if (!success) {
-              return; // Retry navigasi ke living_room setelah cooldown
-            }
-            if (guest_idx_ == 1) {
-              transitionTo(ReceptionistState::OFFER_SEAT, "Arrived at living_room with Guest 1");
-            } else {
-              transitionTo(
-                ReceptionistState::INTRODUCE_G1_TO_G2,
-                "Arrived at living_room with Guest 2, starting introductions");
-            }
-          });
+        // jalankan TTS tanpa callback
+        speakAsync(escort_msg);
+
+        // langsung jalankan navigasi secara bersamaan
+        navigateTo("living_room", [this](bool success) {
+          if (!success) {
+            return; //retry di tick berikutnya setelah TTS dan cooldown selesai
+          }
+          if (guest_idx_ == 1) {
+            transitionTo(ReceptionistState::OFFER_SEAT, "Arrived at living_room with Guest 1");
+          } else {
+            transitionTo(
+              ReceptionistState::INTRODUCE_G1_TO_G2, "Arrived at living_room with Guest 2, starting introductions"
+            )
+          }
         });
         break;
+
+        // speakAsync(escort_msg, [this]() {
+        //   navigateTo("living_room", [this](bool success) {
+        //     if (!success) {
+        //       return; // Retry navigasi ke living_room setelah cooldown
+        //     }
+        //     if (guest_idx_ == 1) {
+        //       transitionTo(ReceptionistState::OFFER_SEAT, "Arrived at living_room with Guest 1");
+        //     } else {
+        //       transitionTo(
+        //         ReceptionistState::INTRODUCE_G1_TO_G2,
+        //         "Arrived at living_room with Guest 2, starting introductions");
+        //     }
+        //   });
+        // });
+        // break;
       }
 
       // ------------------------------------------------------------------------
