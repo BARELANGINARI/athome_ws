@@ -886,11 +886,13 @@ private:
   YoloDetector chair_yolo_;
 
   bool enable_yolo_{true};
+  bool enable_bag_{true};
   bool enable_drinks_{true};
   bool enable_chair_{true};
   std::vector<std::string> bag_labels_;
   std::vector<std::string> chair_labels_;
   double yolo_min_area_{1500.0};
+  double drink_min_area_{100.0};
   int yolo_stride_{2};
   int yolo_frame_{0};
   int drink_frame_{0};
@@ -937,12 +939,15 @@ ZedNode::ZedNode()
   declare_parameter("yolo_stride", 2);
   declare_parameter("bag_labels",std::vector<std::string>{"bag", "backpack", "handbag", "suitcase"});
   declare_parameter("yolo_min_area", 1500.0);
+  declare_parameter("drink_min_area", 100.0);
+  declare_parameter("drink_conf", 0.20);
   declare_parameter("botol_model", std::string("models/botol.onnx"));
   declare_parameter("cracker_model", std::string("models/best_cracker.onnx"));
   declare_parameter("enable_drinks", true);
   declare_parameter("chair_model", std::string(""));
   declare_parameter("enable_chair", true);
   declare_parameter("chair_labels", std::vector<std::string>{"chair", "couch", "bench"});
+  declare_parameter("enable_bag", true);
 
   // Parameter Model AI untuk Atribut Orang (Gender, Warna Pakaian, Warna Rambut)
   declare_parameter("gender_model", std::string("models/gender_cls.onnx"));
@@ -964,7 +969,8 @@ ZedNode::ZedNode()
     is_help_me_carry_ = true;
     is_receptionist_ = true;
   }
-  IC("Vision Task Mode", task_mode_);
+  enable_bag_ = get_parameter("enable_bag").as_bool();
+  IC("Vision Task Mode", task_mode_, "enable_bag", enable_bag_);
 
   const double camera_fps = get_parameter("camera_fps").as_double();
   camera_fps_ = camera_fps;
@@ -1039,6 +1045,7 @@ ZedNode::ZedNode()
   mirror_        = get_parameter("mirror").as_bool();
   bag_labels_    = get_parameter("bag_labels").as_string_array();
   yolo_min_area_ = get_parameter("yolo_min_area").as_double();
+  drink_min_area_ = get_parameter("drink_min_area").as_double();
   yolo_stride_   = std::max(1, static_cast<int>(get_parameter("yolo_stride").as_int()));
 
   auto resolve = [](const std::string & p) {
@@ -1050,6 +1057,8 @@ ZedNode::ZedNode()
     } catch (...) {}
     if (std::filesystem::exists(p)) return p;
     if (std::filesystem::exists("src/athome_vision/" + p)) return std::string("src/athome_vision/") + p;
+    const std::string ws_src = "/home/dell/Documents/athome_ws/src/athome_vision/" + p;
+    if (std::filesystem::exists(ws_src)) return ws_src;
     return std::string("share/athome_vision/") + p;
   };
 
@@ -1082,7 +1091,7 @@ ZedNode::ZedNode()
   // Load Model-model YOLO untuk Deteksi Minuman / Makanan (Botol & Cracker)
   enable_drinks_ = get_parameter("enable_drinks").as_bool();
   if (enable_drinks_) {
-    float conf = static_cast<float>(get_parameter("yolo_conf").as_double());
+    float drink_conf = static_cast<float>(get_parameter("drink_conf").as_double());
     float nms  = static_cast<float>(get_parameter("yolo_nms").as_double());
     int size   = static_cast<int>(get_parameter("yolo_size").as_int());
 
@@ -1091,7 +1100,7 @@ ZedNode::ZedNode()
       std::string botol_path = resolve(botol_param);
       if (std::filesystem::exists(botol_path)) {
         std::string err;
-        if (botol_yolo_.load(botol_path, "", conf, nms, size, "botol", &err)) {
+        if (botol_yolo_.load(botol_path, "", drink_conf, nms, size, "botol", &err)) {
           IC("Botol ONNX model loaded successfully", botol_path);
         } else {
           IC("Botol ONNX load error", err);
@@ -1106,7 +1115,7 @@ ZedNode::ZedNode()
       std::string cracker_path = resolve(cracker_param);
       if (std::filesystem::exists(cracker_path)) {
         std::string err;
-        if (cracker_yolo_.load(cracker_path, "", conf, nms, size, "cracker", &err)) {
+        if (cracker_yolo_.load(cracker_path, "", drink_conf, nms, size, "cracker", &err)) {
           IC("Cracker ONNX model loaded successfully", cracker_path);
         } else {
           IC("Cracker ONNX load error", err);
@@ -1249,33 +1258,35 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
 {
   using namespace zed_vision;
 
-  std::vector<YoloDetection> bag_dets = last_bag_dets_;
-  if (enable_yolo_ && yolo_.ready()) {
-    if (yolo_frame_++ % std::max(1, yolo_stride_) == 0) {
-      yolo_.detect(bgr, bag_labels_, bag_dets);
-      last_bag_dets_ = bag_dets;
-    }
-  }
-
   preview_bags_.clear();
-  std::string bag_str;
-  for (const auto & d : bag_dets) {
-    if (static_cast<double>(d.rect.area()) < yolo_min_area_) continue;
-    double x = 0.0, y = 0.0, z = 0.0;
-    const bool ok = get3dCoordinatesWithOffset(d.rect, point_cloud, x, y, z);
-    const double dist = ok ? std::hypot(x, y) : 0.0;
-    preview_bags_.push_back({d.rect, ok, x, y, dist});
-    if (is_help_me_carry_ && ok) {
-      IC("[HMC:BAG]", d.label, x, y, dist);
+  if (enable_bag_) {
+    std::vector<YoloDetection> bag_dets = last_bag_dets_;
+    if (enable_yolo_ && yolo_.ready()) {
+      if (yolo_frame_++ % std::max(1, yolo_stride_) == 0) {
+        yolo_.detect(bgr, bag_labels_, bag_dets);
+        last_bag_dets_ = bag_dets;
+      }
     }
 
-    if (!bag_str.empty()) bag_str += ";";
-    bag_str += cv::format("bag:%d,%d,%d,%d|", d.rect.x, d.rect.y, d.rect.width, d.rect.height);
-    bag_str += ok ? cv::format("%.2f,%.2f,%.2f|%.2f", x, y, z, d.score) : cv::format("nan,nan,nan|%.2f", d.score);
+    std::string bag_str;
+    for (const auto & d : bag_dets) {
+      if (static_cast<double>(d.rect.area()) < yolo_min_area_) continue;
+      double x = 0.0, y = 0.0, z = 0.0;
+      const bool ok = get3dCoordinatesWithOffset(d.rect, point_cloud, x, y, z);
+      const double dist = ok ? std::hypot(x, y) : 0.0;
+      preview_bags_.push_back({d.rect, ok, x, y, dist});
+      if (is_help_me_carry_ && ok) {
+        IC("[HMC:BAG]", d.label, x, y, dist);
+      }
+
+      if (!bag_str.empty()) bag_str += ";";
+      bag_str += cv::format("bag:%d,%d,%d,%d|", d.rect.x, d.rect.y, d.rect.width, d.rect.height);
+      bag_str += ok ? cv::format("%.2f,%.2f,%.2f|%.2f", x, y, z, d.score) : cv::format("nan,nan,nan|%.2f", d.score);
+    }
+    std_msgs::msg::String bag_msg;
+    bag_msg.data = bag_str;
+    bag_dets_publisher_->publish(bag_msg);
   }
-  std_msgs::msg::String bag_msg;
-  bag_msg.data = bag_str;
-  bag_dets_publisher_->publish(bag_msg);
 
   // Deteksi Minuman & Makanan (Botol & Cracker) untuk Receptionist
   std::vector<YoloDetection> drink_dets = last_drink_dets_;
@@ -1299,7 +1310,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
   preview_drinks_.clear();
   std::string drink_str;
   for (const auto & d : drink_dets) {
-    if (static_cast<double>(d.rect.area()) < yolo_min_area_) continue;
+    if (static_cast<double>(d.rect.area()) < drink_min_area_) continue;
     double x = 0.0, y = 0.0, z = 0.0;
     const bool ok = get3dCoordinatesWithOffset(d.rect, point_cloud, x, y, z);
     const double dist = ok ? std::hypot(x, y) : 0.0;
@@ -1706,16 +1717,18 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       }
     }
 
-    for (size_t i = 0; i < std::min<size_t>(3, preview_bags_.size()); ++i) {
-      const auto & b = preview_bags_[i];
-      cv::Rect r = flip_rect(b.bbox);
-      r &= cv::Rect(0, 0, W, H);
-      if (r.width > 0 && r.height > 0) {
-        cv::rectangle(canvas, r, cv::Scalar(255, 0, 255), 2);
-        const int bag_cx = r.x + r.width / 2;
-        const int bag_cy = r.y + r.height / 2;
-        cv::circle(canvas, cv::Point(bag_cx, bag_cy), 4, cv::Scalar(255, 0, 255), -1);
-        cv::line(canvas, cv::Point(bag_cx, bag_cy), cv::Point(W / 2, H), cv::Scalar(255, 0, 255), 2);
+    if (enable_bag_) {
+      for (size_t i = 0; i < std::min<size_t>(3, preview_bags_.size()); ++i) {
+        const auto & b = preview_bags_[i];
+        cv::Rect r = flip_rect(b.bbox);
+        r &= cv::Rect(0, 0, W, H);
+        if (r.width > 0 && r.height > 0) {
+          cv::rectangle(canvas, r, cv::Scalar(255, 0, 255), 2);
+          const int bag_cx = r.x + r.width / 2;
+          const int bag_cy = r.y + r.height / 2;
+          cv::circle(canvas, cv::Point(bag_cx, bag_cy), 4, cv::Scalar(255, 0, 255), -1);
+          cv::line(canvas, cv::Point(bag_cx, bag_cy), cv::Point(W / 2, H), cv::Scalar(255, 0, 255), 2);
+        }
       }
     }
 
@@ -1772,10 +1785,13 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     };
 
     const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos) ? preview_persons_[0] : PrevPerson{};
-    draw_hud("Operator [ID " + std::to_string(p0.id) + "] :", p0.x_m, p0.y_m, p0.range_m, cv::Scalar(0, 255, 0));
+    const std::string person_title = (is_receptionist_ && !is_help_me_carry_) ? "Guest [ID " : "Operator [ID ";
+    draw_hud(person_title + std::to_string(p0.id) + "] :", p0.x_m, p0.y_m, p0.range_m, cv::Scalar(0, 255, 0));
 
-    const PrevBag b0 = (!preview_bags_.empty() && preview_bags_[0].has_pos) ? preview_bags_[0] : PrevBag{};
-    draw_hud("Bag :", b0.x_m, b0.y_m, b0.range_m, cv::Scalar(255, 0, 255));
+    if (enable_bag_) {
+      const PrevBag b0 = (!preview_bags_.empty() && preview_bags_[0].has_pos) ? preview_bags_[0] : PrevBag{};
+      draw_hud("Bag :", b0.x_m, b0.y_m, b0.range_m, cv::Scalar(255, 0, 255));
+    }
 
     if (!preview_drinks_.empty() && preview_drinks_[0].has_pos) {
       draw_hud(preview_drinks_[0].label + " :", preview_drinks_[0].x_m, preview_drinks_[0].y_m, preview_drinks_[0].range_m, cv::Scalar(255, 255, 0));
