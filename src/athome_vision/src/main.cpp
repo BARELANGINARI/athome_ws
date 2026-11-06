@@ -892,6 +892,7 @@ private:
   std::vector<std::string> bag_labels_;
   std::vector<std::string> chair_labels_;
   double yolo_min_area_{1500.0};
+  double drink_min_area_{100.0};
   int yolo_stride_{2};
   int yolo_frame_{0};
   int drink_frame_{0};
@@ -938,6 +939,8 @@ ZedNode::ZedNode()
   declare_parameter("yolo_stride", 2);
   declare_parameter("bag_labels",std::vector<std::string>{"bag", "backpack", "handbag", "suitcase"});
   declare_parameter("yolo_min_area", 1500.0);
+  declare_parameter("drink_min_area", 100.0);
+  declare_parameter("drink_conf", 0.20);
   declare_parameter("botol_model", std::string("models/botol.onnx"));
   declare_parameter("cracker_model", std::string("models/best_cracker.onnx"));
   declare_parameter("enable_drinks", true);
@@ -1042,6 +1045,7 @@ ZedNode::ZedNode()
   mirror_        = get_parameter("mirror").as_bool();
   bag_labels_    = get_parameter("bag_labels").as_string_array();
   yolo_min_area_ = get_parameter("yolo_min_area").as_double();
+  drink_min_area_ = get_parameter("drink_min_area").as_double();
   yolo_stride_   = std::max(1, static_cast<int>(get_parameter("yolo_stride").as_int()));
 
   auto resolve = [](const std::string & p) {
@@ -1053,6 +1057,8 @@ ZedNode::ZedNode()
     } catch (...) {}
     if (std::filesystem::exists(p)) return p;
     if (std::filesystem::exists("src/athome_vision/" + p)) return std::string("src/athome_vision/") + p;
+    const std::string ws_src = "/home/dell/Documents/athome_ws/src/athome_vision/" + p;
+    if (std::filesystem::exists(ws_src)) return ws_src;
     return std::string("share/athome_vision/") + p;
   };
 
@@ -1085,7 +1091,7 @@ ZedNode::ZedNode()
   // Load Model-model YOLO untuk Deteksi Minuman / Makanan (Botol & Cracker)
   enable_drinks_ = get_parameter("enable_drinks").as_bool();
   if (enable_drinks_) {
-    float conf = static_cast<float>(get_parameter("yolo_conf").as_double());
+    float drink_conf = static_cast<float>(get_parameter("drink_conf").as_double());
     float nms  = static_cast<float>(get_parameter("yolo_nms").as_double());
     int size   = static_cast<int>(get_parameter("yolo_size").as_int());
 
@@ -1094,7 +1100,7 @@ ZedNode::ZedNode()
       std::string botol_path = resolve(botol_param);
       if (std::filesystem::exists(botol_path)) {
         std::string err;
-        if (botol_yolo_.load(botol_path, "", conf, nms, size, "botol", &err)) {
+        if (botol_yolo_.load(botol_path, "", drink_conf, nms, size, "botol", &err)) {
           IC("Botol ONNX model loaded successfully", botol_path);
         } else {
           IC("Botol ONNX load error", err);
@@ -1109,7 +1115,7 @@ ZedNode::ZedNode()
       std::string cracker_path = resolve(cracker_param);
       if (std::filesystem::exists(cracker_path)) {
         std::string err;
-        if (cracker_yolo_.load(cracker_path, "", conf, nms, size, "cracker", &err)) {
+        if (cracker_yolo_.load(cracker_path, "", drink_conf, nms, size, "cracker", &err)) {
           IC("Cracker ONNX model loaded successfully", cracker_path);
         } else {
           IC("Cracker ONNX load error", err);
@@ -1304,7 +1310,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
   preview_drinks_.clear();
   std::string drink_str;
   for (const auto & d : drink_dets) {
-    if (static_cast<double>(d.rect.area()) < yolo_min_area_) continue;
+    if (static_cast<double>(d.rect.area()) < drink_min_area_) continue;
     double x = 0.0, y = 0.0, z = 0.0;
     const bool ok = get3dCoordinatesWithOffset(d.rect, point_cloud, x, y, z);
     const double dist = ok ? std::hypot(x, y) : 0.0;

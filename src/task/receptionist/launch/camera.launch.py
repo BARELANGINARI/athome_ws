@@ -22,6 +22,8 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_drinks', default_value='true', description='Enable bottle and cracker detection'),
         DeclareLaunchArgument('botol_model', default_value='models/botol.onnx', description='Path to botol ONNX model'),
         DeclareLaunchArgument('cracker_model', default_value='models/best_cracker.onnx', description='Path to cracker ONNX model'),
+        DeclareLaunchArgument('drink_min_area', default_value='100.0', description='Minimum bounding box area for drinks & crackers (pixels)'),
+        DeclareLaunchArgument('drink_conf', default_value='0.20', description='Confidence threshold for drinks & crackers'),
         # 4. Bag detection disabled for receptionist
         DeclareLaunchArgument('enable_bag', default_value='false', description='Enable bag detection (disabled for receptionist)'),
         DeclareLaunchArgument('enable_yolo', default_value='true', description='Enable YOLO backend for chair/objects'),
@@ -51,6 +53,8 @@ def generate_launch_description():
                 'enable_bag': LaunchConfiguration('enable_bag'),
                 'botol_model': LaunchConfiguration('botol_model'),
                 'cracker_model': LaunchConfiguration('cracker_model'),
+                'drink_min_area': LaunchConfiguration('drink_min_area'),
+                'drink_conf': LaunchConfiguration('drink_conf'),
                 'enable_drinks': LaunchConfiguration('enable_drinks'),
                 'chair_model': LaunchConfiguration('chair_model'),
                 'enable_chair': LaunchConfiguration('enable_chair'),
