@@ -58,6 +58,11 @@ def generate_launch_description():
             default_value='false',
             description='Launch HRI stack (Faster-Whisper STT + Piper TTS + FSM Task Manager).',
         ),
+        DeclareLaunchArgument(
+            'camera',
+            default_value='false',
+            description='Launch ZED camera vision stack for receptionist.',
+        ),
 
         # 1. Hardware Bringup (Motor + LiDAR)
         IncludeLaunchDescription(
@@ -111,5 +116,19 @@ def generate_launch_description():
             launch_arguments={
                 'manager_node': LaunchConfiguration('manager'),
             }.items(),
+        ),
+
+        # 4. Camera & Vision Bringup (ZED + Person Tracking + YOLO)
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare('receptionist'),
+                    'launch',
+                    'camera.launch.py',
+                ])
+            ),
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('camera'), "' == 'true'"])
+            ),
         ),
     ])

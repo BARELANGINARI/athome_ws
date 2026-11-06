@@ -205,11 +205,12 @@ public:
   YoloDetector(const YoloDetector &) = delete;
   YoloDetector & operator=(const YoloDetector &) = delete;
 
-  // model_path: yolov8n_sim.onnx (COCO pretrained).
+  // model_path: yolov8n_sim.onnx (COCO pretrained) atau custom YOLO11n (botol, cracker, dll).
   bool load(
     const std::string & model_path, const std::string & classes_path,
     float conf_threshold = 0.45f, float nms_threshold = 0.45f,
-    int input_size = 640, std::string * err = nullptr);
+    int input_size = 640, const std::string & default_label = "object",
+    std::string * err = nullptr);
 
   bool ready() const;
 
@@ -232,6 +233,7 @@ struct YoloDetector::Impl
   std::string input_name;
   std::string output_name;
   std::vector<std::string> names;
+  std::string default_label{"object"};
   float conf_threshold{0.45f};
   float nms_threshold{0.45f};
   int input_size{640};
@@ -248,23 +250,27 @@ bool YoloDetector::ready() const {return impl_->ready;}
 bool YoloDetector::load(
   const std::string & model_path, const std::string & classes_path,
   float conf_threshold, float nms_threshold, int input_size,
+  const std::string & default_label,
   std::string * err)
 {
   Impl & im = *impl_;
   im.conf_threshold = conf_threshold;
   im.nms_threshold = nms_threshold;
   im.input_size = input_size;
+  im.default_label = default_label;
   im.ready = false;
 
   im.names.clear();
-  std::ifstream f(classes_path);
-  std::string line;
-  while (std::getline(f, line)) {
-    if (!line.empty() && line.back() == '\r') {
-      line.pop_back();
-    }
-    if (!line.empty()) {
-      im.names.push_back(line);
+  if (!classes_path.empty()) {
+    std::ifstream f(classes_path);
+    std::string line;
+    while (std::getline(f, line)) {
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
+      }
+      if (!line.empty()) {
+        im.names.push_back(line);
+      }
     }
   }
 
@@ -357,12 +363,14 @@ void YoloDetector::detect(
     return "";
   };
 
-  auto is_bag = [&](int id) {
+  auto is_wanted = [&](int id) {
     if (num_classes == 1) return true;
-    if (num_classes == 80 && (id == 24 || id == 26 || id == 28)) return true;
+    if (want_bag.empty()) return true;
     const std::string n = get_label(id);
-    if (!n.empty()) {
-      return n == "backpack" || n == "handbag" || n == "suitcase" || want_bag.count(n) > 0;
+    if (!n.empty() && want_bag.count(n) > 0) return true;
+    if (num_classes == 80) {
+      if (want_bag.count("bag") > 0 && (id == 24 || id == 26 || id == 28)) return true;
+      if (want_bag.count("chair") > 0 && (id == 56 || id == 57)) return true;
     }
     return false;
   };
@@ -388,7 +396,7 @@ void YoloDetector::detect(
       cls_id = class_id_pt.x;
     }
 
-    if (score < im.conf_threshold || !is_bag(cls_id)) {
+    if (score < im.conf_threshold || !is_wanted(cls_id)) {
       continue;
     }
 
@@ -420,7 +428,12 @@ void YoloDetector::detect(
     d.rect = boxes[static_cast<size_t>(idx)];
     d.score = confidences[static_cast<size_t>(idx)];
     d.class_id = class_ids[static_cast<size_t>(idx)];
-    d.label = "bag";
+    if (num_classes == 1) {
+      d.label = im.default_label;
+    } else {
+      d.label = get_label(d.class_id);
+      if (d.label.empty()) d.label = im.default_label;
+    }
     out.push_back(d);
   }
 }
@@ -788,9 +801,12 @@ private:
 
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr yaw_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr bag_dets_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr drink_dets_publisher_; // publish /zed/drink_detections (botol, cracker, drinks)
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr persons_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr gesture_publisher_;  // publish gesture RIGHT/LEFT/NONE
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr attributes_publisher_; // publish /zed/person_attributes
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr empty_seat_publisher_; // publish /zed/empty_seat (left, center, right)
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr chair_dets_publisher_; // publish /zed/chair_detections
   rclcpp::TimerBase::SharedPtr timer_;
 
   bool publish_yaw_{true};
@@ -842,16 +858,46 @@ private:
     double y_m{0.0};
     double range_m{0.0};
   };
+  struct PrevItem {
+    std::string label;
+    cv::Rect bbox;
+    bool has_pos{false};
+    double x_m{0.0};
+    double y_m{0.0};
+    double range_m{0.0};
+  };
+  struct PrevChair {
+    cv::Rect bbox;
+    bool has_pos{false};
+    double x_m{0.0};
+    double y_m{0.0};
+    double range_m{0.0};
+    bool occupied{false};
+    std::string side{"center"};
+  };
   std::vector<PrevPerson> preview_persons_;
   std::vector<PrevBag> preview_bags_;
+  std::vector<PrevItem> preview_drinks_;
+  std::vector<PrevChair> preview_chairs_;
 
   YoloDetector yolo_;
-  bool enable_yolo_{false};
+  YoloDetector botol_yolo_;
+  YoloDetector cracker_yolo_;
+  YoloDetector chair_yolo_;
+
+  bool enable_yolo_{true};
+  bool enable_drinks_{true};
+  bool enable_chair_{true};
   std::vector<std::string> bag_labels_;
+  std::vector<std::string> chair_labels_;
   double yolo_min_area_{1500.0};
   int yolo_stride_{2};
   int yolo_frame_{0};
+  int drink_frame_{0};
+  int chair_frame_{0};
   std::vector<YoloDetection> last_bag_dets_;
+  std::vector<YoloDetection> last_drink_dets_;
+  std::vector<YoloDetection> last_chair_dets_;
 
   // Memori Operator (Stabilisasi ID & Re-ID saat hilang-timbul)
   struct OperatorMemory {
@@ -880,10 +926,10 @@ ZedNode::ZedNode()
   declare_parameter("yaw_360", true);
   declare_parameter("enable_body_tracking", true);
   declare_parameter("depth_minimum_distance", 30.0);
-  declare_parameter("enable_yolo", false);
+  declare_parameter("enable_yolo", true);
   declare_parameter("debug_window", false);
   declare_parameter("mirror", true);
-  declare_parameter("yolo_model", std::string(""));
+  declare_parameter("yolo_model", std::string("models/yolov8n_sim.onnx"));
   declare_parameter("yolo_classes", std::string("models/coco_names.txt"));
   declare_parameter("yolo_conf", 0.25);
   declare_parameter("yolo_nms", 0.45);
@@ -891,6 +937,12 @@ ZedNode::ZedNode()
   declare_parameter("yolo_stride", 2);
   declare_parameter("bag_labels",std::vector<std::string>{"bag", "backpack", "handbag", "suitcase"});
   declare_parameter("yolo_min_area", 1500.0);
+  declare_parameter("botol_model", std::string("models/botol.onnx"));
+  declare_parameter("cracker_model", std::string("models/best_cracker.onnx"));
+  declare_parameter("enable_drinks", true);
+  declare_parameter("chair_model", std::string(""));
+  declare_parameter("enable_chair", true);
+  declare_parameter("chair_labels", std::vector<std::string>{"chair", "couch", "bench"});
 
   // Parameter Model AI untuk Atribut Orang (Gender, Warna Pakaian, Warna Rambut)
   declare_parameter("gender_model", std::string("models/gender_cls.onnx"));
@@ -927,9 +979,12 @@ ZedNode::ZedNode()
 
   yaw_publisher_ = create_publisher<std_msgs::msg::Float64>("/zed/yaw_deg", 10);
   bag_dets_publisher_ = create_publisher<std_msgs::msg::String>("/zed/bag_detections", 10);
+  drink_dets_publisher_ = create_publisher<std_msgs::msg::String>("/zed/drink_detections", 10);
   persons_publisher_ = create_publisher<std_msgs::msg::String>("/zed/person_label", 10);
   gesture_publisher_ = create_publisher<std_msgs::msg::String>("/zed/gesture", 10);
   attributes_publisher_ = create_publisher<std_msgs::msg::String>("/zed/person_attributes", 10);
+  empty_seat_publisher_ = create_publisher<std_msgs::msg::String>("/zed/empty_seat", 10);
+  chair_dets_publisher_ = create_publisher<std_msgs::msg::String>("/zed/chair_detections", 10);
 
   sl::InitParameters init_parameters;
   init_parameters.depth_mode = sl::DEPTH_MODE::ULTRA;
@@ -989,8 +1044,13 @@ ZedNode::ZedNode()
   auto resolve = [](const std::string & p) {
     if (p.empty()) return std::string("");
     if (std::filesystem::path(p).is_absolute()) return p;
-    try { return ament_index_cpp::get_package_share_directory("athome_vision") + "/" + p; }
-    catch (...) { return std::string("share/athome_vision/") + p; }
+    try {
+      std::string sp = ament_index_cpp::get_package_share_directory("athome_vision") + "/" + p;
+      if (std::filesystem::exists(sp)) return sp;
+    } catch (...) {}
+    if (std::filesystem::exists(p)) return p;
+    if (std::filesystem::exists("src/athome_vision/" + p)) return std::string("src/athome_vision/") + p;
+    return std::string("share/athome_vision/") + p;
   };
 
   if (enable_yolo_) {
@@ -1009,11 +1069,70 @@ ZedNode::ZedNode()
         int size   = static_cast<int>(get_parameter("yolo_size").as_int());
 
         std::string err;
-        if (!yolo_.load(model_path, classes_path, conf, nms, size, &err)) {
+        if (!yolo_.load(model_path, classes_path, conf, nms, size, "bag", &err)) {
           IC("YOLO load error", err);
           enable_yolo_ = false;
         } else {
           IC("YOLO loaded successfully", model_path);
+        }
+      }
+    }
+  }
+
+  // Load Model-model YOLO untuk Deteksi Minuman / Makanan (Botol & Cracker)
+  enable_drinks_ = get_parameter("enable_drinks").as_bool();
+  if (enable_drinks_) {
+    float conf = static_cast<float>(get_parameter("yolo_conf").as_double());
+    float nms  = static_cast<float>(get_parameter("yolo_nms").as_double());
+    int size   = static_cast<int>(get_parameter("yolo_size").as_int());
+
+    const std::string botol_param = get_parameter("botol_model").as_string();
+    if (!botol_param.empty()) {
+      std::string botol_path = resolve(botol_param);
+      if (std::filesystem::exists(botol_path)) {
+        std::string err;
+        if (botol_yolo_.load(botol_path, "", conf, nms, size, "botol", &err)) {
+          IC("Botol ONNX model loaded successfully", botol_path);
+        } else {
+          IC("Botol ONNX load error", err);
+        }
+      } else {
+        IC("Botol ONNX model not found", botol_path);
+      }
+    }
+
+    const std::string cracker_param = get_parameter("cracker_model").as_string();
+    if (!cracker_param.empty()) {
+      std::string cracker_path = resolve(cracker_param);
+      if (std::filesystem::exists(cracker_path)) {
+        std::string err;
+        if (cracker_yolo_.load(cracker_path, "", conf, nms, size, "cracker", &err)) {
+          IC("Cracker ONNX model loaded successfully", cracker_path);
+        } else {
+          IC("Cracker ONNX load error", err);
+        }
+      } else {
+        IC("Cracker ONNX model not found", cracker_path);
+      }
+    }
+  }
+
+  // Load Model YOLO untuk Deteksi Kursi (jika ada model custom kursi, jika tidak fallback ke YOLO COCO)
+  enable_chair_ = get_parameter("enable_chair").as_bool();
+  chair_labels_ = get_parameter("chair_labels").as_string_array();
+  if (enable_chair_) {
+    const std::string chair_param = get_parameter("chair_model").as_string();
+    if (!chair_param.empty()) {
+      std::string chair_path = resolve(chair_param);
+      if (std::filesystem::exists(chair_path)) {
+        float conf = static_cast<float>(get_parameter("yolo_conf").as_double());
+        float nms  = static_cast<float>(get_parameter("yolo_nms").as_double());
+        int size   = static_cast<int>(get_parameter("yolo_size").as_int());
+        std::string err;
+        if (chair_yolo_.load(chair_path, "", conf, nms, size, "chair", &err)) {
+          IC("Custom Chair ONNX model loaded successfully", chair_path);
+        } else {
+          IC("Custom Chair ONNX load error", err);
         }
       }
     }
@@ -1157,6 +1276,45 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
   std_msgs::msg::String bag_msg;
   bag_msg.data = bag_str;
   bag_dets_publisher_->publish(bag_msg);
+
+  // Deteksi Minuman & Makanan (Botol & Cracker) untuk Receptionist
+  std::vector<YoloDetection> drink_dets = last_drink_dets_;
+  if (enable_drinks_) {
+    if (drink_frame_++ % std::max(1, yolo_stride_) == 0) {
+      drink_dets.clear();
+      if (botol_yolo_.ready()) {
+        std::vector<YoloDetection> b_dets;
+        botol_yolo_.detect(bgr, {}, b_dets);
+        drink_dets.insert(drink_dets.end(), b_dets.begin(), b_dets.end());
+      }
+      if (cracker_yolo_.ready()) {
+        std::vector<YoloDetection> c_dets;
+        cracker_yolo_.detect(bgr, {}, c_dets);
+        drink_dets.insert(drink_dets.end(), c_dets.begin(), c_dets.end());
+      }
+      last_drink_dets_ = drink_dets;
+    }
+  }
+
+  preview_drinks_.clear();
+  std::string drink_str;
+  for (const auto & d : drink_dets) {
+    if (static_cast<double>(d.rect.area()) < yolo_min_area_) continue;
+    double x = 0.0, y = 0.0, z = 0.0;
+    const bool ok = get3dCoordinatesWithOffset(d.rect, point_cloud, x, y, z);
+    const double dist = ok ? std::hypot(x, y) : 0.0;
+    preview_drinks_.push_back({d.label, d.rect, ok, x, y, dist});
+    if (is_receptionist_ && ok) {
+      IC("[REC:ITEM]", d.label, x, y, dist);
+    }
+
+    if (!drink_str.empty()) drink_str += ";";
+    drink_str += cv::format("%s:%d,%d,%d,%d|", d.label.c_str(), d.rect.x, d.rect.y, d.rect.width, d.rect.height);
+    drink_str += ok ? cv::format("%.2f,%.2f,%.2f|%.2f", x, y, z, d.score) : cv::format("nan,nan,nan|%.2f", d.score);
+  }
+  std_msgs::msg::String drink_msg;
+  drink_msg.data = drink_str;
+  drink_dets_publisher_->publish(drink_msg);
 
   preview_persons_.clear();
   std::string person_str = "NO_PERSON";
@@ -1370,6 +1528,123 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     persons_publisher_->publish(m);
   }
 
+  // Deteksi Kursi & Klasifikasi Kosong vs Penuh untuk Receptionist
+  std::vector<YoloDetection> chair_dets = last_chair_dets_;
+  if (enable_chair_) {
+    if (chair_frame_++ % std::max(1, yolo_stride_) == 0) {
+      chair_dets.clear();
+      if (chair_yolo_.ready()) {
+        chair_yolo_.detect(bgr, {}, chair_dets);
+      } else if (enable_yolo_ && yolo_.ready()) {
+        yolo_.detect(bgr, chair_labels_, chair_dets);
+      }
+      last_chair_dets_ = chair_dets;
+    }
+  }
+
+  preview_chairs_.clear();
+  std::string chair_str;
+  std::string best_empty_side = "none";
+  double best_empty_dist = 1e9;
+
+  for (const auto & d : chair_dets) {
+    if (static_cast<double>(d.rect.area()) < yolo_min_area_) continue;
+    double x = 0.0, y = 0.0, z = 0.0;
+    const bool ok = get3dCoordinatesWithOffset(d.rect, point_cloud, x, y, z);
+    const double dist = ok ? std::hypot(x, y) : 0.0;
+
+    // Tentukan apakah kursi terisi (occupied) atau kosong (empty)
+    bool is_occupied = false;
+    for (const auto & p : preview_persons_) {
+      cv::Rect inter = d.rect & p.bbox;
+      if (inter.area() > 0) {
+        const double chair_area = static_cast<double>(d.rect.area());
+        const double overlap_ratio = static_cast<double>(inter.area()) / chair_area;
+        const double person_overlap = static_cast<double>(inter.area()) / static_cast<double>(p.bbox.area());
+        if (overlap_ratio > 0.18 || person_overlap > 0.20) {
+          is_occupied = true;
+          break;
+        }
+      }
+      // Cek apakah titik tengah badan atau titik kunci orang berada di dalam kotak kursi
+      const int p_cx = p.bbox.x + p.bbox.width / 2;
+      const int p_cy = p.bbox.y + p.bbox.height / 2;
+      if (d.rect.contains(cv::Point(p_cx, p_cy))) {
+        is_occupied = true;
+        break;
+      }
+      for (const auto & kp : p.kpt) {
+        if (std::isfinite(kp.x) && std::isfinite(kp.y)) {
+          if (d.rect.contains(cv::Point(static_cast<int>(kp.x), static_cast<int>(kp.y)))) {
+            is_occupied = true;
+            break;
+          }
+        }
+      }
+      // Cek jarak 3D jika keduanya memiliki data depth
+      if (ok && p.has_pos) {
+        const double d3d = std::hypot(x - p.x_m, y - p.y_m);
+        if (d3d < 0.65) {
+          is_occupied = true;
+          break;
+        }
+      }
+      if (is_occupied) break;
+    }
+
+    // Tentukan sisi horizontal (left, center, right)
+    std::string side = "center";
+    if (ok) {
+      if (y > 0.20) {
+        side = "left";
+      } else if (y < -0.20) {
+        side = "right";
+      }
+    } else {
+      const int chair_cx = d.rect.x + d.rect.width / 2;
+      const int W = bgr.cols > 0 ? bgr.cols : 640;
+      if (chair_cx < W / 3) {
+        side = mirror_ ? "right" : "left";
+      } else if (chair_cx > 2 * W / 3) {
+        side = mirror_ ? "left" : "right";
+      }
+    }
+
+    preview_chairs_.push_back({d.rect, ok, x, y, dist, is_occupied, side});
+
+    if (!is_occupied) {
+      if (ok && dist > 0.1 && dist < best_empty_dist) {
+        best_empty_dist = dist;
+        best_empty_side = side;
+      } else if (best_empty_side == "none") {
+        best_empty_side = side;
+      }
+    }
+
+    if (is_receptionist_) {
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "\033[1;35m[CHAIR]\033[0m Kursi %s di sisi %s (3D: x=%.2f m, y=%.2f m, dist=%.2f m)",
+        is_occupied ? "TERISI (OCCUPIED)" : "KOSONG (EMPTY)", side.c_str(), x, y, dist);
+    }
+
+    if (!chair_str.empty()) chair_str += ";";
+    chair_str += cv::format("chair:%d,%d,%d,%d|", d.rect.x, d.rect.y, d.rect.width, d.rect.height);
+    chair_str += ok ? cv::format("%.2f,%.2f,%.2f|", x, y, z) : "nan,nan,nan|";
+    chair_str += is_occupied ? "occupied|" : "empty|";
+    chair_str += side;
+  }
+
+  // Publish /zed/chair_detections
+  std_msgs::msg::String chair_msg;
+  chair_msg.data = chair_str;
+  chair_dets_publisher_->publish(chair_msg);
+
+  // Publish /zed/empty_seat untuk Receptionist State Machine
+  std_msgs::msg::String empty_seat_msg;
+  empty_seat_msg.data = best_empty_side;
+  empty_seat_publisher_->publish(empty_seat_msg);
+
   showPreview(bgr);
 }
 
@@ -1444,6 +1719,43 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       }
     }
 
+    for (size_t i = 0; i < std::min<size_t>(4, preview_drinks_.size()); ++i) {
+      const auto & d = preview_drinks_[i];
+      cv::Rect r = flip_rect(d.bbox);
+      r &= cv::Rect(0, 0, W, H);
+      if (r.width > 0 && r.height > 0) {
+        cv::rectangle(canvas, r, cv::Scalar(255, 255, 0), 2);
+        const int item_cx = r.x + r.width / 2;
+        const int item_cy = r.y + r.height / 2;
+        cv::circle(canvas, cv::Point(item_cx, item_cy), 4, cv::Scalar(255, 255, 0), -1);
+        std::string txt = d.label;
+        if (d.has_pos) {
+          txt += cv::format(" (%.2fm, %.2fm)", d.x_m, d.y_m);
+        }
+        cv::putText(canvas, txt, cv::Point(r.x, std::max(15, r.y - 5)),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 0), 1, cv::LINE_AA);
+      }
+    }
+
+    for (size_t i = 0; i < std::min<size_t>(4, preview_chairs_.size()); ++i) {
+      const auto & c = preview_chairs_[i];
+      cv::Rect r = flip_rect(c.bbox);
+      r &= cv::Rect(0, 0, W, H);
+      if (r.width > 0 && r.height > 0) {
+        const cv::Scalar color = c.occupied ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0); // Merah: Penuh, Hijau: Kosong
+        cv::rectangle(canvas, r, color, 2);
+        const int chair_cx = r.x + r.width / 2;
+        const int chair_cy = r.y + r.height / 2;
+        cv::circle(canvas, cv::Point(chair_cx, chair_cy), 4, color, -1);
+        std::string txt = (c.occupied ? "Chair (Occupied)" : "Chair (Empty): ") + c.side;
+        if (c.has_pos) {
+          txt += cv::format(" (%.2fm, %.2fm)", c.x_m, c.y_m);
+        }
+        cv::putText(canvas, txt, cv::Point(r.x, std::max(15, r.y - 5)),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv::LINE_AA);
+      }
+    }
+
     const auto now_t = now();
     if ((now_t - preview_fps_t_).seconds() >= 1.0) {
       preview_fps_t_ = now_t;
@@ -1464,6 +1776,17 @@ void ZedNode::showPreview(const cv::Mat & bgr)
 
     const PrevBag b0 = (!preview_bags_.empty() && preview_bags_[0].has_pos) ? preview_bags_[0] : PrevBag{};
     draw_hud("Bag :", b0.x_m, b0.y_m, b0.range_m, cv::Scalar(255, 0, 255));
+
+    if (!preview_drinks_.empty() && preview_drinks_[0].has_pos) {
+      draw_hud(preview_drinks_[0].label + " :", preview_drinks_[0].x_m, preview_drinks_[0].y_m, preview_drinks_[0].range_m, cv::Scalar(255, 255, 0));
+    }
+
+    for (const auto & c : preview_chairs_) {
+      if (!c.occupied && c.has_pos) {
+        draw_hud("Empty Chair [" + c.side + "] :", c.x_m, c.y_m, c.range_m, cv::Scalar(0, 255, 0));
+        break;
+      }
+    }
 
     const std::string win = "POV";
     if (!preview_inited_) {

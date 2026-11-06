@@ -550,14 +550,24 @@ private:
            target.find(d_name) != std::string::npos))
       {
         found_match = true;
-        return calculateHorizontalPosition(drink.bbox_x, drink.bbox_w);
+        const std::string side = calculateHorizontalPosition(drink.bbox_x, drink.bbox_w);
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;32m[BEVERAGE]\033[0m Cocok item '%s' di sisi %s (3D: x=%.2f m, y=%.2f m)",
+          drink.name.c_str(), side.c_str(), drink.x, drink.y);
+        return side;
       }
     }
 
     if (!drinks_list.empty()) {
       found_match = true;
       const auto & first = drinks_list.front();
-      return calculateHorizontalPosition(first.bbox_x, first.bbox_w);
+      const std::string side = calculateHorizontalPosition(first.bbox_x, first.bbox_w);
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[1;33m[BEVERAGE]\033[0m Fallback item terdekat '%s' di sisi %s (3D: x=%.2f m, y=%.2f m)",
+        first.name.c_str(), side.c_str(), first.x, first.y);
+      return side;
     }
 
     return "center";
@@ -848,7 +858,8 @@ private:
       static const std::vector<std::string> kKnownDrinks = {
         "orange juice", "apple juice", "iced tea", "green tea",
         "coke", "cola", "pepsi", "sprite", "fanta",
-        "milk", "water", "coffee", "tea", "juice", "soda"
+        "milk", "water", "coffee", "tea", "juice", "soda",
+        "botol", "bottle", "cracker", "cracker box", "snack"
       };
       for (const auto & drink : kKnownDrinks) {
         if (containsWholePhrase(norm, drink) &&
@@ -1015,6 +1026,24 @@ private:
         obj.bbox_w = rect[2];
         obj.bbox_h = rect[3];
       }
+
+      // Parse 3D coordinates (x, y, z)
+      const auto second_bar = chunk.find('|', bar + 1);
+      const std::string coord_str = (second_bar != std::string::npos)
+        ? chunk.substr(bar + 1, second_bar - bar - 1)
+        : chunk.substr(bar + 1);
+      std::stringstream css(coord_str);
+      std::string c_val;
+      std::vector<double> coords;
+      while (std::getline(css, c_val, ',')) {
+        try { coords.push_back(std::stod(c_val)); } catch (...) {}
+      }
+      if (coords.size() >= 3) {
+        obj.x = coords[0];
+        obj.y = coords[1];
+        obj.z = coords[2];
+      }
+
       list.push_back(obj);
     }
     return list;
@@ -1032,6 +1061,12 @@ private:
       return;
     }
     latest_drinks_ = parseDetectionString(message->data);
+    for (const auto & item : latest_drinks_) {
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "\033[1;36m[DRINK_DET]\033[0m Terdeteksi '%s' pada posisi 3D (x=%.2f m, y=%.2f m, z=%.2f m)",
+        item.name.c_str(), item.x, item.y, item.z);
+    }
   }
 
   // Callback fallback (/zed/bag_detections): HANYA digunakan jika /zed/drink_detections
@@ -1077,8 +1112,18 @@ private:
   {
     if (!isVisionActive() || !message || message->data.empty()) return;
     std::lock_guard<std::mutex> lock(vision_mutex_);
-    empty_seat_position_ = normalize(message->data);
+    const std::string raw = normalize(message->data);
+    if (raw == "none" || raw.empty()) {
+      has_explicit_empty_seat_ = false;
+      return;
+    }
+    const auto pipe = raw.find('|');
+    empty_seat_position_ = (pipe != std::string::npos) ? raw.substr(0, pipe) : raw;
     has_explicit_empty_seat_ = true;
+    RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 2000,
+      "\033[1;32m[EMPTY_SEAT]\033[0m Kursi kosong terdeteksi di sisi: %s",
+      empty_seat_position_.c_str());
   }
 
   // ============================================================================
