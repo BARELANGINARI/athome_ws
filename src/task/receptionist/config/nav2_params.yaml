@@ -90,12 +90,14 @@ controller_server:
       plugin: "nav2_rotation_shim_controller::RotationShimController" # Rotation Shim Controller (putar haluan menghadap path terlebih dahulu)
       primary_controller: "dwb_core::DWBLocalPlanner"                 # Primary local controller (DWB)
 
-      # Rotation Shim Parameters (KUNCI: Memutar robot in-place menghadap arah jalur path sebelum melaju)
-      angular_dist_threshold: 0.85           # Ambang sudut (rad, ~49 derajat): hand-off lebih cepat ke DWB tanpa harus menunggu putaran penuh
+      # Rotation Shim Parameters (KUNCI: Memutar robot in-place halus hanya jika benar-benar membelakangi jalur di awal)
+      angular_dist_threshold: 1.2            # Ambang picu rotasi in-place (~68 derajat). Jika sudut di bawah 68 derajat, robot langsung melaju maju sambil berbelok menyusuri path!
+      angular_disengage_threshold: 0.6       # Histeresis hand-off (~34 derajat): saat in-place berputar dan mencapai 34 derajat, langsung serahkan ke DWB agar sisa sudut diselesaikan sambil berjalan maju!
       forward_sampling_distance: 0.5         # Jarak sampel ke depan pada path (m) untuk mendeteksi arah haluan path
-      rotate_to_heading_angular_vel: 1.5     # Kecepatan rotasi in-place dinaikkan ke 1.5 rad/s agar putaran di pintu sempit gesit
-      max_angular_accel: 3.0                 # Akselerasi rotasi in-place dinaikkan ke 3.0 rad/s^2 agar responsif
-      simulate_ahead_time: 0.4               # Diturunkan ke 0.4s agar tidak ragu-ragu/false collision dengan kusen pintu 90cm
+      rotate_to_heading_angular_vel: 1.0     # Kecepatan rotasi in-place dibuat stabil dan halus di 1.0 rad/s
+      max_angular_accel: 2.5                 # Akselerasi rotasi in-place dibuat halus dan teratur
+      simulate_ahead_time: 0.3               # 0.3s agar tidak ragu-ragu / false collision di dekat kusen pintu 90cm
+      rotate_to_heading_once: true           # KUNCI MUTLAK: Rotasi in-place HANYA jalan 1x di awal goal. DILARANG memotong di tengah jalan agar tidak terjadi rotate-stop-rotate-stop!
 
       # DWB Local Planner Parameters (3-wheel omni)
       debug_trajectory_details: False    # Disable heavy debug logging to prevent loop rate dropping from 20Hz to 3Hz
@@ -105,7 +107,7 @@ controller_server:
       max_vel_y: 0.20                    # Max lateral strafe velocity (m/s)
       min_speed_xy: 0.05                 # Min translational speed (m/s, mencegah micro-speed di bawah deadband motor)
       max_speed_xy: 0.30                 # Max translational speed (m/s)
-      max_vel_theta: 1.5                 # Max angular velocity dinaikkan ke 1.5 rad/s agar putaran lincah
+      max_vel_theta: 1.2                 # Max angular velocity disesuaikan ke 1.2 rad/s agar manuver halus
       min_speed_theta: 0.15              # Min angular velocity (rad/s, dinaikkan ke 0.15 agar PWM motor di atas deadband motor dan tidak freeze di lantai)
       acc_lim_x: 1.2                     # Translation X acceleration limit (m/s^2)
       acc_lim_y: 1.0                     # Translation Y acceleration limit (m/s^2)
@@ -130,9 +132,9 @@ controller_server:
       shorten_transformed_plan: True     # Potong plan sesuai batas local costmap
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"] # GoalAlign dihapus; GoalDist diberi bobot kecil agar robot maju menyusuri path tanpa memotong dinding
       BaseObstacle.scale: 0.02           # Obstacle proximity penalty weight (standar Nav2 0.02; nilai 0.25 menyebabkan robot freeze)
-      PathDist.scale: 40.0               # Prioritas utama: bobot dominan ketat mengikuti garis jalur path (mencegah jalan memotong dinding)
-      GoalDist.scale: 2.0                # Bobot dorong maju ke titik 0.8m di depan pada garis path (tidak ditarik ke seberang dinding)
-      PathAlign.scale: 16.0              # Bobot penjajaran hadap saat bergerak menyusuri path
+      PathDist.scale: 35.0               # Bobot ketat mengikuti garis jalur path (mencegah jalan memotong dinding)
+      GoalDist.scale: 6.0                # Bobot dorong maju kontinu agar robot melaju maju menyusuri path sambil berbelok
+      PathAlign.scale: 24.0              # KUNCI: Bobot penjajaran hadap ditingkatkan agar robot memutar haluan ke arah path SAMBIL melaju maju (v_x > 0)
       PathAlign.forward_point_distance: 0.10 # KUNCI: Dikecilkan ke 0.10m agar radius ayunan hidung kecil di goal sehingga TIDAK melawan RotateToGoal
       RotateToGoal.scale: 36.0           # Bobot rotasi yaw tujuan akhir (dinaikkan dominan ke 36.0 agar robot tegas mengunci yaw target)
       RotateToGoal.slowing_factor: 5.0
