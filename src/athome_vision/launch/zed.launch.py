@@ -31,6 +31,7 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_drinks', default_value='true', description='Enable bottle & cracker detection for receptionist'),
         DeclareLaunchArgument('chair_model', default_value='', description='Optional path to custom chair ONNX model'),
         DeclareLaunchArgument('enable_chair', default_value='true', description='Enable chair detection and empty/occupied classification'),
+        DeclareLaunchArgument('enable_bag', default_value='true', description='Enable luggage bag detection (for Help Me Carry)'),
 
         Node(
             package='athome_vision',
@@ -65,6 +66,7 @@ def generate_launch_description():
                 'enable_drinks': LaunchConfiguration('enable_drinks'),
                 'chair_model': LaunchConfiguration('chair_model'),
                 'enable_chair': LaunchConfiguration('enable_chair'),
+                'enable_bag': LaunchConfiguration('enable_bag'),
             }],
         ),
     ])
