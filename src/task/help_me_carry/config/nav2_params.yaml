@@ -84,36 +84,44 @@ controller_server:
       stateful: True                     # Stateful goal checking
       plugin: "nav2_controller::SimpleGoalChecker" # Goal checker plugin
       xy_goal_tolerance: 0.15            # Goal XY position tolerance (m)
-      yaw_goal_tolerance: 0.35           # Goal yaw orientation tolerance (rad)
+      yaw_goal_tolerance: 0.38           # Goal yaw orientation tolerance (rad, 0.38 rad ≈ 21.8 derajat)
 
     FollowPath:
-      plugin: "dwb_core::DWBLocalPlanner" # DWB local planner (omni)
+      plugin: "nav2_rotation_shim_controller::RotationShimController" # Rotation Shim Controller (putar haluan menghadap path terlebih dahulu)
+      primary_controller: "dwb_core::DWBLocalPlanner"                 # Primary local controller (DWB)
+
+      # Rotation Shim Parameters (KUNCI: Memutar robot in-place menghadap arah jalur path sebelum melaju)
+      angular_dist_threshold: 0.85           # Ambang sudut (rad, ~49 derajat): hand-off lebih cepat ke DWB tanpa harus menunggu putaran penuh
+      forward_sampling_distance: 0.5         # Jarak sampel ke depan pada path (m) untuk mendeteksi arah haluan path
+      rotate_to_heading_angular_vel: 1.5     # Kecepatan rotasi in-place dinaikkan ke 1.5 rad/s agar putaran di pintu sempit gesit
+      max_angular_accel: 3.0                 # Akselerasi rotasi in-place dinaikkan ke 3.0 rad/s^2 agar responsif
+      simulate_ahead_time: 0.4               # Diturunkan ke 0.4s agar tidak ragu-ragu/false collision dengan kusen pintu 90cm
 
       # DWB Local Planner Parameters (3-wheel omni)
       debug_trajectory_details: False    # Disable heavy debug logging to prevent loop rate dropping from 20Hz to 3Hz
-      min_vel_x: -0.08                   # Izinkan sedikit mundur (-0.08 m/s) agar tidak deadlock saat dekat obstacle
+      min_vel_x: 0.0                     # KUNCI MUTLAK: 0.0 m/s (DILARANG MUNDUR! Robot hanya boleh maju ke depan menghadap path)
       max_vel_x: 0.30                    # Max forward velocity (m/s)
       min_vel_y: -0.20                   # Min lateral strafe velocity (m/s, diperluas agar bisa strafe menjauhi obstacle)
       max_vel_y: 0.20                    # Max lateral strafe velocity (m/s)
       min_speed_xy: 0.05                 # Min translational speed (m/s, mencegah micro-speed di bawah deadband motor)
       max_speed_xy: 0.30                 # Max translational speed (m/s)
-      max_vel_theta: 1.0                 # Max angular velocity (rad/s, responsif saat memutar haluan)
-      min_speed_theta: 0.15              # Min angular velocity (rad/s, mengatasi friksi motor saat rotasi in-place)
+      max_vel_theta: 1.5                 # Max angular velocity dinaikkan ke 1.5 rad/s agar putaran lincah
+      min_speed_theta: 0.15              # Min angular velocity (rad/s, dinaikkan ke 0.15 agar PWM motor di atas deadband motor dan tidak freeze di lantai)
       acc_lim_x: 1.2                     # Translation X acceleration limit (m/s^2)
       acc_lim_y: 1.0                     # Translation Y acceleration limit (m/s^2)
-      acc_lim_theta: 1.5                 # Angular acceleration limit (rad/s^2)
+      acc_lim_theta: 3.0                 # Angular acceleration limit dinaikkan ke 3.0 rad/s^2
       decel_lim_x: -1.2                  # Translation X deceleration limit (m/s^2)
       decel_lim_y: -1.0                  # Translation Y deceleration limit (m/s^2)
-      decel_lim_theta: -1.5              # Angular deceleration limit (rad/s^2)
+      decel_lim_theta: -3.0              # Angular deceleration limit (-3.0 rad/s^2)
       vx_samples: 20                     # VX velocity samples
       vy_samples: 15                     # VY velocity samples (dinaikkan ke 15 agar sampling translasi lateral omni halus)
-      vtheta_samples: 25                 # Vtheta velocity samples
-      sim_time: 1.2                      # Trajectory simulation time (s, diturunkan dari 2.0 ke 1.2 agar tidak false collision di area sempit)
+      vtheta_samples: 31                 # Vtheta velocity samples (angka ganjil 31 agar ada sampel resolusi nol dan rotasi halus)
+      sim_time: 1.2                      # Trajectory simulation time (s)
       linear_granularity: 0.05           # Linear simulation step (m)
       angular_granularity: 0.025         # Angular simulation step (rad)
       transform_tolerance: 0.25          # TF transform tolerance (s)
       xy_goal_tolerance: 0.15            # Goal XY tolerance (m)
-      trans_stopped_velocity: 0.05       # Stopped translational velocity threshold (m/s)
+      trans_stopped_velocity: 0.08       # Stopped translational velocity threshold (m/s, memungkinkan rotasi goal segera aktif saat robot melambat)
       short_circuit_trajectory_evaluation: False # Allow exploring alternative trajectories when rotating near obstacles
       stateful: True                     # Maintain state between iterations
       prune_plan: True                   # Pangkas titik path di belakang robot agar fokus maju ke rute di depan
@@ -124,9 +132,9 @@ controller_server:
       BaseObstacle.scale: 0.02           # Obstacle proximity penalty weight (standar Nav2 0.02; nilai 0.25 menyebabkan robot freeze)
       PathDist.scale: 40.0               # Prioritas utama: bobot dominan ketat mengikuti garis jalur path (mencegah jalan memotong dinding)
       GoalDist.scale: 2.0                # Bobot dorong maju ke titik 0.8m di depan pada garis path (tidak ditarik ke seberang dinding)
-      PathAlign.scale: 20.0              # Bobot penjajaran hadap: selaras dengan tangen garis path (robot menghadap ke arah garis path)
-      PathAlign.forward_point_distance: 0.15 # Forward evaluation point distance (m)
-      RotateToGoal.scale: 10.0           # Final goal rotation weight (hanya aktif di titik akhir saat tiba di toleransi goal)
+      PathAlign.scale: 16.0              # Bobot penjajaran hadap saat bergerak menyusuri path
+      PathAlign.forward_point_distance: 0.10 # KUNCI: Dikecilkan ke 0.10m agar radius ayunan hidung kecil di goal sehingga TIDAK melawan RotateToGoal
+      RotateToGoal.scale: 36.0           # Bobot rotasi yaw tujuan akhir (dinaikkan dominan ke 36.0 agar robot tegas mengunci yaw target)
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0  # -1.0 = KUNCI: nonaktifkan orientasi tujuan selama di perjalanan, hanya aktif saat tiba di titik X,Y final
 

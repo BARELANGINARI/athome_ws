@@ -51,14 +51,14 @@ public:
     declare_parameter<double>("nav_timeout_sec", 110.0);
 
     // Door waypoint
-    declare_parameter<double>("door.x", 0.0);
+    declare_parameter<double>("door.x", 0.5);
     declare_parameter<double>("door.y", 0.0);
     declare_parameter<double>("door.yaw", 180.0);
 
     // Beverage area waypoint
     declare_parameter<double>("beverage_area.x", 1.9);
     declare_parameter<double>("beverage_area.y", 1.9);
-    declare_parameter<double>("beverage_area.yaw", 90.0);
+    declare_parameter<double>("beverage_area.yaw", 270.0);
 
     // Living room waypoint
     declare_parameter<double>("living_room.x", 1.5);
