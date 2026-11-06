@@ -116,13 +116,17 @@ controller_server:
       trans_stopped_velocity: 0.05       # Stopped translational velocity threshold (m/s)
       short_circuit_trajectory_evaluation: False # Allow exploring alternative trajectories when rotating near obstacles
       stateful: True                     # Maintain state between iterations
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"] # Trajectory critics (GoalAlign dihapus agar robot murni menghadap garis path)
+      prune_plan: True                   # Pangkas titik path di belakang robot agar fokus maju ke rute di depan
+      prune_distance: 0.5                # Jarak pangkas path di belakang robot (m)
+      forward_prune_distance: 0.8        # KUNCI: Batasi path di depan robot max 0.8m agar target GoalDist tidak tembus dinding ke ruang sebelah
+      shorten_transformed_plan: True     # Potong plan sesuai batas local costmap
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"] # GoalAlign dihapus; GoalDist diberi bobot kecil agar robot maju menyusuri path tanpa memotong dinding
       BaseObstacle.scale: 0.02           # Obstacle proximity penalty weight (standar Nav2 0.02; nilai 0.25 menyebabkan robot freeze)
-      PathDist.scale: 32.0               # Global path following weight (prioritas utama: bergerak mengikuti jalur)
-      GoalDist.scale: 24.0               # Goal approach weight
-      PathAlign.scale: 10.0              # Bobot penjajaran hadap ke tangen jalur (disesuaikan agar omni tetap luwes bertranslasi)
-      PathAlign.forward_point_distance: 0.10 # Forward evaluation point distance (m, standar 0.10m agar tidak memproyeksikan titik terlalu jauh)
-      RotateToGoal.scale: 32.0           # Final goal rotation weight (hanya aktif di titik akhir saat tiba di toleransi goal)
+      PathDist.scale: 40.0               # Prioritas utama: bobot dominan ketat mengikuti garis jalur path (mencegah jalan memotong dinding)
+      GoalDist.scale: 2.0                # Bobot dorong maju ke titik 0.8m di depan pada garis path (tidak ditarik ke seberang dinding)
+      PathAlign.scale: 20.0              # Bobot penjajaran hadap: selaras dengan tangen garis path (robot menghadap ke arah garis path)
+      PathAlign.forward_point_distance: 0.15 # Forward evaluation point distance (m)
+      RotateToGoal.scale: 10.0           # Final goal rotation weight (hanya aktif di titik akhir saat tiba di toleransi goal)
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0  # -1.0 = KUNCI: nonaktifkan orientasi tujuan selama di perjalanan, hanya aktif saat tiba di titik X,Y final
 

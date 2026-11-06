@@ -56,8 +56,8 @@ public:
     declare_parameter<double>("door.yaw", 180.0);
 
     // Beverage area waypoint
-    declare_parameter<double>("beverage_area.x", 1.0);
-    declare_parameter<double>("beverage_area.y", 0.2);
+    declare_parameter<double>("beverage_area.x", 1.9);
+    declare_parameter<double>("beverage_area.y", 1.9);
     declare_parameter<double>("beverage_area.yaw", 90.0);
 
     // Living room waypoint
