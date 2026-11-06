@@ -65,11 +65,6 @@ public:
     declare_parameter<double>("living_room.y", 0.0);
     declare_parameter<double>("living_room.yaw", 270.0);
 
-    // Living room center waypoint
-    declare_parameter<double>("living_room_center.x", 2.0);
-    declare_parameter<double>("living_room_center.y", 0.0);
-    declare_parameter<double>("living_room_center.yaw", 0.0);
-
     global_frame_ = get_parameter("global_frame").as_string();
     nav_timeout_sec_ = get_parameter("nav_timeout_sec").as_double();
     std::string announce_topic = get_parameter("announce_topic").as_string();
@@ -112,20 +107,10 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
-    srv_go_living_room_center_ = create_service<std_srvs::srv::Trigger>(
-      "/receptionist/go_to_living_room_center",
-      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
-             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
-        handleGoTo("living_room_center", res);
-      },
-      rclcpp::ServicesQoS(),
-      srv_cb_group_);
-
     RCLCPP_INFO(get_logger(), "Receptionist Navigation Node ready. Services available:");
     RCLCPP_INFO(get_logger(), " - /receptionist/go_to_door");
     RCLCPP_INFO(get_logger(), " - /receptionist/go_to_beverage_area");
     RCLCPP_INFO(get_logger(), " - /receptionist/go_to_living_room");
-    RCLCPP_INFO(get_logger(), " - /receptionist/go_to_living_room_center");
     publishStatus("Receptionist navigation node ready");
   }
 
@@ -180,7 +165,7 @@ public:
     }
 
     NavigateToPose::Goal goal;
-    goal.behavior_tree = "/opt/ros/jazzy/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml";
+    goal.behavior_tree = "";
     goal.pose.header.frame_id = global_frame_;
     goal.pose.header.stamp = now();
     goal.pose.pose.position.x = wp.x;
@@ -247,7 +232,6 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_door_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_beverage_area_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_living_room_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_living_room_center_;
 };
 
 }  // namespace receptionist

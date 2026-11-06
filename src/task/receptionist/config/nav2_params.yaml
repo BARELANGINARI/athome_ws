@@ -83,8 +83,8 @@ controller_server:
     general_goal_checker:
       stateful: True                     # Stateful goal checking
       plugin: "nav2_controller::SimpleGoalChecker" # Goal checker plugin
-      xy_goal_tolerance: 0.15            # Goal XY position tolerance (m)
-      yaw_goal_tolerance: 0.15           # Goal yaw orientation tolerance (rad)
+      xy_goal_tolerance: 0.20            # Goal XY position tolerance (m, dilonggarkan ke 0.20m agar tidak deadlock di dekat dinding)
+      yaw_goal_tolerance: 0.20           # Goal yaw orientation tolerance (rad)
 
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner" # DWB local planner (omni)
@@ -93,8 +93,8 @@ controller_server:
       debug_trajectory_details: False    # Disable heavy debug logging to prevent loop rate dropping from 20Hz to 3Hz
       min_vel_x: -0.08                   # Izinkan sedikit mundur (-0.08 m/s) agar tidak deadlock saat dekat obstacle
       max_vel_x: 0.30                    # Max forward velocity (m/s)
-      min_vel_y: -0.20                   # Min lateral strafe velocity (m/s, diperluas agar bisa strafe menjauhi obstacle)
-      max_vel_y: 0.20                    # Max lateral strafe velocity (m/s)
+      min_vel_y: -0.25                   # Min lateral strafe velocity (m/s, diperluas agar bisa strafe menjauhi dinding)
+      max_vel_y: 0.25                    # Max lateral strafe velocity (m/s)
       min_speed_xy: 0.05                 # Min translational speed (m/s, mencegah micro-speed di bawah deadband motor)
       max_speed_xy: 0.30                 # Max translational speed (m/s)
       max_vel_theta: 1.0                 # Max angular velocity (rad/s, responsif saat memutar haluan)
@@ -108,19 +108,19 @@ controller_server:
       vx_samples: 20                     # VX velocity samples
       vy_samples: 15                     # VY velocity samples (dinaikkan ke 15 agar sampling translasi lateral omni halus)
       vtheta_samples: 25                 # Vtheta velocity samples
-      sim_time: 1.2                      # Trajectory simulation time (s, diturunkan dari 2.0 ke 1.2 agar tidak false collision di area sempit)
+      sim_time: 0.8                      # Trajectory simulation time (s, diturunkan ke 0.8 agar tidak false collision di dekat dinding & pintu)
       linear_granularity: 0.05           # Linear simulation step (m)
       angular_granularity: 0.025         # Angular simulation step (rad)
       transform_tolerance: 0.25          # TF transform tolerance (s)
-      xy_goal_tolerance: 0.15            # Goal XY tolerance (m)
+      xy_goal_tolerance: 0.20            # Goal XY tolerance (m)
       trans_stopped_velocity: 0.05       # Stopped translational velocity threshold (m/s)
       short_circuit_trajectory_evaluation: False # Allow exploring alternative trajectories when rotating near obstacles
       stateful: True                     # Maintain state between iterations
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"] # Trajectory critics (GoalAlign dihapus agar robot murni menghadap garis path)
       BaseObstacle.scale: 0.02           # Obstacle proximity penalty weight (standar Nav2 0.02; nilai 0.25 menyebabkan robot freeze)
-      PathDist.scale: 32.0               # Global path following weight (prioritas utama: bergerak mengikuti jalur)
+      PathDist.scale: 24.0               # Global path following weight (disesuaikan ke 24.0 agar robot leluasa bermanuver menghindari tepi dinding)
       GoalDist.scale: 24.0               # Goal approach weight
-      PathAlign.scale: 10.0              # Bobot penjajaran hadap ke tangen jalur (disesuaikan agar omni tetap luwes bertranslasi)
+      PathAlign.scale: 5.0               # Bobot penjajaran hadap (diturunkan ke 5.0 agar omni leluasa strafe menyamping menjauhi dinding)
       PathAlign.forward_point_distance: 0.10 # Forward evaluation point distance (m, standar 0.10m agar tidak memproyeksikan titik terlalu jauh)
       RotateToGoal.scale: 32.0           # Final goal rotation weight (hanya aktif di titik akhir saat tiba di toleransi goal)
       RotateToGoal.slowing_factor: 5.0
@@ -223,7 +223,7 @@ planner_server:
     GridBased:
       plugin: "nav2_navfn_planner::NavfnPlanner" # Global path planner algorithm
       tolerance: 2.0                     # Search tolerance around blocked goal (m)
-      use_astar: true                    # Gunakan A* untuk mencari rute tercepat dan replanning responsif
+      use_astar: false                   # Gunakan Dijkstra untuk perambatan medan potensi yang lebih aman dan menjauhi rintangan/dinding
       allow_unknown: false               # Kunci: DILARANG lewat area unknown! Hanya boleh lewat path yang sudah pernah termapping
 
 # ---------------------------------------------------------------------

@@ -139,10 +139,6 @@ receptionist_node:
       x: 1.5
       y: 0.0
       yaw: 0.0
-    living_room_center:
-      x: 2.0
-      y: 0.0
-      yaw: 0.0
     global_frame: "map"
 
 receptionist_manager:
@@ -162,7 +158,6 @@ receptionist_manager:
 * `/receptionist/go_to_door`: Memerintahkan robot ke posisi pintu masuk.
 * `/receptionist/go_to_beverage_area`: Memerintahkan robot ke area minuman.
 * `/receptionist/go_to_living_room`: Memerintahkan robot ke area ruang tamu.
-* `/receptionist/go_to_living_room_center`: Memerintahkan robot ke titik tengah ruang tamu.
 
 ### Topik Publikasi:
 * `/hri/tts_say` (`std_msgs/msg/String`): Kalimat ucapan robot yang dikirim ke TTS engine.

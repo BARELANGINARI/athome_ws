@@ -13,10 +13,6 @@ receptionist_node:
       x: 2.0
       y: 0.0
       yaw: 270.0
-    living_room_center:
-      x: 2.0
-      y: 0.0
-      yaw: 0.0
 
     # Operational settings
     global_frame: "map"
