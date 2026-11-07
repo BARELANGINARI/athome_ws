@@ -883,6 +883,7 @@ private:
     double x_m{0.0};
     double y_m{0.0};
     double range_m{0.0};
+    bool is_sitting{false};
     std::vector<cv::Point2f> kpt;
     std::string clothing{"casual attire"};
     std::string hair{"dark hair"};
@@ -1535,7 +1536,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     bool first_p = true;
     std::string gesture_result = "NONE";  // gesture dari operator terdekat
     for (const auto & e : entries) {
-      PrevPerson pp{e.id, e.bbox, e.has_depth, e.x, e.y, e.range_m, {}};
+      PrevPerson pp{e.id, e.bbox, e.has_depth, e.x, e.y, e.range_m, false, {}};
       const auto & points = e.body->keypoint_2d;
       for (const auto & pt : points) {
         pp.kpt.emplace_back(std::isfinite(pt.x) ? pt.x : NAN, std::isfinite(pt.y) ? pt.y : NAN);
@@ -1633,7 +1634,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
 
     // Tentukan apakah kursi terisi (occupied) atau kosong (empty)
     bool is_occupied = false;
-    for (const auto & p : preview_persons_) {
+    for (auto & p : preview_persons_) {
       cv::Rect inter = d.rect & p.bbox;
       if (inter.area() > 0) {
         const double chair_area = static_cast<double>(d.rect.area());
@@ -1641,6 +1642,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
         const double person_overlap = static_cast<double>(inter.area()) / static_cast<double>(p.bbox.area());
         if (overlap_ratio > 0.18 || person_overlap > 0.20) {
           is_occupied = true;
+          p.is_sitting = true;
           break;
         }
       }
@@ -1649,12 +1651,14 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       const int p_cy = p.bbox.y + p.bbox.height / 2;
       if (d.rect.contains(cv::Point(p_cx, p_cy))) {
         is_occupied = true;
+        p.is_sitting = true;
         break;
       }
       for (const auto & kp : p.kpt) {
         if (std::isfinite(kp.x) && std::isfinite(kp.y)) {
           if (d.rect.contains(cv::Point(static_cast<int>(kp.x), static_cast<int>(kp.y)))) {
             is_occupied = true;
+            p.is_sitting = true;
             break;
           }
         }
@@ -1664,10 +1668,14 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
         const double d3d = std::hypot(x - p.x_m, y - p.y_m);
         if (d3d < 0.65) {
           is_occupied = true;
+          p.is_sitting = true;
           break;
         }
       }
-      if (is_occupied) break;
+      if (is_occupied) {
+        p.is_sitting = true;
+        break;
+      }
     }
 
     // Tentukan sisi horizontal (left, center, right)
@@ -1748,36 +1756,46 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     };
     auto flip_x = [&](int x) {return flip ? (W - x) : x;};
 
-    if (!preview_persons_.empty() && preview_persons_[0].range_m <= 3.0) {
-      const auto & p = preview_persons_[0];
+    for (size_t i = 0; i < std::min<size_t>(4, preview_persons_.size()); ++i) {
+      const auto & p = preview_persons_[i];
+      if (p.has_pos && p.range_m > 4.5) {continue;}
       cv::Rect r = flip_rect(p.bbox);
       r &= cv::Rect(0, 0, W, H);
-      if (r.width > 0 && r.height > 0) {
-        cv::rectangle(canvas, r, cv::Scalar(0, 255, 0), 2);
-        std::string label_txt;
-        if (is_receptionist_ && !is_help_me_carry_) {
-          // Receptionist: Tanpa ID! Gunakan nama tamu dari memori HRI jika ada
-          label_txt = guest_name_.empty() ? "Guest" : guest_name_;
-        } else {
-          // Help Me Carry: Gunakan ID operator
-          label_txt = "ID: " + std::to_string(p.id);
-        }
-        cv::putText(
-          canvas, label_txt,
-          cv::Point(r.x, std::max(20, r.y - 6)),
-          cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 0), 2);
+      if (r.width <= 0 || r.height <= 0) {continue;}
 
-        std::string attr_txt = p.gender + " | " + p.clothing + " | " + p.hair;
-        cv::putText(
-          canvas, attr_txt,
-          cv::Point(r.x, std::min(H - 8, r.y + r.height + 18)),
-          cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
-        const int center_x = r.x + r.width / 2;
-        const int center_y = r.y + r.height / 2;
-        cv::circle(canvas, cv::Point(center_x, center_y), 5, cv::Scalar(0, 255, 255), -1);
-        cv::drawMarker(canvas, cv::Point(center_x, center_y), cv::Scalar(0, 255, 255), cv::MARKER_CROSS, 14, 2);
+      const cv::Scalar bbox_col = p.is_sitting ? cv::Scalar(0, 200, 255) : cv::Scalar(0, 255, 0); // Emas jika duduk di kursi, Hijau jika berdiri
+      cv::rectangle(canvas, r, bbox_col, 2);
+
+      std::string label_txt;
+      if (is_receptionist_ && !is_help_me_carry_) {
+        // Receptionist: Tanpa ID! Gunakan nama tamu dari memori HRI jika ada
+        label_txt = (i == 0) ? (guest_name_.empty() ? "Guest" : guest_name_) : "Person";
+      } else {
+        // Help Me Carry: Gunakan ID operator
+        label_txt = "ID: " + std::to_string(p.id);
+      }
+      if (p.is_sitting) {
+        label_txt += " [Seated]";
+      }
+
+      cv::putText(
+        canvas, label_txt,
+        cv::Point(r.x, std::max(20, r.y - 6)),
+        cv::FONT_HERSHEY_SIMPLEX, 0.6, bbox_col, 2);
+
+      std::string attr_txt = p.gender + " | " + p.clothing + " | " + p.hair;
+      cv::putText(
+        canvas, attr_txt,
+        cv::Point(r.x, std::min(H - 8, r.y + r.height + 18)),
+        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+      const int center_x = r.x + r.width / 2;
+      const int center_y = r.y + r.height / 2;
+      cv::circle(canvas, cv::Point(center_x, center_y), 5, cv::Scalar(0, 255, 255), -1);
+      cv::drawMarker(canvas, cv::Point(center_x, center_y), cv::Scalar(0, 255, 255), cv::MARKER_CROSS, 14, 2);
+      if (i == 0) {
         cv::line(canvas, cv::Point(center_x, center_y), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 2);
       }
+
       for (size_t k = 0; k < p.kpt.size(); ++k) {
         const cv::Point2f & pt = p.kpt[k];
         if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) {continue;}
@@ -1861,10 +1879,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos) ? preview_persons_[0] : PrevPerson{};
     std::string person_title;
     if (is_receptionist_ && !is_help_me_carry_) {
-      // Receptionist: Tanpa ID! Gunakan nama tamu dari memori HRI jika ada
       person_title = (guest_name_.empty() ? "Guest :" : (guest_name_ + " :"));
     } else {
-      // Help Me Carry: Operator [ID X]
       person_title = "Operator [ID " + std::to_string(p0.id) + "] :";
     }
     draw_hud(person_title, p0.x_m, p0.y_m, p0.range_m, cv::Scalar(0, 255, 0));
