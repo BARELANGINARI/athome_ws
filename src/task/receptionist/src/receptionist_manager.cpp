@@ -48,6 +48,7 @@ enum class ReceptionistState {
   INTRODUCE_G1_TO_G2,
   INTRODUCE_G2_TO_G1,
   EVALUATE_SIMILARITY,
+  SEARCH_CHAIR,
   OFFER_SEAT,
   WAIT_GUEST_SIT,
   FINISH_TASK,
@@ -75,6 +76,7 @@ static std::string stateToString(ReceptionistState state)
     case ReceptionistState::INTRODUCE_G1_TO_G2:      return "INTRODUCE_G1_TO_G2";
     case ReceptionistState::INTRODUCE_G2_TO_G1:      return "INTRODUCE_G2_TO_G1";
     case ReceptionistState::EVALUATE_SIMILARITY:     return "EVALUATE_SIMILARITY";
+    case ReceptionistState::SEARCH_CHAIR:            return "SEARCH_CHAIR";
     case ReceptionistState::OFFER_SEAT:              return "OFFER_SEAT";
     case ReceptionistState::WAIT_GUEST_SIT:          return "WAIT_GUEST_SIT";
     case ReceptionistState::FINISH_TASK:             return "FINISH_TASK";
@@ -206,6 +208,9 @@ public:
     nav_living_room_client_ = create_client<Trigger>(
       "/receptionist/go_to_living_room", rclcpp::ServicesQoS(), callback_group_);
 
+    search_chair_client_ = create_client<Trigger>(
+      "/search_chair", rclcpp::ServicesQoS(), callback_group_);
+
     arm_ambil_tas_client_ = create_client<Trigger>(
       "/arm/ambil_tas", rclcpp::ServicesQoS(), callback_group_);
     arm_ambil_tas_simple_client_ = create_client<Trigger>(
@@ -326,6 +331,7 @@ private:
   TriggerClient::SharedPtr nav_door_client_;
   TriggerClient::SharedPtr nav_beverage_client_;
   TriggerClient::SharedPtr nav_living_room_client_;
+  TriggerClient::SharedPtr search_chair_client_;
 
   TriggerClient::SharedPtr arm_ambil_tas_client_;
   TriggerClient::SharedPtr arm_ambil_tas_simple_client_;
@@ -522,6 +528,38 @@ private:
         }
       },
       15.0);
+  }
+
+  // Mencari kursi kosong dan menyelaraskan arah hadap robot via /search_chair
+  void searchChair(std::function<void(bool, const std::string &)> on_finished)
+  {
+    TriggerClient::SharedPtr client = search_chair_client_;
+    std::string srv_name = "/search_chair";
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[CHAIR]\033[0m Calling %s to search and align to empty chair...",
+      srv_name.c_str());
+
+    callTrigger(
+      client, srv_name,
+      [this, srv_name, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[CHAIR]\033[0m Search chair (%s) succeeded: %s",
+            srv_name.c_str(), msg.c_str());
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[CHAIR]\033[0m Search chair (%s) finished with warning/failure: %s",
+            srv_name.c_str(), msg.c_str());
+        }
+        if (on_finished) {
+          on_finished(success, msg);
+        }
+      },
+      45.0);
   }
 
   // Menentukan posisi horizontal (left, center, right) pada frame kamera statis
@@ -1629,7 +1667,7 @@ private:
             return; //retry di tick berikutnya setelah TTS dan cooldown selesai
           }
           if (guest_idx_ == 1) {
-            transitionTo(ReceptionistState::OFFER_SEAT, "Arrived at living_room with Guest 1");
+            transitionTo(ReceptionistState::SEARCH_CHAIR, "Arrived at living_room with Guest 1; searching for empty chair");
           } else {
             transitionTo(
               ReceptionistState::INTRODUCE_G1_TO_G2, "Arrived at living_room with Guest 2, starting introductions"
@@ -1638,21 +1676,6 @@ private:
         });
         break;
 
-        // speakAsync(escort_msg, [this]() {
-        //   navigateTo("living_room", [this](bool success) {
-        //     if (!success) {
-        //       return; // Retry navigasi ke living_room setelah cooldown
-        //     }
-        //     if (guest_idx_ == 1) {
-        //       transitionTo(ReceptionistState::OFFER_SEAT, "Arrived at living_room with Guest 1");
-        //     } else {
-        //       transitionTo(
-        //         ReceptionistState::INTRODUCE_G1_TO_G2,
-        //         "Arrived at living_room with Guest 2, starting introductions");
-        //     }
-        //   });
-        // });
-        // break;
       }
 
       // ------------------------------------------------------------------------
@@ -1667,7 +1690,7 @@ private:
               get_logger(),
               "Insufficient guest profiles (%zu < 2) for introduction!",
               guests_.size());
-            transitionTo(ReceptionistState::OFFER_SEAT, "Skipped introductions due to missing guest data");
+            transitionTo(ReceptionistState::SEARCH_CHAIR, "Skipped introductions due to missing guest data");
             break;
           }
           guest1 = guests_[0];
@@ -1698,7 +1721,7 @@ private:
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
           if (guests_.size() < 2) {
-            transitionTo(ReceptionistState::OFFER_SEAT, "Skipped introduction due to missing guest data");
+            transitionTo(ReceptionistState::SEARCH_CHAIR, "Skipped introduction due to missing guest data");
             break;
           }
           guest1 = guests_[0];
@@ -1724,7 +1747,7 @@ private:
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
           if (guests_.size() < 2) {
-            transitionTo(ReceptionistState::OFFER_SEAT, "Skipped similarity evaluation");
+            transitionTo(ReceptionistState::SEARCH_CHAIR, "Skipped similarity evaluation");
             break;
           }
           all_people = {host_, guests_[0], guests_[1]};
@@ -1761,13 +1784,24 @@ private:
 
         if (!similarity_speech.empty()) {
           speakAsync(similarity_speech, [this]() {
-            transitionTo(ReceptionistState::OFFER_SEAT, "Shared interest announced");
+            transitionTo(ReceptionistState::SEARCH_CHAIR, "Shared interest announced; searching for empty chair");
           });
         } else {
-          transitionTo(ReceptionistState::OFFER_SEAT, "No identical interest found");
+          transitionTo(ReceptionistState::SEARCH_CHAIR, "No identical interest found; searching for empty chair");
         }
         break;
       }
+
+      // ------------------------------------------------------------------------
+      // STATE 5: CARI KURSI KOSONG DENGAN BERPUTAR & ALIGNMENT (/search_chair)
+      // ------------------------------------------------------------------------
+      case ReceptionistState::SEARCH_CHAIR:
+        searchChair([this](bool /*success*/, const std::string & /*msg*/) {
+          transitionTo(
+            ReceptionistState::OFFER_SEAT,
+            "Chair search finished; proceeding to offer seat");
+        });
+        break;
 
       // ------------------------------------------------------------------------
       // STATE 5: DETEKSI KURSI KOSONG, SERVO (/arm/ambil_tas), & TUNGGU DUDUK
