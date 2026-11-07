@@ -151,13 +151,11 @@ bool get3dCoordinatesWithOffset(
   const int centroidY = rect.y + rect.height / 2;
   sl::float4 point{NAN, NAN, NAN, NAN};
 
-  // Tahap 1: Cek titik tengah piksel secara langsung (cepat O(1))
   if (centroidX >= 0 && centroidX < static_cast<int>(point_cloud.getWidth()) &&
       centroidY >= 0 && centroidY < static_cast<int>(point_cloud.getHeight())) {
     point_cloud.getValue(centroidX, centroidY, &point);
   }
 
-  // Tahap 2: Fallback ke median sampling R_max jika titik tengah berada di NaN/pantulan
   if (!std::isfinite(point.z)) {
     get3dCoordinates(rect, point_cloud, point);
   }
@@ -166,21 +164,17 @@ bool get3dCoordinatesWithOffset(
     return false;
   }
 
-  // Tahap 3: Terapkan offset kalibrasi kamera ZED robot (cm → meter)
-  // Referensi: robotPos.x = point.x + 13; robotPos.y = -point.y + 3; robotPos.z = point.z + 44;
   x = (point.x + 13.0) / 100.0;
-  y = (-point.y + 3.0) / 100.0;  // y di-negate karena sumbu Y ZED terbalik
+  y = (-point.y + 3.0) / 100.0;
   z = (point.z + 44.0) / 100.0;
   return true;
 }
 
-// Ekstraksi warna dominan torso (HSV) untuk memori visual ringan
 cv::Scalar extractTorsoColor(const cv::Mat & bgr, const cv::Rect & bbox)
 {
   if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) {
     return cv::Scalar(0, 0, 0);
   }
-  // Ambil area torso di sepertiga atas-tengah badan
   int tw = std::max(4, bbox.width / 3);
   int th = std::max(4, bbox.height / 4);
   int tx = std::clamp(bbox.x + bbox.width / 3, 0, bgr.cols - tw);
@@ -196,7 +190,7 @@ cv::Scalar extractTorsoColor(const cv::Mat & bgr, const cv::Rect & bbox)
   return cv::mean(hsv);
 }
 
-}  // namespace zed_vision  
+}
 
 struct YoloDetection
 {
@@ -215,7 +209,6 @@ public:
   YoloDetector(const YoloDetector &) = delete;
   YoloDetector & operator=(const YoloDetector &) = delete;
 
-  // model_path: yolov8n_sim.onnx (COCO pretrained) atau custom YOLO11n (botol, cracker, dll).
   bool load(
     const std::string & model_path, const std::string & classes_path,
     float conf_threshold = 0.45f, float nms_threshold = 0.45f,
@@ -476,11 +469,6 @@ private:
   void processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cloud);
   void showPreview(const cv::Mat & bgr);
 
-  // ---------- Deteksi Gestur (Opsi 1 & Opsi 2) ----------
-  // Murni hanya menggunakan Bahu (Shoulder) dan Pergelangan Tangan (Wrist):
-  // Opsi 1: Menghitung kemiringan vektor bahu -> pergelangan (dx, dy).
-  //         dy > 0 (menunjuk bawah) & |dx| >= 0.5 * dy (diagonal serong).
-  // Opsi 2: Memeriksa kedua lengan (kiri: bahu 5, wrist 7 | kanan: bahu 12, wrist 14).
   std::string classifyArmRaw(
     const std::vector<sl::float2> & kpt, int shoulder, int wrist)
   {
@@ -507,7 +495,6 @@ private:
   {
     if (kpt.size() < 15) return "NONE";
 
-    // Cek kedua lengan: kiri (5, 7) dan kanan (12, 14)
     const std::string left = classifyArmRaw(kpt, 5, 7);
     const std::string right = classifyArmRaw(kpt, 12, 14);
 
@@ -520,21 +507,17 @@ private:
     return "NONE";
   }
 
-  // ---------- 1. Klasifikasi Warna Pakaian (Baju Torso) ----------
   std::string classifyClothingColor(
     const cv::Mat & bgr, const cv::Rect & bbox,
     const std::vector<sl::float2> & kpt = {})
   {
     if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return "casual attire";
 
-    // Tentukan perbatasan torso/baju: strictly DARI PINGGANG KE ATAS (waist-up, leher ke pinggang).
-    // Bagian bawah (celana/kaki) sama sekali tidak diikutsertakan agar tidak salah terdeteksi.
     int torso_y1 = -1;
     int torso_y2 = -1;
     int torso_x1 = -1;
     int torso_x2 = -1;
 
-    // Batas bawah baju: PINGGANG (Waist / Hip Keypoints)
     float waist_y = -1.0f;
     if (kpt.size() > 22 && std::isfinite(kpt[18].y) && std::isfinite(kpt[22].y)) {
       waist_y = (kpt[18].y + kpt[22].y) * 0.5f;
@@ -542,7 +525,6 @@ private:
       waist_y = kpt[0].y;
     }
 
-    // Batas atas baju: BAHU / LEHER (Shoulder / Neck Keypoints)
     float shoulder_y = -1.0f;
     if (kpt.size() > 12 && std::isfinite(kpt[5].y) && std::isfinite(kpt[12].y)) {
       shoulder_y = (kpt[5].y + kpt[12].y) * 0.5f;
@@ -556,9 +538,6 @@ private:
       torso_x1 = bbox.x + static_cast<int>(bbox.width * 0.15);
       torso_x2 = bbox.x + static_cast<int>(bbox.width * 0.85);
     } else {
-      // Fallback proporsi tubuh:
-      // Dari bahu/dada (20% tinggi dari atas bbox) sampai batas pinggang (50% tinggi bbox).
-      // Bagian >50% adalah celana/kaki, yang diabaikan.
       torso_y1 = bbox.y + static_cast<int>(bbox.height * 0.20);
       torso_y2 = bbox.y + static_cast<int>(bbox.height * 0.50);
       torso_x1 = bbox.x + static_cast<int>(bbox.width * 0.15);
@@ -578,7 +557,6 @@ private:
     torso_roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
     if (torso_roi.area() <= 0) return "casual attire";
 
-    // 1. Coba inferensi via Model AI ONNX jika tersedia
     if (color_session_ && !color_labels_.empty()) {
       cv::Mat crop = bgr(torso_roi);
       cv::Mat resized;
@@ -633,19 +611,17 @@ private:
           }
         }
       } catch (...) {
-        // Fallback ke HSV jika terjadi kegagalan inferensi runtime
       }
     }
 
-    // 2. Fallback: Analisis Ruang Warna HSV pada torso_roi (pinggang ke atas)
     cv::Mat crop = bgr(torso_roi);
     cv::Mat hsv;
     cv::cvtColor(crop, hsv, cv::COLOR_BGR2HSV);
     cv::Scalar mean_hsv = cv::mean(hsv);
 
-    double h = mean_hsv[0]; // 0 - 180
-    double s = mean_hsv[1]; // 0 - 255
-    double v = mean_hsv[2]; // 0 - 255
+    double h = mean_hsv[0];
+    double s = mean_hsv[1];
+    double v = mean_hsv[2];
 
     std::string color = "dark";
     if (v < 50.0) {
@@ -672,12 +648,10 @@ private:
     return color + " shirt";
   }
 
-  // ---------- 2. Klasifikasi Warna Rambut ----------
   std::string classifyHairColor(const cv::Mat & bgr, const cv::Rect & bbox)
   {
     if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return "dark hair";
 
-    // 1. Coba inferensi via Model AI ONNX jika tersedia
     if (hair_session_ && !hair_labels_.empty()) {
       int head_y1 = std::clamp(bbox.y, 0, bgr.rows);
       int head_y2 = std::clamp(static_cast<int>(bbox.y + bbox.height * 0.20), 0, bgr.rows);
@@ -735,12 +709,10 @@ private:
             }
           }
         } catch (...) {
-          // Fallback ke HSV jika terjadi kegagalan inferensi runtime
         }
       }
     }
 
-    // 2. Fallback: Analisis Ruang Warna HSV
     int hw = std::max(4, static_cast<int>(bbox.width * 0.35));
     int hh = std::max(4, static_cast<int>(bbox.height * 0.15));
     int hx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.325), 0, bgr.cols - hw);
@@ -766,10 +738,8 @@ private:
     return "dark hair";
   }
 
-  // ---------- 3. Klasifikasi Gender ----------
   std::string classifyGender(const std::vector<sl::float2> & kpt, const cv::Mat & bgr, const cv::Rect & bbox)
   {
-    // 1. Coba inferensi via Model AI ONNX jika tersedia
     if (gender_session_ && !bgr.empty() && bbox.width > 0 && bbox.height > 0) {
       int x1 = std::clamp(bbox.x, 0, bgr.cols);
       int y1 = std::clamp(bbox.y, 0, bgr.rows);
@@ -798,8 +768,8 @@ private:
             Ort::RunOptions{nullptr}, in_names, &in_tensor, 1, out_names, 1);
           if (!outputs.empty()) {
             const float * logits = outputs.front().GetTensorData<float>();
-            float l0 = logits[0]; // female
-            float l1 = logits[1]; // male
+            float l0 = logits[0];
+            float l1 = logits[1];
             float m = std::max(l0, l1);
             float exp0 = std::exp(l0 - m);
             float exp1 = std::exp(l1 - m);
@@ -810,12 +780,10 @@ private:
             if (p1 > 0.65f) return "male";
           }
         } catch (...) {
-          // Fallback ke heuristik jika terjadi kesalahan inferensi
         }
       }
     }
 
-    // 2. Fallback: Analisis Proporsi Bahu / Pinggul dari Keypoint ZED
     if (kpt.size() >= 23) {
       const auto & l_sh = kpt[5];
       const auto & r_sh = kpt[12];
@@ -840,6 +808,101 @@ private:
     return "male";
   }
 
+  std::vector<float> extractFaceEmbedding(
+    const cv::Mat & bgr, const cv::Rect & bbox,
+    const std::vector<sl::float2> & kpt = {})
+  {
+    if (!face_session_ || bgr.empty() || bbox.width <= 0 || bbox.height <= 0) {
+      return {};
+    }
+
+    int head_x1 = -1, head_y1 = -1, head_x2 = -1, head_y2 = -1;
+
+    if (kpt.size() > 28 && std::isfinite(kpt[26].x) && std::isfinite(kpt[26].y) &&
+        kpt[26].x > 0 && kpt[26].y > 0)
+    {
+      float nose_x = kpt[26].x;
+      float nose_y = kpt[26].y;
+      float head_span = bbox.width * 0.45f;
+      if (kpt.size() > 3 && std::isfinite(kpt[3].y) && kpt[3].y > nose_y) {
+        head_span = std::max(head_span, (kpt[3].y - nose_y) * 2.0f);
+      }
+      head_x1 = static_cast<int>(nose_x - head_span * 0.5f);
+      head_x2 = static_cast<int>(nose_x + head_span * 0.5f);
+      head_y1 = static_cast<int>(nose_y - head_span * 0.65f);
+      head_y2 = static_cast<int>(nose_y + head_span * 0.65f);
+    } else {
+      head_y1 = bbox.y;
+      head_y2 = bbox.y + static_cast<int>(bbox.height * 0.22);
+      head_x1 = bbox.x + static_cast<int>(bbox.width * 0.20);
+      head_x2 = bbox.x + static_cast<int>(bbox.width * 0.80);
+    }
+
+    head_x1 = std::clamp(head_x1, 0, bgr.cols);
+    head_x2 = std::clamp(head_x2, 0, bgr.cols);
+    head_y1 = std::clamp(head_y1, 0, bgr.rows);
+    head_y2 = std::clamp(head_y2, 0, bgr.rows);
+
+    if (head_x2 <= head_x1 + 10 || head_y2 <= head_y1 + 10) {
+      return {};
+    }
+
+    cv::Rect head_roi(head_x1, head_y1, head_x2 - head_x1, head_y2 - head_y1);
+    head_roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+    if (head_roi.area() <= 100) return {};
+
+    cv::Mat crop = bgr(head_roi);
+    cv::Mat resized;
+    cv::resize(crop, resized, cv::Size(112, 112));
+    cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
+
+    cv::Mat blob = cv::dnn::blobFromImage(
+      resized, 1.0, cv::Size(112, 112), cv::Scalar(0, 0, 0), false, false);
+
+    std::array<int64_t, 4> input_shape{1, 3, 112, 112};
+    Ort::Value in_tensor = Ort::Value::CreateTensor<float>(
+      ort_attr_mem_info_, blob.ptr<float>(), blob.total(),
+      input_shape.data(), input_shape.size());
+
+    const char * in_names[] = {face_in_name_.c_str()};
+    const char * out_names[] = {face_out_name_.c_str()};
+
+    try {
+      auto outputs = face_session_->Run(
+        Ort::RunOptions{nullptr}, in_names, &in_tensor, 1, out_names, 1);
+      if (!outputs.empty()) {
+        const float * feat_data = outputs.front().GetTensorData<float>();
+        const auto shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
+        int feat_dim = (shape.size() >= 2) ? static_cast<int>(shape[1]) : 128;
+
+        std::vector<float> feat(feat_dim);
+        float norm_sq = 0.0f;
+        for (int i = 0; i < feat_dim; ++i) {
+          feat[i] = feat_data[i];
+          norm_sq += feat[i] * feat[i];
+        }
+        float inv_norm = 1.0f / std::sqrt(std::max(norm_sq, 1e-6f));
+        for (int i = 0; i < feat_dim; ++i) {
+          feat[i] *= inv_norm;
+        }
+        return feat;
+      }
+    } catch (const std::exception & e) {
+      std::cerr << "Face embedding extraction error: " << e.what() << std::endl;
+    }
+    return {};
+  }
+
+  static float matchFaceEmbeddings(const std::vector<float> & f1, const std::vector<float> & f2)
+  {
+    if (f1.empty() || f2.empty() || f1.size() != f2.size()) return -1.0f;
+    float dot = 0.0f;
+    for (size_t i = 0; i < f1.size(); ++i) {
+      dot += f1[i] * f2[i];
+    }
+    return dot;
+  }
+
   sl::Camera zed_;
   sl::Mat zed_image_;
   sl::Mat zed_point_cloud_;
@@ -848,12 +911,12 @@ private:
 
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr yaw_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr bag_dets_publisher_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr drink_dets_publisher_; // publish /zed/drink_detections (botol, cracker, drinks)
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr drink_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr persons_publisher_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr gesture_publisher_;  // publish gesture RIGHT/LEFT/NONE
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr attributes_publisher_; // publish /zed/person_attributes
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr empty_seat_publisher_; // publish /zed/empty_seat (left, center, right)
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr chair_dets_publisher_; // publish /zed/chair_detections
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr gesture_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr attributes_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr empty_seat_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr chair_dets_publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   bool publish_yaw_{true};
@@ -867,7 +930,6 @@ private:
   int preview_fps_{0};
   rclcpp::Time preview_fps_t_{0, 0, RCL_ROS_TIME};
 
-  // ONNX Runtime untuk Atribut Person (Gender, Clothing, Hair)
   Ort::Env ort_attr_env_{ORT_LOGGING_LEVEL_WARNING, "zed_attributes"};
   Ort::MemoryInfo ort_attr_mem_info_ = Ort::MemoryInfo::CreateCpu(
     OrtArenaAllocator, OrtMemTypeDefault);
@@ -886,6 +948,20 @@ private:
   std::string hair_out_name_;
   std::vector<std::string> hair_labels_;
 
+  std::unique_ptr<Ort::Session> face_session_;
+  std::string face_in_name_;
+  std::string face_out_name_;
+
+  struct RegisteredPerson {
+    std::string name;
+    std::vector<float> feature;
+    int last_tracking_id{-1};
+    rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
+  };
+  std::vector<RegisteredPerson> registered_persons_;
+  std::string pending_register_name_{""};
+  double face_threshold_{0.363};
+
   struct PrevPerson {
     int id{-1};
     cv::Rect bbox;
@@ -898,6 +974,7 @@ private:
     std::string clothing{""};
     std::string hair{""};
     std::string gender{""};
+    std::string name{""};
   };
   struct PrevBag {
     cv::Rect bbox;
@@ -950,15 +1027,14 @@ private:
   std::vector<YoloDetection> last_drink_dets_;
   std::vector<YoloDetection> last_chair_dets_;
 
-  // Memori Operator (Stabilisasi ID & Re-ID saat hilang-timbul)
   struct OperatorMemory {
     bool active{false};
-    int stable_id{0};               // ID konsisten yang selalu dipublish untuk orang awal
+    int stable_id{0};
     double x{0.0};
     double y{0.0};
-    double vx{0.0};                 // Estimasi kecepatan X (m/s)
-    double vy{0.0};                 // Estimasi kecepatan Y (m/s)
-    cv::Scalar torso_hsv{0, 0, 0};   // Karakteristik warna pakaian
+    double vx{0.0};
+    double vy{0.0};
+    cv::Scalar torso_hsv{0, 0, 0};
     bool has_color{false};
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   } op_mem_;
@@ -1002,12 +1078,13 @@ ZedNode::ZedNode()
   declare_parameter("chair_labels", std::vector<std::string>{"chair", "couch", "bench"});
   declare_parameter("enable_bag", true);
 
-  // Parameter Model AI untuk Atribut Orang (Gender, Warna Pakaian, Warna Rambut)
   declare_parameter("gender_model", std::string("models/gender_cls.onnx"));
   declare_parameter("color_model", std::string("models/color_model.onnx"));
   declare_parameter("color_labels", std::string("models/color_names.txt"));
   declare_parameter("hair_model", std::string("models/hair_model.onnx"));
   declare_parameter("hair_labels", std::string("models/hair_names.txt"));
+  declare_parameter("face_model", std::string("models/face_recognition_sface.onnx"));
+  declare_parameter("face_threshold", 0.363);
 
   task_mode_ = get_parameter("task").as_string();
   std::string t = task_mode_;
@@ -1058,9 +1135,10 @@ ZedNode::ZedNode()
       }
       guest_name_ = n;
       if (!guest_name_.empty()) {
-        std::cout << "Guest name set: " << guest_name_ << std::endl;
+        pending_register_name_ = guest_name_;
+        std::cout << "\033[1;36m[VISION]\033[0m Guest name set: \"" << guest_name_ << "\" (queued for Face Recognition registration)" << std::endl;
       } else {
-        std::cout << "Guest name reset" << std::endl;
+        std::cout << "\033[1;36m[VISION]\033[0m Guest name reset" << std::endl;
       }
     });
 
@@ -1160,7 +1238,6 @@ ZedNode::ZedNode()
     }
   }
 
-  // Load Model-model YOLO untuk Deteksi Minuman / Makanan (Botol & Cracker)
   enable_drinks_ = get_parameter("enable_drinks").as_bool();
   if (enable_drinks_) {
     float drink_conf = static_cast<float>(get_parameter("drink_conf").as_double());
@@ -1177,12 +1254,12 @@ ZedNode::ZedNode()
       if (std::filesystem::exists(botol_path)) {
         std::string err;
         if (botol_yolo_.load(botol_path, "", drink_conf, nms, size, "Water", &err)) {
-          std::cout << "Water/Botol ONNX model loaded successfully: " << botol_path << std::endl;
+          std::cout << "Water/Bottle ONNX model loaded successfully: " << botol_path << std::endl;
         } else {
-          std::cerr << "Water/Botol ONNX load error: " << err << std::endl;
+          std::cerr << "Water/Bottle ONNX load error: " << err << std::endl;
         }
       } else {
-        std::cerr << "Water/Botol ONNX model not found: " << botol_path << std::endl;
+        std::cerr << "Water/Bottle ONNX model not found: " << botol_path << std::endl;
       }
     }
 
@@ -1227,7 +1304,6 @@ ZedNode::ZedNode()
     }
   }
 
-  // Load Model YOLO untuk Deteksi Kursi (jika ada model custom kursi, jika tidak fallback ke YOLO COCO)
   enable_chair_ = get_parameter("enable_chair").as_bool();
   chair_labels_ = get_parameter("chair_labels").as_string_array();
   if (enable_chair_) {
@@ -1248,13 +1324,11 @@ ZedNode::ZedNode()
     }
   }
 
-  // Load Model-model AI untuk Atribut Orang (Gender, Color, Hair)
   Ort::SessionOptions attr_opts;
   attr_opts.SetIntraOpNumThreads(2);
   attr_opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
   Ort::AllocatorWithDefaultOptions alloc;
 
-  // 1. Gender Classification Model
   const std::string gender_param = get_parameter("gender_model").as_string();
   if (!gender_param.empty()) {
     std::string gender_path = resolve(gender_param);
@@ -1273,7 +1347,6 @@ ZedNode::ZedNode()
     }
   }
 
-  // 2. Clothing Color Classification Model & Labels
   const std::string color_labels_param = get_parameter("color_labels").as_string();
   if (!color_labels_param.empty()) {
     std::string color_labels_path = resolve(color_labels_param);
@@ -1299,7 +1372,6 @@ ZedNode::ZedNode()
     }
   }
 
-  // 3. Hair Classification Model & Labels
   const std::string hair_labels_param = get_parameter("hair_labels").as_string();
   if (!hair_labels_param.empty()) {
     std::string hair_labels_path = resolve(hair_labels_param);
@@ -1322,6 +1394,26 @@ ZedNode::ZedNode()
       }
     } else {
       std::cout << "Hair ONNX model not found, fallback to HSV: " << hair_path << std::endl;
+    }
+  }
+
+  face_threshold_ = get_parameter("face_threshold").as_double();
+  const std::string face_param = get_parameter("face_model").as_string();
+  if (!face_param.empty()) {
+    std::string face_path = resolve(face_param);
+    if (std::filesystem::exists(face_path)) {
+      try {
+        face_session_ = std::make_unique<Ort::Session>(ort_attr_env_, face_path.c_str(), attr_opts);
+        face_in_name_ = face_session_->GetInputNameAllocated(0, alloc).get();
+        face_out_name_ = face_session_->GetOutputNameAllocated(0, alloc).get();
+        std::cout << "\033[1;32mFace Recognition SFace ONNX model loaded successfully: " << face_path
+                  << " (Cosine threshold: " << face_threshold_ << ")\033[0m" << std::endl;
+      } catch (const std::exception & e) {
+        std::cerr << "Face Recognition ONNX model load error: " << e.what() << std::endl;
+        face_session_.reset();
+      }
+    } else {
+      std::cout << "Face Recognition model not found, face recognition disabled: " << face_path << std::endl;
     }
   }
 
@@ -1389,7 +1481,6 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     bag_dets_publisher_->publish(bag_msg);
   }
 
-  // Deteksi Minuman & Makanan (Botol & Cracker) untuk Receptionist
   std::vector<YoloDetection> drink_dets = last_drink_dets_;
   if (enable_drinks_) {
     if (drink_frame_++ % std::max(1, yolo_stride_) == 0) {
@@ -1439,11 +1530,9 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     std_msgs::msg::String m;
     m.data = "NO_PERSON";
     persons_publisher_->publish(m);
-    // Tidak ada orang → gesture NONE
     std_msgs::msg::String g;
     g.data = "NONE";
     gesture_publisher_->publish(g);
-    // Atribut kosong
     std_msgs::msg::String attr_msg;
     attr_msg.data = "";
     attributes_publisher_->publish(attr_msg);
@@ -1481,16 +1570,12 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
 
     const auto current_time = now();
 
-    // Logika Memori Operator: Menjaga ID orang awal tetap stabil meskipun hilang-timbul
     int op_match_idx = -1;
     if (op_mem_.active) {
       const double dt = (current_time - op_mem_.last_seen).seconds();
-      // Toleransi hilang-timbul hingga 4.0 detik
       if (dt <= 4.0) {
-        // Prediksi posisi berdasarkan kecepatan (Kalman / Constant Velocity model)
         const double pred_x = op_mem_.x + op_mem_.vx * std::min(dt, 2.0);
         const double pred_y = op_mem_.y + op_mem_.vy * std::min(dt, 2.0);
-        // Radius pencarian melebar bertahap seiring durasi hilang
         const double max_match_dist = 1.0 + 0.8 * dt;
 
         double best_cost = std::numeric_limits<double>::infinity();
@@ -1501,11 +1586,9 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
           const double dist_diff = std::hypot(cand.x - pred_x, cand.y - pred_y);
           if (dist_diff > max_match_dist) continue;
 
-          // Hitung penalti warna pakaian torso jika tersedia
           double color_penalty = 0.0;
           if (op_mem_.has_color) {
             const cv::Scalar cand_hsv = zed_vision::extractTorsoColor(bgr, cand.bbox);
-            // Selisih nilai Hue & Saturation
             const double dh = std::abs(cand_hsv[0] - op_mem_.torso_hsv[0]);
             const double ds = std::abs(cand_hsv[1] - op_mem_.torso_hsv[1]);
             color_penalty = (dh / 180.0) * 0.5 + (ds / 255.0) * 0.3;
@@ -1518,18 +1601,15 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
           }
         }
       } else {
-        // Timeout > 4 detik: reset memori agar bisa mengunci operator baru
         op_mem_.active = false;
         op_mem_.has_color = false;
       }
     }
 
-    // Jika belum ada operator yang dikunci atau match ditemukan
     if (!op_mem_.active && !entries.empty()) {
-      // Kunci orang terdekat pertama kali sebagai operator
       op_match_idx = 0;
       op_mem_.active = true;
-      op_mem_.stable_id = 0;  // Tetapkan ID stabil selalu 0
+      op_mem_.stable_id = 0;
       op_mem_.vx = 0.0;
       op_mem_.vy = 0.0;
       if (entries[0].has_depth) {
@@ -1544,19 +1624,17 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       }
     }
 
-    // Jika kandidat operator cocok dengan memori, update posisinya & jadikan urutan pertama (operator)
     if (op_match_idx >= 0 && op_match_idx < static_cast<int>(entries.size())) {
       if (op_match_idx > 0) {
         std::swap(entries[0], entries[static_cast<size_t>(op_match_idx)]);
       }
       auto & op = entries.front();
-      op.id = op_mem_.stable_id;  // Paksa ID ZED kembali ke ID stabil orang awal!
+      op.id = op_mem_.stable_id;
       op.label = "operator";
 
       if (op.has_depth) {
         const double dt = std::max(0.01, (current_time - op_mem_.last_seen).seconds());
         if (dt < 1.0) {
-          // Update estimasi kecepatan dengan low-pass filter
           op_mem_.vx = 0.7 * op_mem_.vx + 0.3 * ((op.x - op_mem_.x) / dt);
           op_mem_.vy = 0.7 * op_mem_.vy + 0.3 * ((op.y - op_mem_.y) / dt);
         }
@@ -1564,7 +1642,6 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
         op_mem_.y = op.y;
       }
       op_mem_.last_seen = current_time;
-      // Perbarui warna torso secara adaptif (moving average)
       const cv::Scalar new_hsv = zed_vision::extractTorsoColor(bgr, op.bbox);
       op_mem_.torso_hsv = 0.85 * op_mem_.torso_hsv + 0.15 * new_hsv;
       op_mem_.has_color = true;
@@ -1578,19 +1655,68 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       }
     }
 
+    if (!pending_register_name_.empty() && !entries.empty() && is_receptionist_) {
+      const auto & nearest = entries.front();
+      std::vector<float> feat = extractFaceEmbedding(bgr, nearest.bbox, nearest.body->keypoint_2d);
+      if (!feat.empty()) {
+        bool updated = false;
+        for (auto & rp : registered_persons_) {
+          if (rp.name == pending_register_name_) {
+            rp.feature = feat;
+            rp.last_tracking_id = nearest.id;
+            rp.last_seen = now();
+            updated = true;
+            break;
+          }
+        }
+        if (!updated) {
+          registered_persons_.push_back({pending_register_name_, feat, nearest.id, now()});
+        }
+        std::cout << "\033[1;32m[FACE RECOGNITION]\033[0m Registered face for guest: \""
+                  << pending_register_name_ << "\" (ZED Body ID: " << nearest.id << ")\033[0m" << std::endl;
+        pending_register_name_ = "";
+      }
+    }
+
     std::ostringstream ss;
     bool first_p = true;
-    std::string gesture_result = "NONE";  // gesture dari operator terdekat
+    std::string gesture_result = "NONE";
     for (const auto & e : entries) {
-      PrevPerson pp{e.id, e.bbox, e.has_depth, e.x, e.y, e.range_m, false, {}};
       const auto & points = e.body->keypoint_2d;
+
+      std::string recognized_name = "";
+      float best_face_score = -1.0f;
+      if (face_session_ && is_receptionist_) {
+        std::vector<float> feat = extractFaceEmbedding(bgr, e.bbox, points);
+        if (!feat.empty()) {
+          for (auto & rp : registered_persons_) {
+            float sim = matchFaceEmbeddings(feat, rp.feature);
+            if (sim > best_face_score) {
+              best_face_score = sim;
+              if (sim >= static_cast<float>(face_threshold_)) {
+                recognized_name = rp.name;
+                rp.last_tracking_id = e.id;
+                rp.last_seen = now();
+              }
+            }
+          }
+        }
+      }
+
+      if (recognized_name.empty() && is_receptionist_) {
+        for (auto & rp : registered_persons_) {
+          if (rp.last_tracking_id == e.id && (now() - rp.last_seen).seconds() < 5.0) {
+            recognized_name = rp.name;
+            break;
+          }
+        }
+      }
+
+      PrevPerson pp{e.id, e.bbox, e.has_depth, e.x, e.y, e.range_m, false, {}, "", "", "", recognized_name};
       for (const auto & pt : points) {
         pp.kpt.emplace_back(std::isfinite(pt.x) ? pt.x : NAN, std::isfinite(pt.y) ? pt.y : NAN);
       }
 
-      // Klasifikasi 3 Atribut Visual Tamu (Baju dari pinggang ke atas, Rambut, Gender)
-      // Khusus Receptionist: Hanya dijalankan SETELAH tamu memberi tahu namanya (guest_name_ tidak kosong).
-      // Pada Help Me Carry: HANYA mendeteksi person dan bag saja tanpa ada klasifikasi atribut.
       const bool should_classify_attributes = (is_receptionist_ && !guest_name_.empty());
       std::string shirt = "";
       std::string hair = "";
@@ -1602,14 +1728,12 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
         gender = classifyGender(points, bgr, e.bbox);
       }
 
-      // Deteksi gesture & publish atribut dari orang terdekat (entry pertama)
       if (first_p) {
         gesture_result = detectGesture(points);
         if (is_help_me_carry_ && gesture_result != "NONE") {
           IC(e.id, gesture_result);
         }
 
-        // Publish ke /zed/person_attributes untuk task receptionist
         std_msgs::msg::String attr_msg;
         if (should_classify_attributes) {
           attr_msg.data = gender + ", " + shirt + ", " + hair;
@@ -1619,7 +1743,14 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
         attributes_publisher_->publish(attr_msg);
 
         if (is_receptionist_) {
-          std::string disp_name = (is_help_me_carry_) ? ("ID " + std::to_string(e.id)) : (guest_name_.empty() ? "Guest" : guest_name_);
+          std::string disp_name;
+          if (is_help_me_carry_) {
+            disp_name = "ID " + std::to_string(e.id);
+          } else if (!recognized_name.empty()) {
+            disp_name = recognized_name;
+          } else {
+            disp_name = guest_name_.empty() ? "Guest" : "Person";
+          }
           IC(disp_name, e.x, e.y, e.range_m);
           if (should_classify_attributes) {
             IC(disp_name, gender, shirt, hair);
@@ -1635,10 +1766,14 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       if (!first_p) ss << ";";
       std::string label;
       if (is_receptionist_ && !is_help_me_carry_) {
-        // Task Receptionist: Tanpa ID, gunakan nama tamu dari memori HRI jika ada
-        label = guest_name_.empty() ? "guest" : guest_name_;
+        if (!recognized_name.empty()) {
+          label = recognized_name;
+        } else if (guest_name_.empty()) {
+          label = "guest";
+        } else {
+          label = "person";
+        }
       } else {
-        // Task Help Me Carry: Gunakan ID operator
         label = first_p ? "operator" : "person";
       }
       first_p = false;
@@ -1657,7 +1792,6 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       }
     }
 
-    // Publish gesture ke /zed/gesture
     std_msgs::msg::String gesture_msg;
     gesture_msg.data = gesture_result;
     gesture_publisher_->publish(gesture_msg);
@@ -1668,7 +1802,6 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     persons_publisher_->publish(m);
   }
 
-  // Deteksi Kursi & Klasifikasi Kosong vs Penuh untuk Receptionist
   std::vector<YoloDetection> chair_dets = last_chair_dets_;
   if (enable_chair_) {
     if (chair_frame_++ % std::max(1, yolo_stride_) == 0) {
@@ -1693,7 +1826,6 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     const bool ok = get3dCoordinatesWithOffset(d.rect, point_cloud, x, y, z);
     const double dist = ok ? std::hypot(x, y) : 0.0;
 
-    // Tentukan apakah kursi terisi (occupied) atau kosong (empty)
     bool is_occupied = false;
     for (auto & p : preview_persons_) {
       cv::Rect inter = d.rect & p.bbox;
@@ -1707,7 +1839,6 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
           break;
         }
       }
-      // Cek apakah titik tengah badan atau titik kunci orang berada di dalam kotak kursi
       const int p_cx = p.bbox.x + p.bbox.width / 2;
       const int p_cy = p.bbox.y + p.bbox.height / 2;
       if (d.rect.contains(cv::Point(p_cx, p_cy))) {
@@ -1724,7 +1855,6 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
           }
         }
       }
-      // Cek jarak 3D jika keduanya memiliki data depth
       if (ok && p.has_pos) {
         const double d3d = std::hypot(x - p.x_m, y - p.y_m);
         if (d3d < 0.65) {
@@ -1739,7 +1869,6 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       }
     }
 
-    // Tentukan sisi horizontal (left, center, right)
     std::string side = "center";
     if (ok) {
       if (y > 0.20) {
@@ -1769,10 +1898,16 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     }
 
     if (is_receptionist_) {
-      RCLCPP_INFO_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "\033[1;35m[CHAIR]\033[0m Kursi %s di sisi %s (3D: x=%.2f m, y=%.2f m, dist=%.2f m)",
-        is_occupied ? "TERISI (OCCUPIED)" : "KOSONG (EMPTY)", side.c_str(), x, y, dist);
+      static auto last_chair_log = std::chrono::steady_clock::now();
+      auto now = std::chrono::steady_clock::now();
+      if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_chair_log).count() > 2000) {
+        last_chair_log = now;
+        std::cout << "\033[1;35m[CHAIR]\033[0m Chair "
+                  << (is_occupied ? "OCCUPIED" : "EMPTY")
+                  << " on " << side << " side (3D: x=" << cv::format("%.2f", x)
+                  << " m, y=" << cv::format("%.2f", y) << " m, dist=" << cv::format("%.2f", dist) << " m)"
+                  << std::endl;
+      }
     }
 
     if (!chair_str.empty()) chair_str += ";";
@@ -1782,12 +1917,10 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     chair_str += side;
   }
 
-  // Publish /zed/chair_detections
   std_msgs::msg::String chair_msg;
   chair_msg.data = chair_str;
   chair_dets_publisher_->publish(chair_msg);
 
-  // Publish /zed/empty_seat untuk Receptionist State Machine
   std_msgs::msg::String empty_seat_msg;
   empty_seat_msg.data = best_empty_side;
   empty_seat_publisher_->publish(empty_seat_msg);
@@ -1817,7 +1950,6 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     };
     auto flip_x = [&](int x) {return flip ? (W - x) : x;};
 
-    // Helper banner label dengan background solid (gaya visualize zed_ws)
     auto draw_banner = [&](const std::string & text, int x, int y, const cv::Scalar & border_col, const cv::Scalar & bg_col, const cv::Scalar & text_col, double font_scale = 0.55, int thickness = 1) {
       int base_line = 0;
       cv::Size sz = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, font_scale, thickness, &base_line);
@@ -1839,22 +1971,26 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       r &= cv::Rect(0, 0, W, H);
       if (r.width <= 0 || r.height <= 0) {continue;}
 
-      const cv::Scalar bbox_col = p.is_sitting ? cv::Scalar(0, 200, 255) : cv::Scalar(0, 255, 0); // Emas jika duduk di kursi, Hijau jika berdiri
+      const cv::Scalar bbox_col = p.is_sitting ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0);
       cv::rectangle(canvas, r, bbox_col, 2);
 
       std::string label_txt;
       if (is_receptionist_ && !is_help_me_carry_) {
-        // Receptionist: Tanpa ID! Gunakan nama tamu dari memori HRI jika ada
-        label_txt = (i == 0) ? (guest_name_.empty() ? "Guest" : guest_name_) : "Person";
+        if (!p.name.empty()) {
+          label_txt = p.name;
+        } else if (guest_name_.empty()) {
+          label_txt = (i == 0) ? "Guest" : "Person";
+        } else {
+          label_txt = "Person";
+        }
       } else {
-        // Help Me Carry: Gunakan ID operator
         label_txt = "ID: " + std::to_string(p.id);
       }
       if (p.is_sitting) {
         label_txt += " [Seated]";
       }
 
-      draw_banner(label_txt, r.x, r.y, bbox_col, p.is_sitting ? cv::Scalar(0, 80, 110) : cv::Scalar(0, 70, 0), cv::Scalar(255, 255, 255), 0.58, 2);
+      draw_banner(label_txt, r.x, r.y, bbox_col, p.is_sitting ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0), cv::Scalar(255, 255, 255), 0.58, 2);
 
       if (!p.gender.empty() || !p.clothing.empty() || !p.hair.empty()) {
         std::string attr_txt;
@@ -1928,16 +2064,16 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       cv::Rect r = flip_rect(c.bbox);
       r &= cv::Rect(0, 0, W, H);
       if (r.width > 0 && r.height > 0) {
-        const cv::Scalar color = c.occupied ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0); // Merah: Penuh, Hijau: Kosong
+        const cv::Scalar color = c.occupied ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0);
         cv::rectangle(canvas, r, color, 2);
         const int chair_cx = r.x + r.width / 2;
         const int chair_cy = r.y + r.height / 2;
         cv::circle(canvas, cv::Point(chair_cx, chair_cy), 4, color, -1);
-        std::string txt = (c.occupied ? "Chair (Occupied)" : "Chair (Empty): ") + c.side;
+        std::string txt = (c.occupied ? "Chair (Occupied): " : "Chair (Empty): ") + c.side;
         if (c.has_pos) {
           txt += cv::format(" (%.2fm, %.2fm)", c.x_m, c.y_m);
         }
-        const cv::Scalar chair_bg = c.occupied ? cv::Scalar(0, 0, 110) : cv::Scalar(0, 80, 0);
+        const cv::Scalar chair_bg = c.occupied ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0);
         draw_banner(txt, r.x, r.y, color, chair_bg, cv::Scalar(255, 255, 255), 0.52, 2);
       }
     }
@@ -1960,7 +2096,13 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos) ? preview_persons_[0] : PrevPerson{};
     std::string person_title;
     if (is_receptionist_ && !is_help_me_carry_) {
-      person_title = (guest_name_.empty() ? "Guest :" : (guest_name_ + " :"));
+      if (!p0.name.empty()) {
+        person_title = p0.name + " :";
+      } else if (guest_name_.empty()) {
+        person_title = "Guest :";
+      } else {
+        person_title = "Person :";
+      }
     } else {
       person_title = "Operator [ID " + std::to_string(p0.id) + "] :";
     }
@@ -1976,9 +2118,12 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     }
 
     for (const auto & c : preview_chairs_) {
-      if (!c.occupied && c.has_pos) {
-        draw_hud("Empty Chair [" + c.side + "] :", c.x_m, c.y_m, c.range_m, cv::Scalar(0, 255, 0));
-        break;
+      if (c.has_pos) {
+        if (!c.occupied) {
+          draw_hud("Empty Chair [" + c.side + "] :", c.x_m, c.y_m, c.range_m, cv::Scalar(0, 255, 0));
+        } else {
+          draw_hud("Occupied Chair [" + c.side + "] :", c.x_m, c.y_m, c.range_m, cv::Scalar(0, 0, 255));
+        }
       }
     }
 
@@ -2052,13 +2197,11 @@ int main(int argc, char ** argv)
     auto node = std::make_shared<ZedNode>();
     rclcpp::spin(node);
   } catch (const std::exception & e) {
-    RCLCPP_FATAL(rclcpp::get_logger("zed_main"), "Fatal Exception ZED: %s", e.what());
-    std::cerr << "\033[91m[ZED Fatal Exception] " << e.what() << "\033[0m\n";
+    std::cout << "\033[91m[ZED Fatal Exception] " << e.what() << "\033[0m" << std::endl;
     rclcpp::shutdown();
     return 1;
   } catch (...) {
-    RCLCPP_FATAL(rclcpp::get_logger("zed_main"), "Unknown Fatal Exception in ZED node!");
-    std::cerr << "\033[91m[ZED Fatal Exception] Unknown error occurred!\033[0m\n";
+    std::cout << "\033[91m[ZED Fatal Exception] Unknown error occurred!\033[0m" << std::endl;
     rclcpp::shutdown();
     return 1;
   }
