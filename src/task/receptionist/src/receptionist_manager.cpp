@@ -155,6 +155,7 @@ public:
     // --------------------------------------------------------------------------
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/status", 10);
+    person_name_pub_ = create_publisher<std_msgs::msg::String>("/zed/set_person_name", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -309,6 +310,7 @@ private:
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tts_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr person_name_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
@@ -371,6 +373,12 @@ private:
       std::lock_guard<std::mutex> lock(guest_mutex_);
       guest_idx_ = idx;
       resetGuestProfileFields(current_guest_, idx);
+    }
+
+    if (person_name_pub_) {
+      std_msgs::msg::String m;
+      m.data = "";
+      person_name_pub_->publish(m);
     }
 
     person_seen_ = false;
@@ -1334,6 +1342,11 @@ private:
               std::lock_guard<std::mutex> lock(guest_mutex_);
               current_guest_.name = parsed_name;
             }
+            if (person_name_pub_) {
+              std_msgs::msg::String m;
+              m.data = parsed_name;
+              person_name_pub_->publish(m);
+            }
             RCLCPP_INFO(
               get_logger(),
               "\033[1;32m[DIALOG NAME]\033[0m Guest %d Name -> \033[1;32m\"%s\"\033[0m (from \"%s\")",
@@ -1441,6 +1454,11 @@ private:
             {
               std::lock_guard<std::mutex> lock(guest_mutex_);
               resetGuestProfileFields(current_guest_, guest_idx_);
+            }
+            if (person_name_pub_) {
+              std_msgs::msg::String m;
+              m.data = "";
+              person_name_pub_->publish(m);
             }
             speakAsync("I am sorry. Let us start over. May I please have your name?", [this]() {
               transitionTo(ReceptionistState::WAIT_NAME, "Restarted name and interest capture");

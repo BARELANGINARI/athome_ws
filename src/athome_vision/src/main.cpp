@@ -511,86 +511,123 @@ private:
   }
 
   // ---------- 1. Klasifikasi Warna Pakaian (Baju Torso) ----------
-  std::string classifyClothingColor(const cv::Mat & bgr, const cv::Rect & bbox)
+  std::string classifyClothingColor(
+    const cv::Mat & bgr, const cv::Rect & bbox,
+    const std::vector<sl::float2> & kpt = {})
   {
     if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return "casual attire";
 
-    // 1. Coba inferensi via Model AI ONNX jika tersedia
-    if (color_session_ && !color_labels_.empty()) {
-      int x1 = std::clamp(bbox.x, 0, bgr.cols);
-      int torso_y1 = std::clamp(static_cast<int>(bbox.y + bbox.height * 0.20), 0, bgr.rows);
-      int x2 = std::clamp(bbox.x + bbox.width, 0, bgr.cols);
-      int y2 = std::clamp(bbox.y + bbox.height, 0, bgr.rows);
+    // Tentukan perbatasan torso/baju: strictly DARI PINGGANG KE ATAS (waist-up, leher ke pinggang).
+    // Bagian bawah (celana/kaki) sama sekali tidak diikutsertakan agar tidak salah terdeteksi.
+    int torso_y1 = -1;
+    int torso_y2 = -1;
+    int torso_x1 = -1;
+    int torso_x2 = -1;
 
-      if (y2 > torso_y1 && x2 > x1) {
-        cv::Mat crop = bgr(cv::Rect(x1, torso_y1, x2 - x1, y2 - torso_y1));
-        cv::Mat resized;
-        cv::resize(crop, resized, cv::Size(224, 224));
-        cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
-
-        cv::Mat blob = cv::dnn::blobFromImage(
-          resized, 1.0 / 255.0, cv::Size(224, 224), cv::Scalar(0, 0, 0), false, false);
-
-        std::array<int64_t, 4> input_shape{1, 3, 224, 224};
-        Ort::Value in_tensor = Ort::Value::CreateTensor<float>(
-          ort_attr_mem_info_, blob.ptr<float>(), blob.total(),
-          input_shape.data(), input_shape.size());
-
-        const char * in_names[] = {color_in_name_.c_str()};
-        const char * out_names[] = {color_out_name_.c_str()};
-
-        try {
-          auto outputs = color_session_->Run(
-            Ort::RunOptions{nullptr}, in_names, &in_tensor, 1, out_names, 1);
-          if (!outputs.empty()) {
-            const auto shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
-            int num_classes = (shape.size() >= 2) ? static_cast<int>(shape[1]) : static_cast<int>(color_labels_.size());
-            const float * logits = outputs.front().GetTensorData<float>();
-
-            float max_l = -1e9f;
-            for (int i = 0; i < num_classes; ++i) {
-              if (logits[i] > max_l) max_l = logits[i];
-            }
-            float sum_exp = 0.0f;
-            std::vector<float> probs(num_classes);
-            for (int i = 0; i < num_classes; ++i) {
-              probs[i] = std::exp(logits[i] - max_l);
-              sum_exp += probs[i];
-            }
-            int best_idx = 0;
-            float best_p = 0.0f;
-            for (int i = 0; i < num_classes; ++i) {
-              probs[i] /= sum_exp;
-              if (probs[i] > best_p) {
-                best_p = probs[i];
-                best_idx = i;
-              }
-            }
-            if (best_p > 0.30f && best_idx < static_cast<int>(color_labels_.size())) {
-              std::string res = color_labels_[best_idx];
-              std::transform(res.begin(), res.end(), res.begin(), ::tolower);
-              if (res.find("shirt") == std::string::npos && res.find("clothes") == std::string::npos) {
-                res += " shirt";
-              }
-              return res;
-            }
-          }
-        } catch (...) {
-          // Fallback ke HSV jika terjadi kegagalan inferensi runtime
-        }
-      }
+    // Batas bawah baju: PINGGANG (Waist / Hip Keypoints)
+    float waist_y = -1.0f;
+    if (kpt.size() > 22 && std::isfinite(kpt[18].y) && std::isfinite(kpt[22].y)) {
+      waist_y = (kpt[18].y + kpt[22].y) * 0.5f;
+    } else if (kpt.size() > 0 && std::isfinite(kpt[0].y)) {
+      waist_y = kpt[0].y;
     }
 
-    // 2. Fallback: Analisis Ruang Warna HSV
-    int tw = std::max(4, static_cast<int>(bbox.width * 0.40));
-    int th = std::max(4, static_cast<int>(bbox.height * 0.30));
-    int tx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.30), 0, bgr.cols - tw);
-    int ty = std::clamp(bbox.y + static_cast<int>(bbox.height * 0.20), 0, bgr.rows - th);
+    // Batas atas baju: BAHU / LEHER (Shoulder / Neck Keypoints)
+    float shoulder_y = -1.0f;
+    if (kpt.size() > 12 && std::isfinite(kpt[5].y) && std::isfinite(kpt[12].y)) {
+      shoulder_y = (kpt[5].y + kpt[12].y) * 0.5f;
+    } else if (kpt.size() > 3 && std::isfinite(kpt[3].y)) {
+      shoulder_y = kpt[3].y;
+    }
 
-    cv::Rect torso_roi(tx, ty, tw, th);
+    if (waist_y > 0.0f && shoulder_y > 0.0f && waist_y > (shoulder_y + 10.0f)) {
+      torso_y1 = static_cast<int>(shoulder_y);
+      torso_y2 = static_cast<int>(waist_y);
+      torso_x1 = bbox.x + static_cast<int>(bbox.width * 0.15);
+      torso_x2 = bbox.x + static_cast<int>(bbox.width * 0.85);
+    } else {
+      // Fallback proporsi tubuh:
+      // Dari bahu/dada (20% tinggi dari atas bbox) sampai batas pinggang (50% tinggi bbox).
+      // Bagian >50% adalah celana/kaki, yang diabaikan.
+      torso_y1 = bbox.y + static_cast<int>(bbox.height * 0.20);
+      torso_y2 = bbox.y + static_cast<int>(bbox.height * 0.50);
+      torso_x1 = bbox.x + static_cast<int>(bbox.width * 0.15);
+      torso_x2 = bbox.x + static_cast<int>(bbox.width * 0.85);
+    }
+
+    torso_y1 = std::clamp(torso_y1, 0, bgr.rows);
+    torso_y2 = std::clamp(torso_y2, 0, bgr.rows);
+    torso_x1 = std::clamp(torso_x1, 0, bgr.cols);
+    torso_x2 = std::clamp(torso_x2, 0, bgr.cols);
+
+    if (torso_y2 <= torso_y1 || torso_x2 <= torso_x1) {
+      return "casual attire";
+    }
+
+    cv::Rect torso_roi(torso_x1, torso_y1, torso_x2 - torso_x1, torso_y2 - torso_y1);
     torso_roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
     if (torso_roi.area() <= 0) return "casual attire";
 
+    // 1. Coba inferensi via Model AI ONNX jika tersedia
+    if (color_session_ && !color_labels_.empty()) {
+      cv::Mat crop = bgr(torso_roi);
+      cv::Mat resized;
+      cv::resize(crop, resized, cv::Size(224, 224));
+      cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
+
+      cv::Mat blob = cv::dnn::blobFromImage(
+        resized, 1.0 / 255.0, cv::Size(224, 224), cv::Scalar(0, 0, 0), false, false);
+
+      std::array<int64_t, 4> input_shape{1, 3, 224, 224};
+      Ort::Value in_tensor = Ort::Value::CreateTensor<float>(
+        ort_attr_mem_info_, blob.ptr<float>(), blob.total(),
+        input_shape.data(), input_shape.size());
+
+      const char * in_names[] = {color_in_name_.c_str()};
+      const char * out_names[] = {color_out_name_.c_str()};
+
+      try {
+        auto outputs = color_session_->Run(
+          Ort::RunOptions{nullptr}, in_names, &in_tensor, 1, out_names, 1);
+        if (!outputs.empty()) {
+          const auto shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
+          int num_classes = (shape.size() >= 2) ? static_cast<int>(shape[1]) : static_cast<int>(color_labels_.size());
+          const float * logits = outputs.front().GetTensorData<float>();
+
+          float max_l = -1e9f;
+          for (int i = 0; i < num_classes; ++i) {
+            if (logits[i] > max_l) max_l = logits[i];
+          }
+          float sum_exp = 0.0f;
+          std::vector<float> probs(num_classes);
+          for (int i = 0; i < num_classes; ++i) {
+            probs[i] = std::exp(logits[i] - max_l);
+            sum_exp += probs[i];
+          }
+          int best_idx = 0;
+          float best_p = 0.0f;
+          for (int i = 0; i < num_classes; ++i) {
+            probs[i] /= sum_exp;
+            if (probs[i] > best_p) {
+              best_p = probs[i];
+              best_idx = i;
+            }
+          }
+          if (best_p > 0.30f && best_idx < static_cast<int>(color_labels_.size())) {
+            std::string res = color_labels_[best_idx];
+            std::transform(res.begin(), res.end(), res.begin(), ::tolower);
+            if (res.find("shirt") == std::string::npos && res.find("clothes") == std::string::npos) {
+              res += " shirt";
+            }
+            return res;
+          }
+        }
+      } catch (...) {
+        // Fallback ke HSV jika terjadi kegagalan inferensi runtime
+      }
+    }
+
+    // 2. Fallback: Analisis Ruang Warna HSV pada torso_roi (pinggang ke atas)
     cv::Mat crop = bgr(torso_roi);
     cv::Mat hsv;
     cv::cvtColor(crop, hsv, cv::COLOR_BGR2HSV);
@@ -917,6 +954,9 @@ private:
   std::string task_mode_{"all"};
   bool is_help_me_carry_{true};
   bool is_receptionist_{true};
+
+  std::string guest_name_{""};
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_name_sub_;
 };
 
 ZedNode::ZedNode()
@@ -991,6 +1031,25 @@ ZedNode::ZedNode()
   attributes_publisher_ = create_publisher<std_msgs::msg::String>("/zed/person_attributes", 10);
   empty_seat_publisher_ = create_publisher<std_msgs::msg::String>("/zed/empty_seat", 10);
   chair_dets_publisher_ = create_publisher<std_msgs::msg::String>("/zed/chair_detections", 10);
+
+  person_name_sub_ = create_subscription<std_msgs::msg::String>(
+    "/zed/set_person_name", 10,
+    [this](const std_msgs::msg::String::SharedPtr msg) {
+      if (!msg) return;
+      std::string n = msg->data;
+      while (!n.empty() && (n.back() == ' ' || n.back() == '\r' || n.back() == '\n' || n.back() == '\t')) {
+        n.pop_back();
+      }
+      while (!n.empty() && (n.front() == ' ' || n.front() == '\t')) {
+        n.erase(n.begin());
+      }
+      guest_name_ = n;
+      if (!guest_name_.empty()) {
+        IC("[RECEPTIONIST:GUEST_NAME_SET]", guest_name_);
+      } else {
+        IC("[RECEPTIONIST:GUEST_NAME_RESET]");
+      }
+    });
 
   sl::InitParameters init_parameters;
   init_parameters.depth_mode = sl::DEPTH_MODE::ULTRA;
@@ -1482,8 +1541,8 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
         pp.kpt.emplace_back(std::isfinite(pt.x) ? pt.x : NAN, std::isfinite(pt.y) ? pt.y : NAN);
       }
 
-      // Hitung 3 Atribut Visual Tamu (Baju, Rambut, Gender)
-      const std::string shirt = classifyClothingColor(bgr, e.bbox);
+      // Hitung 3 Atribut Visual Tamu (Baju dari pinggang ke atas, Rambut, Gender)
+      const std::string shirt = classifyClothingColor(bgr, e.bbox, points);
       const std::string hair = classifyHairColor(bgr, e.bbox);
       const std::string gender = classifyGender(points, bgr, e.bbox);
 
@@ -1500,8 +1559,9 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
         attributes_publisher_->publish(attr_msg);
 
         if (is_receptionist_) {
-          IC("[RECEPTIONIST:PERSON]", e.id, e.x, e.y, e.range_m);
-          IC("[RECEPTIONIST:ATTRIBUTES]", e.id, gender, shirt, hair);
+          std::string disp_name = (is_help_me_carry_) ? ("ID " + std::to_string(e.id)) : (guest_name_.empty() ? "Guest" : guest_name_);
+          IC("[RECEPTIONIST:PERSON]", disp_name, e.x, e.y, e.range_m);
+          IC("[RECEPTIONIST:ATTRIBUTES]", disp_name, gender, shirt, hair);
         }
       }
 
@@ -1511,7 +1571,14 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       preview_persons_.push_back(pp);
 
       if (!first_p) ss << ";";
-      const std::string label = first_p ? "operator" : "person";
+      std::string label;
+      if (is_receptionist_ && !is_help_me_carry_) {
+        // Task Receptionist: Tanpa ID, gunakan nama tamu dari memori HRI jika ada
+        label = guest_name_.empty() ? "guest" : guest_name_;
+      } else {
+        // Task Help Me Carry: Gunakan ID operator
+        label = first_p ? "operator" : "person";
+      }
       first_p = false;
       ss << label << ":" << e.bbox.x << "," << e.bbox.y << "," << e.bbox.width << "," << e.bbox.height << "|";
       if (e.has_depth) ss << std::fixed << std::setprecision(2) << e.x << "," << e.y << "," << e.z;
@@ -1687,7 +1754,14 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       r &= cv::Rect(0, 0, W, H);
       if (r.width > 0 && r.height > 0) {
         cv::rectangle(canvas, r, cv::Scalar(0, 255, 0), 2);
-        std::string label_txt = "ID: " + std::to_string(p.id);
+        std::string label_txt;
+        if (is_receptionist_ && !is_help_me_carry_) {
+          // Receptionist: Tanpa ID! Gunakan nama tamu dari memori HRI jika ada
+          label_txt = guest_name_.empty() ? "Guest" : guest_name_;
+        } else {
+          // Help Me Carry: Gunakan ID operator
+          label_txt = "ID: " + std::to_string(p.id);
+        }
         cv::putText(
           canvas, label_txt,
           cv::Point(r.x, std::max(20, r.y - 6)),
@@ -1785,8 +1859,15 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     };
 
     const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos) ? preview_persons_[0] : PrevPerson{};
-    const std::string person_title = (is_receptionist_ && !is_help_me_carry_) ? "Guest [ID " : "Operator [ID ";
-    draw_hud(person_title + std::to_string(p0.id) + "] :", p0.x_m, p0.y_m, p0.range_m, cv::Scalar(0, 255, 0));
+    std::string person_title;
+    if (is_receptionist_ && !is_help_me_carry_) {
+      // Receptionist: Tanpa ID! Gunakan nama tamu dari memori HRI jika ada
+      person_title = (guest_name_.empty() ? "Guest :" : (guest_name_ + " :"));
+    } else {
+      // Help Me Carry: Operator [ID X]
+      person_title = "Operator [ID " + std::to_string(p0.id) + "] :";
+    }
+    draw_hud(person_title, p0.x_m, p0.y_m, p0.range_m, cv::Scalar(0, 255, 0));
 
     if (enable_bag_) {
       const PrevBag b0 = (!preview_bags_.empty() && preview_bags_[0].has_pos) ? preview_bags_[0] : PrevBag{};
