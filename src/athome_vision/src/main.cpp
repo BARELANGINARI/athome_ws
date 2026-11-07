@@ -1898,10 +1898,16 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     }
 
     if (is_receptionist_) {
-      RCLCPP_INFO_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "\033[1;35m[CHAIR]\033[0m Kursi %s di sisi %s (3D: x=%.2f m, y=%.2f m, dist=%.2f m)",
-        is_occupied ? "TERISI (OCCUPIED)" : "KOSONG (EMPTY)", side.c_str(), x, y, dist);
+      static auto last_chair_log = std::chrono::steady_clock::now();
+      auto now = std::chrono::steady_clock::now();
+      if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_chair_log).count() > 2000) {
+        last_chair_log = now;
+        std::cout << "\033[1;35m[CHAIR]\033[0m Kursi "
+                  << (is_occupied ? "TERISI (OCCUPIED)" : "KOSONG (EMPTY)")
+                  << " di sisi " << side << " (3D: x=" << cv::format("%.2f", x)
+                  << " m, y=" << cv::format("%.2f", y) << " m, dist=" << cv::format("%.2f", dist) << " m)"
+                  << std::endl;
+      }
     }
 
     if (!chair_str.empty()) chair_str += ";";
@@ -2191,13 +2197,11 @@ int main(int argc, char ** argv)
     auto node = std::make_shared<ZedNode>();
     rclcpp::spin(node);
   } catch (const std::exception & e) {
-    RCLCPP_FATAL(rclcpp::get_logger("zed_main"), "Fatal Exception ZED: %s", e.what());
-    std::cerr << "\033[91m[ZED Fatal Exception] " << e.what() << "\033[0m\n";
+    std::cout << "\033[91m[ZED Fatal Exception] " << e.what() << "\033[0m" << std::endl;
     rclcpp::shutdown();
     return 1;
   } catch (...) {
-    RCLCPP_FATAL(rclcpp::get_logger("zed_main"), "Unknown Fatal Exception in ZED node!");
-    std::cerr << "\033[91m[ZED Fatal Exception] Unknown error occurred!\033[0m\n";
+    std::cout << "\033[91m[ZED Fatal Exception] Unknown error occurred!\033[0m" << std::endl;
     rclcpp::shutdown();
     return 1;
   }
