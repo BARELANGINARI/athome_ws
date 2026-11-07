@@ -504,11 +504,6 @@ private:
       srv_name = "/arm/ambil_tas_simple";
     }
 
-    // RCLCPP_INFO(
-    //   get_logger(),
-    //   "\033[1;36m[ARM]\033[0m Actuating servo to indicate empty chair via %s...",
-    //   srv_name.c_str());
-
     callTrigger(
       client, srv_name,
       [this, srv_name, on_finished](bool success, const std::string & msg) {

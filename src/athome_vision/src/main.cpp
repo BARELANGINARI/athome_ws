@@ -840,6 +840,106 @@ private:
     return "male";
   }
 
+  // ---------- 4. Ekstraksi Embedding Wajah (SFace 128-D) ----------
+  std::vector<float> extractFaceEmbedding(
+    const cv::Mat & bgr, const cv::Rect & bbox,
+    const std::vector<sl::float2> & kpt = {})
+  {
+    if (!face_session_ || bgr.empty() || bbox.width <= 0 || bbox.height <= 0) {
+      return {};
+    }
+
+    // Tentukan ROI wajah dari keypoint kepala atau proporsi tubuh atas
+    int head_x1 = -1, head_y1 = -1, head_x2 = -1, head_y2 = -1;
+
+    // Cek keypoint ZED BODY_34: 26=Nose, 27=L_Eye, 28=R_Eye, 3=Neck
+    if (kpt.size() > 28 && std::isfinite(kpt[26].x) && std::isfinite(kpt[26].y) &&
+        kpt[26].x > 0 && kpt[26].y > 0)
+    {
+      float nose_x = kpt[26].x;
+      float nose_y = kpt[26].y;
+      float head_span = bbox.width * 0.45f;
+      if (kpt.size() > 3 && std::isfinite(kpt[3].y) && kpt[3].y > nose_y) {
+        head_span = std::max(head_span, (kpt[3].y - nose_y) * 2.0f);
+      }
+      head_x1 = static_cast<int>(nose_x - head_span * 0.5f);
+      head_x2 = static_cast<int>(nose_x + head_span * 0.5f);
+      head_y1 = static_cast<int>(nose_y - head_span * 0.65f);
+      head_y2 = static_cast<int>(nose_y + head_span * 0.65f);
+    } else {
+      // Fallback: area 22% teratas dari bbox tubuh
+      head_y1 = bbox.y;
+      head_y2 = bbox.y + static_cast<int>(bbox.height * 0.22);
+      head_x1 = bbox.x + static_cast<int>(bbox.width * 0.20);
+      head_x2 = bbox.x + static_cast<int>(bbox.width * 0.80);
+    }
+
+    head_x1 = std::clamp(head_x1, 0, bgr.cols);
+    head_x2 = std::clamp(head_x2, 0, bgr.cols);
+    head_y1 = std::clamp(head_y1, 0, bgr.rows);
+    head_y2 = std::clamp(head_y2, 0, bgr.rows);
+
+    if (head_x2 <= head_x1 + 10 || head_y2 <= head_y1 + 10) {
+      return {};
+    }
+
+    cv::Rect head_roi(head_x1, head_y1, head_x2 - head_x1, head_y2 - head_y1);
+    head_roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+    if (head_roi.area() <= 100) return {};
+
+    cv::Mat crop = bgr(head_roi);
+    cv::Mat resized;
+    cv::resize(crop, resized, cv::Size(112, 112));
+    cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
+
+    cv::Mat blob = cv::dnn::blobFromImage(
+      resized, 1.0, cv::Size(112, 112), cv::Scalar(0, 0, 0), false, false);
+
+    std::array<int64_t, 4> input_shape{1, 3, 112, 112};
+    Ort::Value in_tensor = Ort::Value::CreateTensor<float>(
+      ort_attr_mem_info_, blob.ptr<float>(), blob.total(),
+      input_shape.data(), input_shape.size());
+
+    const char * in_names[] = {face_in_name_.c_str()};
+    const char * out_names[] = {face_out_name_.c_str()};
+
+    try {
+      auto outputs = face_session_->Run(
+        Ort::RunOptions{nullptr}, in_names, &in_tensor, 1, out_names, 1);
+      if (!outputs.empty()) {
+        const float * feat_data = outputs.front().GetTensorData<float>();
+        const auto shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
+        int feat_dim = (shape.size() >= 2) ? static_cast<int>(shape[1]) : 128;
+
+        std::vector<float> feat(feat_dim);
+        float norm_sq = 0.0f;
+        for (int i = 0; i < feat_dim; ++i) {
+          feat[i] = feat_data[i];
+          norm_sq += feat[i] * feat[i];
+        }
+        float inv_norm = 1.0f / std::sqrt(std::max(norm_sq, 1e-6f));
+        for (int i = 0; i < feat_dim; ++i) {
+          feat[i] *= inv_norm;
+        }
+        return feat;
+      }
+    } catch (const std::exception & e) {
+      std::cerr << "Face embedding extraction error: " << e.what() << std::endl;
+    }
+    return {};
+  }
+
+  // Menghitung Cosine Similarity antara dua embedding wajah unit-normalized
+  static float matchFaceEmbeddings(const std::vector<float> & f1, const std::vector<float> & f2)
+  {
+    if (f1.empty() || f2.empty() || f1.size() != f2.size()) return -1.0f;
+    float dot = 0.0f;
+    for (size_t i = 0; i < f1.size(); ++i) {
+      dot += f1[i] * f2[i];
+    }
+    return dot;
+  }
+
   sl::Camera zed_;
   sl::Mat zed_image_;
   sl::Mat zed_point_cloud_;
@@ -886,6 +986,21 @@ private:
   std::string hair_out_name_;
   std::vector<std::string> hair_labels_;
 
+  // Face Recognition SFace ONNX
+  std::unique_ptr<Ort::Session> face_session_;
+  std::string face_in_name_;
+  std::string face_out_name_;
+
+  struct RegisteredPerson {
+    std::string name;
+    std::vector<float> feature;
+    int last_tracking_id{-1};
+    rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
+  };
+  std::vector<RegisteredPerson> registered_persons_;
+  std::string pending_register_name_{""};
+  double face_threshold_{0.363};
+
   struct PrevPerson {
     int id{-1};
     cv::Rect bbox;
@@ -898,6 +1013,7 @@ private:
     std::string clothing{""};
     std::string hair{""};
     std::string gender{""};
+    std::string name{""};
   };
   struct PrevBag {
     cv::Rect bbox;
@@ -1008,6 +1124,8 @@ ZedNode::ZedNode()
   declare_parameter("color_labels", std::string("models/color_names.txt"));
   declare_parameter("hair_model", std::string("models/hair_model.onnx"));
   declare_parameter("hair_labels", std::string("models/hair_names.txt"));
+  declare_parameter("face_model", std::string("models/face_recognition_sface.onnx"));
+  declare_parameter("face_threshold", 0.363);
 
   task_mode_ = get_parameter("task").as_string();
   std::string t = task_mode_;
@@ -1058,9 +1176,10 @@ ZedNode::ZedNode()
       }
       guest_name_ = n;
       if (!guest_name_.empty()) {
-        std::cout << "Guest name set: " << guest_name_ << std::endl;
+        pending_register_name_ = guest_name_;
+        std::cout << "\033[1;36m[VISION]\033[0m Guest name set: \"" << guest_name_ << "\" (queued for Face Recognition registration)" << std::endl;
       } else {
-        std::cout << "Guest name reset" << std::endl;
+        std::cout << "\033[1;36m[VISION]\033[0m Guest name reset" << std::endl;
       }
     });
 
@@ -1325,6 +1444,27 @@ ZedNode::ZedNode()
     }
   }
 
+  // 4. Face Recognition Model (SFace ONNX)
+  face_threshold_ = get_parameter("face_threshold").as_double();
+  const std::string face_param = get_parameter("face_model").as_string();
+  if (!face_param.empty()) {
+    std::string face_path = resolve(face_param);
+    if (std::filesystem::exists(face_path)) {
+      try {
+        face_session_ = std::make_unique<Ort::Session>(ort_attr_env_, face_path.c_str(), attr_opts);
+        face_in_name_ = face_session_->GetInputNameAllocated(0, alloc).get();
+        face_out_name_ = face_session_->GetOutputNameAllocated(0, alloc).get();
+        std::cout << "\033[1;32mFace Recognition SFace ONNX model loaded successfully: " << face_path
+                  << " (Cosine threshold: " << face_threshold_ << ")\033[0m" << std::endl;
+      } catch (const std::exception & e) {
+        std::cerr << "Face Recognition ONNX model load error: " << e.what() << std::endl;
+        face_session_.reset();
+      }
+    } else {
+      std::cout << "Face Recognition model not found, face recognition disabled: " << face_path << std::endl;
+    }
+  }
+
   const auto period = std::chrono::duration<double>(1.0 / camera_fps);
   timer_ = create_wall_timer(period, std::bind(&ZedNode::loop, this));
 
@@ -1578,12 +1718,67 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       }
     }
 
+    // Registrasi Wajah Tamu ke Database Visual (SFace 128-D)
+    if (!pending_register_name_.empty() && !entries.empty() && is_receptionist_) {
+      const auto & nearest = entries.front();
+      std::vector<float> feat = extractFaceEmbedding(bgr, nearest.bbox, nearest.body->keypoint_2d);
+      if (!feat.empty()) {
+        bool updated = false;
+        for (auto & rp : registered_persons_) {
+          if (rp.name == pending_register_name_) {
+            rp.feature = feat;
+            rp.last_tracking_id = nearest.id;
+            rp.last_seen = now();
+            updated = true;
+            break;
+          }
+        }
+        if (!updated) {
+          registered_persons_.push_back({pending_register_name_, feat, nearest.id, now()});
+        }
+        std::cout << "\033[1;32m[FACE RECOGNITION]\033[0m Registered face for guest: \""
+                  << pending_register_name_ << "\" (ZED Body ID: " << nearest.id << ")\033[0m" << std::endl;
+        pending_register_name_ = "";
+      }
+    }
+
     std::ostringstream ss;
     bool first_p = true;
     std::string gesture_result = "NONE";  // gesture dari operator terdekat
     for (const auto & e : entries) {
-      PrevPerson pp{e.id, e.bbox, e.has_depth, e.x, e.y, e.range_m, false, {}};
       const auto & points = e.body->keypoint_2d;
+
+      // Face Recognition & Person Identification
+      std::string recognized_name = "";
+      float best_face_score = -1.0f;
+      if (face_session_ && is_receptionist_) {
+        std::vector<float> feat = extractFaceEmbedding(bgr, e.bbox, points);
+        if (!feat.empty()) {
+          for (auto & rp : registered_persons_) {
+            float sim = matchFaceEmbeddings(feat, rp.feature);
+            if (sim > best_face_score) {
+              best_face_score = sim;
+              if (sim >= static_cast<float>(face_threshold_)) {
+                recognized_name = rp.name;
+                rp.last_tracking_id = e.id;
+                rp.last_seen = now();
+              }
+            }
+          }
+        }
+      }
+
+      // Tracking ID continuity fallback jika wajah menoleh / membelakangi kamera
+      if (recognized_name.empty() && is_receptionist_) {
+        for (auto & rp : registered_persons_) {
+          if (rp.last_tracking_id == e.id && (now() - rp.last_seen).seconds() < 5.0) {
+            recognized_name = rp.name;
+            break;
+          }
+        }
+      }
+
+      PrevPerson pp{e.id, e.bbox, e.has_depth, e.x, e.y, e.range_m, false, {}, "", "", "", recognized_name};
       for (const auto & pt : points) {
         pp.kpt.emplace_back(std::isfinite(pt.x) ? pt.x : NAN, std::isfinite(pt.y) ? pt.y : NAN);
       }
@@ -1619,7 +1814,14 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
         attributes_publisher_->publish(attr_msg);
 
         if (is_receptionist_) {
-          std::string disp_name = (is_help_me_carry_) ? ("ID " + std::to_string(e.id)) : (guest_name_.empty() ? "Guest" : guest_name_);
+          std::string disp_name;
+          if (is_help_me_carry_) {
+            disp_name = "ID " + std::to_string(e.id);
+          } else if (!recognized_name.empty()) {
+            disp_name = recognized_name;
+          } else {
+            disp_name = guest_name_.empty() ? "Guest" : "Person";
+          }
           IC(disp_name, e.x, e.y, e.range_m);
           if (should_classify_attributes) {
             IC(disp_name, gender, shirt, hair);
@@ -1635,8 +1837,14 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       if (!first_p) ss << ";";
       std::string label;
       if (is_receptionist_ && !is_help_me_carry_) {
-        // Task Receptionist: Tanpa ID, gunakan nama tamu dari memori HRI jika ada
-        label = guest_name_.empty() ? "guest" : guest_name_;
+        if (!recognized_name.empty()) {
+          label = recognized_name;
+        } else if (guest_name_.empty()) {
+          label = "guest";
+        } else {
+          // Ada nama yang sedang aktif (misal Alex), tapi orang ini BUKAN Alex!
+          label = "person";
+        }
       } else {
         // Task Help Me Carry: Gunakan ID operator
         label = first_p ? "operator" : "person";
@@ -1839,13 +2047,19 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       r &= cv::Rect(0, 0, W, H);
       if (r.width <= 0 || r.height <= 0) {continue;}
 
-      const cv::Scalar bbox_col = p.is_sitting ? cv::Scalar(0, 200, 255) : cv::Scalar(0, 255, 0); // Emas jika duduk di kursi, Hijau jika berdiri
+      const cv::Scalar bbox_col = p.is_sitting ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0); // Merah jika duduk di kursi, Hijau jika berdiri
       cv::rectangle(canvas, r, bbox_col, 2);
 
       std::string label_txt;
       if (is_receptionist_ && !is_help_me_carry_) {
-        // Receptionist: Tanpa ID! Gunakan nama tamu dari memori HRI jika ada
-        label_txt = (i == 0) ? (guest_name_.empty() ? "Guest" : guest_name_) : "Person";
+        // Receptionist: Tampilkan nama tamu jika teridentifikasi via Face Recognition / Re-ID
+        if (!p.name.empty()) {
+          label_txt = p.name;
+        } else if (guest_name_.empty()) {
+          label_txt = (i == 0) ? "Guest" : "Person";
+        } else {
+          label_txt = "Person"; // Tamu lain, bukan tamu yang aktif
+        }
       } else {
         // Help Me Carry: Gunakan ID operator
         label_txt = "ID: " + std::to_string(p.id);
@@ -1854,7 +2068,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         label_txt += " [Seated]";
       }
 
-      draw_banner(label_txt, r.x, r.y, bbox_col, p.is_sitting ? cv::Scalar(0, 80, 110) : cv::Scalar(0, 70, 0), cv::Scalar(255, 255, 255), 0.58, 2);
+      draw_banner(label_txt, r.x, r.y, bbox_col, p.is_sitting ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0), cv::Scalar(255, 255, 255), 0.58, 2);
 
       if (!p.gender.empty() || !p.clothing.empty() || !p.hair.empty()) {
         std::string attr_txt;
@@ -1928,16 +2142,17 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       cv::Rect r = flip_rect(c.bbox);
       r &= cv::Rect(0, 0, W, H);
       if (r.width > 0 && r.height > 0) {
-        const cv::Scalar color = c.occupied ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0); // Merah: Penuh, Hijau: Kosong
+        // Merah jika ada orangnya, Hijau jika kosong
+        const cv::Scalar color = c.occupied ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0);
         cv::rectangle(canvas, r, color, 2);
         const int chair_cx = r.x + r.width / 2;
         const int chair_cy = r.y + r.height / 2;
         cv::circle(canvas, cv::Point(chair_cx, chair_cy), 4, color, -1);
-        std::string txt = (c.occupied ? "Chair (Occupied)" : "Chair (Empty): ") + c.side;
+        std::string txt = (c.occupied ? "Chair (Occupied): " : "Chair (Empty): ") + c.side;
         if (c.has_pos) {
           txt += cv::format(" (%.2fm, %.2fm)", c.x_m, c.y_m);
         }
-        const cv::Scalar chair_bg = c.occupied ? cv::Scalar(0, 0, 110) : cv::Scalar(0, 80, 0);
+        const cv::Scalar chair_bg = c.occupied ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0);
         draw_banner(txt, r.x, r.y, color, chair_bg, cv::Scalar(255, 255, 255), 0.52, 2);
       }
     }
@@ -1960,7 +2175,13 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos) ? preview_persons_[0] : PrevPerson{};
     std::string person_title;
     if (is_receptionist_ && !is_help_me_carry_) {
-      person_title = (guest_name_.empty() ? "Guest :" : (guest_name_ + " :"));
+      if (!p0.name.empty()) {
+        person_title = p0.name + " :";
+      } else if (guest_name_.empty()) {
+        person_title = "Guest :";
+      } else {
+        person_title = "Person :";
+      }
     } else {
       person_title = "Operator [ID " + std::to_string(p0.id) + "] :";
     }
@@ -1976,9 +2197,12 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     }
 
     for (const auto & c : preview_chairs_) {
-      if (!c.occupied && c.has_pos) {
-        draw_hud("Empty Chair [" + c.side + "] :", c.x_m, c.y_m, c.range_m, cv::Scalar(0, 255, 0));
-        break;
+      if (c.has_pos) {
+        if (!c.occupied) {
+          draw_hud("Empty Chair [" + c.side + "] :", c.x_m, c.y_m, c.range_m, cv::Scalar(0, 255, 0));
+        } else {
+          draw_hud("Occupied Chair [" + c.side + "] :", c.x_m, c.y_m, c.range_m, cv::Scalar(0, 0, 255));
+        }
       }
     }
 
