@@ -26,7 +26,7 @@ audio_queue = queue.Queue()
 asr_queue = queue.Queue()
 
 threshold_dbfs = -40.0 #-35.0
-threshold_flatness = 0.40  # Speech typically has flatness < 0.45
+threshold_flatness = 0.10  # Speech typically has flatness < 0.45
 latest_transcript = "[Waiting for speech...]"
 latest_asr_metrics = "RTF: 0.00 | Duration: 0.0s"
 

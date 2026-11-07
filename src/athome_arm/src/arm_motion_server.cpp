@@ -101,6 +101,7 @@ struct MotionData {
     std::vector<Frame> frames;
 };
 
+// constructor ArmMotionServer
 class ArmMotionServer : public rclcpp::Node {
 public:
     ArmMotionServer() : Node("arm_motion_server") {
@@ -111,6 +112,8 @@ public:
         port_name_ = this->get_parameter("port").as_string();
         baudrate_ = this->get_parameter("baudrate").as_int();
         motions_dir_ = this->get_parameter("motions_dir").as_string();
+
+        // Menambahkan service untuk motion arm
 
         ambil_tas_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "/arm/ambil_tas_simple",
@@ -127,9 +130,25 @@ public:
             std::bind(&ArmMotionServer::handleAmbilTas, this, std::placeholders::_1, std::placeholders::_2)
         );
 
+        point_pos_srv_ = this->create_service<std_srvs::srv::Trigger>(
+            "/arm/point_position",
+            [this] (const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+                std::shared_ptr<std_srvs::srv::Trigger::Response>res) {
+                std::lock_guard<std::mutex> lock(hardware_mutex_);
+                std::string err;
+                if (runMotionByName("point_position", err)) {
+                    res->success = true;
+                    res->message = "Motion point_position executed successfully";
+                } else {
+                    res->success = false;
+                    res->message = err;
+                }
+            }
+        );
+
         RCLCPP_INFO(this->get_logger(), "Arm Motion Server ready.");
         RCLCPP_INFO(this->get_logger(), "Port: %s, Baudrate: %d", port_name_.c_str(), baudrate_);
-        RCLCPP_INFO(this->get_logger(), "Services: /arm/ambil_tas_simple, /arm/letakkan_tas, /arm/play_motion");
+        RCLCPP_INFO(this->get_logger(), "Services: /arm/ambil_tas_simple, /arm/letakkan_tas, /arm/play_motion, /arm/point_position");
 
         // Initialize hardware connection
         if (initHardware()) {
@@ -152,6 +171,7 @@ private:
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_tas_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr letakkan_tas_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr play_motion_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr point_pos_srv_;
 
     dynamixel::PortHandler   *portHandler   = nullptr;
     dynamixel::PacketHandler *packetHandler = nullptr;

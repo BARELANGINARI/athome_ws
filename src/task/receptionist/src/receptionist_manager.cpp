@@ -211,6 +211,9 @@ public:
     arm_ambil_tas_simple_client_ = create_client<Trigger>(
       "/arm/ambil_tas_simple", rclcpp::ServicesQoS(), callback_group_);
 
+    arm_point_position_client_ = create_client<Trigger>(
+      "/arm/point_position", rclcpp::ServicesQoS(), callback_group_);
+
     // Timer siklus FSM (10 Hz / 100 ms)
     fsm_timer_ = create_wall_timer(
       100ms, std::bind(&ReceptionistTaskNode::fsmTick, this));
@@ -326,6 +329,7 @@ private:
 
   TriggerClient::SharedPtr arm_ambil_tas_client_;
   TriggerClient::SharedPtr arm_ambil_tas_simple_client_;
+  TriggerClient::SharedPtr arm_point_position_client_;
 
   // ============================================================================
   // SUB-ROUTINES / HELPER FUNCTIONS
@@ -482,8 +486,10 @@ private:
   // Menunjuk kursi kosong menggunakan service /arm/ambil_tas (fallback ke /arm/ambil_tas_simple)
   void pointToSeatWithArm(std::function<void(bool)> on_finished)
   {
-    TriggerClient::SharedPtr client = arm_ambil_tas_client_;
-    std::string srv_name = "/arm/ambil_tas";
+    TriggerClient::SharedPtr client = arm_point_position_client_;
+    std::string srv_name = "/arm/point_position";
+
+    RCLCPP_INFO(get_logger(), "\033[1;36m[ARM]\033[0m Actuating arm to point to chair via %s...", srv_name.c_str());
 
     if ((!client || !client->service_is_ready()) &&
         arm_ambil_tas_simple_client_ && arm_ambil_tas_simple_client_->service_is_ready())
@@ -492,10 +498,10 @@ private:
       srv_name = "/arm/ambil_tas_simple";
     }
 
-    RCLCPP_INFO(
-      get_logger(),
-      "\033[1;36m[ARM]\033[0m Actuating servo to indicate empty chair via %s...",
-      srv_name.c_str());
+    // RCLCPP_INFO(
+    //   get_logger(),
+    //   "\033[1;36m[ARM]\033[0m Actuating servo to indicate empty chair via %s...",
+    //   srv_name.c_str());
 
     callTrigger(
       client, srv_name,
@@ -1773,39 +1779,35 @@ private:
         }
 
         const std::string seat_pos = detectEmptyChairSide();
-        RCLCPP_INFO(
-          get_logger(),
-          "\033[1;32m[VISION]\033[0m Empty chair detected at '%s', calling /arm/ambil_tas...",
-          seat_pos.c_str());
+        PersonProfile cg;
+        {
+          std::lock_guard<std::mutex> lock(guest_mutex_);
+          cg = current_guest_;
+        }
 
-        pointToSeatWithArm([this, seat_pos](bool) {
-          PersonProfile cg;
-          {
-            std::lock_guard<std::mutex> lock(guest_mutex_);
-            cg = current_guest_;
-          }
-          std::string offer_msg;
-          if (guest_idx_ == 1) {
-            offer_msg =
-              host_.name + ", this is our guest, " + cg.name + ". " +
-              formatPersonDescription(cg) + ". Their favorite drink is " +
-              cg.drink + ", and their interest is " + cg.interest + ". " +
-              cg.name + ", please take a seat in the empty chair on the " + seat_pos +
-              " side that I am indicating.";
-          } else {
-            offer_msg =
-              cg.name +
-              ", please take a seat in the empty chair on the " + seat_pos +
-              " side that I am indicating.";
-          }
+        // menentukan bagian 1 kalimat (berhenti tepat pada kalimat 'on the ')
+        std::string part1_msg;
+        if (guest_idx_ == 1) {
+          part1_msg =
+            host_.name + ", this is our guest, " + cg.name + ". " +
+            formatPersonDescription(cg) + ". Their favorite drink is " +
+            cg.drink + ", and their interest is " + cg.interest + ". " +
+            cg.name + ", please take a seat in the empty chair on the ";
+        } else {
+          part1_msg = cg.name + ", please take a seat in the empty chair on the ";
+        }
 
-          speakAsync(
-            offer_msg,
-            [this]() {
+        speakAsync(part1_msg, [this, seat_pos]() {
+          // tepat setelah kalimat diatas selesai, gerakkan lengan menunjuk
+          pointToSeatWithArm([this, seat_pos](bool /*success*/) {
+            // setelah lengan menunjuk, lanjutkan menyebutkan sisi kursi
+            std::string part2_msg = seat_pos + " side that I am indicating.";
+            speakAsync(part2_msg, [this]() {
               transitionTo(
                 ReceptionistState::WAIT_GUEST_SIT,
                 "Waiting for guest to occupy the indicated chair");
             });
+          });
         });
         break;
       }
