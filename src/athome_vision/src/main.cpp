@@ -1254,12 +1254,12 @@ ZedNode::ZedNode()
       if (std::filesystem::exists(botol_path)) {
         std::string err;
         if (botol_yolo_.load(botol_path, "", drink_conf, nms, size, "Water", &err)) {
-          std::cout << "Water/Botol ONNX model loaded successfully: " << botol_path << std::endl;
+          std::cout << "Water/Bottle ONNX model loaded successfully: " << botol_path << std::endl;
         } else {
-          std::cerr << "Water/Botol ONNX load error: " << err << std::endl;
+          std::cerr << "Water/Bottle ONNX load error: " << err << std::endl;
         }
       } else {
-        std::cerr << "Water/Botol ONNX model not found: " << botol_path << std::endl;
+        std::cerr << "Water/Bottle ONNX model not found: " << botol_path << std::endl;
       }
     }
 
@@ -1902,9 +1902,9 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       auto now = std::chrono::steady_clock::now();
       if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_chair_log).count() > 2000) {
         last_chair_log = now;
-        std::cout << "\033[1;35m[CHAIR]\033[0m Kursi "
-                  << (is_occupied ? "TERISI (OCCUPIED)" : "KOSONG (EMPTY)")
-                  << " di sisi " << side << " (3D: x=" << cv::format("%.2f", x)
+        std::cout << "\033[1;35m[CHAIR]\033[0m Chair "
+                  << (is_occupied ? "OCCUPIED" : "EMPTY")
+                  << " on " << side << " side (3D: x=" << cv::format("%.2f", x)
                   << " m, y=" << cv::format("%.2f", y) << " m, dist=" << cv::format("%.2f", dist) << " m)"
                   << std::endl;
       }
