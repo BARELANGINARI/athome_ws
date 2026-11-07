@@ -9,7 +9,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Launch LiDAR (RPLiDAR), laser filters, static TF, and ZED camera."""
+    """Launch LiDAR, laser filters, static TF, and ZED camera."""
     lidar_yaml = PathJoinSubstitution(
         [FindPackageShare('athome_bringup'), 'config', 'lidar.yaml'])
 

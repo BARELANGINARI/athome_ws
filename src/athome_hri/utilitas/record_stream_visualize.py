@@ -10,22 +10,18 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from faster_whisper import WhisperModel
 
-# --- 1. SYSTEM & MODEL CONFIGURATION ---
 SAMPLE_RATE = 16000
 BLOCK_DURATION = 0.03  # 30 ms per frame
 BLOCK_SIZE = int(SAMPLE_RATE * BLOCK_DURATION)
 
-# VAD State Machine Parameters
 PRE_ROLL_FRAMES = 10      # Store 300 ms before speech detected (prevents clipping onset)
 HANGOVER_FRAMES = 25      # Wait 750 ms of silence before concluding end of sentence
 MIN_SPEECH_FRAMES = 15    # Minimum speech duration 450 ms to process ASR (ignore coughs/clicks)
 
-# Whisper Configuration (Change device="cpu", compute_type="int8" to test on CPU)
 WHISPER_MODEL_SIZE = "base"
 WHISPER_DEVICE = "cuda"
 WHISPER_COMPUTE = "float16"
 
-# --- 2. GLOBAL QUEUES & STATE ---
 audio_queue = queue.Queue()
 asr_queue = queue.Queue()
 
@@ -34,13 +30,11 @@ threshold_flatness = 0.40  # Speech typically has flatness < 0.45
 latest_transcript = "[Waiting for speech...]"
 latest_asr_metrics = "RTF: 0.00 | Duration: 0.0s"
 
-# VAD State
 is_speaking = False
 speech_buffer = []
 pre_roll_buffer = deque(maxlen=PRE_ROLL_FRAMES)
 silence_counter = 0
 
-# Vocal Bandpass Filter (300 - 3400 Hz)
 def butter_bandpass(lowcut, highcut, fs, order=4):
     nyq = 0.5 * fs
     return butter(order, [lowcut / nyq, highcut / nyq], btype='band')
@@ -51,7 +45,6 @@ def compute_features(indata):
     eps = 1e-10
     signal = indata[:, 0]
     
-    # Full-band & Speech-band dBFS
     rms = np.sqrt(np.mean(signal**2) + eps)
     dbfs = 20 * np.log10(rms + eps)
     
@@ -59,16 +52,13 @@ def compute_features(indata):
     rms_speech = np.sqrt(np.mean(speech_sig**2) + eps)
     dbfs_speech = 20 * np.log10(rms_speech + eps)
     
-    # Spectral Flatness
     fft_mag = np.abs(np.fft.rfft(signal * np.hanning(len(signal)))) + eps
     flatness = np.exp(np.mean(np.log(fft_mag))) / np.mean(fft_mag)
     
     return signal, fft_mag, dbfs, dbfs_speech, flatness
 
-# Hallucination filter
 HALLUCINATION_BLACKLIST = ["Terima kasih", "terimakasih", "Thank You", "Thanks", "thank you", "Thank you"]
 
-# --- 3. BACKGROUND WORKER THREAD FOR ASR ---
 def asr_worker():
     global latest_transcript, latest_asr_metrics
     print(f"[ASR INIT] Loading Whisper model ({WHISPER_MODEL_SIZE}) on {WHISPER_DEVICE}...")
@@ -87,7 +77,6 @@ def asr_worker():
         dur = len(audio_segment) / SAMPLE_RATE
         t0 = time.perf_counter()
         
-        # Transcribe directly from array
         segments, _ = model.transcribe(
             audio_segment,
             beam_size=2,
@@ -110,7 +99,6 @@ def asr_worker():
         proc_time = time.perf_counter() - t0
         rtf = proc_time / dur if dur > 0 else 0
 
-        # Post-filter blacklist and sentence length
         if text and text.lower().rstrip(".!") not in HALLUCINATION_BLACKLIST and len(text)>2:
 
             latest_transcript = f'"{text}"'
@@ -124,24 +112,20 @@ def asr_worker():
 asr_thread = threading.Thread(target=asr_worker, daemon=True)
 asr_thread.start()
 
-# --- 4. AUDIO CALLBACK ---
 def audio_callback(indata, frames, time_info, status):
     if status:
         print(status)
     audio_queue.put(indata.copy())
 
-# --- 5. MATPLOTLIB GUI SETUP ---
 fig, (ax_wave, ax_spec, ax_dbfs) = plt.subplots(3, 1, figsize=(10, 8.5))
 plt.subplots_adjust(hspace=0.5, bottom=0.15)
 
-# Plot 1: Waveform & VAD Status Indicator
 x_wave = np.arange(BLOCK_SIZE) / SAMPLE_RATE * 1000
 line_wave, = ax_wave.plot(x_wave, np.zeros(BLOCK_SIZE), color='#007acc')
 ax_wave.set_ylim(-1.0, 1.0)
 title_wave = ax_wave.set_title("VAD Status: SILENCE | waiting for input...", fontweight="bold", color="gray")
 ax_wave.set_ylabel("Amplitude")
 
-# Plot 2: FFT Spectrum
 freqs = np.fft.rfftfreq(BLOCK_SIZE, 1.0 / SAMPLE_RATE)
 line_spec, = ax_spec.plot(freqs, np.zeros(len(freqs)), color='#d9534f')
 ax_spec.axvspan(300, 3400, color='green', alpha=0.15, label='Speech Band (300-3400 Hz)')
@@ -151,7 +135,6 @@ ax_spec.set_title("Frequency Spectrum (FFT dB)")
 ax_spec.set_ylabel("dB")
 ax_spec.legend(loc="upper right")
 
-# Plot 3: Rolling Energy & Threshold
 HISTORY_LEN = 100
 dbfs_hist = np.full(HISTORY_LEN, -80.0)
 speech_dbfs_hist = np.full(HISTORY_LEN, -80.0)
@@ -165,7 +148,6 @@ ax_dbfs.set_title(f"VAD Energy | [UP/DOWN] dBFS Thresh | [LEFT/RIGHT] Flatness M
 ax_dbfs.set_ylabel("dBFS")
 ax_dbfs.legend(loc="upper left")
 
-# ASR transcription result text box at the bottom
 asr_text_box = fig.text(0.5, 0.03, f"ASR: {latest_transcript}\n{latest_asr_metrics}", 
                         ha="center", va="center", fontsize=11, fontweight="bold",
                         bbox=dict(boxstyle="round,pad=0.5", facecolor="#f0f4f8", edgecolor="#007acc"))
@@ -188,7 +170,6 @@ def on_key(event):
 
 fig.canvas.mpl_connect('key_press_event', on_key)
 
-# --- 6. UPDATE LOOP & VAD STATE MACHINE ---
 def update_plot(frame):
     global dbfs_hist, speech_dbfs_hist, is_speaking, speech_buffer, silence_counter
     
@@ -196,13 +177,11 @@ def update_plot(frame):
         indata = audio_queue.get_nowait()
         sig, fft_mag, dbfs, dbfs_speech, flatness = compute_features(indata)
         
-        # VAD Decision Logic (Combination of Speech-Band Energy & Spectral Flatness)
         frame_is_voice = (dbfs_speech > threshold_dbfs) and (flatness < threshold_flatness)
         
         if frame_is_voice:
             if not is_speaking:
                 is_speaking = True
-                # Insert pre-roll buffer to prevent cutting off start of words
                 speech_buffer.extend(list(pre_roll_buffer))
             speech_buffer.append(sig)
             silence_counter = 0
@@ -210,7 +189,6 @@ def update_plot(frame):
             if is_speaking:
                 speech_buffer.append(sig)
                 silence_counter += 1
-                # If silence exceeds hangover duration, send to ASR
                 if silence_counter >= HANGOVER_FRAMES:
                     if len(speech_buffer) >= MIN_SPEECH_FRAMES + PRE_ROLL_FRAMES:
                         full_audio = np.concatenate(speech_buffer)
@@ -222,7 +200,6 @@ def update_plot(frame):
             else:
                 pre_roll_buffer.append(sig)
                 
-        # Update Plot Data
         line_wave.set_ydata(sig)
         line_spec.set_ydata(20 * np.log10(fft_mag))
         
@@ -234,7 +211,6 @@ def update_plot(frame):
         line_dbfs.set_ydata(dbfs_hist)
         line_speech_dbfs.set_ydata(speech_dbfs_hist)
         
-        # Update VAD Visual Indicator
         if is_speaking:
             title_wave.set_text(f"VAD Status: [SPEECH DETECTED - RECORDING] (Flatness: {flatness:.2f})")
             title_wave.set_color("green")
@@ -247,7 +223,6 @@ def update_plot(frame):
     asr_text_box.set_text(f"ASR: {latest_transcript}\n{latest_asr_metrics}")
     return line_wave, line_spec, line_dbfs, line_speech_dbfs, line_thresh, title_wave, asr_text_box
 
-# --- MAIN EXECUTION ---
 with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='float32',
                     blocksize=BLOCK_SIZE, callback=audio_callback):
     ani = FuncAnimation(fig, update_plot, interval=30, blit=False, cache_frame_data=False)

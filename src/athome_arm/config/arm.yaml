@@ -1,16 +1,13 @@
 arm_motion_server:
   ros__parameters:
-    # Komunikasi Serial Dynamixel (AX-18A Protocol 1.0)
     port: "/dev/ttyUSB0"
     baudrate: 1000000
-    motions_dir: ""  # Kosongkan untuk auto-detect direktori motions dari package share
+    motions_dir: ""  
 
-    # Konfigurasi Joint & Pergerakan
     update_rate_hz: 50
     max_speed_dps: 60.0
     work_range_deg: 260.0
 
-    # Parameter Adaptive Gripper
     gripper:
       id: 6
       max_open_deg: 80.0
@@ -24,7 +21,6 @@ arm_motion_server:
       confirm_count: 3
       compliance_slope: 50
 
-    # Batas Kalibrasi Servo (Center & Limits)
     calibration:
       servo_1: { center_tick: 802, cw_limit: 10, ccw_limit: 1010 }
       servo_4: { center_tick: 809, cw_limit: 10, ccw_limit: 1010 }

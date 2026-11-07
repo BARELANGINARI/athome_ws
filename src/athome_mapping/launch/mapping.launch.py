@@ -87,7 +87,6 @@ def generate_launch_description():
         description='Force RViz software rendering',
     )
 
-    # 1. Hardware: Motor driver (UDP to Nucleo)
     nucleo_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
@@ -104,7 +103,6 @@ def generate_launch_description():
         }.items(),
     )
 
-    # 2. Hardware: RPLiDAR node
     rplidar_node = Node(
         package='rplidar_ros',
         executable='rplidar_composition',
@@ -125,7 +123,6 @@ def generate_launch_description():
         ],
     )
 
-    # 3. Hardware: Static TFs
     footprint_to_base = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -160,7 +157,6 @@ def generate_launch_description():
         ],
     )
 
-    # 4. SLAM Toolbox
     slam_toolbox = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(slam_toolbox_launch),
         launch_arguments={
@@ -169,7 +165,6 @@ def generate_launch_description():
         }.items(),
     )
 
-    # 5. RViz2
     rviz = Node(
         package='rviz2',
         executable='rviz2',

@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-Barelang Inari - Human-Robot Interaction (HRI) Master Node.
-
-Bertugas sebagai Task Manager & antarmuka terpadu (Voice/NLU/Web/ROS 2/VAD Visualizer).
-"""
-
 import asyncio
 from enum import Enum, auto
 import logging

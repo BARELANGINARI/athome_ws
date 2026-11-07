@@ -1,5 +1,3 @@
-"""HTTP and WebSocket server module for the HRI Web UI client."""
-
 import asyncio
 import base64
 import http.server

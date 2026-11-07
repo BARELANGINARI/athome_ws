@@ -12,7 +12,6 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """All-in-one bringup launch for Help Me Carry task: hardware, navigation, and task node."""
     return LaunchDescription([
         DeclareLaunchArgument('rviz', default_value='true', description='Launch RViz visualization'),
         DeclareLaunchArgument('rviz_software', default_value='false', description='Force RViz software OpenGL rendering'),

@@ -1,5 +1,3 @@
-"""Natural Language Understanding (NLU) intent recognizer module."""
-
 from difflib import SequenceMatcher
 import logging
 from typing import Dict, List, Optional, Tuple

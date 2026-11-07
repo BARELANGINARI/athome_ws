@@ -1,5 +1,3 @@
-"""Text-to-Speech (TTS) engine module powered by Piper TTS."""
-
 import base64
 import io
 import logging

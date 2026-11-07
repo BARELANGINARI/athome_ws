@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Barelang Inari - Standalone Robot Face Node
-Serves the 7-inch LCD web interface and connects ROS 2 expression topics to WebSocket.
-"""
-
 import asyncio
 import http.server
 import json
@@ -34,7 +28,6 @@ class ReusableTCPServer(socketserver.TCPServer):
 
 
 class RobotFaceNode(Node):
-    """ROS 2 Node that bridges robot emotions and states to the 7-inch HDMI face interface."""
 
     def __init__(self, async_loop: asyncio.AbstractEventLoop) -> None:
         super().__init__("robot_face_node")
@@ -54,22 +47,15 @@ class RobotFaceNode(Node):
         self.kiosk_mode: bool = bool(self.get_parameter("kiosk_mode").value)
         self.browser_type: str = str(self.get_parameter("browser_type").value).strip()
 
-        # Web Directory Discovery
         self.web_dir: Path = self._find_web_dir()
         logger.info("Serving Web Face GUI from: %s", self.web_dir)
 
-        # ROS 2 Subscriptions
-        # 1. Main Direct Expression Topic (String)
         self.create_subscription(
             String, "/robot/expression", self._on_expression_received, 10
         )
-
-        # 2. Optional HRI Event Topic
         self.create_subscription(
             String, "/hri/event", self._on_hri_event_received, 10
         )
-
-        # 3. Optional TTS Subtitle Topic
         self.create_subscription(
             String, "/hri/tts_say", self._on_tts_say_received, 10
         )
@@ -77,14 +63,11 @@ class RobotFaceNode(Node):
         logger.info("RobotFaceNode ready. Listening on /robot/expression")
 
     def _find_web_dir(self) -> Path:
-        """Find the static web directory containing index.html."""
-        # Check source tree relative to this file
         current_file = Path(__file__).resolve()
         source_web = current_file.parent.parent / "web"
         if (source_web / "index.html").is_file():
             return source_web
 
-        # Check install space
         try:
             from ament_index_python.packages import get_package_share_directory
             share_web = Path(get_package_share_directory("athome_face")) / "web"
@@ -96,7 +79,6 @@ class RobotFaceNode(Node):
         return source_web
 
     def start_http_server(self) -> None:
-        """Start simple HTTP server in a background thread."""
         web_path = str(self.web_dir)
 
         class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -104,7 +86,7 @@ class RobotFaceNode(Node):
                 super().__init__(*args, directory=web_path, **kwargs)
 
             def log_message(self, format, *args):
-                pass  # Suppress noisy HTTP request logs
+                pass  
 
         def _serve():
             try:
@@ -118,7 +100,6 @@ class RobotFaceNode(Node):
         t.start()
 
     async def ws_handler(self, websocket: WebSocketServerProtocol) -> None:
-        """Handle incoming WebSocket client connections."""
         self.active_clients.add(websocket)
         logger.info(
             "Face UI client connected (%s). Total clients: %d",
@@ -127,7 +108,6 @@ class RobotFaceNode(Node):
         )
         try:
             async for raw_msg in websocket:
-                # Can process incoming client events here if needed
                 pass
         except websockets.exceptions.ConnectionClosed:
             pass
@@ -136,7 +116,6 @@ class RobotFaceNode(Node):
             logger.info("Face UI client disconnected. Remaining: %d", len(self.active_clients))
 
     def broadcast(self, payload: dict) -> None:
-        """Broadcast payload to all active WebSocket clients thread-safely."""
         if not self.active_clients:
             return
 
@@ -177,13 +156,11 @@ class RobotFaceNode(Node):
             self.broadcast({"type": "TTS_PLAY", "text": text})
 
     def launch_kiosk_browser(self) -> None:
-        """Launch browser (Firefox / Chromium / Chrome) in full-screen kiosk mode for 7-inch HDMI LCD."""
         if not self.launch_browser:
             return
 
         url = f"http://localhost:{self.http_port}"
 
-        # Determine browser binary
         browser_bin = None
         if self.browser_type and self.browser_type != "auto":
             browser_bin = shutil.which(self.browser_type) or self.browser_type
@@ -202,18 +179,16 @@ class RobotFaceNode(Node):
 
         if not browser_bin:
             logger.warning(
-                "Could not find any supported browser (firefox, chromium, google-chrome) in PATH."
+                "Could not find any supported browser in PATH."
             )
             return
 
-        # Build command based on browser family
         if "firefox" in browser_bin.lower():
             if self.kiosk_mode:
                 cmd = [browser_bin, "--kiosk", url]
             else:
                 cmd = [browser_bin, "--new-window", url]
         else:
-            # Chromium / Chrome
             cmd = [
                 browser_bin,
                 "--kiosk" if self.kiosk_mode else f"--app={url}",
@@ -235,13 +210,11 @@ async def main_async() -> None:
     loop = asyncio.get_running_loop()
     node = RobotFaceNode(loop)
 
-    # Start ROS 2 executor thread
     ros_thread = threading.Thread(
         target=rclpy.spin, args=(node,), name="FaceRosSpin", daemon=True
     )
     ros_thread.start()
 
-    # Start Web Servers
     node.start_http_server()
     if node.launch_browser:
         node.launch_kiosk_browser()
@@ -253,7 +226,6 @@ async def main_async() -> None:
     logger.info("CLI Expression   : ros2 topic pub /robot/expression std_msgs/msg/String \"{data: 'GREETING'}\"")
     logger.info("=================================================================")
 
-    # Run WebSocket Server indefinitely
     async with websockets.serve(node.ws_handler, "0.0.0.0", node.ws_port):
         await asyncio.Future()
 

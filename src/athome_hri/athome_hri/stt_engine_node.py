@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-"""Standalone ROS 2 speech-to-text engine."""
-
 import asyncio
 import contextlib
 import os

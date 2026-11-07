@@ -867,7 +867,8 @@ private:
         "orange juice", "apple juice", "iced tea", "green tea",
         "coke", "cola", "pepsi", "sprite", "fanta",
         "milk", "water", "coffee", "tea", "juice", "soda",
-        "botol", "bottle", "cracker", "cracker box", "snack"
+        "botol", "bottle", "cracker", "cracker box", "snack",
+        "pringles", "cheezit", "cheez-it", "chips"
       };
       for (const auto & drink : kKnownDrinks) {
         if (containsWholePhrase(norm, drink) &&

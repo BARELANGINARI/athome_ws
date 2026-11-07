@@ -46,7 +46,6 @@ enum class TaskState {
   ABORTED                   // Tugas dibatalkan karena timeout / error kritis
 };
 
-// Konversi enum state ke representasi teks string untuk logging
 static std::string stateToString(TaskState state)
 {
   switch (state) {

@@ -9,8 +9,7 @@ LOCAL_MODELS = {
     "base": os.path.expanduser("~/.cache/huggingface/hub/models--Systran--faster-whisper-base/snapshots/d01c3014881c9c6f3133c182f3d2887eb6ca1c789a7538c5c007196857a0a6a9"),
     "small": os.path.expanduser("~/.cache/huggingface/hub/models--Systran--faster-whisper-small/snapshots/f0525ff8f037671755ee14f9d45388656111f26a"),
 }
-# Original reference text played from external speaker (Ground Truth)
-# Example:
+
 GROUND_TRUTH_TEXT = "robotika politeknik negeri batam mengembangkan sistem navigasi otonom berbasis kecerdasan buatan"
 
 MODELS_TO_TEST = ["tiny", "base", "small"]
@@ -35,7 +34,6 @@ def run_benchmarks(wav_folder="./"):
         for model_size in MODELS_TO_TEST:
             print(f"\n[LOADING] Whisper {model_size} | Device: {dev} ({comp})...")
             try:
-                # model = WhisperModel(model_size, device=dev, compute_type=comp)
                 model = WhisperModel(model_size, device=dev, compute_type=comp)
             except Exception as e:
                 print(f"[SKIP] Failed to load {dev}: {e}")
@@ -43,13 +41,11 @@ def run_benchmarks(wav_folder="./"):
 
             for wav_path in wav_files:
                 filename = os.path.basename(wav_path)
-                # Estimate metadata from filename
                 parts = filename.replace(".wav", "").split("_")
                 mic = parts[1] if len(parts) > 1 else "Unknown"
                 condition = parts[2] if len(parts) > 2 else "Unknown"
                 distance = parts[3] if len(parts) > 3 else "Unknown"
                 
-                # Measure latency & RTF
                 start_t = time.perf_counter()
                 segments, info = model.transcribe(wav_path, beam_size=1, language="id")
                 pred_text = " ".join([seg.text for seg in segments])

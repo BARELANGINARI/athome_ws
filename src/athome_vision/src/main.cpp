@@ -895,9 +895,9 @@ private:
     double range_m{0.0};
     bool is_sitting{false};
     std::vector<cv::Point2f> kpt;
-    std::string clothing{"casual attire"};
-    std::string hair{"dark hair"};
-    std::string gender{"male"};
+    std::string clothing{""};
+    std::string hair{""};
+    std::string gender{""};
   };
   struct PrevBag {
     cv::Rect bbox;
@@ -931,6 +931,7 @@ private:
   YoloDetector yolo_;
   YoloDetector botol_yolo_;
   YoloDetector cracker_yolo_;
+  YoloDetector pringles_yolo_;
   YoloDetector chair_yolo_;
 
   bool enable_yolo_{true};
@@ -992,8 +993,9 @@ ZedNode::ZedNode()
   declare_parameter("yolo_min_area", 1500.0);
   declare_parameter("drink_min_area", 100.0);
   declare_parameter("drink_conf", 0.20);
-  declare_parameter("botol_model", std::string("models/botol.onnx"));
-  declare_parameter("cracker_model", std::string("models/best_cracker.onnx"));
+  declare_parameter("botol_model", std::string("models/water.onnx"));
+  declare_parameter("cracker_model", std::string("models/cheezit.onnx"));
+  declare_parameter("pringles_model", std::string("models/pringles_ chips _can.onnx"));
   declare_parameter("enable_drinks", true);
   declare_parameter("chair_model", std::string(""));
   declare_parameter("enable_chair", true);
@@ -1168,30 +1170,59 @@ ZedNode::ZedNode()
     const std::string botol_param = get_parameter("botol_model").as_string();
     if (!botol_param.empty()) {
       std::string botol_path = resolve(botol_param);
+      if (!std::filesystem::exists(botol_path)) {
+        std::string fallback = resolve("models/botol.onnx");
+        if (std::filesystem::exists(fallback)) botol_path = fallback;
+      }
       if (std::filesystem::exists(botol_path)) {
         std::string err;
-        if (botol_yolo_.load(botol_path, "", drink_conf, nms, size, "botol", &err)) {
-          std::cout << "Botol ONNX model loaded successfully: " << botol_path << std::endl;
+        if (botol_yolo_.load(botol_path, "", drink_conf, nms, size, "Water", &err)) {
+          std::cout << "Water/Botol ONNX model loaded successfully: " << botol_path << std::endl;
         } else {
-          std::cerr << "Botol ONNX load error: " << err << std::endl;
+          std::cerr << "Water/Botol ONNX load error: " << err << std::endl;
         }
       } else {
-        std::cerr << "Botol ONNX model not found: " << botol_path << std::endl;
+        std::cerr << "Water/Botol ONNX model not found: " << botol_path << std::endl;
       }
     }
 
     const std::string cracker_param = get_parameter("cracker_model").as_string();
     if (!cracker_param.empty()) {
       std::string cracker_path = resolve(cracker_param);
+      if (!std::filesystem::exists(cracker_path)) {
+        std::string fallback = resolve("models/cheezit.onnx");
+        if (!std::filesystem::exists(fallback)) fallback = resolve("models/best_cracker.onnx");
+        if (std::filesystem::exists(fallback)) cracker_path = fallback;
+      }
       if (std::filesystem::exists(cracker_path)) {
         std::string err;
-        if (cracker_yolo_.load(cracker_path, "", drink_conf, nms, size, "cracker", &err)) {
-          std::cout << "Cracker ONNX model loaded successfully: " << cracker_path << std::endl;
+        if (cracker_yolo_.load(cracker_path, "", drink_conf, nms, size, "Cheez-It", &err)) {
+          std::cout << "Cheez-It/Cracker ONNX model loaded successfully: " << cracker_path << std::endl;
         } else {
-          std::cerr << "Cracker ONNX load error: " << err << std::endl;
+          std::cerr << "Cheez-It/Cracker ONNX load error: " << err << std::endl;
         }
       } else {
-        std::cerr << "Cracker ONNX model not found: " << cracker_path << std::endl;
+        std::cerr << "Cheez-It/Cracker ONNX model not found: " << cracker_path << std::endl;
+      }
+    }
+
+    const std::string pringles_param = get_parameter("pringles_model").as_string();
+    if (!pringles_param.empty()) {
+      std::string pringles_path = resolve(pringles_param);
+      if (!std::filesystem::exists(pringles_path)) {
+        std::string fallback = resolve("models/pringles_ chips _can.onnx");
+        if (!std::filesystem::exists(fallback)) fallback = resolve("models/pringles.onnx");
+        if (std::filesystem::exists(fallback)) pringles_path = fallback;
+      }
+      if (std::filesystem::exists(pringles_path)) {
+        std::string err;
+        if (pringles_yolo_.load(pringles_path, "", drink_conf, nms, size, "Pringles", &err)) {
+          std::cout << "Pringles ONNX model loaded successfully: " << pringles_path << std::endl;
+        } else {
+          std::cerr << "Pringles ONNX load error: " << err << std::endl;
+        }
+      } else {
+        std::cerr << "Pringles ONNX model not found: " << pringles_path << std::endl;
       }
     }
   }
@@ -1373,6 +1404,11 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
         cracker_yolo_.detect(bgr, {}, c_dets);
         drink_dets.insert(drink_dets.end(), c_dets.begin(), c_dets.end());
       }
+      if (pringles_yolo_.ready()) {
+        std::vector<YoloDetection> p_dets;
+        pringles_yolo_.detect(bgr, {}, p_dets);
+        drink_dets.insert(drink_dets.end(), p_dets.begin(), p_dets.end());
+      }
       last_drink_dets_ = drink_dets;
     }
   }
@@ -1552,10 +1588,19 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
         pp.kpt.emplace_back(std::isfinite(pt.x) ? pt.x : NAN, std::isfinite(pt.y) ? pt.y : NAN);
       }
 
-      // Hitung 3 Atribut Visual Tamu (Baju dari pinggang ke atas, Rambut, Gender)
-      const std::string shirt = classifyClothingColor(bgr, e.bbox, points);
-      const std::string hair = classifyHairColor(bgr, e.bbox);
-      const std::string gender = classifyGender(points, bgr, e.bbox);
+      // Klasifikasi 3 Atribut Visual Tamu (Baju dari pinggang ke atas, Rambut, Gender)
+      // Khusus Receptionist: Hanya dijalankan SETELAH tamu memberi tahu namanya (guest_name_ tidak kosong).
+      // Pada Help Me Carry: HANYA mendeteksi person dan bag saja tanpa ada klasifikasi atribut.
+      const bool should_classify_attributes = (is_receptionist_ && !guest_name_.empty());
+      std::string shirt = "";
+      std::string hair = "";
+      std::string gender = "";
+
+      if (should_classify_attributes) {
+        shirt = classifyClothingColor(bgr, e.bbox, points);
+        hair = classifyHairColor(bgr, e.bbox);
+        gender = classifyGender(points, bgr, e.bbox);
+      }
 
       // Deteksi gesture & publish atribut dari orang terdekat (entry pertama)
       if (first_p) {
@@ -1566,13 +1611,19 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
 
         // Publish ke /zed/person_attributes untuk task receptionist
         std_msgs::msg::String attr_msg;
-        attr_msg.data = gender + ", " + shirt + ", " + hair;
+        if (should_classify_attributes) {
+          attr_msg.data = gender + ", " + shirt + ", " + hair;
+        } else {
+          attr_msg.data = "";
+        }
         attributes_publisher_->publish(attr_msg);
 
         if (is_receptionist_) {
           std::string disp_name = (is_help_me_carry_) ? ("ID " + std::to_string(e.id)) : (guest_name_.empty() ? "Guest" : guest_name_);
           IC(disp_name, e.x, e.y, e.range_m);
-          IC(disp_name, gender, shirt, hair);
+          if (should_classify_attributes) {
+            IC(disp_name, gender, shirt, hair);
+          }
         }
       }
 
@@ -1805,8 +1856,13 @@ void ZedNode::showPreview(const cv::Mat & bgr)
 
       draw_banner(label_txt, r.x, r.y, bbox_col, p.is_sitting ? cv::Scalar(0, 80, 110) : cv::Scalar(0, 70, 0), cv::Scalar(255, 255, 255), 0.58, 2);
 
-      std::string attr_txt = p.gender + " | " + p.clothing + " | " + p.hair;
-      draw_banner(attr_txt, r.x, r.y + r.height + 22, cv::Scalar(0, 180, 180), cv::Scalar(20, 30, 30), cv::Scalar(0, 255, 255), 0.48, 1);
+      if (!p.gender.empty() || !p.clothing.empty() || !p.hair.empty()) {
+        std::string attr_txt;
+        if (!p.gender.empty()) attr_txt += p.gender;
+        if (!p.clothing.empty()) attr_txt += (attr_txt.empty() ? "" : " | ") + p.clothing;
+        if (!p.hair.empty()) attr_txt += (attr_txt.empty() ? "" : " | ") + p.hair;
+        draw_banner(attr_txt, r.x, r.y + r.height + 22, cv::Scalar(0, 180, 180), cv::Scalar(20, 30, 30), cv::Scalar(0, 255, 255), 0.48, 1);
+      }
 
       const int center_x = r.x + r.width / 2;
       const int center_y = r.y + r.height / 2;

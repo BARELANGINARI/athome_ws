@@ -23,7 +23,6 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def _resolve_map_file(map_path, navigation_share):
-    """Resolve map YAML file path with fallback to source tree."""
     if map_path and os.path.isabs(map_path) and os.path.exists(map_path):
         return os.path.abspath(map_path)
 
@@ -47,7 +46,6 @@ def _resolve_map_file(map_path, navigation_share):
 
 
 def _resolve_params_file(params_path, fallback_share):
-    """Resolve Nav2 params YAML file path with fallback to task package."""
     if params_path and os.path.isabs(params_path) and os.path.exists(params_path):
         return os.path.abspath(params_path)
 

@@ -96,7 +96,6 @@
 
   <h2>🤖 Barelang Inari - HRI</h2>
 
-  <!-- Server Connection -->
   <div class="card" style="padding: 10px;">
     <span id="conn_dot" class="status-dot"></span>
     <span id="conn_status">Disconnected</span> | 
@@ -104,14 +103,12 @@
     <button onclick="connectWs()" class="sim-btn" style="background:#4a5568; color:white;">Connect</button>
   </div>
 
-  <!-- Following Status -->
   <div class="card">
     <p style="margin: 4px 0;">Following Status:</p>
     <div id="state_txt" class="badge">IDLE</div>
     <p style="margin: 6px 0 0 0; font-size: 13px; color: #718096;">Info: <b id="substate_txt">-</b></p>
   </div>
 
-  <!-- Audio Record Button -->
   <div class="card">
     <p style="margin: 0 0 8px 0; font-size: 14px; color: #4a5568;">Tap to speak, tap again when finished:</p>
     <button id="btn_rec" class="btn-record" onclick="toggleRecording()">
@@ -120,10 +117,8 @@
     <p id="rec_status" style="font-size: 13px; color: #718096; margin: 4px 0;">Microphone ready.</p>
   </div>
 
-  <!-- Audio Player Piper -->
   <audio id="audio_player" preload="auto"></audio>
 
-  <!-- Transcript & Response Monitor -->
   <div class="card">
     <div class="info-box">
       <div>🎧 <b>Heard (Faster-Whisper):</b></div>
@@ -133,7 +128,6 @@
     </div>
   </div>
 
-  <!-- Simulation / Testing -->
   <div class="card" style="text-align: left;">
     <h4 style="margin: 0 0 8px 0;">🛠️ Command & Vision Simulation</h4>
     <div style="margin-bottom: 6px;">
@@ -157,7 +151,6 @@
     let isRecording = false;
     const player = document.getElementById("audio_player");
 
-    // Initialize default IP from host URL or localhost
     const defaultHost = window.location.hostname || "localhost";
     document.getElementById("ws_ip").value = defaultHost;
 
@@ -220,12 +213,10 @@
       };
     }
 
-    // Auto connect on page load
     window.addEventListener("load", () => {
       connectWs();
     });
 
-    // Perekaman Audio Smartphone
     async function toggleRecording() {
       const btn = document.getElementById("btn_rec");
       const statusTxt = document.getElementById("rec_status");
@@ -266,7 +257,6 @@
           alert("Failed to access microphone: " + err.message);
         }
       } else {
-        // Stop recording
         if (mediaRecorder && mediaRecorder.state !== "inactive") {
           mediaRecorder.stop();
         }
