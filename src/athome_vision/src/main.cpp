@@ -101,21 +101,26 @@ float getMedian(std::vector<float> & v)
 }
 
 bool get3dCoordinates(
-  const cv::Rect & box, const sl::Mat & point_cloud, sl::float4 & point)
+  const cv::Rect & cur_box, const sl::Mat & point_cloud, sl::float4 & point)
 {
-  const int r = std::min(10, std::min(box.width, box.height) / 2);
-  const int cx = box.x + box.width / 2;
-  const int cy = box.y + box.height / 2;
+  const unsigned int R_max_global = 10;
+  const unsigned int obj_size = std::min(cur_box.width, cur_box.height);
+  const unsigned int R_max = std::min(R_max_global, obj_size / 2);
+  const int center_i = cur_box.x + cur_box.width / 2;
+  const int center_j = cur_box.y + cur_box.height / 2;
   const int w = static_cast<int>(point_cloud.getWidth());
   const int h = static_cast<int>(point_cloud.getHeight());
 
   std::vector<float> x_vect, y_vect, z_vect;
-  for (int dy = -r; dy <= r; ++dy) {
-    for (int dx = -r; dx <= r; ++dx) {
-      const int i = cx + dx, j = cy + dy;
-      if (i >= 0 && i < w && j >= 0 && j < h) {
-        sl::float4 out;
-        point_cloud.getValue(i, j, &out);
+  for (unsigned int R = 0; R < R_max; ++R) {
+    for (int dy = -static_cast<int>(R); dy <= static_cast<int>(R); ++dy) {
+      for (int dx = -static_cast<int>(R); dx <= static_cast<int>(R); ++dx) {
+        const int i = center_i + dx;
+        const int j = center_j + dy;
+        sl::float4 out{NAN, NAN, NAN, NAN};
+        if (i >= 0 && i < w && j >= 0 && j < h) {
+          point_cloud.getValue(i, j, &out);
+        }
         if (std::isfinite(out.z)) {
           x_vect.push_back(out.x);
           y_vect.push_back(out.y);
@@ -125,38 +130,43 @@ bool get3dCoordinates(
     }
   }
 
-  if (x_vect.empty()) {
+  if (!x_vect.empty()) {
+    point.x = getMedian(x_vect);
+    point.y = getMedian(y_vect);
+    point.z = getMedian(z_vect);
+    return true;
+  } else {
+    point.x = NAN;
+    point.y = NAN;
     point.z = NAN;
     return false;
   }
-  point.x = getMedian(x_vect);
-  point.y = getMedian(y_vect);
-  point.z = getMedian(z_vect);
-  return true;
 }
 
 bool get3dCoordinatesWithOffset(
   const cv::Rect & rect, const sl::Mat & point_cloud,
   double & x, double & y, double & z)
 {
-  const int cx = rect.x + rect.width / 2;
-  const int cy = rect.y + rect.height / 2;
-  sl::float4 point{0, 0, NAN, 0};
+  const int centroidX = rect.x + rect.width / 2;
+  const int centroidY = rect.y + rect.height / 2;
+  sl::float4 point{NAN, NAN, NAN, NAN};
 
-  if (cx >= 0 && cx < static_cast<int>(point_cloud.getWidth()) &&
-      cy >= 0 && cy < static_cast<int>(point_cloud.getHeight())) {
-    point_cloud.getValue(cx, cy, &point);
+  // Tahap 1: Cek titik tengah piksel secara langsung (cepat O(1))
+  if (centroidX >= 0 && centroidX < static_cast<int>(point_cloud.getWidth()) &&
+      centroidY >= 0 && centroidY < static_cast<int>(point_cloud.getHeight())) {
+    point_cloud.getValue(centroidX, centroidY, &point);
   }
 
-  if (!std::isfinite(point.z) && !get3dCoordinates(rect, point_cloud, point)) {
-    return false;
+  // Tahap 2: Fallback ke median sampling R_max jika titik tengah berada di NaN/pantulan
+  if (!std::isfinite(point.z)) {
+    get3dCoordinates(rect, point_cloud, point);
   }
 
   if (!std::isfinite(point.z)) {
     return false;
   }
 
-  // Offset koreksi pemasangan kamera ZED (cm → meter):
+  // Tahap 3: Terapkan offset kalibrasi kamera ZED robot (cm → meter)
   // Referensi: robotPos.x = point.x + 13; robotPos.y = -point.y + 3; robotPos.z = point.z + 44;
   x = (point.x + 13.0) / 100.0;
   y = (-point.y + 3.0) / 100.0;  // y di-negate karena sumbu Y ZED terbalik
@@ -1011,7 +1021,7 @@ ZedNode::ZedNode()
     is_receptionist_ = true;
   }
   enable_bag_ = get_parameter("enable_bag").as_bool();
-  IC("Vision Task Mode", task_mode_, "enable_bag", enable_bag_);
+  std::cout << "Vision Task Mode: " << task_mode_ << ", enable_bag: " << (enable_bag_ ? "true" : "false") << std::endl;
 
   const double camera_fps = get_parameter("camera_fps").as_double();
   camera_fps_ = camera_fps;
@@ -1046,9 +1056,9 @@ ZedNode::ZedNode()
       }
       guest_name_ = n;
       if (!guest_name_.empty()) {
-        IC("[RECEPTIONIST:GUEST_NAME_SET]", guest_name_);
+        std::cout << "Guest name set: " << guest_name_ << std::endl;
       } else {
-        IC("[RECEPTIONIST:GUEST_NAME_RESET]");
+        std::cout << "Guest name reset" << std::endl;
       }
     });
 
@@ -1073,7 +1083,7 @@ ZedNode::ZedNode()
   }
 
   if (state != sl::ERROR_CODE::SUCCESS) {
-    IC("ZED open failed setelah 5 percobaan", sl::toString(state));
+    std::cerr << "ZED open failed setelah 5 percobaan: " << sl::toString(state) << std::endl;
     throw std::runtime_error(std::string("ZED open failed: ") + sl::toString(state).c_str());
   }
 
@@ -1129,7 +1139,7 @@ ZedNode::ZedNode()
     } else {
       std::string model_path = resolve(model_param);
       if (!std::filesystem::exists(model_path)) {
-        IC("YOLO model not found, YOLO disabled", model_path);
+        std::cerr << "YOLO model not found, YOLO disabled: " << model_path << std::endl;
         enable_yolo_ = false;
       } else {
         std::string classes_path = resolve(get_parameter("yolo_classes").as_string());
@@ -1139,10 +1149,10 @@ ZedNode::ZedNode()
 
         std::string err;
         if (!yolo_.load(model_path, classes_path, conf, nms, size, "bag", &err)) {
-          IC("YOLO load error", err);
+          std::cerr << "YOLO load error: " << err << std::endl;
           enable_yolo_ = false;
         } else {
-          IC("YOLO loaded successfully", model_path);
+          std::cout << "YOLO loaded successfully: " << model_path << std::endl;
         }
       }
     }
@@ -1161,12 +1171,12 @@ ZedNode::ZedNode()
       if (std::filesystem::exists(botol_path)) {
         std::string err;
         if (botol_yolo_.load(botol_path, "", drink_conf, nms, size, "botol", &err)) {
-          IC("Botol ONNX model loaded successfully", botol_path);
+          std::cout << "Botol ONNX model loaded successfully: " << botol_path << std::endl;
         } else {
-          IC("Botol ONNX load error", err);
+          std::cerr << "Botol ONNX load error: " << err << std::endl;
         }
       } else {
-        IC("Botol ONNX model not found", botol_path);
+        std::cerr << "Botol ONNX model not found: " << botol_path << std::endl;
       }
     }
 
@@ -1176,12 +1186,12 @@ ZedNode::ZedNode()
       if (std::filesystem::exists(cracker_path)) {
         std::string err;
         if (cracker_yolo_.load(cracker_path, "", drink_conf, nms, size, "cracker", &err)) {
-          IC("Cracker ONNX model loaded successfully", cracker_path);
+          std::cout << "Cracker ONNX model loaded successfully: " << cracker_path << std::endl;
         } else {
-          IC("Cracker ONNX load error", err);
+          std::cerr << "Cracker ONNX load error: " << err << std::endl;
         }
       } else {
-        IC("Cracker ONNX model not found", cracker_path);
+        std::cerr << "Cracker ONNX model not found: " << cracker_path << std::endl;
       }
     }
   }
@@ -1199,9 +1209,9 @@ ZedNode::ZedNode()
         int size   = static_cast<int>(get_parameter("yolo_size").as_int());
         std::string err;
         if (chair_yolo_.load(chair_path, "", conf, nms, size, "chair", &err)) {
-          IC("Custom Chair ONNX model loaded successfully", chair_path);
+          std::cout << "Custom Chair ONNX model loaded successfully: " << chair_path << std::endl;
         } else {
-          IC("Custom Chair ONNX load error", err);
+          std::cerr << "Custom Chair ONNX load error: " << err << std::endl;
         }
       }
     }
@@ -1222,13 +1232,13 @@ ZedNode::ZedNode()
         gender_session_ = std::make_unique<Ort::Session>(ort_attr_env_, gender_path.c_str(), attr_opts);
         gender_in_name_ = gender_session_->GetInputNameAllocated(0, alloc).get();
         gender_out_name_ = gender_session_->GetOutputNameAllocated(0, alloc).get();
-        IC("Gender ONNX model loaded successfully", gender_path);
+        std::cout << "Gender ONNX model loaded successfully: " << gender_path << std::endl;
       } catch (const std::exception & e) {
-        IC("Gender ONNX model load error", e.what());
+        std::cerr << "Gender ONNX model load error: " << e.what() << std::endl;
         gender_session_.reset();
       }
     } else {
-      IC("Gender ONNX model not found, fallback to heuristic", gender_path);
+      std::cout << "Gender ONNX model not found, fallback to heuristic: " << gender_path << std::endl;
     }
   }
 
@@ -1248,13 +1258,13 @@ ZedNode::ZedNode()
         color_session_ = std::make_unique<Ort::Session>(ort_attr_env_, color_path.c_str(), attr_opts);
         color_in_name_ = color_session_->GetInputNameAllocated(0, alloc).get();
         color_out_name_ = color_session_->GetOutputNameAllocated(0, alloc).get();
-        IC("Clothing color ONNX model loaded successfully", color_path, color_labels_.size());
+        std::cout << "Clothing color ONNX model loaded successfully: " << color_path << " (" << color_labels_.size() << " labels)" << std::endl;
       } catch (const std::exception & e) {
-        IC("Clothing color ONNX model load error", e.what());
+        std::cerr << "Clothing color ONNX model load error: " << e.what() << std::endl;
         color_session_.reset();
       }
     } else {
-      IC("Clothing color ONNX model not found, fallback to HSV", color_path);
+      std::cout << "Clothing color ONNX model not found, fallback to HSV: " << color_path << std::endl;
     }
   }
 
@@ -1274,13 +1284,13 @@ ZedNode::ZedNode()
         hair_session_ = std::make_unique<Ort::Session>(ort_attr_env_, hair_path.c_str(), attr_opts);
         hair_in_name_ = hair_session_->GetInputNameAllocated(0, alloc).get();
         hair_out_name_ = hair_session_->GetOutputNameAllocated(0, alloc).get();
-        IC("Hair ONNX model loaded successfully", hair_path, hair_labels_.size());
+        std::cout << "Hair ONNX model loaded successfully: " << hair_path << " (" << hair_labels_.size() << " labels)" << std::endl;
       } catch (const std::exception & e) {
-        IC("Hair ONNX model load error", e.what());
+        std::cerr << "Hair ONNX model load error: " << e.what() << std::endl;
         hair_session_.reset();
       }
     } else {
-      IC("Hair ONNX model not found, fallback to HSV", hair_path);
+      std::cout << "Hair ONNX model not found, fallback to HSV: " << hair_path << std::endl;
     }
   }
 
@@ -1336,7 +1346,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       const double dist = ok ? std::hypot(x, y) : 0.0;
       preview_bags_.push_back({d.rect, ok, x, y, dist});
       if (is_help_me_carry_ && ok) {
-        IC("[HMC:BAG]", d.label, x, y, dist);
+        IC(d.label, x, y, dist);
       }
 
       if (!bag_str.empty()) bag_str += ";";
@@ -1376,7 +1386,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
     const double dist = ok ? std::hypot(x, y) : 0.0;
     preview_drinks_.push_back({d.label, d.rect, ok, x, y, dist});
     if (is_receptionist_ && ok) {
-      IC("[REC:ITEM]", d.label, x, y, dist);
+      IC(d.label, x, y, dist);
     }
 
     if (!drink_str.empty()) drink_str += ";";
@@ -1494,7 +1504,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       op_mem_.has_color = true;
       op_mem_.last_seen = current_time;
       if (is_help_me_carry_) {
-        IC("[HMC:OPERATOR_LOCK]", op_mem_.stable_id, op_mem_.x, op_mem_.y);
+        IC(op_mem_.stable_id, op_mem_.x, op_mem_.y);
       }
     }
 
@@ -1528,7 +1538,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       entries.front().label = "operator";
       if (is_help_me_carry_ && entries.front().has_depth) {
         const auto & person = entries.front();
-        IC("[HMC:PERSON]", person.id, person.label, person.x, person.y, person.dist);
+        IC(person.id, person.label, person.x, person.y, person.dist);
       }
     }
 
@@ -1551,7 +1561,7 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
       if (first_p) {
         gesture_result = detectGesture(points);
         if (is_help_me_carry_ && gesture_result != "NONE") {
-          IC("[HMC:GESTURE]", e.id, gesture_result);
+          IC(e.id, gesture_result);
         }
 
         // Publish ke /zed/person_attributes untuk task receptionist
@@ -1561,8 +1571,8 @@ void ZedNode::processBodiesAndYolo(const cv::Mat & bgr, const sl::Mat & point_cl
 
         if (is_receptionist_) {
           std::string disp_name = (is_help_me_carry_) ? ("ID " + std::to_string(e.id)) : (guest_name_.empty() ? "Guest" : guest_name_);
-          IC("[RECEPTIONIST:PERSON]", disp_name, e.x, e.y, e.range_m);
-          IC("[RECEPTIONIST:ATTRIBUTES]", disp_name, gender, shirt, hair);
+          IC(disp_name, e.x, e.y, e.range_m);
+          IC(disp_name, gender, shirt, hair);
         }
       }
 
@@ -1756,6 +1766,21 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     };
     auto flip_x = [&](int x) {return flip ? (W - x) : x;};
 
+    // Helper banner label dengan background solid (gaya visualize zed_ws)
+    auto draw_banner = [&](const std::string & text, int x, int y, const cv::Scalar & border_col, const cv::Scalar & bg_col, const cv::Scalar & text_col, double font_scale = 0.55, int thickness = 1) {
+      int base_line = 0;
+      cv::Size sz = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, font_scale, thickness, &base_line);
+      int bx = std::clamp(x, 0, std::max(0, W - sz.width - 6));
+      int by = std::clamp(y - sz.height - 4, 0, std::max(0, H - sz.height - 6));
+      cv::Rect bg_rect(bx, by, sz.width + 6, sz.height + 6);
+      bg_rect &= cv::Rect(0, 0, W, H);
+      if (bg_rect.width > 0 && bg_rect.height > 0) {
+        cv::rectangle(canvas, bg_rect, bg_col, -1);
+        cv::rectangle(canvas, bg_rect, border_col, 1, cv::LINE_AA);
+      }
+      cv::putText(canvas, text, cv::Point(bx + 3, by + sz.height + 1), cv::FONT_HERSHEY_SIMPLEX, font_scale, text_col, thickness, cv::LINE_AA);
+    };
+
     for (size_t i = 0; i < std::min<size_t>(4, preview_persons_.size()); ++i) {
       const auto & p = preview_persons_[i];
       if (p.has_pos && p.range_m > 4.5) {continue;}
@@ -1778,16 +1803,11 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         label_txt += " [Seated]";
       }
 
-      cv::putText(
-        canvas, label_txt,
-        cv::Point(r.x, std::max(20, r.y - 6)),
-        cv::FONT_HERSHEY_SIMPLEX, 0.6, bbox_col, 2);
+      draw_banner(label_txt, r.x, r.y, bbox_col, p.is_sitting ? cv::Scalar(0, 80, 110) : cv::Scalar(0, 70, 0), cv::Scalar(255, 255, 255), 0.58, 2);
 
       std::string attr_txt = p.gender + " | " + p.clothing + " | " + p.hair;
-      cv::putText(
-        canvas, attr_txt,
-        cv::Point(r.x, std::min(H - 8, r.y + r.height + 18)),
-        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+      draw_banner(attr_txt, r.x, r.y + r.height + 22, cv::Scalar(0, 180, 180), cv::Scalar(20, 30, 30), cv::Scalar(0, 255, 255), 0.48, 1);
+
       const int center_x = r.x + r.width / 2;
       const int center_y = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(center_x, center_y), 5, cv::Scalar(0, 255, 255), -1);
@@ -1820,6 +1840,12 @@ void ZedNode::showPreview(const cv::Mat & bgr)
           const int bag_cy = r.y + r.height / 2;
           cv::circle(canvas, cv::Point(bag_cx, bag_cy), 4, cv::Scalar(255, 0, 255), -1);
           cv::line(canvas, cv::Point(bag_cx, bag_cy), cv::Point(W / 2, H), cv::Scalar(255, 0, 255), 2);
+
+          std::string bag_txt = "Bag";
+          if (b.has_pos) {
+            bag_txt += cv::format(" (%.2fm, %.2fm)", b.x_m, b.y_m);
+          }
+          draw_banner(bag_txt, r.x, r.y, cv::Scalar(255, 0, 255), cv::Scalar(125, 40, 81), cv::Scalar(253, 168, 208), 0.52, 1);
         }
       }
     }
@@ -1837,8 +1863,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         if (d.has_pos) {
           txt += cv::format(" (%.2fm, %.2fm)", d.x_m, d.y_m);
         }
-        cv::putText(canvas, txt, cv::Point(r.x, std::max(15, r.y - 5)),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 0), 1, cv::LINE_AA);
+        draw_banner(txt, r.x, r.y, cv::Scalar(255, 255, 0), cv::Scalar(80, 80, 0), cv::Scalar(255, 255, 255), 0.52, 1);
       }
     }
 
@@ -1856,8 +1881,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         if (c.has_pos) {
           txt += cv::format(" (%.2fm, %.2fm)", c.x_m, c.y_m);
         }
-        cv::putText(canvas, txt, cv::Point(r.x, std::max(15, r.y - 5)),
-                    cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv::LINE_AA);
+        const cv::Scalar chair_bg = c.occupied ? cv::Scalar(0, 0, 110) : cv::Scalar(0, 80, 0);
+        draw_banner(txt, r.x, r.y, color, chair_bg, cv::Scalar(255, 255, 255), 0.52, 2);
       }
     }
 
