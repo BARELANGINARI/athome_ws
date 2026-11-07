@@ -17,6 +17,7 @@ def generate_launch_description():
         DeclareLaunchArgument('yolo_conf', default_value='0.25', description='YOLO confidence threshold'),
         DeclareLaunchArgument('debug_window', default_value='true', description='Show OpenCV preview visualization window'),
         DeclareLaunchArgument('mirror', default_value='false', description='Mirror display preview horizontally'),
+        DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 deg range (default: true)'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -27,10 +28,10 @@ def generate_launch_description():
                 ])
             ),
             launch_arguments={
+                'task': 'help_me_carry',
                 'camera_fps': LaunchConfiguration('camera_fps'),
                 'publish_yaw': 'true',
-                'publish_image': 'true',
-                'image_stride': LaunchConfiguration('image_stride'),
+                'yaw_360': LaunchConfiguration('yaw_360'),
                 'enable_body_tracking': 'true',
                 'enable_yolo': 'true',
                 'yolo_conf': LaunchConfiguration('yolo_conf'),

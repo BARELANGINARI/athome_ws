@@ -48,6 +48,21 @@ def generate_launch_description():
             default_value='false',
             description='Use software rendering for RViz.',
         ),
+        DeclareLaunchArgument(
+            'manager',
+            default_value='true',
+            description='Launch receptionist task manager FSM node in HRI launch.',
+        ),
+        DeclareLaunchArgument(
+            'hri',
+            default_value='false',
+            description='Launch HRI stack (Faster-Whisper STT + Piper TTS + FSM Task Manager).',
+        ),
+        DeclareLaunchArgument(
+            'camera',
+            default_value='false',
+            description='Launch ZED camera vision stack for receptionist.',
+        ),
 
         # 1. Hardware Bringup (Motor + LiDAR)
         IncludeLaunchDescription(
@@ -84,5 +99,36 @@ def generate_launch_description():
                 'rviz_software': LaunchConfiguration('rviz_software'),
                 'task_node': 'true',
             }.items(),
+        ),
+
+        # 3. HRI & Task Manager FSM Bringup (Speech + FSM)
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare('receptionist'),
+                    'launch',
+                    'hri.launch.py',
+                ])
+            ),
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('hri'), "' == 'true'"])
+            ),
+            launch_arguments={
+                'manager_node': LaunchConfiguration('manager'),
+            }.items(),
+        ),
+
+        # 4. Camera & Vision Bringup (ZED + Person Tracking + YOLO)
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare('receptionist'),
+                    'launch',
+                    'camera.launch.py',
+                ])
+            ),
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('camera'), "' == 'true'"])
+            ),
         ),
     ])

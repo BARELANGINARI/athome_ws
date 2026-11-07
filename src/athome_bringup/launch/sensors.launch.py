@@ -26,6 +26,7 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_yolo', default_value='true', description='Enable YOLO object detection'),
         DeclareLaunchArgument('debug_window', default_value='false', description='Show OpenCV preview window'),
         DeclareLaunchArgument('mirror', default_value='true', description='Mirror display preview horizontally'),
+        DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 range (default: true)'),
 
         Node(
             package='rplidar_ros',
@@ -88,6 +89,7 @@ def generate_launch_description():
             launch_arguments={
                 'camera_fps': LaunchConfiguration('camera_fps'),
                 'publish_yaw': 'true',
+                'yaw_360': LaunchConfiguration('yaw_360'),
                 'enable_body_tracking': LaunchConfiguration('enable_body_tracking'),
                 'depth_minimum_distance': LaunchConfiguration('depth_minimum_distance'),
                 'image_stride': LaunchConfiguration('image_stride'),

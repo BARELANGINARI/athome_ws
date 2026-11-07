@@ -35,8 +35,9 @@ ros2 launch help_me_carry help_me_carry.launch.py
 | `/follow/stop` | `std_srvs/srv/Trigger` | Stop following |
 | `/task/align_bag` | `std_srvs/srv/Trigger` | Align robot towards the bag indicated by gesture (`LEFT`/`RIGHT`) |
 | `/task/step_back` | `std_srvs/srv/Trigger` | Move backward until person distance reaches 2.0m or a bag is detected |
+| `/task/rotate_safe` | `std_srvs/srv/Trigger` | In-place rotation towards the most spacious open area oriented towards origin |
 | `/arm/ambil_tas` | `std_srvs/srv/Trigger` | Trigger arm trajectory to pick up bag |
-| `/homing` | `std_srvs/srv/Trigger` | Return robot autonomously to starting pose `(0, 0)` |
+| `/homing` | `std_srvs/srv/Trigger` | Autonomous homing: auto in-place rotate if facing away, wait & update map on dynamic obstacles |
 
 ### CLI Examples
 ```bash
@@ -44,6 +45,8 @@ ros2 service call /follow/person std_srvs/srv/Trigger {}
 ros2 service call /follow/stop std_srvs/srv/Trigger {}
 ros2 service call /task/step_back std_srvs/srv/Trigger {}
 # Alias: ros2 service call /help_me_carry/step_back std_srvs/srv/Trigger {}
+ros2 service call /task/rotate_safe std_srvs/srv/Trigger {}
+# Alias: ros2 service call /help_me_carry/rotate_safe std_srvs/srv/Trigger {}
 ros2 service call /task/align_bag std_srvs/srv/Trigger {}
 ros2 service call /homing std_srvs/srv/Trigger {}
 ```

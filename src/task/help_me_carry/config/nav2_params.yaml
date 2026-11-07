@@ -47,7 +47,7 @@ bt_navigator:
     robot_base_frame: base_link          # Robot base frame
     odom_topic: /odom                    # Odometry topic
     bt_loop_duration: 10                 # BT loop duration (ms)
-    default_server_timeout: 20           # Default server timeout (ms)
+    default_server_timeout: 1000         # Default server timeout (ms, increased from 20ms to prevent false timeout on CPU spikes)
     wait_for_service_timeout: 1000       # Wait for service timeout (ms)
     action_server_result_timeout: 900.0  # Action result timeout (s)
     navigators: ["navigate_to_pose", "navigate_through_poses"] # Active navigators
@@ -70,7 +70,7 @@ controller_server:
     min_x_velocity_threshold: 0.001      # Min X velocity threshold (m/s)
     min_y_velocity_threshold: 0.001      # Min Y velocity threshold (m/s)
     min_theta_velocity_threshold: 0.001  # Min angular velocity threshold (rad/s)
-    failure_tolerance: 0.3               # Controller failure tolerance (s)
+    failure_tolerance: 1.5               # Controller failure tolerance (s, relaxed to avoid instant abort near obstacles)
     progress_checker_plugins: ["progress_checker"] # Progress checker plugin
     goal_checker_plugins: ["general_goal_checker"] # Goal checker plugin
     controller_plugins: ["FollowPath"]   # Active controller plugin
@@ -78,55 +78,67 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker" # Stuck detection plugin
       required_movement_radius: 0.15     # Required movement radius (m)
-      movement_time_allowance: 15.0      # Movement time allowance (s)
+      movement_time_allowance: 20.0      # Movement time allowance (s, diberi waktu cukup untuk in-place align)
 
     general_goal_checker:
       stateful: True                     # Stateful goal checking
       plugin: "nav2_controller::SimpleGoalChecker" # Goal checker plugin
       xy_goal_tolerance: 0.15            # Goal XY position tolerance (m)
-      yaw_goal_tolerance: 0.35           # Goal yaw orientation tolerance (rad)
+      yaw_goal_tolerance: 0.38           # Goal yaw orientation tolerance (rad, 0.38 rad ≈ 21.8 derajat)
 
     FollowPath:
-      plugin: "dwb_core::DWBLocalPlanner" # DWB local planner (omni)
+      plugin: "nav2_rotation_shim_controller::RotationShimController" # Rotation Shim Controller (putar haluan menghadap path terlebih dahulu)
+      primary_controller: "dwb_core::DWBLocalPlanner"                 # Primary local controller (DWB)
+
+      # Rotation Shim Parameters (KUNCI: Memutar robot in-place halus hanya jika benar-benar membelakangi jalur di awal)
+      angular_dist_threshold: 1.2            # Ambang picu rotasi in-place (~68 derajat). Jika sudut di bawah 68 derajat, robot langsung melaju maju sambil berbelok menyusuri path!
+      angular_disengage_threshold: 0.6       # Histeresis hand-off (~34 derajat): saat in-place berputar dan mencapai 34 derajat, langsung serahkan ke DWB agar sisa sudut diselesaikan sambil berjalan maju!
+      forward_sampling_distance: 0.5         # Jarak sampel ke depan pada path (m) untuk mendeteksi arah haluan path
+      rotate_to_heading_angular_vel: 1.0     # Kecepatan rotasi in-place dibuat stabil dan halus di 1.0 rad/s
+      max_angular_accel: 2.5                 # Akselerasi rotasi in-place dibuat halus dan teratur
+      simulate_ahead_time: 0.3               # 0.3s agar tidak ragu-ragu / false collision di dekat kusen pintu 90cm
+      rotate_to_heading_once: true           # KUNCI MUTLAK: Rotasi in-place HANYA jalan 1x di awal goal. DILARANG memotong di tengah jalan agar tidak terjadi rotate-stop-rotate-stop!
 
       # DWB Local Planner Parameters (3-wheel omni)
-      debug_trajectory_details: False    # Debug trajectory logging
-      min_vel_x: 0.0                     # Min forward velocity (m/s, prevent reverse)
+      debug_trajectory_details: False    # Disable heavy debug logging to prevent loop rate dropping from 20Hz to 3Hz
+      min_vel_x: 0.0                     # KUNCI MUTLAK: 0.0 m/s (DILARANG MUNDUR! Robot hanya boleh maju ke depan menghadap path)
       max_vel_x: 0.30                    # Max forward velocity (m/s)
-      min_vel_y: -0.12                   # Min lateral strafe velocity (m/s)
-      max_vel_y: 0.12                    # Max lateral strafe velocity (m/s)
-      min_speed_xy: 0.0                  # Min translational speed (m/s)
+      min_vel_y: -0.20                   # Min lateral strafe velocity (m/s, diperluas agar bisa strafe menjauhi obstacle)
+      max_vel_y: 0.20                    # Max lateral strafe velocity (m/s)
+      min_speed_xy: 0.05                 # Min translational speed (m/s, mencegah micro-speed di bawah deadband motor)
       max_speed_xy: 0.30                 # Max translational speed (m/s)
-      max_vel_theta: 0.8                 # Max angular velocity (rad/s)
-      min_speed_theta: 0.0               # Min angular velocity (rad/s)
+      max_vel_theta: 1.2                 # Max angular velocity disesuaikan ke 1.2 rad/s agar manuver halus
+      min_speed_theta: 0.15              # Min angular velocity (rad/s, dinaikkan ke 0.15 agar PWM motor di atas deadband motor dan tidak freeze di lantai)
       acc_lim_x: 1.2                     # Translation X acceleration limit (m/s^2)
       acc_lim_y: 1.0                     # Translation Y acceleration limit (m/s^2)
-      acc_lim_theta: 1.2                 # Angular acceleration limit (rad/s^2)
+      acc_lim_theta: 3.0                 # Angular acceleration limit dinaikkan ke 3.0 rad/s^2
       decel_lim_x: -1.2                  # Translation X deceleration limit (m/s^2)
       decel_lim_y: -1.0                  # Translation Y deceleration limit (m/s^2)
-      decel_lim_theta: -1.2              # Angular deceleration limit (rad/s^2)
+      decel_lim_theta: -3.0              # Angular deceleration limit (-3.0 rad/s^2)
       vx_samples: 20                     # VX velocity samples
-      vy_samples: 5                      # VY velocity samples
-      vtheta_samples: 25                 # Vtheta velocity samples
-      sim_time: 2.0                      # Trajectory simulation time (s)
+      vy_samples: 15                     # VY velocity samples (dinaikkan ke 15 agar sampling translasi lateral omni halus)
+      vtheta_samples: 31                 # Vtheta velocity samples (angka ganjil 31 agar ada sampel resolusi nol dan rotasi halus)
+      sim_time: 1.2                      # Trajectory simulation time (s)
       linear_granularity: 0.05           # Linear simulation step (m)
       angular_granularity: 0.025         # Angular simulation step (rad)
       transform_tolerance: 0.25          # TF transform tolerance (s)
       xy_goal_tolerance: 0.15            # Goal XY tolerance (m)
-      trans_stopped_velocity: 0.05       # Stopped translational velocity threshold (m/s)
-      short_circuit_trajectory_evaluation: True # Skip evaluation if trajectory collides
+      trans_stopped_velocity: 0.08       # Stopped translational velocity threshold (m/s, memungkinkan rotasi goal segera aktif saat robot melambat)
+      short_circuit_trajectory_evaluation: False # Allow exploring alternative trajectories when rotating near obstacles
       stateful: True                     # Maintain state between iterations
-      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "GoalAlign", "PathAlign", "PathDist", "GoalDist"] # Trajectory critics
-      BaseObstacle.scale: 0.25           # Obstacle proximity penalty weight
-      PathDist.scale: 32.0               # Global path following weight
-      GoalDist.scale: 24.0               # Goal approach weight
-      PathAlign.scale: 16.0              # Path heading alignment weight
-      PathAlign.forward_point_distance: 0.20 # Forward evaluation point distance (m)
-      GoalAlign.scale: 20.0              # Goal heading alignment weight
-      GoalAlign.forward_point_distance: 0.20 # Goal evaluation point distance (m)
-      RotateToGoal.scale: 32.0           # Final goal rotation weight
+      prune_plan: True                   # Pangkas titik path di belakang robot agar fokus maju ke rute di depan
+      prune_distance: 0.5                # Jarak pangkas path di belakang robot (m)
+      forward_prune_distance: 0.8        # KUNCI: Batasi path di depan robot max 0.8m agar target GoalDist tidak tembus dinding ke ruang sebelah
+      shorten_transformed_plan: True     # Potong plan sesuai batas local costmap
+      critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"] # GoalAlign dihapus; GoalDist diberi bobot kecil agar robot maju menyusuri path tanpa memotong dinding
+      BaseObstacle.scale: 0.02           # Obstacle proximity penalty weight (standar Nav2 0.02; nilai 0.25 menyebabkan robot freeze)
+      PathDist.scale: 35.0               # Bobot ketat mengikuti garis jalur path (mencegah jalan memotong dinding)
+      GoalDist.scale: 6.0                # Bobot dorong maju kontinu agar robot melaju maju menyusuri path sambil berbelok
+      PathAlign.scale: 24.0              # KUNCI: Bobot penjajaran hadap ditingkatkan agar robot memutar haluan ke arah path SAMBIL melaju maju (v_x > 0)
+      PathAlign.forward_point_distance: 0.10 # KUNCI: Dikecilkan ke 0.10m agar radius ayunan hidung kecil di goal sehingga TIDAK melawan RotateToGoal
+      RotateToGoal.scale: 36.0           # Bobot rotasi yaw tujuan akhir (dinaikkan dominan ke 36.0 agar robot tegas mengunci yaw target)
       RotateToGoal.slowing_factor: 5.0
-      RotateToGoal.lookahead_time: -1.0
+      RotateToGoal.lookahead_time: -1.0  # -1.0 = KUNCI: nonaktifkan orientasi tujuan selama di perjalanan, hanya aktif saat tiba di titik X,Y final
 
 # ---------------------------------------------------------------------
 # 4. LOCAL COSTMAP (Sensor-based Dynamic Costmap)
@@ -143,7 +155,7 @@ local_costmap:
       width: 4                           # Costmap width (m)
       height: 4                          # Costmap height (m)
       resolution: 0.05                   # Grid resolution (m/cell)
-      robot_radius: 0.22                 # Robot footprint radius (m, diameter 0.44m)
+      robot_radius: 0.24                 # Robot footprint radius (m, diameter fisik 0.44m + 2cm margin)
       transform_tolerance: 0.3           # TF transform tolerance (s)
       plugins: ["obstacle_layer", "inflation_layer"] # Active costmap layers
       obstacle_layer:
@@ -156,13 +168,13 @@ local_costmap:
           clearing: True                 # Clear free space along laser rays
           marking: True                  # Mark obstacle cells on laser hit
           data_type: "LaserScan"         # ROS 2 message type
-          raytrace_max_range: 3.5        # Max raytracing range (m)
+          raytrace_max_range: 5.0        # Max raytracing range (m, ditingkatkan agar pembersihan rintangan dinamis cepat)
           raytrace_min_range: 0.0        # Min raytracing range (m)
-          obstacle_max_range: 3.0        # Max obstacle marking range (m)
-          obstacle_min_range: 0.4        # Min obstacle marking range (m)
+          obstacle_max_range: 4.0        # Max obstacle marking range (m, ditingkatkan dari 3.0 agar rintangan terdeteksi dari jauh)
+          obstacle_min_range: 0.22       # Min obstacle marking range (m, diselaraskan dengan bodi 0.22m agar rintangan dekat tidak terhapus)
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Safety buffer layer around obstacles
-        cost_scaling_factor: 10.0        # Exponential cost decay factor
+        cost_scaling_factor: 25.0        # Exponential cost decay factor (ditingkatkan dari 10.0 agar objek kecil seperti kaki tidak menggelembung tebal)
         inflation_radius: 0.35           # Inflation radius (m)
       always_send_full_costmap: True     # Send full costmap on publish
 
@@ -177,15 +189,16 @@ global_costmap:
       global_frame: map                  # Global map frame
       robot_base_frame: base_link        # Robot base frame
       use_sim_time: False                # Real clock
-      robot_radius: 0.22                 # Robot footprint radius (m)
+      robot_radius: 0.24                 # Robot footprint radius (m, diameter fisik 0.44m + 2cm margin)
       resolution: 0.05                   # Grid resolution (m/cell)
-      track_unknown_space: false         # Allow traversal across unmapped space
+      track_unknown_space: true          # Kunci: Tandai area unmapped/unknown sebagai NO_INFORMATION, jangan anggap free space
       transform_tolerance: 0.5           # TF transform tolerance (s)
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"] # Costmap layers
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer" # Static map layer from map_server
         map_subscribe_transient_local: True # Transient local QoS for map
         subscribe_to_updates: True       # Subscribe to /map_updates during SLAM
+        track_unknown_space: true        # Pertahankan status unknown dari peta SLAM (-1 tetap unknown)
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer" # Dynamic LiDAR obstacle layer
         enabled: True
@@ -196,13 +209,13 @@ global_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
-          raytrace_max_range: 3.5
+          raytrace_max_range: 5.0
           raytrace_min_range: 0.0
-          obstacle_max_range: 3.0
-          obstacle_min_range: 0.4
+          obstacle_max_range: 4.0
+          obstacle_min_range: 0.22
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
-        cost_scaling_factor: 10.0        # Exponential cost decay factor
+        cost_scaling_factor: 25.0        # Exponential cost decay factor
         inflation_radius: 0.35           # Inflation radius (m)
       always_send_full_costmap: True     # Send full costmap on publish
 
@@ -218,14 +231,14 @@ map_server:
 # ---------------------------------------------------------------------
 planner_server:
   ros__parameters:
-    expected_planner_frequency: 20.0     # Expected replanning frequency (Hz)
+    expected_planner_frequency: 1.0      # Expected replanning frequency (Hz, changed from 20.0 to 1.0 to prevent CPU choking)
     use_sim_time: False                  # Real clock
     planner_plugins: ["GridBased"]       # Planner plugin
     GridBased:
       plugin: "nav2_navfn_planner::NavfnPlanner" # Global path planner algorithm
       tolerance: 2.0                     # Search tolerance around blocked goal (m)
-      use_astar: false                   # Use Dijkstra for reliable traversal of unknown space
-      allow_unknown: true                # Allow planning through unknown space
+      use_astar: true                    # Gunakan A* untuk mencari rute tercepat dan replanning responsif
+      allow_unknown: false               # Kunci: DILARANG lewat area unknown! Hanya boleh lewat path yang sudah pernah termapping
 
 # ---------------------------------------------------------------------
 # 8. SMOOTHER SERVER (Global Path Smoother)
@@ -261,7 +274,7 @@ behavior_server:
     robot_base_frame: base_link          # Robot base frame
     transform_tolerance: 0.25            # TF transform tolerance (s)
     use_sim_time: False                  # Real clock
-    simulate_ahead_time: 2.0             # Forward collision check time (s)
+    simulate_ahead_time: 0.8             # Forward collision check time (s, relaxed from 2.0 to allow spin in tighter rooms)
     max_rotational_vel: 1.4              # Max spin velocity (rad/s)
     min_rotational_vel: 0.4              # Min spin velocity (rad/s)
     rotational_acc_lim: 2.0              # Spin angular acceleration limit (rad/s^2)
@@ -289,8 +302,8 @@ velocity_smoother:
     smoothing_frequency: 20.0            # Output smoothing frequency (Hz)
     scale_velocities: True               # Scale velocities when limits hit
     feedback: "OPEN_LOOP"                # Open-loop velocity estimation
-    max_velocity: [0.30, 0.12, 1.4]      # Max velocity limits [vx, vy, vtheta]
-    min_velocity: [0.0, -0.12, -1.4]     # Min velocity limits [vx, vy, vtheta]
+    max_velocity: [0.30, 0.20, 1.4]      # Max velocity limits [vx, vy, vtheta]
+    min_velocity: [-0.08, -0.20, -1.4]   # Min velocity limits [vx, vy, vtheta]
     max_accel: [1.2, 1.0, 1.8]           # Max acceleration limits [ax, ay, atheta]
     max_decel: [-1.2, -1.0, -1.8]        # Max deceleration limits [dx, dy, dtheta]
     odom_topic: "odom"                   # Odometry input topic
@@ -415,8 +428,8 @@ slam_toolbox:
     transform_timeout: 0.2               # TF transform timeout (s)
     tf_buffer_duration: 30.0             # TF buffer duration (s)
 
-    minimum_travel_distance: 0.05        # Min translation before new scan (m)
-    minimum_travel_heading: 0.05         # Min rotation before new scan (rad)
+    minimum_travel_distance: 0.0         # Continuous real-time map update even when stationary (m)
+    minimum_travel_heading: 0.0          # Continuous real-time heading update (rad)
     scan_queue_size: 10                  # Scan queue size
     throttle_scans: 1                    # Process every N scans (1 = all)
 

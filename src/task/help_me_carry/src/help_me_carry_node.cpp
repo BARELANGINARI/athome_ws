@@ -261,6 +261,13 @@ public:
     rclcpp::SubscriptionOptions sub_options;
     sub_options.callback_group = cb_group_;
 
+    cmd_vel_monitor_sub_ = create_subscription<geometry_msgs::msg::Twist>(
+      cmd_vel_topic_, rclcpp::QoS(1),
+      [this](const geometry_msgs::msg::Twist::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(cmd_vel_mon_mutex_);
+        monitored_cmd_vel_ = *msg;
+      }, sub_options);
+
     person_sub_ = create_subscription<std_msgs::msg::String>(
       person_topic_, rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::String::SharedPtr msg) {
@@ -364,6 +371,22 @@ public:
       "/help_me_carry/step_back",
       [this](const std::shared_ptr<Trigger::Request> req, std::shared_ptr<Trigger::Response> resp) {
         handle_step_back(req, resp);
+      },
+      rclcpp::ServicesQoS(),
+      cb_group_);
+
+    rotate_safe_srv_ = create_service<Trigger>(
+      "/task/rotate_safe",
+      [this](const std::shared_ptr<Trigger::Request> req, std::shared_ptr<Trigger::Response> resp) {
+        handle_rotate_safe(req, resp);
+      },
+      rclcpp::ServicesQoS(),
+      cb_group_);
+
+    rotate_safe_srv_alias_ = create_service<Trigger>(
+      "/help_me_carry/rotate_safe",
+      [this](const std::shared_ptr<Trigger::Request> req, std::shared_ptr<Trigger::Response> resp) {
+        handle_rotate_safe(req, resp);
       },
       rclcpp::ServicesQoS(),
       cb_group_);
@@ -961,6 +984,7 @@ private:
   void handle_stop_follow(std::shared_ptr<Trigger::Response> resp)
   {
     is_following_ = false;
+    is_homing_active_ = false;
     is_nav_active_ = false;
     is_moving_ = false;
     current_cmd_vx_ = 0.0;
@@ -1403,6 +1427,387 @@ private:
     IC(resp->success, resp->message);
   }
 
+  double get_robot_heading()
+  {
+    try {
+      auto trans = tf_buffer_->lookupTransform(frame_map_, frame_base_, tf2::TimePointZero);
+      const auto & rq = trans.transform.rotation;
+      const double siny_cosp = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+      const double cosy_cosp = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+      return std::atan2(siny_cosp, cosy_cosp);
+    } catch (const tf2::TransformException &) {
+      try {
+        auto trans = tf_buffer_->lookupTransform("odom", frame_base_, tf2::TimePointZero);
+        const auto & rq = trans.transform.rotation;
+        const double siny_cosp = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+        const double cosy_cosp = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+        return std::atan2(siny_cosp, cosy_cosp);
+      } catch (const tf2::TransformException &) {
+        std::lock_guard<std::mutex> lock(bag_mutex_);
+        return current_yaw_deg_ * M_PI / 180.0;
+      }
+    }
+  }
+
+  struct ClearanceSummary {
+    double front{999.0};
+    double back{999.0};
+    double left{999.0};
+    double right{999.0};
+    double min_any{999.0};
+  };
+
+  ClearanceSummary get_clearance_summary()
+  {
+    ClearanceSummary sum;
+    sensor_msgs::msg::LaserScan::SharedPtr scan;
+    {
+      std::lock_guard<std::mutex> lock(scan_mutex_);
+      scan = latest_scan_;
+    }
+    if (!scan || scan->ranges.empty()) return sum;
+
+    double laser_tx = 0.0, laser_ty = 0.0, laser_yaw = 3.1415926535;
+    try {
+      auto tf_laser = tf_buffer_->lookupTransform(frame_base_, scan->header.frame_id, tf2::TimePointZero);
+      laser_tx = tf_laser.transform.translation.x;
+      laser_ty = tf_laser.transform.translation.y;
+      const auto & rq = tf_laser.transform.rotation;
+      const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+      const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+      laser_yaw = std::atan2(siny, cosy);
+    } catch (...) {}
+
+    const int n = static_cast<int>(scan->ranges.size());
+    for (int i = 0; i < n; ++i) {
+      const float r = scan->ranges[i];
+      if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) continue;
+      const double angle_laser = scan->angle_min + i * scan->angle_increment;
+      const double angle_base = normalize_angle(angle_laser + laser_yaw);
+      const double px = laser_tx + r * std::cos(angle_base);
+      const double py = laser_ty + r * std::sin(angle_base);
+      const double d = std::hypot(px, py);
+      if (d < 0.22) continue; // Abaikan pantulan rangka/sasis robot sendiri
+
+      if (d < sum.min_any) sum.min_any = d;
+
+      // Sektor Depan (-30 s.d. +30 deg)
+      if (std::abs(angle_base) < 0.52) {
+        if (d < sum.front) sum.front = d;
+      }
+      // Sektor Belakang (> 150 deg atau < -150 deg)
+      else if (std::abs(angle_base) > 2.62) {
+        if (d < sum.back) sum.back = d;
+      }
+      // Sektor Kiri (60 s.d. 120 deg)
+      else if (angle_base > 1.05 && angle_base < 2.09) {
+        if (d < sum.left) sum.left = d;
+      }
+      // Sektor Kanan (-120 s.d. -60 deg)
+      else if (angle_base < -1.05 && angle_base > -2.09) {
+        if (d < sum.right) sum.right = d;
+      }
+    }
+    return sum;
+  }
+
+  double find_safe_heading(double & out_best_clearance)
+  {
+    sensor_msgs::msg::LaserScan::SharedPtr scan;
+    {
+      std::lock_guard<std::mutex> lock(scan_mutex_);
+      scan = latest_scan_;
+    }
+
+    out_best_clearance = 0.0;
+    if (!scan || scan->ranges.empty()) {
+      RCLCPP_WARN(get_logger(), "\033[1;31m[Safe Rotate]\033[0m Data LaserScan /scan tidak tersedia!");
+      return 0.0;
+    }
+
+    // 1. Transform laser frame ke base_link
+    double laser_tx = 0.0;
+    double laser_ty = 0.0;
+    double laser_yaw = 3.1415926535;
+    try {
+      auto tf_laser = tf_buffer_->lookupTransform(frame_base_, scan->header.frame_id, tf2::TimePointZero);
+      laser_tx = tf_laser.transform.translation.x;
+      laser_ty = tf_laser.transform.translation.y;
+      const auto & rq = tf_laser.transform.rotation;
+      const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+      const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+      laser_yaw = std::atan2(siny, cosy);
+    } catch (const tf2::TransformException &) {
+      laser_yaw = 3.1415926535;
+    }
+
+    // 2. Tentukan arah relatif robot menuju titik origin (homing)
+    double angle_to_origin_rel = M_PI; // Default 180 deg (belakang robot)
+    try {
+      auto trans = tf_buffer_->lookupTransform(frame_map_, frame_base_, tf2::TimePointZero);
+      const double rx = trans.transform.translation.x;
+      const double ry = trans.transform.translation.y;
+      const auto & rq = trans.transform.rotation;
+      const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+      const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+      const double ryaw = std::atan2(siny, cosy);
+      if (origin_recorded_) {
+        const double origin_map_yaw = std::atan2(origin_y_ - ry, origin_x_ - rx);
+        angle_to_origin_rel = normalize_angle(origin_map_yaw - ryaw);
+      }
+    } catch (const tf2::TransformException &) {
+      // TF map belum siap, gunakan default M_PI
+    }
+
+    // 3. Konversi semua titik scan yang valid ke koordinat base_link
+    struct LaserPt { double x, y; };
+    std::vector<LaserPt> pts;
+    pts.reserve(scan->ranges.size());
+    const int n = static_cast<int>(scan->ranges.size());
+    for (int i = 0; i < n; ++i) {
+      const float r = scan->ranges[i];
+      if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) continue;
+      const double angle_laser = scan->angle_min + i * scan->angle_increment;
+      const double angle_base = normalize_angle(angle_laser + laser_yaw);
+      const double px = laser_tx + r * std::cos(angle_base);
+      const double py = laser_ty + r * std::sin(angle_base);
+      if (std::hypot(px, py) < 0.22) continue; // Abaikan titik internal robot
+      pts.push_back({px, py});
+    }
+
+    if (pts.empty()) {
+      out_best_clearance = 3.0;
+      return angle_to_origin_rel;
+    }
+
+    // 4. Evaluasi 36 kandidat heading (-180 sampai +180 derajat)
+    const int num_candidates = 36;
+    const double step = 2.0 * M_PI / num_candidates;
+    const double corridor_half_width = std::max(0.32, corridor_width_);
+    const double max_eval_dist = 3.5;
+
+    double best_score = -1e9;
+    double best_heading = 0.0;
+    double best_clearance = 0.0;
+    double front_clearance = max_eval_dist;
+
+    for (int c = 0; c < num_candidates; ++c) {
+      const double phi = normalize_angle(-M_PI + c * step);
+      const double cos_p = std::cos(phi);
+      const double sin_p = std::sin(phi);
+
+      double min_fwd = max_eval_dist;
+      for (const auto & p : pts) {
+        // Rotasi titik ke koordinat lokal kandidat heading
+        const double fwd = p.x * cos_p + p.y * sin_p;
+        const double lat = -p.x * sin_p + p.y * cos_p;
+
+        if (fwd > 0.05 && fwd < max_eval_dist && std::abs(lat) < corridor_half_width) {
+          if (fwd < min_fwd) {
+            min_fwd = fwd;
+          }
+        }
+      }
+
+      if (std::abs(phi) < 0.15) {
+        front_clearance = min_fwd;
+      }
+
+      // Hitung skor:
+      // Area dengan clearance < 0.60 m dianggap terhalang rintangan
+      double score = 0.0;
+      const double safe_threshold = 0.60; // 0.60 m
+      if (min_fwd < safe_threshold) {
+        score = -100.0 + min_fwd;
+      } else {
+        // Keselarasan dengan arah origin (1.0 jika tepat menuju origin, 0.0 jika bertolak belakang)
+        const double origin_align = 0.5 * (1.0 + std::cos(phi - angle_to_origin_rel));
+        // Bonus clearance: jika clearance sudah aman (>= 1.2 m), beri skor penuh
+        const double cl_bonus = std::min(min_fwd, 1.5) / 1.5;
+        // Prioritas utama: Kepala robot HARUS MENGHADAP KE ARAH ORIGIN (bobot 10.0),
+        // clearance sebagai syarat keamanan dan penentu tie-breaker (bobot 1.0).
+        score = origin_align * 10.0 + cl_bonus * 1.0;
+      }
+
+      if (score > best_score) {
+        best_score = score;
+        best_heading = phi;
+        best_clearance = min_fwd;
+      }
+    }
+
+    out_best_clearance = best_clearance;
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[SAFE ROTATE SCAN]\033[0m Evaluasi Heading: Best Angle=%.1f° (Clearance=%.2f m, Score=%.2f) | Clearance Depan Saat Ini=%.2f m | Arah Origin=%.1f°",
+      best_heading * 180.0 / M_PI, best_clearance, best_score, front_clearance, angle_to_origin_rel * 180.0 / M_PI);
+
+    return best_heading;
+  }
+
+  bool rotate_to_safe_area(double max_duration_sec = 8.0)
+  {
+    double clearance = 0.0;
+    double safe_rel_yaw = find_safe_heading(clearance);
+
+    // Jika depan sudah aman (clearance >= 1.0 m) dan heading aman hanya berbeda kecil (< 15 deg), lewati
+    if (std::abs(safe_rel_yaw) < 0.26 && clearance >= 1.0) {
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[1;32m[SAFE ROTATE]\033[0m Area depan robot sudah lapang (clearance: %.2f m) dan selaras. Rotasi tidak diperlukan.",
+        clearance);
+      return true;
+    }
+
+    const double start_yaw = get_robot_heading();
+    const double target_yaw = normalize_angle(start_yaw + safe_rel_yaw);
+    const auto t_start = now();
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;33m[SAFE ROTATE START]\033[0m Memulai rotasi aman di tempat: Start Yaw=%.1f° -> Target Yaw=%.1f° (Perlu putar %.1f°, Area Lapang: %.2fm)...",
+      start_yaw * 180.0 / M_PI, target_yaw * 180.0 / M_PI, safe_rel_yaw * 180.0 / M_PI, clearance);
+
+    geometry_msgs::msg::Twist twist;
+    rclcpp::Rate rate(20);
+    int loop_count = 0;
+
+    while (rclcpp::ok() && is_homing_active_) {
+      const double elapsed = (now() - t_start).seconds();
+      if (elapsed > max_duration_sec) {
+        RCLCPP_WARN(
+          get_logger(),
+          "\033[1;31m[SAFE ROTATE TIMEOUT]\033[0m Waktu rotasi melebihi %.1f s. Menghentikan putaran in-place.",
+          max_duration_sec);
+        break;
+      }
+
+      // Safety check rintangan yang benar-benar menempel bodi luar robot (< 0.26 m dari pusat)
+      ClearanceSummary clear = get_clearance_summary();
+      if (clear.min_any < 0.26) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "\033[1;31m[SAFE ROTATE EMERGENCY STOP]\033[0m Objek sangat dekat dengan bodi (jarak: %.2f m)! Rotasi dihentikan darurat.",
+          clear.min_any);
+        break;
+      }
+
+      const double cur_yaw = get_robot_heading();
+      const double err = normalize_angle(target_yaw - cur_yaw);
+
+      // Selesai jika deviasi sudut <= 0.08 rad (~4.5 deg)
+      if (std::abs(err) <= 0.08) {
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;32m[SAFE ROTATE SUCCEEDED]\033[0m Rotasi in-place berhasil diselesaikan! Posisi akhir: %.1f° (sisa error: %.1f°, waktu: %.2f s).",
+          cur_yaw * 180.0 / M_PI, err * 180.0 / M_PI, elapsed);
+        break;
+      }
+
+      // Proportional angular speed dengan batas minimum untuk mengatasi friksi roda
+      double wz = std::clamp(1.2 * err, -max_wz_, max_wz_);
+      if (std::abs(wz) < 0.15) {
+        wz = (err > 0.0 ? 0.15 : -0.15);
+      }
+
+      twist.linear.x = 0.0;
+      twist.linear.y = 0.0;
+      twist.angular.z = wz;
+      cmd_vel_pub_->publish(twist);
+
+      loop_count++;
+      if (loop_count % 5 == 0) { // Print setiap ~250 ms
+        RCLCPP_INFO(
+          get_logger(),
+          "[SAFE ROTATE RUNNING] t=%.1fs | Yaw Saat Ini: %.1f° -> Target: %.1f° | Sisa Error: %.1f° | Cmd Vel Wz: %.2f rad/s",
+          elapsed, cur_yaw * 180.0 / M_PI, target_yaw * 180.0 / M_PI, err * 180.0 / M_PI, wz);
+      }
+
+      rate.sleep();
+    }
+
+    // Stop total pergerakan robot
+    geometry_msgs::msg::Twist stop_twist;
+    cmd_vel_pub_->publish(stop_twist);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    return true;
+  }
+
+  bool is_facing_away_or_blocked()
+  {
+    double cur_x = 0.0, cur_y = 0.0, cur_yaw = 0.0;
+    bool has_tf = false;
+    try {
+      auto trans = tf_buffer_->lookupTransform(frame_map_, frame_base_, tf2::TimePointZero);
+      cur_x = trans.transform.translation.x;
+      cur_y = trans.transform.translation.y;
+      const auto & rq = trans.transform.rotation;
+      const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+      const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+      cur_yaw = std::atan2(siny, cosy);
+      has_tf = true;
+    } catch (...) {}
+
+    double rel_angle_origin = 0.0;
+    if (has_tf && origin_recorded_) {
+      const double origin_map_yaw = std::atan2(origin_y_ - cur_y, origin_x_ - cur_x);
+      rel_angle_origin = normalize_angle(origin_map_yaw - cur_yaw);
+    }
+
+    ClearanceSummary clear = get_clearance_summary();
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[HOMING DIAGNOSTIC]\033[0m Posisi: (x=%.2f, y=%.2f, yaw=%.1f°) | Selisih Sudut ke Origin: %.1f° | Jarak Sensor: Depan=%.2fm, Belakang=%.2fm, Kiri=%.2fm, Kanan=%.2fm",
+      cur_x, cur_y, cur_yaw * 180.0 / M_PI, rel_angle_origin * 180.0 / M_PI,
+      clear.front, clear.back, clear.left, clear.right);
+
+    // Kriteria membelakangi atau terhalang:
+    // 1. Selisih sudut ke origin > 45 derajat (robot membelakangi jalur pulang)
+    // 2. ATAU jarak rintangan di depan < 0.70 m (ada meja / orang tepat di depan muka robot)
+    bool facing_away = std::abs(rel_angle_origin) > 0.78;
+    bool front_blocked = clear.front < 0.70;
+
+    if (facing_away || front_blocked) {
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[1;33m[HOMING DIAGNOSTIC]\033[0m Status: %s%s -> Memerlukan rotasi di tempat ke area lapang!",
+        facing_away ? "[MEMBELAKANGI ORIGIN] " : "",
+        front_blocked ? "[DEPAN TERHALANG < 0.70m]" : "");
+      return true;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;32m[HOMING DIAGNOSTIC]\033[0m Status: Posisi hadap sudah selaras (%.1f°) dan depan lapang (%.2fm). Siap maju!",
+      rel_angle_origin * 180.0 / M_PI, clear.front);
+    return false;
+  }
+
+  void handle_rotate_safe(
+    const std::shared_ptr<Trigger::Request> /*req*/,
+    std::shared_ptr<Trigger::Response> resp)
+  {
+    RCLCPP_INFO(get_logger(), "\033[1;36m[Rotate Safe]\033[0m Menerima perintah service rotasi aman...");
+    if (is_following_) {
+      auto dummy = std::make_shared<Trigger::Response>();
+      handle_stop_follow(dummy);
+    }
+
+    double clearance = 0.0;
+    double safe_yaw = find_safe_heading(clearance);
+    bool ok = rotate_to_safe_area();
+
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "Rotasi aman selesai: heading %.1f deg, clearance %.2f m.",
+                  safe_yaw * 180.0 / M_PI, clearance);
+    resp->success = ok;
+    resp->message = buf;
+    RCLCPP_INFO(get_logger(), "[Rotate Safe] %s", resp->message.c_str());
+    IC(resp->success, resp->message);
+  }
+
   void handle_homming(
     const std::shared_ptr<Trigger::Request> /*req*/,
     std::shared_ptr<Trigger::Response> resp)
@@ -1423,18 +1828,18 @@ private:
       return;
     }
 
-    // 3. Goal recorded origin point on map frame with standard BT replanning & recovery
+    // 3. Goal origin point (x=0, y=0, w=1) on map frame with standard BT replanning & recovery
     NavigateToPose::Goal goal;
     goal.behavior_tree = "/opt/ros/jazzy/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml";
     goal.pose.header.frame_id = frame_map_;
     goal.pose.header.stamp = now();
-    goal.pose.pose.position.x = origin_x_;
-    goal.pose.pose.position.y = origin_y_;
+    goal.pose.pose.position.x = 0.0;
+    goal.pose.pose.position.y = 0.0;
     goal.pose.pose.position.z = 0.0;
     goal.pose.pose.orientation.x = 0.0;
     goal.pose.pose.orientation.y = 0.0;
-    goal.pose.pose.orientation.z = origin_qz_;
-    goal.pose.pose.orientation.w = origin_qw_;
+    goal.pose.pose.orientation.z = 0.0;
+    goal.pose.pose.orientation.w = 1.0;
 
     auto promise = std::make_shared<std::promise<rclcpp_action::ResultCode>>();
     auto future = promise->get_future();
@@ -1575,6 +1980,9 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr follow_status_pub_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_monitor_sub_;
+  std::mutex cmd_vel_mon_mutex_;
+  geometry_msgs::msg::Twist monitored_cmd_vel_{};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr bag_sub_;
@@ -1587,7 +1995,10 @@ private:
   rclcpp::Service<Trigger>::SharedPtr align_bag_srv_;
   rclcpp::Service<Trigger>::SharedPtr step_back_srv_;
   rclcpp::Service<Trigger>::SharedPtr step_back_srv_alias_;
+  rclcpp::Service<Trigger>::SharedPtr rotate_safe_srv_;
+  rclcpp::Service<Trigger>::SharedPtr rotate_safe_srv_alias_;
   rclcpp::Service<Trigger>::SharedPtr homing_srv_;
+  std::atomic<bool> is_homing_active_{false};
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
   rclcpp::CallbackGroup::SharedPtr cb_group_;
 };

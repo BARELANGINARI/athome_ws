@@ -18,8 +18,8 @@ help_me_carry_node:
     # -------------------------------------------------------------
     # 2. FOLLOWING DISTANCES & TIMEOUTS
     # -------------------------------------------------------------
-    follow_stop_distance: 0.5                 # Distance to stop following (meters)
-    follow_start_distance: 0.7                # Distance to start moving forward (meters)
+    follow_stop_distance: 1.0                 # Distance to stop following (meters)
+    follow_start_distance: 1.0                # Distance to start moving forward (meters)
     bag_stop_distance: 0.45                   # Distance to stop in front of bag (meters)
     max_follow_range: 3.0                     # Max detection range to follow (meters)
     max_lost_time: 3.0                        # Watchdog safety timeout before reset (seconds)
@@ -51,7 +51,7 @@ help_me_carry_node:
     # -------------------------------------------------------------
     enable_avoidance: true                    # Enable real-time LiDAR obstacle avoidance
     obstacle_distance: 0.75                   # Distance threshold to start slowing down (meters)
-    footprint_radius: 0.40                    # Robot self-footprint radius filter (meters)
+    footprint_radius: 0.24                    # Robot self-footprint radius filter (meters)
     min_stop_x: 0.38                          # Hard safety braking distance from robot center (meters)
     corridor_width: 0.32                      # Front danger corridor half-width (|y| in meters)
 
