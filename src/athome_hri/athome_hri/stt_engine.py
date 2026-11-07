@@ -1,7 +1,3 @@
-"""Speech-to-Text (STT) engine module powered by Faster-Whisper.
-edit : 2 nov 2026 22.02
-"""
-
 import logging
 import os
 import tempfile

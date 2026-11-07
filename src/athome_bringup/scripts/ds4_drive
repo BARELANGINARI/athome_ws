@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-"""DS4 drive: left stick moves, L1 turbo, triangle cruise forward -> cmd_vel.
-
-Replaces teleop_twist_joy.
-DualShock 4 kernel layout: 8 axes, 13 buttons.
-  axes: 0=LX 1=LY 2=L2 3=RX 4=RY 5=R2 6=DPAD-X 7=DPAD-Y
-  buttons: 0=X 1=O 2=Triangle 3=Square 4=L1 5=R1 6=L2 7=R2
-           8=Share 9=Options 10=PS 11=L3 12=R3
-"""
-
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
@@ -17,7 +7,7 @@ from std_msgs.msg import UInt8
 
 AX_LX, AX_LY, AX_RX = 0, 1, 3
 AX_DPAD_Y = 7
-BTN_TURBO, BTN_CRUISE = 4, 2  # L1, Segitiga
+BTN_TURBO, BTN_CRUISE = 4, 2
 
 
 class Ds4Drive(Node):
@@ -38,12 +28,9 @@ class Ds4Drive(Node):
         self.declare_parameter('lifter_topic', 'lifter_target')
         self.lifter_topic = str(self.get_parameter('lifter_topic').value)
 
-        # Lifter state
         self.lifter_target = 0
         self._last_dpad_y = 0.0
 
-        # QoS BestEffort + KeepLast(1) to match nucleo
-        # (publisher Reliable + queue 10 causes queuing/retransmits).
         qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
@@ -55,8 +42,7 @@ class Ds4Drive(Node):
         self.sub = self.create_subscription(Joy, 'joy', self.on_joy, qos)
         self._last_joy_time = self.get_clock().now()
         self._stopped = False
-        # Safety: if joy connection drops, publish zero immediately
-        # rather than waiting for 0.5s cmd_vel_timeout in nucleo.
+
         self._timer = self.create_timer(0.05, self._check_timeout)
         self.get_logger().info(
             'DS4 ready: left stick=motion, L1=turbo, triangle=cruise, DPAD Up=Lifter UP(1), DPAD Down=Lifter DOWN(0)')
@@ -81,7 +67,7 @@ class Ds4Drive(Node):
 
         vx = ly * lin
         if cruise:
-            vx = lin  # triangle: cruise straight
+            vx = lin  
         vy = lx * lin
         yaw = rx * ang
 
@@ -95,9 +81,6 @@ class Ds4Drive(Node):
         twist.angular.z = yaw
         self.pub.publish(twist)
 
-        # Lifter control via D-Pad Y (DPAD-Y)
-        # Pad UP (ax > 0.5)   -> lifter target = 1 (UP)
-        # Pad DOWN (ax < -0.5) -> lifter target = 0 (DOWN)
         if len(ax) > AX_DPAD_Y:
             dpad_y = ax[AX_DPAD_Y]
             new_target = None
@@ -122,7 +105,7 @@ class Ds4Drive(Node):
             return
         age = (self.get_clock().now() - self._last_joy_time).nanoseconds * 1e-9
         if age > self.joy_timeout:
-            self.pub.publish(Twist())  # all zero = stop
+            self.pub.publish(Twist()) 
             self._stopped = True
 
 

@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-"""Standalone ROS 2 text-to-speech engine."""
-
 from concurrent.futures import ThreadPoolExecutor
 
 import rclpy

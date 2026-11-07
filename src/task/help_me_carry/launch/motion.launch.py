@@ -11,7 +11,6 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Launch SLAM, Nav2 navigation stack, and RViz visualization for Help Me Carry."""
     pkg_carry = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     default_rviz = os.path.join(pkg_carry, 'rviz', 'help_me_carry.rviz')
 

@@ -1,8 +1,3 @@
-/* =====================================================================
-   Barelang Inari - Robot Face Expression Styling
-   Optimized for 7-inch HDMI LCD (1024x600 / 800x480 / 1280x720)
-   ===================================================================== */
-
 :root {
   --bg-color: #06080e;
   --bg-radial: radial-gradient(circle at center, #0e1526 0%, #06080e 85%);
@@ -34,7 +29,6 @@ html, body {
   color: #ffffff;
 }
 
-/* Stage container */
 .stage {
   position: relative;
   width: 100vw;
@@ -46,7 +40,6 @@ html, body {
   cursor: pointer;
 }
 
-/* Top Subtle HUD */
 .hud-bar {
   position: absolute;
   top: 0;
@@ -128,7 +121,6 @@ html, body {
   border-color: #00f2ff;
 }
 
-/* Eyebrows Container */
 .eyebrows-wrap {
   display: flex;
   justify-content: center;
@@ -150,7 +142,6 @@ html, body {
   transition: transform var(--transition-speed) cubic-bezier(0.34, 1.56, 0.64, 1), background var(--transition-speed);
 }
 
-/* FX Layer (Badges: ?, !, Sparks) */
 .fx-layer {
   position: absolute;
   top: 15%;
@@ -184,7 +175,6 @@ html, body {
   text-shadow: 0 0 20px #ff3344;
 }
 
-/* Eyes Wrap */
 .eyes-wrap {
   display: flex;
   justify-content: center;
@@ -193,7 +183,6 @@ html, body {
   transition: transform var(--transition-speed) ease;
 }
 
-/* Natural breathing motion */
 @keyframes breathing {
   0%, 100% { transform: translateY(0) scale(1); }
   50% { transform: translateY(-4px) scale(1.015); }
@@ -203,7 +192,6 @@ html, body {
   animation: breathing 4.5s ease-in-out infinite;
 }
 
-/* Eye Socket */
 .eye-socket {
   position: relative;
   width: var(--eye-width);
@@ -220,7 +208,6 @@ html, body {
   transition: transform var(--transition-speed) cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-/* Eye SVG elements */
 .eye-shape {
   transition: d var(--transition-speed) cubic-bezier(0.3, 1.3, 0.3, 1),
               fill var(--transition-speed) ease;
@@ -252,7 +239,6 @@ html, body {
   animation: scan-radar 1.5s ease-in-out infinite;
 }
 
-/* Cheek Blush */
 .cheek-blush {
   position: absolute;
   bottom: -15px;
@@ -274,12 +260,10 @@ html, body {
   transform: scale(1.1);
 }
 
-/* Eyelids for smooth blink */
 .eyelid-top, .eyelid-bottom {
   transition: height 0.08s ease-in-out, y 0.08s ease-in-out;
 }
 
-/* Mouth / Waveform */
 .mouth-wrap {
   margin-top: 18px;
   height: 35px;
@@ -338,7 +322,6 @@ html, body {
   transform: translateY(0) scale(1);
 }
 
-/* Speech Subtitle */
 .speech-bubble {
   position: absolute;
   bottom: 60px;
@@ -362,9 +345,6 @@ html, body {
   transform: translateY(0);
 }
 
-/* =====================================================================
-   Testing & Demo Toolbar (Docked at Bottom)
-   ===================================================================== */
 .test-toolbar {
   position: fixed;
   bottom: 0;

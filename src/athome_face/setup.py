@@ -18,7 +18,7 @@ setup(
     zip_safe=True,
     maintainer="cyan",
     maintainer_email="cyan@barelang.org",
-    description="Standalone 7-inch HDMI LCD Emotion & Expression Interface for Barelang Inari Robot",
+    description="HDMI LCD Emotion & Expression Interface for Barelang Inari Robot",
     license="MIT",
     tests_require=["pytest"],
     entry_points={

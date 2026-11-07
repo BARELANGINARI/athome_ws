@@ -9,7 +9,6 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Launch ZED camera, body tracking, and YOLO bag detection preview."""
     return LaunchDescription([
         DeclareLaunchArgument('camera_fps', default_value='30.0', description='Camera frame rate (FPS)'),
         DeclareLaunchArgument('depth_minimum_distance', default_value='30.0', description='Minimum depth sensing distance (cm)'),
@@ -34,6 +33,9 @@ def generate_launch_description():
                 'yaw_360': LaunchConfiguration('yaw_360'),
                 'enable_body_tracking': 'true',
                 'enable_yolo': 'true',
+                'enable_bag': 'true',
+                'enable_drinks': 'false',
+                'enable_chair': 'false',
                 'yolo_conf': LaunchConfiguration('yolo_conf'),
                 'debug_window': LaunchConfiguration('debug_window'),
                 'mirror': LaunchConfiguration('mirror'),

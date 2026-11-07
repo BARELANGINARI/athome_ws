@@ -23,7 +23,6 @@ def generate_launch_description():
             default_value='192.168.0.4',
             description='STM32 IP address.',
         ),
-        # Navigation arguments
         DeclareLaunchArgument(
             'navigation',
             default_value='true',
@@ -64,7 +63,6 @@ def generate_launch_description():
             description='Launch ZED camera vision stack for receptionist.',
         ),
 
-        # 1. Hardware Bringup (Motor + LiDAR)
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
@@ -81,7 +79,6 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # 2. Navigation Bringup (Nav2 + AMCL on existing Map + Receptionist Service Node + RViz)
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
@@ -101,7 +98,6 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # 3. HRI & Task Manager FSM Bringup (Speech + FSM)
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
@@ -118,7 +114,6 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # 4. Camera & Vision Bringup (ZED + Person Tracking + YOLO)
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([

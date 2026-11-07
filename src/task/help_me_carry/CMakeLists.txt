@@ -73,7 +73,6 @@ ament_target_dependencies(help_me_carry_manager
   std_srvs
 )
 install(TARGETS help_me_carry_manager DESTINATION lib/${PROJECT_NAME})
-install(PROGRAMS src/help_me_carry_hri.py DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY behavior_trees/ DESTINATION share/${PROJECT_NAME}/behavior_trees)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)

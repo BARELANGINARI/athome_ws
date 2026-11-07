@@ -43,7 +43,7 @@ struct PCtoSTM32 {
 };
 
 static_assert(sizeof(PCtoSTM32) == 12,
-              "PCtoSTM32 must be 12 bytes (motor + dribbler + lifter + kicker)");
+              "PCtoSTM32 must be 12 bytes");
 
 #pragma pack()
 

@@ -1,7 +1,6 @@
 #pragma once
 #include <cstdint>
 
-// Dihasilkan otomatis oleh calibrate_arm.cpp
 struct CalibratedServoConfig {
     uint8_t  id;
     uint16_t raw_zero;

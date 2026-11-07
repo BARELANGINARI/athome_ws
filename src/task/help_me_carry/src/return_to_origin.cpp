@@ -15,7 +15,6 @@ int main(int argc, char ** argv)
 
   std::cout << "\033[96m[INFO] Returning robot to starting pose (origin: x=0.0, y=0.0, yaw=0.0)...\033[0m" << std::endl;
 
-  // 1. Try service /return_to_origin
   auto srv_client = node->create_client<std_srvs::srv::Trigger>("/return_to_origin");
   if (srv_client->wait_for_service(std::chrono::milliseconds(1500))) {
     std::cout << "\033[92m[INFO] Calling /return_to_origin service...\033[0m" << std::endl;
@@ -37,7 +36,6 @@ int main(int argc, char ** argv)
     }
   }
 
-  // 2. Fallback: send NavigateToPose goal directly to Nav2 action server
   std::cout << "\033[93m[INFO] Service /return_to_origin unavailable. Sending goal to Nav2 action server...\033[0m" << std::endl;
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
   using GoalHandleNav = rclcpp_action::ClientGoalHandle<NavigateToPose>;

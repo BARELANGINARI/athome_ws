@@ -12,7 +12,6 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Launch low-level robot base motor driver (Nucleo) and RPLiDAR sensor."""
     return LaunchDescription([
         DeclareLaunchArgument('nucleo', default_value='true', description='Launch STM32 Nucleo base motor driver'),
         DeclareLaunchArgument('stm_ip', default_value='192.168.0.4', description='STM32 IP address'),
@@ -24,7 +23,6 @@ def generate_launch_description():
         DeclareLaunchArgument('lidar_y', default_value='0.0', description='LiDAR Y offset from base_link (m)'),
         DeclareLaunchArgument('lidar_z', default_value='0.25', description='LiDAR Z offset from base_link (m)'),
         DeclareLaunchArgument('lidar_yaw', default_value='3.14159', description='LiDAR yaw offset from base_link (rad)'),
-        # Motor control driver (UDP to Nucleo)
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([
@@ -42,7 +40,6 @@ def generate_launch_description():
                 'test_topic': LaunchConfiguration('test_topic'),
             }.items(),
         ),
-        # RPLiDAR node
         Node(
             package='rplidar_ros',
             executable='rplidar_composition',
@@ -62,7 +59,6 @@ def generate_launch_description():
                 },
             ],
         ),
-        # TF: base_link -> laser_frame
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
@@ -82,7 +78,6 @@ def generate_launch_description():
                 '--child-frame-id', 'laser_frame',
             ],
         ),
-        # TF: base_footprint -> base_link
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
