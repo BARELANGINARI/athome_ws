@@ -84,7 +84,7 @@ def generate_launch_description():
                 PathJoinSubstitution([
                     FindPackageShare('receptionist'),
                     'launch',
-                    'navigation.launch.py',
+                    'motion.launch.py',
                 ])
             ),
             condition=IfCondition(

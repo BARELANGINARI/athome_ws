@@ -71,12 +71,23 @@ get_filename_component(ONNXRUNTIME_LIBDIR "${ONNXRUNTIME_LIB}" DIRECTORY)
 set_target_properties(zed PROPERTIES
   INSTALL_RPATH "${ONNXRUNTIME_LIBDIR}"
   BUILD_WITH_INSTALL_RPATH TRUE)
-install(TARGETS zed
+add_executable(record src/record.cpp)
+target_include_directories(record PRIVATE
+  ${ZED_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(record
+  ${OpenCV_LIBS}
+  ${ZED_LIBRARIES}
+)
+
+install(TARGETS zed record
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 install(DIRECTORY models/ DESTINATION share/${PROJECT_NAME}/models)
+install(DIRECTORY scripts/ DESTINATION share/${PROJECT_NAME}/scripts)
 
 ament_package()

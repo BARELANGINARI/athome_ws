@@ -28,7 +28,7 @@ source install/setup.bash
 ### 1. ROS 2 Motion Server Node
 Runs the playback service for taught arm motions:
 ```bash
-ros2 launch athome_arm arm.launch.py port:=/dev/ttyUSB1 baudrate:=1000000
+ros2 launch athome_arm arm.launch.py port:=/dev/ttyUSB0 baudrate:=1000000
 ```
 
 **Trigger bag pickup motion:**

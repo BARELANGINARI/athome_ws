@@ -21,7 +21,7 @@ def generate_launch_description():
         DeclareLaunchArgument('yolo_nms', default_value='0.45', description='YOLO NMS IoU threshold'),
         DeclareLaunchArgument('yolo_size', default_value='640', description='YOLO input image dimension'),
         DeclareLaunchArgument('yolo_min_area', default_value='1500.0', description='Minimum bounding box area (pixels)'),
-        DeclareLaunchArgument('gender_model', default_value='models/gender_cls.onnx', description='Path to gender ONNX model'),
+        DeclareLaunchArgument('gender_model', default_value='models/gender_model_weights.onnx', description='Path to DeepFace gender ONNX model'),
         DeclareLaunchArgument('color_model', default_value='models/color_model.onnx', description='Path to clothing color ONNX model'),
         DeclareLaunchArgument('color_labels', default_value='models/color_names.txt', description='Path to clothing color labels file'),
         DeclareLaunchArgument('hair_model', default_value='models/hair_model.onnx', description='Path to hair color ONNX model'),

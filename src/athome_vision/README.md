@@ -12,6 +12,9 @@ Computer vision package powered by Stereolabs ZED SDK and ONNX YOLO object detec
 ## Running
 
 ```bash
+# Download DeepFace gender ONNX model (~512 MB, once)
+src/athome_vision/scripts/download_deepface_gender.sh
+
 # Default (tampilkan semua log IC):
 ros2 launch athome_vision zed.launch.py
 

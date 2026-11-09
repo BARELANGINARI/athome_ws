@@ -74,6 +74,12 @@ ament_target_dependencies(help_me_carry_manager
 )
 install(TARGETS help_me_carry_manager DESTINATION lib/${PROJECT_NAME})
 
+install(PROGRAMS
+  launch/run.sh
+  launch/stop.sh
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(DIRECTORY behavior_trees/ DESTINATION share/${PROJECT_NAME}/behavior_trees)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
