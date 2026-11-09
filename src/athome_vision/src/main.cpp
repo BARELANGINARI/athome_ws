@@ -222,6 +222,15 @@ struct PrevChair
   std::string side{"center"};
 };
 
+struct ChairMemory
+{
+  cv::Rect bbox;
+  bool has_pos{false};
+  double x{0.0}, y{0.0}, z{0.0};
+  double range_m{0.0};
+  rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
+};
+
 static std::vector<std::string> loadLabels(const std::string & path)
 {
   std::vector<std::string> labels;
@@ -650,58 +659,29 @@ public:
   {
     if (!face_.ready() || bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return {};
 
-    int x1, y1, x2, y2;
-    if (kpt.size() > 28 && std::isfinite(kpt[26].x) && std::isfinite(kpt[26].y) &&
-        kpt[26].x > 0 && kpt[26].y > 0)
-    {
-      float span = bbox.width * 0.45f;
-      if (kpt.size() > 3 && std::isfinite(kpt[3].y) && kpt[3].y > kpt[26].y) {
-        span = std::max(span, (kpt[3].y - kpt[26].y) * 2.0f);
+    cv::Point2f eye_left, eye_right, nose;
+    if (faceLandmarks(kpt, eye_left, eye_right, nose)) {
+      std::vector<cv::Point2f> from{eye_left, eye_right, nose};
+      std::vector<cv::Point2f> to{
+        {38.2946f, 51.6963f}, {73.5318f, 51.5014f}, {56.0252f, 71.7366f}};
+      cv::Mat transform = cv::estimateAffinePartial2D(
+        from, to, cv::noArray(), cv::LMEDS);
+      if (transform.empty()) transform = cv::getAffineTransform(from, to);
+      if (!transform.empty()) {
+        cv::Mat aligned;
+        cv::warpAffine(bgr, aligned, transform, cv::Size(112, 112),
+          cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+        std::vector<float> feature = embedFace(aligned);
+        if (!feature.empty()) return feature;
       }
-      x1 = static_cast<int>(kpt[26].x - span * 0.5f);
-      x2 = static_cast<int>(kpt[26].x + span * 0.5f);
-      y1 = static_cast<int>(kpt[26].y - span * 0.65f);
-      y2 = static_cast<int>(kpt[26].y + span * 0.65f);
-    } else {
-      y1 = bbox.y;
-      y2 = bbox.y + static_cast<int>(bbox.height * 0.22);
-      x1 = bbox.x + static_cast<int>(bbox.width * 0.20);
-      x2 = bbox.x + static_cast<int>(bbox.width * 0.80);
     }
 
-    x1 = std::clamp(x1, 0, bgr.cols);
-    x2 = std::clamp(x2, 0, bgr.cols);
-    y1 = std::clamp(y1, 0, bgr.rows);
-    y2 = std::clamp(y2, 0, bgr.rows);
-    if (x2 <= x1 + 10 || y2 <= y1 + 10) return {};
-
-    cv::Rect roi(x1, y1, x2 - x1, y2 - y1);
-    roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
-    if (roi.area() <= 100) return {};
+    const cv::Rect roi = faceRegion(bbox, kpt, bgr.cols, bgr.rows);
+    if (roi.width <= 10 || roi.height <= 10) return {};
 
     cv::Mat resized;
     cv::resize(bgr(roi), resized, cv::Size(112, 112));
-    cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
-    cv::Mat blob = cv::dnn::blobFromImage(
-      resized, 1.0, cv::Size(112, 112), cv::Scalar(0, 0, 0), false, false);
-    std::array<int64_t, 4> shape{1, 3, 112, 112};
-    std::vector<Ort::Value> outputs = face_.run(blob, shape);
-    if (outputs.empty()) return {};
-
-    const float * data = outputs.front().GetTensorData<float>();
-    const auto out_shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
-    const int dim = (out_shape.size() >= 2) ? static_cast<int>(out_shape[1]) : 128;
-    std::vector<float> feature(static_cast<size_t>(dim));
-    float norm_sq = 0.0f;
-    for (int i = 0; i < dim; ++i) {
-      feature[static_cast<size_t>(i)] = data[i];
-      norm_sq += data[i] * data[i];
-    }
-    const float inv_norm = 1.0f / std::sqrt(std::max(norm_sq, 1e-6f));
-    for (int i = 0; i < dim; ++i) {
-      feature[static_cast<size_t>(i)] *= inv_norm;
-    }
-    return feature;
+    return embedFace(resized);
   }
 
   static float matchFace(const std::vector<float> & a, const std::vector<float> & b)
@@ -723,6 +703,51 @@ public:
   }
 
 private:
+  std::vector<float> embedFace(const cv::Mat & image)
+  {
+    if (!face_.ready() || image.empty()) return {};
+
+    cv::Mat blob = cv::dnn::blobFromImage(
+      image, 1.0, cv::Size(112, 112), cv::Scalar(0, 0, 0), true, false);
+    std::array<int64_t, 4> shape{1, 3, 112, 112};
+    std::vector<Ort::Value> outputs = face_.run(blob, shape);
+    if (outputs.empty()) return {};
+
+    const float * data = outputs.front().GetTensorData<float>();
+    const auto out_shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
+    const int dim = (out_shape.size() >= 2) ? static_cast<int>(out_shape[1]) : 128;
+    std::vector<float> feature(static_cast<size_t>(dim));
+    float norm_sq = 0.0f;
+    for (int i = 0; i < dim; ++i) {
+      feature[static_cast<size_t>(i)] = data[i];
+      norm_sq += data[i] * data[i];
+    }
+    const float inv_norm = 1.0f / std::sqrt(std::max(norm_sq, 1e-6f));
+    for (int i = 0; i < dim; ++i) {
+      feature[static_cast<size_t>(i)] *= inv_norm;
+    }
+    return feature;
+  }
+
+  static bool faceLandmarks(
+    const std::vector<sl::float2> & kpt, cv::Point2f & eye_left,
+    cv::Point2f & eye_right, cv::Point2f & nose)
+  {
+    if (kpt.size() <= 30) return false;
+    const auto valid = [](const sl::float2 & p) {
+        return std::isfinite(p.x) && std::isfinite(p.y) && p.x > 0.0f && p.y > 0.0f;
+      };
+    if (!valid(kpt[27]) || !valid(kpt[28]) || !valid(kpt[30])) return false;
+
+    eye_left = cv::Point2f(kpt[28].x, kpt[28].y);
+    eye_right = cv::Point2f(kpt[30].x, kpt[30].y);
+    nose = cv::Point2f(kpt[27].x, kpt[27].y);
+    if (eye_left.x > eye_right.x) std::swap(eye_left, eye_right);
+    const float eye_dist = std::hypot(
+      eye_right.x - eye_left.x, eye_right.y - eye_left.y);
+    return eye_dist >= 4.0f;
+  }
+
   void configureGender()
   {
     gender_nhwc_ = false;
@@ -749,7 +774,18 @@ private:
     const cv::Rect & bbox, const std::vector<sl::float2> & kpt, int cols, int rows)
   {
     int x1, y1, x2, y2;
-    if (kpt.size() > 28 && std::isfinite(kpt[26].x) && std::isfinite(kpt[26].y) &&
+    cv::Point2f eye_left, eye_right, nose;
+    if (faceLandmarks(kpt, eye_left, eye_right, nose)) {
+      const float eye_dist = std::hypot(
+        eye_right.x - eye_left.x, eye_right.y - eye_left.y);
+      const float center_x = (eye_left.x + eye_right.x) * 0.5f;
+      const float center_y = (eye_left.y + eye_right.y) * 0.5f + eye_dist * 0.15f;
+      const float half = eye_dist * 1.6f;
+      x1 = static_cast<int>(center_x - half);
+      x2 = static_cast<int>(center_x + half);
+      y1 = static_cast<int>(center_y - half);
+      y2 = static_cast<int>(center_y + half);
+    } else if (kpt.size() > 28 && std::isfinite(kpt[26].x) && std::isfinite(kpt[26].y) &&
         kpt[26].x > 0 && kpt[26].y > 0)
     {
       float span = bbox.width * 0.45f;
@@ -913,6 +949,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr bag_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr drink_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr persons_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr recognized_name_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr gesture_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr attributes_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr empty_seat_publisher_;
@@ -957,6 +994,7 @@ private:
   std::vector<YoloDetection> last_bag_dets_;
   std::vector<YoloDetection> last_drink_dets_;
   std::vector<YoloDetection> last_chair_dets_;
+  std::vector<ChairMemory> chair_memory_;
 
   OperatorMemory op_mem_;
   std::string task_mode_{"all"};
@@ -1029,6 +1067,8 @@ ZedNode::ZedNode()
   bag_dets_publisher_ = create_publisher<std_msgs::msg::String>("/zed/bag_detections", 10);
   drink_dets_publisher_ = create_publisher<std_msgs::msg::String>("/zed/drink_detections", 10);
   persons_publisher_ = create_publisher<std_msgs::msg::String>("/zed/person_label", 10);
+  recognized_name_publisher_ =
+    create_publisher<std_msgs::msg::String>("/zed/recognized_name", 10);
   gesture_publisher_ = create_publisher<std_msgs::msg::String>("/zed/gesture", 10);
   attributes_publisher_ = create_publisher<std_msgs::msg::String>("/zed/person_attributes", 10);
   empty_seat_publisher_ = create_publisher<std_msgs::msg::String>("/zed/empty_seat", 10);
@@ -1355,6 +1395,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     std_msgs::msg::String attr_msg;
     attr_msg.data = "";
     attributes_publisher_->publish(attr_msg);
+    std_msgs::msg::String name_msg;
+    name_msg.data = "";
+    recognized_name_publisher_->publish(name_msg);
     return;
   }
 
@@ -1470,32 +1513,48 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   }
 
   if (!pending_register_name_.empty() && !entries.empty() && is_receptionist_) {
-    const auto & nearest = entries.front();
-    std::vector<float> feature =
-      analyzer_.faceEmbedding(bgr, nearest.bbox, nearest.body->keypoint_2d);
-    if (!feature.empty()) {
+    const PersonEntry * target = nullptr;
+    std::vector<float> feature;
+    for (const auto & candidate : entries) {
+      feature = analyzer_.faceEmbedding(
+        bgr, candidate.bbox, candidate.body->keypoint_2d);
+      if (!feature.empty()) {
+        target = &candidate;
+        break;
+      }
+    }
+    if (!feature.empty() && target != nullptr) {
       bool updated = false;
       for (auto & person : registered_persons_) {
         if (person.name == pending_register_name_) {
           person.feature = feature;
-          person.last_tracking_id = nearest.id;
+          person.last_tracking_id = target->id;
           person.last_seen = now();
           updated = true;
           break;
         }
       }
       if (!updated) {
-        registered_persons_.push_back({pending_register_name_, feature, nearest.id, now()});
+        registered_persons_.push_back({pending_register_name_, feature, target->id, now()});
       }
       RCLCPP_INFO(get_logger(), "Registered face for guest: \"%s\" (body id %d)",
-        pending_register_name_.c_str(), nearest.id);
+        pending_register_name_.c_str(), target->id);
       pending_register_name_.clear();
+    } else {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+        "Guest \"%s\" pending registration: face embedding unavailable",
+        pending_register_name_.c_str());
     }
+  } else if (!pending_register_name_.empty() && is_receptionist_ && entries.empty()) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
+      "Guest \"%s\" pending registration: no person detected",
+      pending_register_name_.c_str());
   }
 
   std::ostringstream ss;
   bool first_person = true;
   std::string gesture_result = "NONE";
+  std::string first_recognized_name;
 
   for (const auto & entry : entries) {
     const auto & points = entry.body->keypoint_2d;
@@ -1527,6 +1586,13 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           break;
         }
       }
+    }
+    if (is_receptionist_ && first_person && !registered_persons_.empty()) {
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+        "Face match best %.3f (threshold %.3f)", best_face_score, face_threshold_);
+    }
+    if (first_recognized_name.empty() && !recognized_name.empty()) {
+      first_recognized_name = recognized_name;
     }
 
     PrevPerson person;
@@ -1614,11 +1680,16 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   std_msgs::msg::String person_msg;
   person_msg.data = first_person ? "NO_PERSON" : ss.str();
   persons_publisher_->publish(person_msg);
+
+  std_msgs::msg::String name_msg;
+  name_msg.data = first_recognized_name;
+  recognized_name_publisher_->publish(name_msg);
 }
 
 void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
 {
   std::vector<YoloDetection> dets = last_chair_dets_;
+  bool fresh_detections = false;
   if (enable_chair_ && chair_frame_++ % yolo_stride_ == 0) {
     dets.clear();
     if (chair_yolo_.ready()) {
@@ -1627,72 +1698,157 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       yolo_.detect(bgr, chair_labels_, dets);
     }
     last_chair_dets_ = dets;
+    fresh_detections = true;
   }
+
+  if (!enable_chair_) chair_memory_.clear();
+
+  const auto current_time = now();
+
+  auto same_chair = [](const ChairMemory & memory, const YoloDetection & det,
+      bool has_pos, double x, double y) {
+      const cv::Rect inter = memory.bbox & det.rect;
+      const double inter_area = static_cast<double>(inter.area());
+      const double union_area =
+        static_cast<double>(memory.bbox.area()) + det.rect.area() - inter_area;
+      const double iou = union_area > 0.0 ? inter_area / union_area : 0.0;
+      const double mcx = memory.bbox.x + memory.bbox.width * 0.5;
+      const double mcy = memory.bbox.y + memory.bbox.height * 0.5;
+      const double dcx = det.rect.x + det.rect.width * 0.5;
+      const double dcy = det.rect.y + det.rect.height * 0.5;
+      const double scale = static_cast<double>(std::max(
+        std::max(memory.bbox.width, memory.bbox.height),
+        std::max(det.rect.width, det.rect.height)));
+      const double center_dist = std::hypot(mcx - dcx, mcy - dcy);
+      const bool depth_ok = !has_pos || !memory.has_pos ||
+        std::hypot(x - memory.x, y - memory.y) < 1.0;
+      return depth_ok && (iou > 0.20 || center_dist < scale * 0.75);
+    };
+
+  if (fresh_detections) {
+    for (const auto & det : dets) {
+      if (static_cast<double>(det.rect.area()) < yolo_min_area_) continue;
+      double x = 0.0, y = 0.0, z = 0.0;
+      const bool ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
+
+      int match = -1;
+      double best_dist = 1e9;
+      for (size_t i = 0; i < chair_memory_.size(); ++i) {
+        const auto & memory = chair_memory_[i];
+        if (!same_chair(memory, det, ok, x, y)) continue;
+        const double mcx = memory.bbox.x + memory.bbox.width * 0.5;
+        const double mcy = memory.bbox.y + memory.bbox.height * 0.5;
+        const double dcx = det.rect.x + det.rect.width * 0.5;
+        const double dcy = det.rect.y + det.rect.height * 0.5;
+        const double center_dist = std::hypot(mcx - dcx, mcy - dcy);
+        if (center_dist < best_dist) {
+          best_dist = center_dist;
+          match = static_cast<int>(i);
+        }
+      }
+
+      if (match >= 0) {
+        auto & memory = chair_memory_[static_cast<size_t>(match)];
+        memory.bbox = det.rect;
+        memory.last_seen = current_time;
+        if (ok) {
+          memory.has_pos = true;
+          memory.x = x;
+          memory.y = y;
+          memory.z = z;
+          memory.range_m = std::hypot(x, y);
+        }
+      } else {
+        ChairMemory memory;
+        memory.bbox = det.rect;
+        memory.last_seen = current_time;
+        if (ok) {
+          memory.has_pos = true;
+          memory.x = x;
+          memory.y = y;
+          memory.z = z;
+          memory.range_m = std::hypot(x, y);
+        }
+        chair_memory_.push_back(memory);
+      }
+    }
+  }
+
+  auto mark_occupied = [&](const cv::Rect & chair_bbox, bool has_pos, double x, double y) {
+      for (auto & person : preview_persons_) {
+        bool hit = false;
+        const cv::Rect inter = chair_bbox & person.bbox;
+        if (inter.area() > 0) {
+          const double chair_area = static_cast<double>(chair_bbox.area());
+          const double person_area = static_cast<double>(person.bbox.area());
+          const double overlap = chair_area > 0.0
+            ? static_cast<double>(inter.area()) / chair_area : 0.0;
+          const double person_overlap = person_area > 0.0
+            ? static_cast<double>(inter.area()) / person_area : 0.0;
+          if (overlap > 0.18 || person_overlap > 0.20) hit = true;
+        }
+        const int cx = person.bbox.x + person.bbox.width / 2;
+        const int cy = person.bbox.y + person.bbox.height / 2;
+        if (!hit && chair_bbox.contains(cv::Point(cx, cy))) hit = true;
+        if (!hit) {
+          for (const auto & kp : person.kpt) {
+            if (std::isfinite(kp.x) && std::isfinite(kp.y) &&
+                chair_bbox.contains(cv::Point(
+                  static_cast<int>(kp.x), static_cast<int>(kp.y))))
+            {
+              hit = true;
+              break;
+            }
+          }
+        }
+        if (!hit && has_pos && person.has_pos &&
+            std::hypot(x - person.x_m, y - person.y_m) < 0.65)
+        {
+          hit = true;
+        }
+        if (hit) {
+          person.is_sitting = true;
+          return true;
+        }
+      }
+      return false;
+    };
+
+  auto side_of = [&](const cv::Rect & chair_bbox, bool has_pos, double y) {
+      if (has_pos) {
+        if (y > 0.20) return std::string("left");
+        if (y < -0.20) return std::string("right");
+        return std::string("center");
+      }
+      const int cx = chair_bbox.x + chair_bbox.width / 2;
+      const int width = bgr.cols > 0 ? bgr.cols : 640;
+      if (cx < width / 3) return std::string(mirror_ ? "right" : "left");
+      if (cx > 2 * width / 3) return std::string(mirror_ ? "left" : "right");
+      return std::string("center");
+    };
 
   preview_chairs_.clear();
   std::string data;
   std::string best_empty_side = "none";
   double best_empty_dist = 1e9;
+  constexpr double memory_timeout = 10.0;
 
-  for (const auto & det : dets) {
-    if (static_cast<double>(det.rect.area()) < yolo_min_area_) continue;
-    double x = 0.0, y = 0.0, z = 0.0;
-    const bool ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
-    const double dist = ok ? std::hypot(x, y) : 0.0;
-
-    bool occupied = false;
-    for (auto & person : preview_persons_) {
-      const cv::Rect inter = det.rect & person.bbox;
-      if (inter.area() > 0) {
-        const double chair_area = static_cast<double>(det.rect.area());
-        const double overlap = static_cast<double>(inter.area()) / chair_area;
-        const double person_overlap =
-          static_cast<double>(inter.area()) / static_cast<double>(person.bbox.area());
-        if (overlap > 0.18 || person_overlap > 0.20) {
-          occupied = true;
-          person.is_sitting = true;
-          break;
-        }
-      }
-      const int cx = person.bbox.x + person.bbox.width / 2;
-      const int cy = person.bbox.y + person.bbox.height / 2;
-      if (det.rect.contains(cv::Point(cx, cy))) {
-        occupied = true;
-        person.is_sitting = true;
-        break;
-      }
-      for (const auto & kp : person.kpt) {
-        if (std::isfinite(kp.x) && std::isfinite(kp.y) &&
-            det.rect.contains(cv::Point(static_cast<int>(kp.x), static_cast<int>(kp.y))))
-        {
-          occupied = true;
-          person.is_sitting = true;
-          break;
-        }
-      }
-      if (ok && person.has_pos && std::hypot(x - person.x_m, y - person.y_m) < 0.65) {
-        occupied = true;
-        person.is_sitting = true;
-        break;
-      }
-      if (occupied) {
-        person.is_sitting = true;
-        break;
-      }
+  for (auto it = chair_memory_.begin(); it != chair_memory_.end(); ) {
+    ChairMemory & chair = *it;
+    const bool occupied = mark_occupied(chair.bbox, chair.has_pos, chair.x, chair.y);
+    if (occupied) {
+      chair.last_seen = current_time;
+    } else if ((current_time - chair.last_seen).seconds() > memory_timeout) {
+      it = chair_memory_.erase(it);
+      continue;
     }
 
-    std::string side = "center";
-    if (ok) {
-      if (y > 0.20) side = "left";
-      else if (y < -0.20) side = "right";
-    } else {
-      const int cx = det.rect.x + det.rect.width / 2;
-      const int width = bgr.cols > 0 ? bgr.cols : 640;
-      if (cx < width / 3) side = mirror_ ? "right" : "left";
-      else if (cx > 2 * width / 3) side = mirror_ ? "left" : "right";
-    }
+    const bool ok = chair.has_pos;
+    const double dist = ok ? chair.range_m : 0.0;
+    const std::string side = side_of(chair.bbox, ok, chair.y);
 
-    preview_chairs_.push_back({det.rect, ok, x, y, dist, occupied, side});
+    preview_chairs_.push_back(
+      {chair.bbox, ok, chair.x, chair.y, dist, occupied, side});
 
     if (!occupied) {
       if (ok && dist > 0.1 && dist < best_empty_dist) {
@@ -1710,15 +1866,20 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
           chair_now - last_chair_log).count() > 2000)
       {
         last_chair_log = chair_now;
-        IC(occupied ? "OCCUPIED" : "EMPTY", side, x, y, dist);
+        IC(occupied ? "OCCUPIED" : "EMPTY", side, chair.x, chair.y, dist);
       }
     }
 
     if (!data.empty()) data += ";";
-    data += cv::format("chair:%d,%d,%d,%d|", det.rect.x, det.rect.y, det.rect.width, det.rect.height);
-    data += ok ? cv::format("%.2f,%.2f,%.2f|", x, y, z) : "nan,nan,nan|";
+    data += cv::format(
+      "chair:%d,%d,%d,%d|", chair.bbox.x, chair.bbox.y,
+      chair.bbox.width, chair.bbox.height);
+    data += ok
+      ? cv::format("%.2f,%.2f,%.2f|", chair.x, chair.y, chair.z)
+      : "nan,nan,nan|";
     data += occupied ? "occupied|" : "empty|";
     data += side;
+    ++it;
   }
 
   std_msgs::msg::String chair_msg;
