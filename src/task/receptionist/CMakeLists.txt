@@ -53,6 +53,12 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(PROGRAMS
+  launch/run.sh
+  launch/stop.sh
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # Install directories
 install(DIRECTORY
   launch
