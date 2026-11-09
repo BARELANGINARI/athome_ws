@@ -910,6 +910,9 @@ private:
   {
     std::string name;
     std::vector<float> feature;
+    int feature_samples{0};
+    cv::Scalar torso_hsv{0, 0, 0};
+    bool has_color{false};
     int last_tracking_id{-1};
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
@@ -1513,7 +1516,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   }
 
   if (!pending_register_name_.empty() && !entries.empty() && is_receptionist_) {
-    const PersonEntry * target = nullptr;
+    const PersonEntry * target = &entries.front();
     std::vector<float> feature;
     for (const auto & candidate : entries) {
       feature = analyzer_.faceEmbedding(
@@ -1523,27 +1526,56 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         break;
       }
     }
-    if (!feature.empty() && target != nullptr) {
-      bool updated = false;
-      for (auto & person : registered_persons_) {
-        if (person.name == pending_register_name_) {
-          person.feature = feature;
-          person.last_tracking_id = target->id;
-          person.last_seen = now();
-          updated = true;
-          break;
+    const cv::Scalar torso_hsv = zed_vision::extractTorsoColor(bgr, target->bbox);
+    bool updated = false;
+    for (auto & person : registered_persons_) {
+      if (person.name == pending_register_name_) {
+        person.last_tracking_id = target->id;
+        person.last_seen = current_time;
+        if (!person.has_color && target->bbox.width > 20) {
+          person.torso_hsv = torso_hsv;
+          person.has_color = true;
         }
+        if (!feature.empty()) {
+          if (person.feature.empty()) {
+            person.feature = feature;
+            person.feature_samples = 1;
+          } else if (person.feature_samples < 25) {
+            float norm_sq = 0.0f;
+            for (size_t k = 0; k < feature.size(); ++k) {
+              person.feature[k] = person.feature[k] * 0.85f + feature[k] * 0.15f;
+              norm_sq += person.feature[k] * person.feature[k];
+            }
+            const float inv_norm = 1.0f / std::sqrt(std::max(norm_sq, 1e-6f));
+            for (size_t k = 0; k < feature.size(); ++k) {
+              person.feature[k] *= inv_norm;
+            }
+            person.feature_samples++;
+          }
+        }
+        updated = true;
+        if (person.feature_samples >= 3) {
+          RCLCPP_INFO(get_logger(),
+            "Locked face & clothing for \"%s\" (body id %d, %d face samples)",
+            pending_register_name_.c_str(), target->id, person.feature_samples);
+          pending_register_name_.clear();
+        }
+        break;
       }
-      if (!updated) {
-        registered_persons_.push_back({pending_register_name_, feature, target->id, now()});
+    }
+    if (!updated) {
+      RegisteredPerson new_person;
+      new_person.name = pending_register_name_;
+      new_person.feature = feature;
+      new_person.feature_samples = feature.empty() ? 0 : 1;
+      new_person.torso_hsv = torso_hsv;
+      new_person.has_color = (target->bbox.width > 20);
+      new_person.last_tracking_id = target->id;
+      new_person.last_seen = current_time;
+      registered_persons_.push_back(new_person);
+      if (new_person.feature_samples >= 3) {
+        pending_register_name_.clear();
       }
-      RCLCPP_INFO(get_logger(), "Registered face for guest: \"%s\" (body id %d)",
-        pending_register_name_.c_str(), target->id);
-      pending_register_name_.clear();
-    } else {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
-        "Guest \"%s\" pending registration: face embedding unavailable",
-        pending_register_name_.c_str());
     }
   } else if (!pending_register_name_.empty() && is_receptionist_ && entries.empty()) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
@@ -1551,46 +1583,124 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       pending_register_name_.c_str());
   }
 
+  // Ekstraksi fitur visual untuk semua orang yang terdeteksi
+  struct EntryFeature {
+    std::vector<float> face_feat;
+    cv::Scalar torso_hsv{0, 0, 0};
+    bool has_torso{false};
+  };
+  std::vector<EntryFeature> entry_feats(entries.size());
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (analyzer_.faceReady()) {
+      entry_feats[i].face_feat = analyzer_.faceEmbedding(
+        bgr, entries[i].bbox, entries[i].body->keypoint_2d);
+    }
+    entry_feats[i].torso_hsv = zed_vision::extractTorsoColor(bgr, entries[i].bbox);
+    entry_feats[i].has_torso = (entries[i].bbox.width > 20 && entries[i].bbox.height > 40);
+  }
+
+  // Hitung matriks kecocokan (affinity) antara entry terdeteksi dan profil terdaftar
+  struct PersonMatch {
+    size_t entry_idx;
+    size_t profile_idx;
+    double score;
+  };
+  std::vector<PersonMatch> matches;
+
+  for (size_t i = 0; i < entries.size(); ++i) {
+    for (size_t j = 0; j < registered_persons_.size(); ++j) {
+      const auto & prof = registered_persons_[j];
+      const auto & feat = entry_feats[i];
+      double score = 0.0;
+
+      // 1. Face Cosine Similarity (SFace 128-D)
+      if (!prof.feature.empty() && !feat.face_feat.empty()) {
+        const float sim = AttributeAnalyzer::matchFace(feat.face_feat, prof.feature);
+        if (sim >= static_cast<float>(face_threshold_)) {
+          score += 2.5 + (sim - face_threshold_) * 5.0;
+        } else if (sim >= 0.25f) {
+          score += (sim - face_threshold_) * 1.5;
+        } else {
+          score -= 2.5; // Penalti kuat jika wajah berbeda
+        }
+      }
+
+      // 2. Torso Clothing Color Similarity (HSV)
+      if (prof.has_color && feat.has_torso) {
+        double dh = std::min(std::abs(feat.torso_hsv[0] - prof.torso_hsv[0]),
+                             180.0 - std::abs(feat.torso_hsv[0] - prof.torso_hsv[0]));
+        double ds = std::abs(feat.torso_hsv[1] - prof.torso_hsv[1]);
+        double dv = std::abs(feat.torso_hsv[2] - prof.torso_hsv[2]);
+        double color_dist = (dh / 90.0) * 0.6 + (ds / 255.0) * 0.2 + (dv / 255.0) * 0.2;
+        if (color_dist < 0.30) {
+          score += 1.5 * (1.0 - color_dist / 0.30);
+        } else if (color_dist > 0.55) {
+          score -= 1.8; // Penalti kuat jika warna pakaian jelas berbeda
+        }
+      }
+
+      // 3. Tracking ID continuity (ZED Tracker ID)
+      if (prof.last_tracking_id == entries[i].id &&
+          (current_time - prof.last_seen).seconds() < 5.0)
+      {
+        score += 2.0;
+      }
+
+      if (score > 0.5) {
+        matches.push_back({i, j, score});
+      }
+    }
+  }
+
+  // Urutkan skor tertinggi ke terendah
+  std::sort(matches.begin(), matches.end(), [](const PersonMatch & a, const PersonMatch & b) {
+    return a.score > b.score;
+  });
+
+  // Pencocokan Eksklusif 1-ke-1 (Orang A dan B tidak bisa tertukar/saling rebut)
+  std::vector<std::string> recognized_names(entries.size(), "");
+  std::vector<bool> profile_assigned(registered_persons_.size(), false);
+
+  for (const auto & m : matches) {
+    if (recognized_names[m.entry_idx].empty() && !profile_assigned[m.profile_idx]) {
+      recognized_names[m.entry_idx] = registered_persons_[m.profile_idx].name;
+      profile_assigned[m.profile_idx] = true;
+
+      auto & prof = registered_persons_[m.profile_idx];
+      prof.last_tracking_id = entries[m.entry_idx].id;
+      prof.last_seen = current_time;
+
+      // Akumulasikan embedding wajah jika kualitas embedding bagus
+      if (!entry_feats[m.entry_idx].face_feat.empty() && prof.feature_samples < 30) {
+        float norm_sq = 0.0f;
+        for (size_t k = 0; k < prof.feature.size(); ++k) {
+          prof.feature[k] = prof.feature[k] * 0.90f + entry_feats[m.entry_idx].face_feat[k] * 0.10f;
+          norm_sq += prof.feature[k] * prof.feature[k];
+        }
+        const float inv_norm = 1.0f / std::sqrt(std::max(norm_sq, 1e-6f));
+        for (size_t k = 0; k < prof.feature.size(); ++k) {
+          prof.feature[k] *= inv_norm;
+        }
+        prof.feature_samples++;
+      }
+    }
+  }
+
   std::ostringstream ss;
   bool first_person = true;
   std::string gesture_result = "NONE";
   std::string first_recognized_name;
 
-  for (const auto & entry : entries) {
+  for (size_t idx = 0; idx < entries.size(); ++idx) {
+    const auto & entry = entries[idx];
     const auto & points = entry.body->keypoint_2d;
-    std::string recognized_name;
-    float best_face_score = -1.0f;
+    std::string recognized_name = recognized_names[idx];
 
-    if (analyzer_.faceReady() && is_receptionist_) {
-      std::vector<float> feature = analyzer_.faceEmbedding(bgr, entry.bbox, points);
-      if (!feature.empty()) {
-        for (auto & person : registered_persons_) {
-          const float similarity = AttributeAnalyzer::matchFace(feature, person.feature);
-          if (similarity > best_face_score) {
-            best_face_score = similarity;
-            if (similarity >= static_cast<float>(face_threshold_)) {
-              recognized_name = person.name;
-              person.last_tracking_id = entry.id;
-              person.last_seen = now();
-            }
-          }
-        }
-      }
+    // Jika sedang mendaftarkan nama tamu baru di pintu
+    if (recognized_name.empty() && is_receptionist_ && !pending_register_name_.empty() && first_person) {
+      recognized_name = pending_register_name_;
     }
-    if (recognized_name.empty() && is_receptionist_) {
-      for (auto & person : registered_persons_) {
-        if (person.last_tracking_id == entry.id &&
-            (now() - person.last_seen).seconds() < 5.0)
-        {
-          recognized_name = person.name;
-          break;
-        }
-      }
-    }
-    if (is_receptionist_ && first_person && !registered_persons_.empty()) {
-      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-        "Face match best %.3f (threshold %.3f)", best_face_score, face_threshold_);
-    }
+
     if (first_recognized_name.empty() && !recognized_name.empty()) {
       first_recognized_name = recognized_name;
     }
@@ -1609,7 +1719,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         std::isfinite(point.y) ? point.y : NAN);
     }
 
-    const bool classify = is_receptionist_ && !guest_name_.empty();
+    const bool classify = is_receptionist_ && (!pending_register_name_.empty() || !recognized_name.empty());
     if (classify) {
       person.clothing = analyzer_.clothingColor(bgr, entry.bbox, points);
       person.hair = analyzer_.hairColor(bgr, entry.bbox);
@@ -1635,7 +1745,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         } else if (!recognized_name.empty()) {
           display = recognized_name;
         } else {
-          display = guest_name_.empty() ? "Guest" : "Person";
+          display = "Guest";
         }
         IC(display, entry.x, entry.y, entry.range_m);
         if (classify) {
@@ -1649,8 +1759,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     if (!first_person) ss << ";";
     std::string label;
     if (is_receptionist_ && !is_help_me_carry_) {
-      label = !recognized_name.empty() ? recognized_name
-        : (guest_name_.empty() ? "guest" : "person");
+      if (!recognized_name.empty()) {
+        label = recognized_name;
+      } else {
+        label = first_person ? "guest" : "person";
+      }
     } else {
       label = first_person ? "operator" : "person";
     }
@@ -1774,45 +1887,106 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
     }
   }
 
-  auto mark_occupied = [&](const cv::Rect & chair_bbox, bool has_pos, double x, double y) {
-      for (auto & person : preview_persons_) {
-        bool hit = false;
-        const cv::Rect inter = chair_bbox & person.bbox;
-        if (inter.area() > 0) {
-          const double chair_area = static_cast<double>(chair_bbox.area());
-          const double person_area = static_cast<double>(person.bbox.area());
-          const double overlap = chair_area > 0.0
-            ? static_cast<double>(inter.area()) / chair_area : 0.0;
-          const double person_overlap = person_area > 0.0
-            ? static_cast<double>(inter.area()) / person_area : 0.0;
-          if (overlap > 0.18 || person_overlap > 0.20) hit = true;
-        }
-        const int cx = person.bbox.x + person.bbox.width / 2;
-        const int cy = person.bbox.y + person.bbox.height / 2;
-        if (!hit && chair_bbox.contains(cv::Point(cx, cy))) hit = true;
-        if (!hit) {
-          for (const auto & kp : person.kpt) {
-            if (std::isfinite(kp.x) && std::isfinite(kp.y) &&
-                chair_bbox.contains(cv::Point(
-                  static_cast<int>(kp.x), static_cast<int>(kp.y))))
-            {
-              hit = true;
-              break;
-            }
-          }
-        }
-        if (!hit && has_pos && person.has_pos &&
-            std::hypot(x - person.x_m, y - person.y_m) < 0.65)
+  auto compute_match_score = [&](const ChairMemory & chair, const PrevPerson & person) -> double {
+      // 1. WAJIB: Ada irisan 2D antara bounding box kursi dan orang
+      const cv::Rect inter = chair.bbox & person.bbox;
+      if (inter.area() <= 0) return 0.0;
+
+      const double chair_area = static_cast<double>(chair.bbox.area());
+      const double person_area = static_cast<double>(person.bbox.area());
+      if (chair_area <= 0.0 || person_area <= 0.0) return 0.0;
+
+      const double overlap_chair = static_cast<double>(inter.area()) / chair_area;
+      const double overlap_person = static_cast<double>(inter.area()) / person_area;
+
+      // 2. Cek konsistensi kedalaman 3D (jika keduanya memiliki posisi 3D valid)
+      if (chair.has_pos && person.has_pos) {
+        const double dist_3d = std::hypot(chair.x - person.x_m, chair.y - person.y_m);
+        // Jika jarak 3D > 1.2m, orang ini di latar depan/belakang, bukan duduk di kursi ini
+        if (dist_3d > 1.20) return 0.0;
+      }
+
+      // 3. Keselarasan horizontal (X-axis)
+      const int inter_x = std::max(0,
+        std::min(chair.bbox.x + chair.bbox.width, person.bbox.x + person.bbox.width) -
+        std::max(chair.bbox.x, person.bbox.x));
+      const int min_w = std::min(chair.bbox.width, person.bbox.width);
+      const double x_ratio = min_w > 0 ? static_cast<double>(inter_x) / min_w : 0.0;
+
+      // 4. Pengecekan posisi tubuh orang terhadap kursi
+      const int cx = person.bbox.x + person.bbox.width / 2;
+      const int cy = person.bbox.y + person.bbox.height / 2;
+      const int hip_y = person.bbox.y + static_cast<int>(person.bbox.height * 0.65);
+      const bool hip_inside = chair.bbox.contains(cv::Point(cx, hip_y));
+      const bool center_inside = chair.bbox.contains(cv::Point(cx, cy));
+
+      // Pengecekan titik tengah kursi di dalam tubuh orang
+      const int chair_cx = chair.bbox.x + chair.bbox.width / 2;
+      const int chair_cy = chair.bbox.y + chair.bbox.height / 2;
+      const bool chair_center_inside = person.bbox.contains(cv::Point(chair_cx, chair_cy));
+
+      // Keypoints tubuh ZED
+      bool kpt_inside = false;
+      for (const auto & kp : person.kpt) {
+        if (std::isfinite(kp.x) && std::isfinite(kp.y) &&
+            chair.bbox.contains(cv::Point(static_cast<int>(kp.x), static_cast<int>(kp.y))))
         {
-          hit = true;
-        }
-        if (hit) {
-          person.is_sitting = true;
-          return true;
+          kpt_inside = true;
+          break;
         }
       }
-      return false;
+
+      // Syarat kelayakan:
+      // Harus memiliki overlap 2D yang nyata (> 12% dari kursi atau orang)
+      // ATAU memiliki keselarasan horizontal yang kuat (x_ratio > 0.40) dengan hip/center/keypoint berada di dalam kursi
+      const bool qualified = (overlap_chair > 0.12 || overlap_person > 0.12) ||
+                             (x_ratio > 0.40 && (hip_inside || center_inside || chair_center_inside || kpt_inside));
+
+      if (!qualified) return 0.0;
+
+      // Skor kecocokan: semakin tinggi overlap dan keselarasan horizontal, semakin besar skornya
+      double score = overlap_chair * 2.0 + overlap_person + x_ratio;
+      if (hip_inside || center_inside) score += 1.0;
+      if (kpt_inside) score += 0.5;
+      if (chair.has_pos && person.has_pos) {
+        const double dist_3d = std::hypot(chair.x - person.x_m, chair.y - person.y_m);
+        score += std::max(0.0, 1.20 - dist_3d);
+      }
+      return score;
     };
+
+  struct MatchPair {
+    size_t chair_idx;
+    size_t person_idx;
+    double score;
+  };
+  std::vector<MatchPair> match_candidates;
+  for (size_t c = 0; c < chair_memory_.size(); ++c) {
+    for (size_t p = 0; p < preview_persons_.size(); ++p) {
+      const double score = compute_match_score(chair_memory_[c], preview_persons_[p]);
+      if (score > 0.0) {
+        match_candidates.push_back({c, p, score});
+      }
+    }
+  }
+
+  // Urutkan pasangan pencocokan dari skor tertinggi ke terendah
+  std::sort(match_candidates.begin(), match_candidates.end(),
+    [](const MatchPair & a, const MatchPair & b) {
+      return a.score > b.score;
+    });
+
+  // Pencocokan eksklusif 1-ke-1: 1 orang hanya bisa menempati MAKSIMAL 1 kursi!
+  std::vector<bool> chair_occupied(chair_memory_.size(), false);
+  std::vector<bool> person_assigned(preview_persons_.size(), false);
+
+  for (const auto & match : match_candidates) {
+    if (!chair_occupied[match.chair_idx] && !person_assigned[match.person_idx]) {
+      chair_occupied[match.chair_idx] = true;
+      person_assigned[match.person_idx] = true;
+      preview_persons_[match.person_idx].is_sitting = true;
+    }
+  }
 
   auto side_of = [&](const cv::Rect & chair_bbox, bool has_pos, double y) {
       if (has_pos) {
@@ -1833,13 +2007,14 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
   double best_empty_dist = 1e9;
   constexpr double memory_timeout = 10.0;
 
-  for (auto it = chair_memory_.begin(); it != chair_memory_.end(); ) {
-    ChairMemory & chair = *it;
-    const bool occupied = mark_occupied(chair.bbox, chair.has_pos, chair.x, chair.y);
+  for (size_t i = 0; i < chair_memory_.size(); ) {
+    ChairMemory & chair = chair_memory_[i];
+    const bool occupied = chair_occupied[i];
     if (occupied) {
       chair.last_seen = current_time;
     } else if ((current_time - chair.last_seen).seconds() > memory_timeout) {
-      it = chair_memory_.erase(it);
+      chair_memory_.erase(chair_memory_.begin() + i);
+      chair_occupied.erase(chair_occupied.begin() + i);
       continue;
     }
 
@@ -1879,7 +2054,7 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       : "nan,nan,nan|";
     data += occupied ? "occupied|" : "empty|";
     data += side;
-    ++it;
+    ++i;
   }
 
   std_msgs::msg::String chair_msg;
@@ -1937,8 +2112,11 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       cv::rectangle(canvas, r, color, 2);
       std::string label;
       if (is_receptionist_ && !is_help_me_carry_) {
-        label = !p.name.empty() ? p.name
-          : (guest_name_.empty() ? (i == 0 ? "Guest" : "Person") : "Person");
+        if (!p.name.empty()) {
+          label = p.name;
+        } else {
+          label = (i == 0 ? "Guest" : "Person");
+        }
       } else {
         label = "ID: " + std::to_string(p.id);
       }
@@ -2042,8 +2220,11 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       ? preview_persons_[0] : PrevPerson{};
     std::string person_title;
     if (is_receptionist_ && !is_help_me_carry_) {
-      person_title = !p0.name.empty() ? p0.name + " :"
-        : (guest_name_.empty() ? "Guest :" : "Person :");
+      if (!p0.name.empty()) {
+        person_title = p0.name + " :";
+      } else {
+        person_title = "Guest :";
+      }
     } else {
       person_title = "Operator [ID " + std::to_string(p0.id) + "] :";
     }
