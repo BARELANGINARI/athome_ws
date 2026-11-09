@@ -6,6 +6,16 @@ Features Kalman Filter person tracking with occlusion dead-reckoning, spatial ga
 
 ## Launch Options
 
+### Multi-Pane (Terminator Layout 2x2 Grid dalam 1 Layar)
+```bash
+./src/task/help_me_carry/launch/run.sh
+
+# Hentikan semua node:
+./src/task/help_me_carry/launch/stop.sh
+# Atau:
+./src/task/help_me_carry/launch/run.sh stop
+```
+
 ### Modular Stack (Recommended for Testing)
 Run across 4 terminals:
 ```bash

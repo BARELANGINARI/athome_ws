@@ -33,7 +33,7 @@ else
     SETUP="cd \"${WS_DIR}\" && source /opt/ros/jazzy/setup.bash && source install/setup.bash"
     gnome-terminal --tab --working-directory="${WS_DIR}" --title="Hardware" -- bash -c "${SETUP} && ros2 launch receptionist hardware.launch.py; exec bash"
     sleep 1
-    gnome-terminal --tab --working-directory="${WS_DIR}" --title="Navigation" -- bash -c "${SETUP} && sleep 2 && ros2 launch receptionist navigation.launch.py; exec bash"
+    gnome-terminal --tab --working-directory="${WS_DIR}" --title="Navigation" -- bash -c "${SETUP} && sleep 2 && ros2 launch receptionist motion.launch.py; exec bash"
     sleep 1
     gnome-terminal --tab --working-directory="${WS_DIR}" --title="Camera" -- bash -c "${SETUP} && sleep 3 && ros2 launch receptionist camera.launch.py; exec bash"
     sleep 1

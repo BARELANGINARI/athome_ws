@@ -10,7 +10,7 @@
 
 ### Modular (Manual per terminal)
 ros2 launch receptionist hardware.launch.py
-ros2 launch receptionist navigation.launch.py
+ros2 launch receptionist motion.launch.py
 ros2 launch receptionist hri.launch.py
 ros2 launch receptionist camera.launch.py
 ros2 launch athome_face face.launch.py
