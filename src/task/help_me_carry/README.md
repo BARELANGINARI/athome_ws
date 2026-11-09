@@ -6,7 +6,8 @@ Features Kalman Filter person tracking with occlusion dead-reckoning, spatial ga
 
 ## Launch Options
 
-### Multi-Pane (Terminator Layout 2x2 Grid dalam 1 Layar)
+### Multi-Pane (Terminator Layout 5-Pane Grid dalam 1 Layar)
+Membuka 1 jendela Terminator dengan 5 panel sekaligus (Hardware, Motion, Camera, HRI, Arm):
 ```bash
 ./src/task/help_me_carry/launch/run.sh
 
@@ -17,7 +18,7 @@ Features Kalman Filter person tracking with occlusion dead-reckoning, spatial ga
 ```
 
 ### Modular Stack (Recommended for Testing)
-Run across 4 terminals:
+Run across 5 terminals:
 ```bash
 # Terminal 1 — STM32 Nucleo motor base & RPLiDAR
 ros2 launch help_me_carry hardware.launch.py
@@ -30,6 +31,9 @@ ros2 launch help_me_carry motion.launch.py
 
 # Terminal 4 — HRI speech interaction & Web dashboard
 ros2 launch help_me_carry hri.launch.py
+
+# Terminal 5 — Dynamixel robotic arm motion server
+ros2 launch athome_arm arm.launch.py
 ```
 
 ### All-in-One

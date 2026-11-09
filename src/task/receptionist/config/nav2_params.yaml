@@ -83,8 +83,8 @@ controller_server:
     general_goal_checker:
       stateful: True                     # Stateful goal checking
       plugin: "nav2_controller::SimpleGoalChecker" # Goal checker plugin
-      xy_goal_tolerance: 0.20            # Goal XY position tolerance (m)
-      yaw_goal_tolerance: 0.38           # Goal yaw orientation tolerance (rad, 0.38 rad ≈ 21.8 derajat)
+      xy_goal_tolerance: 0.15            # Goal XY position tolerance (m)
+      yaw_goal_tolerance: 0.15           # Goal yaw orientation tolerance (rad, 0.38 rad ≈ 21.8 derajat)
 
     FollowPath:
       plugin: "nav2_rotation_shim_controller::RotationShimController" # Rotation Shim Controller (putar haluan menghadap path terlebih dahulu)
@@ -122,7 +122,7 @@ controller_server:
       linear_granularity: 0.05           # Linear simulation step (m)
       angular_granularity: 0.025         # Angular simulation step (rad)
       transform_tolerance: 0.25          # TF transform tolerance (s)
-      xy_goal_tolerance: 0.20            # Goal XY tolerance (m)
+      xy_goal_tolerance: 0.15            # Goal XY tolerance (m)
       trans_stopped_velocity: 0.08       # Stopped translational velocity threshold (m/s, memungkinkan rotasi goal segera aktif saat robot melambat)
       short_circuit_trajectory_evaluation: False # Allow exploring alternative trajectories when rotating near obstacles
       stateful: True                     # Maintain state between iterations
