@@ -257,10 +257,26 @@ public:
       Ort::SessionOptions opts;
       opts.SetIntraOpNumThreads(2);
       opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+
+      try {
+        OrtCUDAProviderOptions cuda_opts{};
+        cuda_opts.device_id = 0;
+        opts.AppendExecutionProvider_CUDA(cuda_opts);
+        using_cuda_ = true;
+      } catch (const std::exception & e) {
+        using_cuda_ = false;
+      }
+
       session_ = std::make_unique<Ort::Session>(env(), path.c_str(), opts);
       Ort::AllocatorWithDefaultOptions alloc;
       input_ = session_->GetInputNameAllocated(0, alloc).get();
       output_ = session_->GetOutputNameAllocated(0, alloc).get();
+
+      if (using_cuda_) {
+        std::cout << "[OrtModel] CUDA Execution Provider aktif: " << path << std::endl;
+      } else {
+        std::cout << "[OrtModel] CPU Execution Provider aktif: " << path << std::endl;
+      }
     } catch (const std::exception & e) {
       if (err) *err = e.what();
       session_.reset();
@@ -270,6 +286,7 @@ public:
   }
 
   bool ready() const {return static_cast<bool>(session_);}
+  bool usingCuda() const {return using_cuda_;}
 
   std::vector<int64_t> inputShape()
   {
@@ -309,6 +326,7 @@ private:
   std::unique_ptr<Ort::Session> session_;
   std::string input_, output_;
   Ort::MemoryInfo mem_;
+  bool using_cuda_{false};
 };
 
 class YoloDetector
@@ -2133,6 +2151,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
           cv::Scalar(0, 180, 180), cv::Scalar(20, 30, 30), cv::Scalar(0, 255, 255), 0.48, 1);
       }
 
+      // Visualisasi titik tengah dan keypoint dinonaktifkan sementara (hanya bounding box)
+      /*
       const int cx = r.x + r.width / 2;
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(0, 255, 255), -1);
@@ -2150,6 +2170,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         cv::circle(canvas, cv::Point(kx, ky), big ? 5 : 3,
           big ? cv::Scalar(0, 200, 255) : cv::Scalar(0, 255, 0), -1);
       }
+      */
     }
 
     if (enable_bag_) {

@@ -235,10 +235,13 @@ public:
     min_stop_x_ = declare_parameter<double>("min_stop_x", 0.38);
     corridor_width_ = declare_parameter<double>("corridor_width", 0.32);
 
-    // Kalman Filter Tuning
+    // Kalman Filter Tuning & 360° LiDAR Fusion
     kf_process_noise_ = declare_parameter<double>("kf_process_noise", 1.2);
     kf_measurement_noise_ = declare_parameter<double>("kf_measurement_noise", 0.15);
     kf_ = help_me_carry::PersonKalmanFilter(kf_process_noise_, kf_measurement_noise_);
+    enable_lidar_fusion_ = declare_parameter<bool>("enable_lidar_fusion", true);
+    kf_lidar_noise_ = declare_parameter<double>("kf_lidar_noise", 0.25);
+    lidar_leg_gate_ = declare_parameter<double>("lidar_leg_gate", 0.90);
 
     if (bt_xml_.empty()) {
       bt_xml_ = find_bt_xml();
@@ -560,9 +563,9 @@ private:
         }
       }
 
-      // 4. Update measurement if target verified
+      // 4. Update measurement if target verified by ZED camera
       if (target_it != candidates.end()) {
-        kf_.update(target_it->rel_x, target_it->rel_y);
+        kf_.updateZED(target_it->rel_x, target_it->rel_y);
         person_matched = true;
         is_predicting = false;
         rel_x = kf_.x();
@@ -571,12 +574,70 @@ private:
         raw_bearing = std::atan2(rel_y, rel_x);
         last_seen_sec_ = now().seconds();
         std_msgs::msg::String status_msg;
-        status_msg.data = "TRACKING";
+        status_msg.data = "TRACKING_ZED";
         follow_status_pub_->publish(status_msg);
       }
     }
 
-    // 5. Handle occluded or missing target:
+    // 5. 360° LiDAR EKF Fusion: If ZED loses sight of target (operator walked to the side or behind):
+    if (!person_matched && enable_lidar_fusion_ && kf_.is_initialized()) {
+      sensor_msgs::msg::LaserScan::SharedPtr scan;
+      {
+        std::lock_guard<std::mutex> lock(scan_mutex_);
+        scan = latest_scan_;
+      }
+      if (scan && !scan->ranges.empty()) {
+        double laser_tx = 0.0, laser_ty = 0.0, laser_yaw = 3.1415926535;
+        try {
+          auto tf_laser = tf_buffer_->lookupTransform(
+            frame_base_, scan->header.frame_id, tf2::TimePointZero);
+          laser_tx = tf_laser.transform.translation.x;
+          laser_ty = tf_laser.transform.translation.y;
+          const auto & rq = tf_laser.transform.rotation;
+          const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+          const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+          laser_yaw = std::atan2(siny, cosy);
+        } catch (const tf2::TransformException &) {
+          laser_yaw = 3.1415926535;
+        }
+
+        const auto clusters = extract_leg_clusters(scan, laser_tx, laser_ty, laser_yaw);
+        double best_gate_dist = 999.0;
+        const LegCluster * best_cluster = nullptr;
+        const double gate_rad = std::max(lidar_leg_gate_, kf_.get_gate_radius(0.6, 2.0));
+
+        for (const auto & cl : clusters) {
+          const double d = kf_.distance_to(cl.x, cl.y);
+          if (d <= gate_rad && d < best_gate_dist) {
+            best_gate_dist = d;
+            best_cluster = &cl;
+          }
+        }
+
+        if (best_cluster != nullptr) {
+          // Update EKF via LiDAR measurement
+          kf_.updateLiDAR(best_cluster->x, best_cluster->y, kf_lidar_noise_ * kf_lidar_noise_);
+          person_matched = true;
+          is_predicting = false;
+          rel_x = kf_.x();
+          rel_y = kf_.y();
+          raw_dist = std::hypot(rel_x, rel_y);
+          raw_bearing = std::atan2(rel_y, rel_x);
+          last_seen_sec_ = now().seconds();
+
+          std_msgs::msg::String status_msg;
+          status_msg.data = "TRACKING_LIDAR_360";
+          follow_status_pub_->publish(status_msg);
+
+          RCLCPP_INFO_THROTTLE(
+            get_logger(), *get_clock(), 1500,
+            "\033[96m[FOLLOW 360°] Tracking via LiDAR Leg: dist=%.2f m | bearing=%+.1f deg (gate=%.2f m)\033[0m",
+            raw_dist, raw_bearing * 180.0 / M_PI, best_gate_dist);
+        }
+      }
+    }
+
+    // 6. Handle total occlusion (neither ZED nor LiDAR found target):
     if (!person_matched) {
       const double elapsed = now().seconds() - last_seen_sec_;
       // DEAD-RECKONING: Track Kalman Filter prediction during short occlusion!
@@ -723,7 +784,12 @@ private:
       }
 
       // Target vx simultaneously with turning towards operator
-      target_vx = v_desired * std::max(0.20, std::cos(direct_bearing));
+      if (std::abs(direct_bearing) > 1.10) {
+        // Operator is far to the side (>63 deg) or behind robot: in-place rotate first!
+        target_vx = 0.0;
+      } else {
+        target_vx = v_desired * std::max(0.15, std::cos(direct_bearing));
+      }
       target_vy = 0.0;
       status_str = is_predicting ? "KALMAN PREDICTING (OCCLUDED)" : "FOLLOWING OPERATOR";
 
@@ -1449,6 +1515,94 @@ private:
     }
   }
 
+  struct LegCluster
+  {
+    double x{0.0};
+    double y{0.0};
+    double dist{0.0};
+    double span{0.0};
+    int count{0};
+  };
+
+  std::vector<LegCluster> extract_leg_clusters(
+    const sensor_msgs::msg::LaserScan::SharedPtr & scan,
+    double laser_tx, double laser_ty, double laser_yaw)
+  {
+    std::vector<LegCluster> clusters;
+    if (!scan || scan->ranges.empty()) return clusters;
+
+    struct Pt { double x; double y; };
+    std::vector<Pt> current_pts;
+
+    const int num_readings = static_cast<int>(scan->ranges.size());
+    for (int i = 0; i < num_readings; ++i) {
+      const float r = scan->ranges[i];
+      if (!std::isfinite(r) || r < 0.15f || r > max_range_) {
+        if (current_pts.size() >= 3) {
+          double sum_x = 0.0, sum_y = 0.0;
+          for (const auto & p : current_pts) {
+            sum_x += p.x;
+            sum_y += p.y;
+          }
+          const double cx = sum_x / current_pts.size();
+          const double cy = sum_y / current_pts.size();
+          const double span = std::hypot(current_pts.front().x - current_pts.back().x,
+                                         current_pts.front().y - current_pts.back().y);
+          if (span >= 0.04 && span <= 0.40) {
+            clusters.push_back({cx, cy, std::hypot(cx, cy), span, static_cast<int>(current_pts.size())});
+          }
+        }
+        current_pts.clear();
+        continue;
+      }
+
+      const double angle = scan->angle_min + i * scan->angle_increment;
+      const double cos_a = std::cos(angle + laser_yaw);
+      const double sin_a = std::sin(angle + laser_yaw);
+      const double lx = laser_tx + r * cos_a;
+      const double ly = laser_ty + r * sin_a;
+
+      if (!current_pts.empty()) {
+        const double d_prev = std::hypot(lx - current_pts.back().x, ly - current_pts.back().y);
+        if (d_prev > 0.15) {
+          if (current_pts.size() >= 3) {
+            double sum_x = 0.0, sum_y = 0.0;
+            for (const auto & p : current_pts) {
+              sum_x += p.x;
+              sum_y += p.y;
+            }
+            const double cx = sum_x / current_pts.size();
+            const double cy = sum_y / current_pts.size();
+            const double span = std::hypot(current_pts.front().x - current_pts.back().x,
+                                           current_pts.front().y - current_pts.back().y);
+            if (span >= 0.04 && span <= 0.40) {
+              clusters.push_back({cx, cy, std::hypot(cx, cy), span, static_cast<int>(current_pts.size())});
+            }
+          }
+          current_pts.clear();
+        }
+      }
+      current_pts.push_back({lx, ly});
+    }
+
+    if (current_pts.size() >= 3) {
+      double sum_x = 0.0, sum_y = 0.0;
+      for (const auto & p : current_pts) {
+        sum_x += p.x;
+        sum_y += p.y;
+      }
+      const double cx = sum_x / current_pts.size();
+      const double cy = sum_y / current_pts.size();
+      const double span = std::hypot(current_pts.front().x - current_pts.back().x,
+                                     current_pts.front().y - current_pts.back().y);
+      if (span >= 0.04 && span <= 0.40) {
+        clusters.push_back({cx, cy, std::hypot(cx, cy), span, static_cast<int>(current_pts.size())});
+      }
+    }
+
+    return clusters;
+  }
+
   struct ClearanceSummary {
     double front{999.0};
     double back{999.0};
@@ -1929,6 +2083,9 @@ private:
   double kf_process_noise_{1.2};
   double kf_measurement_noise_{0.15};
   help_me_carry::PersonKalmanFilter kf_{1.2, 0.15};
+  bool enable_lidar_fusion_{true};
+  double kf_lidar_noise_{0.25};
+  double lidar_leg_gate_{0.90};
 
   int locked_person_id_{-1};
   std::atomic<bool> is_following_{false};
