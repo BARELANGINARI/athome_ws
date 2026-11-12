@@ -501,9 +501,15 @@ private:
         if (locked_it != candidates.end()) {
           // Validate spatial consistency via Kalman gate
           const double dist_to_kf = kf_.distance_to(locked_it->rel_x, locked_it->rel_y);
-          const double gate_radius = kf_.get_gate_radius(1.2, 2.5);
+          const double gate_radius = is_bypassing_ ? kf_.get_gate_radius(1.5, 3.0) : kf_.get_gate_radius(1.2, 2.5);
           if (dist_to_kf <= gate_radius) {
             target_it = locked_it;
+            if (is_bypassing_) {
+              RCLCPP_INFO(
+                get_logger(),
+                "\033[92m[BYPASS] Target re-acquired past obstacle! Resuming direct follow.\033[0m");
+              is_bypassing_ = false;
+            }
           } else {
             RCLCPP_WARN_THROTTLE(
               get_logger(), *get_clock(), 1000,
@@ -525,8 +531,17 @@ private:
             }
           }
 
+          // Anti-ID hijacking: Do NOT switch lock to an intervening stranger stopping right in front of the robot
+          if (best_cand != candidates.end()) {
+            const double kf_dist_from_robot = std::hypot(kf_.x(), kf_.y());
+            if (best_cand->dist < kf_dist_from_robot - 0.50 && kf_dist_from_robot > 0.8) {
+              // The candidate is a closer bystander blocking the view, not the tracked operator
+              best_cand = candidates.end();
+            }
+          }
+
           // Check if nearest candidate is within Kalman gate radius
-          const double re_gate_radius = kf_.get_gate_radius(0.85, 2.0);
+          const double re_gate_radius = is_bypassing_ ? kf_.get_gate_radius(1.2, 2.8) : kf_.get_gate_radius(0.85, 2.0);
           if (best_cand != candidates.end() && min_kf_dist <= re_gate_radius) {
             RCLCPP_INFO(
               get_logger(),
@@ -534,6 +549,12 @@ private:
               locked_person_id_, best_cand->id, min_kf_dist, re_gate_radius);
             target_it = best_cand;
             locked_person_id_ = target_it->id;
+            if (is_bypassing_) {
+              RCLCPP_INFO(
+                get_logger(),
+                "\033[92m[BYPASS] Target re-acquired past obstacle! Resuming direct follow.\033[0m");
+              is_bypassing_ = false;
+            }
           }
         }
       }
@@ -560,6 +581,7 @@ private:
             target_it->id, target_it->dist, target_it->bearing * 180.0 / M_PI);
           locked_person_id_ = target_it->id;
           kf_.init(target_it->rel_x, target_it->rel_y);
+          is_bypassing_ = false;
         }
       }
 
@@ -568,6 +590,7 @@ private:
         kf_.updateZED(target_it->rel_x, target_it->rel_y);
         person_matched = true;
         is_predicting = false;
+        is_bypassing_ = false;
         rel_x = kf_.x();
         rel_y = kf_.y();
         raw_dist = std::hypot(rel_x, rel_y);
@@ -579,69 +602,74 @@ private:
       }
     }
 
-    // 5. 360° LiDAR EKF Fusion: If ZED loses sight of target (operator walked to the side or behind):
-    if (!person_matched && enable_lidar_fusion_ && kf_.is_initialized()) {
-      sensor_msgs::msg::LaserScan::SharedPtr scan;
-      {
-        std::lock_guard<std::mutex> lock(scan_mutex_);
-        scan = latest_scan_;
+    // Pre-fetch 2D LiDAR scan and extract leg clusters (used for both 360° EKF & stranger obstacle bypass)
+    sensor_msgs::msg::LaserScan::SharedPtr scan;
+    {
+      std::lock_guard<std::mutex> lock(scan_mutex_);
+      scan = latest_scan_;
+    }
+    double laser_tx = 0.0, laser_ty = 0.0, laser_yaw = 3.1415926535;
+    if (scan && !scan->ranges.empty()) {
+      try {
+        auto tf_laser = tf_buffer_->lookupTransform(
+          frame_base_, scan->header.frame_id, tf2::TimePointZero);
+        laser_tx = tf_laser.transform.translation.x;
+        laser_ty = tf_laser.transform.translation.y;
+        const auto & rq = tf_laser.transform.rotation;
+        const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+        const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+        laser_yaw = std::atan2(siny, cosy);
+      } catch (const tf2::TransformException &) {
+        laser_yaw = 3.1415926535;
       }
-      if (scan && !scan->ranges.empty()) {
-        double laser_tx = 0.0, laser_ty = 0.0, laser_yaw = 3.1415926535;
-        try {
-          auto tf_laser = tf_buffer_->lookupTransform(
-            frame_base_, scan->header.frame_id, tf2::TimePointZero);
-          laser_tx = tf_laser.transform.translation.x;
-          laser_ty = tf_laser.transform.translation.y;
-          const auto & rq = tf_laser.transform.rotation;
-          const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
-          const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
-          laser_yaw = std::atan2(siny, cosy);
-        } catch (const tf2::TransformException &) {
-          laser_yaw = 3.1415926535;
+    }
+    const auto leg_clusters = (scan && !scan->ranges.empty())
+      ? extract_leg_clusters(scan, laser_tx, laser_ty, laser_yaw)
+      : std::vector<LegCluster>{};
+
+    // 5. 360° LiDAR EKF Fusion: If ZED loses sight of target (operator walked to the side or behind):
+    if (!person_matched && enable_lidar_fusion_ && kf_.is_initialized() && !leg_clusters.empty()) {
+      double best_gate_dist = 999.0;
+      const LegCluster * best_cluster = nullptr;
+      const double gate_rad = std::max(lidar_leg_gate_, kf_.get_gate_radius(0.6, 2.0));
+
+      for (const auto & cl : leg_clusters) {
+        const double d = kf_.distance_to(cl.x, cl.y);
+        if (d <= gate_rad && d < best_gate_dist) {
+          best_gate_dist = d;
+          best_cluster = &cl;
         }
+      }
 
-        const auto clusters = extract_leg_clusters(scan, laser_tx, laser_ty, laser_yaw);
-        double best_gate_dist = 999.0;
-        const LegCluster * best_cluster = nullptr;
-        const double gate_rad = std::max(lidar_leg_gate_, kf_.get_gate_radius(0.6, 2.0));
+      if (best_cluster != nullptr) {
+        // Update EKF via LiDAR measurement
+        kf_.updateLiDAR(best_cluster->x, best_cluster->y, kf_lidar_noise_ * kf_lidar_noise_);
+        person_matched = true;
+        is_predicting = false;
+        rel_x = kf_.x();
+        rel_y = kf_.y();
+        raw_dist = std::hypot(rel_x, rel_y);
+        raw_bearing = std::atan2(rel_y, rel_x);
+        last_seen_sec_ = now().seconds();
 
-        for (const auto & cl : clusters) {
-          const double d = kf_.distance_to(cl.x, cl.y);
-          if (d <= gate_rad && d < best_gate_dist) {
-            best_gate_dist = d;
-            best_cluster = &cl;
-          }
-        }
+        std_msgs::msg::String status_msg;
+        status_msg.data = "TRACKING_LIDAR_360";
+        follow_status_pub_->publish(status_msg);
 
-        if (best_cluster != nullptr) {
-          // Update EKF via LiDAR measurement
-          kf_.updateLiDAR(best_cluster->x, best_cluster->y, kf_lidar_noise_ * kf_lidar_noise_);
-          person_matched = true;
-          is_predicting = false;
-          rel_x = kf_.x();
-          rel_y = kf_.y();
-          raw_dist = std::hypot(rel_x, rel_y);
-          raw_bearing = std::atan2(rel_y, rel_x);
-          last_seen_sec_ = now().seconds();
-
-          std_msgs::msg::String status_msg;
-          status_msg.data = "TRACKING_LIDAR_360";
-          follow_status_pub_->publish(status_msg);
-
-          RCLCPP_INFO_THROTTLE(
-            get_logger(), *get_clock(), 1500,
-            "\033[96m[FOLLOW 360°] Tracking via LiDAR Leg: dist=%.2f m | bearing=%+.1f deg (gate=%.2f m)\033[0m",
-            raw_dist, raw_bearing * 180.0 / M_PI, best_gate_dist);
-        }
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1500,
+          "\033[96m[FOLLOW 360°] Tracking via LiDAR Leg: dist=%.2f m | bearing=%+.1f deg (gate=%.2f m)%s\033[0m",
+          raw_dist, raw_bearing * 180.0 / M_PI, best_gate_dist,
+          best_cluster->is_paired_legs ? " [PAIRED]" : "");
       }
     }
 
     // 6. Handle total occlusion (neither ZED nor LiDAR found target):
     if (!person_matched) {
       const double elapsed = now().seconds() - last_seen_sec_;
-      // DEAD-RECKONING: Track Kalman Filter prediction during short occlusion!
-      if (kf_.is_initialized() && elapsed <= occlusion_timeout_) {
+      const double eff_occlusion_timeout = is_bypassing_ ? 4.5 : occlusion_timeout_;
+      // DEAD-RECKONING: Track Kalman Filter prediction during short occlusion / bypass!
+      if (kf_.is_initialized() && elapsed <= eff_occlusion_timeout) {
         person_matched = true;
         is_predicting = true;
         rel_x = kf_.x();
@@ -793,98 +821,116 @@ private:
       target_vy = 0.0;
       status_str = is_predicting ? "KALMAN PREDICTING (OCCLUDED)" : "FOLLOWING OPERATOR";
 
-      // --- ROBUST LIDAR OBSTACLE & WALL AVOIDANCE ---
+      // --- ROBUST LIDAR OBSTACLE & WALL AVOIDANCE & STRANGER BYPASS ---
       bool obstacle_detected = false;
-      if (enable_avoidance_) {
-        sensor_msgs::msg::LaserScan::SharedPtr scan;
-        {
-          std::lock_guard<std::mutex> lock(scan_mutex_);
-          scan = latest_scan_;
+      if (enable_avoidance_ && scan && !scan->ranges.empty()) {
+        double rep_y = 0.0;
+        double min_front_x = 999.0;
+        double left_clearance = 0.0;
+        double right_clearance = 0.0;
+        int left_count = 0;
+        int right_count = 0;
+
+        const int num_readings = static_cast<int>(scan->ranges.size());
+        for (int i = 0; i < num_readings; ++i) {
+          const float r = scan->ranges[i];
+          if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) {
+            continue;
+          }
+
+          // Calculate beam angle in robot frame (base_link)
+          const double angle_laser = scan->angle_min + i * scan->angle_increment;
+          double angle_base = angle_laser + laser_yaw;
+          angle_base = std::atan2(std::sin(angle_base), std::cos(angle_base));
+
+          // Obstacle coordinate in base_link
+          const double obs_x = laser_tx + r * std::cos(angle_base);
+          const double obs_y = laser_ty + r * std::sin(angle_base);
+
+          // 1. FILTER ROBOT FOOTPRINT: Ignore robot body reflections
+          if (std::hypot(obs_x, obs_y) < footprint_radius_) {
+            continue;
+          }
+
+          // 2. Evaluate ONLY front sector in base_link (-75 deg to +75 deg)
+          if (angle_base < -1.30 || angle_base > 1.30) {
+            continue;
+          }
+
+          // 3. Evaluate left vs right front clearance
+          if (angle_base > 0.15 && angle_base < 1.20) {
+            left_clearance += std::min(r, 2.0f);
+            left_count++;
+          } else if (angle_base < -0.15 && angle_base > -1.20) {
+            right_clearance += std::min(r, 2.0f);
+            right_count++;
+          }
+
+          // 4. FILTER OPERATOR: Do not treat operator's legs as obstacle
+          if (std::abs(angle_base - direct_bearing) < 0.30 && std::abs(r - direct_dist) < 0.40) {
+            continue;
+          }
+
+          // 5. Danger corridor in front of robot
+          if (obs_x > footprint_radius_ && obs_x < obstacle_distance_ && std::abs(obs_y) < corridor_width_) {
+            obstacle_detected = true;
+            if (obs_x < min_front_x) {
+              min_front_x = obs_x;
+            }
+          }
+
+          // Lateral repulsive force (Y) for obstacle avoidance
+          if (obs_x > footprint_radius_ * 0.8 && r < obstacle_distance_) {
+            const double weight = (1.0 / std::max(0.20f, r)) - (1.0 / obstacle_distance_);
+            rep_y -= weight * std::sin(angle_base);
+          }
         }
 
-        if (scan && !scan->ranges.empty()) {
-          // Lookup transform from base_link to lidar sensor frame
-          // Default yaw = 3.14159 rad because Lidar is mounted backwards (180 deg)
-          double laser_tx = 0.0;
-          double laser_ty = 0.0;
-          double laser_yaw = 3.1415926535;
-          try {
-            auto tf_laser = tf_buffer_->lookupTransform(
-              frame_base_, scan->header.frame_id, tf2::TimePointZero);
-            laser_tx = tf_laser.transform.translation.x;
-            laser_ty = tf_laser.transform.translation.y;
-            const auto & rq = tf_laser.transform.rotation;
-            const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
-            const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
-            laser_yaw = std::atan2(siny, cosy);
-          } catch (const tf2::TransformException &) {
-            laser_yaw = 3.1415926535;
+        // Determine if the front obstacle is blocking our path to the operator (stranger or partition)
+        bool is_blocking_operator = false;
+        if (direct_dist > min_front_x + 0.30 || is_predicting) {
+          is_blocking_operator = true;
+        }
+
+        // Check if the front obstacle has human leg characteristics
+        bool obstacle_is_human_legs = false;
+        for (const auto & cl : leg_clusters) {
+          if (cl.x > footprint_radius_ && cl.x < obstacle_distance_ + 0.15 && std::abs(cl.y) < corridor_width_ + 0.12) {
+            obstacle_is_human_legs = true;
+            break;
           }
+        }
 
-          double rep_y = 0.0;
-          double min_front_x = 999.0;
-          double left_clearance = 0.0;
-          double right_clearance = 0.0;
-          int left_count = 0;
-          int right_count = 0;
+        if (obstacle_detected) {
+          if (is_blocking_operator) {
+            // -----------------------------------------------------------------
+            // ACTIVE LATERAL BYPASS: A stranger / divider is blocking our path!
+            // Instead of freezing, navigate around them while keeping camera & EKF searching for operator.
+            // -----------------------------------------------------------------
+            is_bypassing_ = true;
+            double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
+            double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
+            bypass_direction_ = (avg_left >= avg_right) ? 1.0 : -1.0;
 
-          const int num_readings = static_cast<int>(scan->ranges.size());
-          for (int i = 0; i < num_readings; ++i) {
-            const float r = scan->ranges[i];
-            if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) {
-              continue;
+            // Tangential strafe velocity around stranger:
+            target_vy = bypass_direction_ * std::clamp(max_vy_ * 0.90, 0.16, 0.24);
+
+            // Allow small forward creep if obstacle distance > min_stop_x_ (0.38m)
+            if (min_front_x > min_stop_x_) {
+              target_vx = 0.10;
+            } else {
+              target_vx = 0.0; // strafe laterally first until front opens up
             }
 
-            // Calculate beam angle in robot frame (base_link)
-            const double angle_laser = scan->angle_min + i * scan->angle_increment;
-            double angle_base = angle_laser + laser_yaw;
-            angle_base = std::atan2(std::sin(angle_base), std::cos(angle_base));
+            // Yaw orientation: lock heading towards operator's EKF predicted position
+            target_wz = std::clamp(kp_yaw_ * eff_bearing + kd_yaw_ * d_bearing + (bypass_direction_ * 0.12), -max_wz_, max_wz_);
 
-            // Obstacle coordinate in base_link
-            const double obs_x = laser_tx + r * std::cos(angle_base);
-            const double obs_y = laser_ty + r * std::sin(angle_base);
-
-            // 1. FILTER ROBOT FOOTPRINT: Ignore robot body reflections
-            if (std::hypot(obs_x, obs_y) < footprint_radius_) {
-              continue;
-            }
-
-            // 2. Evaluate ONLY front sector in base_link (-75 deg to +75 deg)
-            if (angle_base < -1.30 || angle_base > 1.30) {
-              continue;
-            }
-
-            // 3. Evaluate left vs right front clearance
-            if (angle_base > 0.15 && angle_base < 1.20) {
-              left_clearance += std::min(r, 2.0f);
-              left_count++;
-            } else if (angle_base < -0.15 && angle_base > -1.20) {
-              right_clearance += std::min(r, 2.0f);
-              right_count++;
-            }
-
-            // 4. FILTER OPERATOR: Do not treat operator's legs as obstacle
-            if (std::abs(angle_base - direct_bearing) < 0.30 && std::abs(r - direct_dist) < 0.40) {
-              continue;
-            }
-
-            // 5. Danger corridor in front of robot
-            if (obs_x > footprint_radius_ && obs_x < obstacle_distance_ && std::abs(obs_y) < corridor_width_) {
-              obstacle_detected = true;
-              if (obs_x < min_front_x) {
-                min_front_x = obs_x;
-              }
-            }
-
-            // Lateral repulsive force (Y) for obstacle avoidance
-            if (obs_x > footprint_radius_ * 0.8 && r < obstacle_distance_) {
-              const double weight = (1.0 / std::max(0.20f, r)) - (1.0 / obstacle_distance_);
-              rep_y -= weight * std::sin(angle_base);
-            }
-          }
-
-          if (obstacle_detected) {
-            // 1. HARD SAFETY STOP / BRAKING:
+            status_str = obstacle_is_human_legs
+              ? "BYPASSING STRANGER (SEARCHING OPERATOR)"
+              : "BYPASSING OBSTACLE (SEARCHING OPERATOR)";
+          } else {
+            // Standard obstacle braking (approaching wall or goal)
+            is_bypassing_ = false;
             if (min_front_x <= min_stop_x_) {
               target_vx = 0.0;
             } else if (min_front_x < obstacle_distance_) {
@@ -893,7 +939,6 @@ private:
               target_vx *= std::clamp(brake_ratio, 0.0, 1.0);
             }
 
-            // 2. TANGENTIAL STRAFE VIA OMNI (Avoid towards open space):
             if (std::abs(rep_y) < 0.4) {
               double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
               double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
@@ -903,6 +948,11 @@ private:
             double avoid_vy = std::clamp(0.22 * rep_y, -max_vy_, max_vy_);
             target_vy = avoid_vy;
             status_str = "AVOIDING WALL/OBSTACLE";
+          }
+        } else {
+          // Corridor clear!
+          if (is_bypassing_ && !is_predicting) {
+            is_bypassing_ = false;
           }
         }
       }
@@ -1033,6 +1083,7 @@ private:
     is_following_ = true;
     is_nav_active_ = false;
     is_moving_ = false;
+    is_bypassing_ = false;
     current_cmd_vx_ = 0.0;
     current_cmd_vy_ = 0.0;
     current_cmd_wz_ = 0.0;
@@ -1053,6 +1104,7 @@ private:
     is_homing_active_ = false;
     is_nav_active_ = false;
     is_moving_ = false;
+    is_bypassing_ = false;
     current_cmd_vx_ = 0.0;
     current_cmd_vy_ = 0.0;
     current_cmd_wz_ = 0.0;
@@ -1094,17 +1146,19 @@ private:
     }
 
     const double elapsed = now().seconds() - last_seen_sec_;
-    if (elapsed > max_lost_time_) {
+    const double eff_max_lost = is_bypassing_ ? (max_lost_time_ + 3.0) : max_lost_time_;
+    if (elapsed > eff_max_lost) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 4000,
         "Watchdog: Operator not visible for %.1f s (max: %.1f s)! Stopping robot.",
-        elapsed, max_lost_time_);
+        elapsed, eff_max_lost);
       if (is_nav_active_ && goal_handle_) {
         action_client_->async_cancel_goal(goal_handle_);
         goal_handle_.reset();
         is_nav_active_ = false;
       }
       // Reset filter so re-acquisition is not blocked by gating
+      is_bypassing_ = false;
       kf_.reset();
       has_last_filter_time_ = false;
       locked_person_id_ = -1;
@@ -1522,6 +1576,7 @@ private:
     double dist{0.0};
     double span{0.0};
     int count{0};
+    bool is_paired_legs{false};
   };
 
   std::vector<LegCluster> extract_leg_clusters(
@@ -1534,24 +1589,29 @@ private:
     struct Pt { double x; double y; };
     std::vector<Pt> current_pts;
 
+    auto finish_cluster = [&](const std::vector<Pt> & pts) {
+      if (pts.size() >= 3) {
+        double sum_x = 0.0, sum_y = 0.0;
+        for (const auto & p : pts) {
+          sum_x += p.x;
+          sum_y += p.y;
+        }
+        const double cx = sum_x / pts.size();
+        const double cy = sum_y / pts.size();
+        const double span = std::hypot(pts.front().x - pts.back().x,
+                                       pts.front().y - pts.back().y);
+        // Human leg span is typically 4cm - 40cm
+        if (span >= 0.04 && span <= 0.40) {
+          clusters.push_back({cx, cy, std::hypot(cx, cy), span, static_cast<int>(pts.size()), false});
+        }
+      }
+    };
+
     const int num_readings = static_cast<int>(scan->ranges.size());
     for (int i = 0; i < num_readings; ++i) {
       const float r = scan->ranges[i];
       if (!std::isfinite(r) || r < 0.15f || r > max_range_) {
-        if (current_pts.size() >= 3) {
-          double sum_x = 0.0, sum_y = 0.0;
-          for (const auto & p : current_pts) {
-            sum_x += p.x;
-            sum_y += p.y;
-          }
-          const double cx = sum_x / current_pts.size();
-          const double cy = sum_y / current_pts.size();
-          const double span = std::hypot(current_pts.front().x - current_pts.back().x,
-                                         current_pts.front().y - current_pts.back().y);
-          if (span >= 0.04 && span <= 0.40) {
-            clusters.push_back({cx, cy, std::hypot(cx, cy), span, static_cast<int>(current_pts.size())});
-          }
-        }
+        finish_cluster(current_pts);
         current_pts.clear();
         continue;
       }
@@ -1565,40 +1625,34 @@ private:
       if (!current_pts.empty()) {
         const double d_prev = std::hypot(lx - current_pts.back().x, ly - current_pts.back().y);
         if (d_prev > 0.15) {
-          if (current_pts.size() >= 3) {
-            double sum_x = 0.0, sum_y = 0.0;
-            for (const auto & p : current_pts) {
-              sum_x += p.x;
-              sum_y += p.y;
-            }
-            const double cx = sum_x / current_pts.size();
-            const double cy = sum_y / current_pts.size();
-            const double span = std::hypot(current_pts.front().x - current_pts.back().x,
-                                           current_pts.front().y - current_pts.back().y);
-            if (span >= 0.04 && span <= 0.40) {
-              clusters.push_back({cx, cy, std::hypot(cx, cy), span, static_cast<int>(current_pts.size())});
-            }
-          }
+          finish_cluster(current_pts);
           current_pts.clear();
         }
       }
       current_pts.push_back({lx, ly});
     }
+    finish_cluster(current_pts);
 
-    if (current_pts.size() >= 3) {
-      double sum_x = 0.0, sum_y = 0.0;
-      for (const auto & p : current_pts) {
-        sum_x += p.x;
-        sum_y += p.y;
-      }
-      const double cx = sum_x / current_pts.size();
-      const double cy = sum_y / current_pts.size();
-      const double span = std::hypot(current_pts.front().x - current_pts.back().x,
-                                     current_pts.front().y - current_pts.back().y);
-      if (span >= 0.04 && span <= 0.40) {
-        clusters.push_back({cx, cy, std::hypot(cx, cy), span, static_cast<int>(current_pts.size())});
+    // Two-leg pairing: detect when someone stands with two legs (spacing 10cm - 45cm)
+    std::vector<LegCluster> paired_clusters;
+    const size_t n_c = clusters.size();
+    for (size_t i = 0; i < n_c; ++i) {
+      for (size_t j = i + 1; j < n_c; ++j) {
+        const double leg_sep = std::hypot(clusters[i].x - clusters[j].x, clusters[i].y - clusters[j].y);
+        if (leg_sep >= 0.10 && leg_sep <= 0.45) {
+          const double mid_x = 0.5 * (clusters[i].x + clusters[j].x);
+          const double mid_y = 0.5 * (clusters[i].y + clusters[j].y);
+          paired_clusters.push_back({
+            mid_x, mid_y, std::hypot(mid_x, mid_y),
+            clusters[i].span + clusters[j].span + leg_sep,
+            clusters[i].count + clusters[j].count,
+            true
+          });
+        }
       }
     }
+    // Insert paired clusters at beginning so they are preferred
+    clusters.insert(clusters.begin(), paired_clusters.begin(), paired_clusters.end());
 
     return clusters;
   }
@@ -2091,6 +2145,8 @@ private:
   std::atomic<bool> is_following_{false};
   std::atomic<bool> is_nav_active_{false};
   bool is_moving_{false};
+  bool is_bypassing_{false};
+  double bypass_direction_{1.0};
   double current_cmd_vx_{0.0};
   double current_cmd_vy_{0.0};
   double current_cmd_wz_{0.0};

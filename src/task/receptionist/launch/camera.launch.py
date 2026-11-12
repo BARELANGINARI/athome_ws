@@ -30,6 +30,8 @@ def generate_launch_description():
         DeclareLaunchArgument('debug_window', default_value='true', description='Show OpenCV preview visualization window'),
         DeclareLaunchArgument('mirror', default_value='false', description='Mirror display preview horizontally'),
         DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 deg range (default: true)'),
+        DeclareLaunchArgument('host_name', default_value='Alex', description='Default host name for pre-registration'),
+        DeclareLaunchArgument('host_photo', default_value='models/host.jpg', description='Optional photo of the host to pre-register face'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -62,6 +64,8 @@ def generate_launch_description():
                 'debug_window': LaunchConfiguration('debug_window'),
                 'mirror': LaunchConfiguration('mirror'),
                 'depth_minimum_distance': LaunchConfiguration('depth_minimum_distance'),
+                'host_name': LaunchConfiguration('host_name'),
+                'host_photo': LaunchConfiguration('host_photo'),
             }.items(),
         ),
     ])

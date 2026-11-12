@@ -56,6 +56,7 @@ install(TARGETS
 install(PROGRAMS
   launch/run.sh
   launch/stop.sh
+  launch/register_host.sh
   DESTINATION lib/${PROJECT_NAME}
 )
 
