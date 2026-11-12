@@ -12,7 +12,10 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(Threads REQUIRED)
 
 add_executable(restaurant_node src/restaurant_node.cpp)
@@ -21,7 +24,10 @@ ament_target_dependencies(restaurant_node
   rclcpp_action
   geometry_msgs
   nav2_msgs
+  std_msgs
   std_srvs
+  tf2
+  tf2_ros
 )
 target_link_libraries(restaurant_node Threads::Threads)
 install(TARGETS restaurant_node DESTINATION lib/${PROJECT_NAME})

@@ -1,0 +1,22 @@
+# =============================================================================
+# Restaurant Task Node Parameters
+# =============================================================================
+restaurant_node:
+  ros__parameters:
+    # -------------------------------------------------------------------------
+    # 1. Homing / Origin Settings
+    # -------------------------------------------------------------------------
+    origin_x: 0.0                        # Koordinat X titik awal robot (meter)
+    origin_y: 0.0                        # Koordinat Y titik awal robot (meter)
+    origin_yaw: 0.0                      # Sudut hadap awal robot (rad)
+    global_frame: "map"                  # Global map frame
+    base_frame: "base_link"              # Robot base frame
+
+    # -------------------------------------------------------------------------
+    # 2. Customer Order / Person Navigation Settings
+    # -------------------------------------------------------------------------
+    order_topic: "/zed/order1"           # Topik input posisi orang / pelanggan dari kamera
+    order_frame: "base_link"             # Frame acuan koordinat: "base_link" (relatif kamera) atau "map" (global)
+    standoff_distance: 0.85              # Jarak henti aman di depan pelanggan (meter)
+    auto_navigate: false                 # false: tunggu service /go_to_order1, true: langsung jalan saat topik publish
+    nav_timeout_sec: 120.0               # Batas waktu navigasi Nav2 sebelum timeout (detik)

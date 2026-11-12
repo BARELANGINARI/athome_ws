@@ -15,6 +15,7 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     pkg_restaurant = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     default_rviz = os.path.join(pkg_restaurant, 'rviz', 'restaurant.rviz')
+    default_task_params = os.path.join(pkg_restaurant, 'config', 'restaurant_params.yaml')
 
     return LaunchDescription([
         # SLAM argument: defaults to 'true' for unmapped/mapless environment
@@ -50,7 +51,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'task_node',
             default_value='true',
-            description='Launch restaurant homing service node'
+            description='Launch restaurant service node'
+        ),
+        DeclareLaunchArgument(
+            'task_params_file',
+            default_value=default_task_params,
+            description='Path to restaurant task parameters configuration file'
         ),
 
         # 1. Nav2 Navigation Bringup (SLAM + Planner + Controller)
@@ -77,12 +83,13 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # 2. Restaurant Node (provides /homing service)
+        # 2. Restaurant Node (provides /homing and /go_to_order1 services)
         Node(
             package='restaurant',
             executable='restaurant_node',
             name='restaurant_node',
             output='screen',
+            parameters=[LaunchConfiguration('task_params_file')],
             condition=IfCondition(LaunchConfiguration('task_node')),
         ),
     ])
