@@ -218,6 +218,8 @@ public:
 
     arm_point_position_client_ = create_client<Trigger>(
       "/arm/point_position", rclcpp::ServicesQoS(), callback_group_);
+    arm_free_client_ = create_client<Trigger>(
+      "/arm/free", rclcpp::ServicesQoS(), callback_group_);
 
     // Timer siklus FSM (10 Hz / 100 ms)
     fsm_timer_ = create_wall_timer(
@@ -336,6 +338,7 @@ private:
   TriggerClient::SharedPtr arm_ambil_tas_client_;
   TriggerClient::SharedPtr arm_ambil_tas_simple_client_;
   TriggerClient::SharedPtr arm_point_position_client_;
+  TriggerClient::SharedPtr arm_free_client_;
 
   // ============================================================================
   // SUB-ROUTINES / HELPER FUNCTIONS
@@ -523,6 +526,36 @@ private:
         }
       },
       15.0);
+  }
+
+  // Mematikan daya / torsi servo lengan robot (mode free)
+  void freeArm(std::function<void(bool)> on_finished = nullptr)
+  {
+    TriggerClient::SharedPtr client = arm_free_client_;
+    std::string srv_name = "/arm/free";
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[ARM]\033[0m Releasing arm torque (free mode) via %s...",
+      srv_name.c_str());
+
+    callTrigger(
+      client, srv_name,
+      [this, srv_name, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[ARM]\033[0m Arm free mode succeeded: %s", msg.c_str());
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[ARM]\033[0m Arm free mode finished with warning: %s", msg.c_str());
+        }
+        if (on_finished) {
+          on_finished(success);
+        }
+      },
+      5.0);
   }
 
   // Mencari kursi kosong dan menyelaraskan arah hadap robot via /search_chair
@@ -1546,18 +1579,21 @@ private:
           return;
         }
 
-        const size_t drink_count = snapshotBeveragesOnTable();
-        std::string prompt;
-        if (!drinks_detected_on_arrival_ || drink_count == 0) {
-          prompt = "There are no drinks on this table; please tell me, what is your favorite drink?";
-        } else {
-          prompt = "There are " + std::to_string(drink_count) +
-                   " drinks on the table. What is your favorite drink?";
-        }
+        speakAsync("We've already arrived in Beverage Area, please stand on my left side.", [this](){
+          const size_t drink_count = snapshotBeveragesOnTable();
+          std::string prompt;
 
-        speakAsync(prompt, [this]() {
-          transitionTo(ReceptionistState::WAIT_DRINK, "Asked for favorite drink after table check");
-        });
+          if (!drinks_detected_on_arrival_ || drink_count == 0) {
+            prompt = "There are no drinks on this table; please tell me, what is your favorite drink?";
+          } else {
+            prompt = "There are " + std::to_string(drink_count) + " drinks on the table. What is your favorite drinks?";
+          }
+
+          // tanyakan minuman favorit dan tunggu jawaban
+          speakAsync(prompt, [this]() {
+            transitionTo(ReceptionistState::WAIT_DRINK, "Asked for favorite drink after table check");
+          });
+        )};
         break;
       }
 
@@ -1832,9 +1868,12 @@ private:
             // setelah lengan menunjuk, lanjutkan menyebutkan sisi kursi
             std::string part2_msg = seat_pos + " side that I am indicating.";
             speakAsync(part2_msg, [this]() {
-              transitionTo(
-                ReceptionistState::WAIT_GUEST_SIT,
-                "Waiting for guest to occupy the indicated chair");
+              // Setelah selesai menyebutkan dan menunjuk kursi, matikan daya lengan (mode free)
+              freeArm([this](bool /*ok*/) {
+                transitionTo(
+                  ReceptionistState::WAIT_GUEST_SIT,
+                  "Waiting for guest to occupy the indicated chair");
+              });
             });
           });
         });

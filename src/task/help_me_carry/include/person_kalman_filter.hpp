@@ -6,6 +6,13 @@
 namespace help_me_carry
 {
 
+enum class SensorSource
+{
+  NONE,
+  ZED,
+  LIDAR
+};
+
 class PersonKalmanFilter
 {
 public:
@@ -23,6 +30,8 @@ public:
     y_ = 0.0;
     vx_ = 0.0;
     vy_ = 0.0;
+    last_source_ = SensorSource::NONE;
+    lidar_updates_in_row_ = 0;
 
     for (int i = 0; i < 4; ++i) {
       for (int j = 0; j < 4; ++j) {
@@ -41,6 +50,8 @@ public:
     y_ = zy;
     vx_ = 0.0;
     vy_ = 0.0;
+    last_source_ = SensorSource::ZED;
+    lidar_updates_in_row_ = 0;
 
     for (int i = 0; i < 4; ++i) {
       for (int j = 0; j < 4; ++j) {
@@ -105,20 +116,21 @@ public:
     p_[3][0] = p30; p_[3][1] = p31; p_[3][2] = p32; p_[3][3] = p33;
   }
 
-  void update(double zx, double zy)
+  // Generic measurement update with customizable sensor noise covariance
+  void updateMeasurement(double mx, double my, double meas_noise_var)
   {
     if (!is_initialized_) {
-      init(zx, zy);
+      init(mx, my);
       return;
     }
 
-    const double yx = zx - x_;
-    const double yy = zy - y_;
+    const double yx = mx - x_;
+    const double yy = my - y_;
 
-    const double s00 = p_[0][0] + r_var_;
+    const double s00 = p_[0][0] + meas_noise_var;
     const double s01 = p_[0][1];
     const double s10 = p_[1][0];
-    const double s11 = p_[1][1] + r_var_;
+    const double s11 = p_[1][1] + meas_noise_var;
 
     double det = s00 * s11 - s01 * s10;
     if (std::abs(det) < 1e-6) {
@@ -154,6 +166,48 @@ public:
     }
   }
 
+  // Update dari ZED Camera (default r_var)
+  void updateZED(double zx, double zy, double r_cov = 0.0225)
+  {
+    updateMeasurement(zx, zy, r_cov > 0.0 ? r_cov : r_var_);
+    last_source_ = SensorSource::ZED;
+    lidar_updates_in_row_ = 0;
+  }
+
+  // Update dari RPLiDAR 2D 360° (mempertahankan pelacakan saat di samping/belakang)
+  void updateLiDAR(double lx, double ly, double r_cov = 0.0625)
+  {
+    updateMeasurement(lx, ly, r_cov);
+    last_source_ = SensorSource::LIDAR;
+    lidar_updates_in_row_++;
+  }
+
+  // Legacy update for backward compatibility
+  void update(double zx, double zy)
+  {
+    updateZED(zx, zy, r_var_);
+  }
+
+  // Mahalanobis distance untuk spatial gating EKF
+  double mahalanobis_distance(double mx, double my, double r_cov = 0.0625) const
+  {
+    if (!is_initialized_) return 999.0;
+    const double yx = mx - x_;
+    const double yy = my - y_;
+    const double s00 = p_[0][0] + r_cov;
+    const double s01 = p_[0][1];
+    const double s10 = p_[1][0];
+    const double s11 = p_[1][1] + r_cov;
+    double det = s00 * s11 - s01 * s10;
+    if (std::abs(det) < 1e-6) det = 1e-6;
+    const double inv_s00 = s11 / det;
+    const double inv_s01 = -s01 / det;
+    const double inv_s10 = -s10 / det;
+    const double inv_s11 = s00 / det;
+    const double d2 = yx * (inv_s00 * yx + inv_s01 * yy) + yy * (inv_s10 * yx + inv_s11 * yy);
+    return std::sqrt(std::max(0.0, d2));
+  }
+
   double get_gate_radius(double min_gate = 0.9, double max_gate = 2.2) const
   {
     if (!is_initialized_) {
@@ -174,6 +228,8 @@ public:
   double vx() const { return vx_; }
   double vy() const { return vy_; }
   double speed() const { return std::hypot(vx_, vy_); }
+  SensorSource last_source() const { return last_source_; }
+  int lidar_updates_in_row() const { return lidar_updates_in_row_; }
 
 private:
   bool is_initialized_{false};
@@ -184,6 +240,8 @@ private:
   double p_[4][4]{};
   double q_var_{1.2};
   double r_var_{0.0225};
+  SensorSource last_source_{SensorSource::NONE};
+  int lidar_updates_in_row_{0};
 };
 
 } // namespace help_me_carry

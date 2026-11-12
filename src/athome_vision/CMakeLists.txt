@@ -74,6 +74,7 @@ set_target_properties(zed PROPERTIES
 add_executable(record src/record.cpp)
 target_include_directories(record PRIVATE
   ${ZED_INCLUDE_DIRS}
+  ${CUDAToolkit_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
 )
 target_link_libraries(record

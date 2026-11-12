@@ -193,26 +193,12 @@ global_costmap:
       resolution: 0.05                   # Grid resolution (m/cell)
       track_unknown_space: true          # Kunci: Tandai area unmapped/unknown sebagai NO_INFORMATION, jangan anggap free space
       transform_tolerance: 0.5           # TF transform tolerance (s)
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"] # Costmap layers
+      plugins: ["static_layer", "inflation_layer"] # Costmap layers (hanya peta SLAM statis + buffer dinding agar rintangan dinamis tidak memutus global path)
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer" # Static map layer from map_server
         map_subscribe_transient_local: True # Transient local QoS for map
         subscribe_to_updates: True       # Subscribe to /map_updates during SLAM
         track_unknown_space: true        # Pertahankan status unknown dari peta SLAM (-1 tetap unknown)
-      obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer" # Dynamic LiDAR obstacle layer
-        enabled: True
-        observation_sources: scan
-        scan:
-          topic: /scan
-          max_obstacle_height: 2.0
-          clearing: True
-          marking: True
-          data_type: "LaserScan"
-          raytrace_max_range: 5.0
-          raytrace_min_range: 0.0
-          obstacle_max_range: 4.0
-          obstacle_min_range: 0.22
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
         cost_scaling_factor: 25.0        # Exponential cost decay factor

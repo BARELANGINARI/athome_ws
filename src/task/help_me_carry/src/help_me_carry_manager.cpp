@@ -798,32 +798,34 @@ private:
       case TaskState::WAIT_START_COMMAND:
         if (follow_requested_.exchange(false)) {
           // Ucapkan konfirmasi DULU, baru robot mulai bergerak setelah TTS selesai
-          speakAsync("Okay, I am following you.", [this]() {
-            busy_ = true;
-            callTrigger(
-              follow_start_client_, "/follow/person",
-              [this](bool success, const std::string & message) {
-                if (!success) {
-                  RCLCPP_ERROR(get_logger(), "Follow gagal: %s", message.c_str());
-                  speakAsync("Person following is not ready.");
-                  return;
-                }
-                last_operator_seen_time_ = now();
-                transitionTo(TaskState::FOLLOW_OPERATOR, "Follow started");
-                busy_ = false;
-              });
-          });
+          speakAsync(
+            "Okay, I am following you. Please walk slowly so that I can follow you from behind.",
+            [this]() {
+              busy_ = true;
+              callTrigger(
+                follow_start_client_, "/follow/person",
+                [this](bool success, const std::string & message) {
+                  if (!success) {
+                    RCLCPP_ERROR(get_logger(), "Follow gagal: %s", message.c_str());
+                    speakAsync("Person following is not ready.");
+                    return;
+                  }
+                  last_operator_seen_time_ = now();
+                  transitionTo(TaskState::FOLLOW_OPERATOR, "Follow started");
+                  busy_ = false;
+                });
+            });
         }
         break;
 
       // ------------------------------------------------------------------------
-      // State 4: FOLLOW_OPERATOR - Mengikuti operator (Grace period 5 detik aktif)
+      // State 4: FOLLOW_OPERATOR - Mengikuti operator (Grace period 5 detik aktif) = grace periode-> kondisi dimana robot tidak menerima inputan darimanapun
       // ------------------------------------------------------------------------
       case TaskState::FOLLOW_OPERATOR:
         if (follow_prompt_count_ < 3 && !speaking_.load() && now() >= follow_prompt_next_time_) {
           ++follow_prompt_count_;
           speakAsync(
-            "Please walk slowly so that I can follow you from behind",
+            "Please say this is the location if you already in the location.",
             [this]() {
               if (follow_prompt_count_ < 3 && state_.load() == TaskState::FOLLOW_OPERATOR)
               {

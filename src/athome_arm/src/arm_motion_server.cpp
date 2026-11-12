@@ -146,9 +146,33 @@ public:
             }
         );
 
+        free_srv_ = this->create_service<std_srvs::srv::Trigger>(
+            "/arm/free",
+            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+                   std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+                std::lock_guard<std::mutex> lock(hardware_mutex_);
+                setTorqueAll(false);
+                res->success = true;
+                res->message = "Arm torque disabled (free mode).";
+                RCLCPP_INFO(this->get_logger(), "[Service Call] Arm torque disabled (free mode).");
+            }
+        );
+
+        relax_srv_ = this->create_service<std_srvs::srv::Trigger>(
+            "/arm/relax",
+            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+                   std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+                std::lock_guard<std::mutex> lock(hardware_mutex_);
+                setTorqueAll(false);
+                res->success = true;
+                res->message = "Arm torque disabled (free mode).";
+                RCLCPP_INFO(this->get_logger(), "[Service Call] Arm torque disabled (free mode).");
+            }
+        );
+
         RCLCPP_INFO(this->get_logger(), "Arm Motion Server ready.");
         RCLCPP_INFO(this->get_logger(), "Port: %s, Baudrate: %d", port_name_.c_str(), baudrate_);
-        RCLCPP_INFO(this->get_logger(), "Services: /arm/ambil_tas_simple, /arm/letakkan_tas, /arm/play_motion, /arm/point_position");
+        RCLCPP_INFO(this->get_logger(), "Services: /arm/ambil_tas_simple, /arm/letakkan_tas, /arm/play_motion, /arm/point_position, /arm/free, /arm/relax");
 
         // Initialize hardware connection
         if (initHardware()) {
@@ -172,6 +196,8 @@ private:
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr letakkan_tas_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr play_motion_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr point_pos_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr free_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr relax_srv_;
 
     dynamixel::PortHandler   *portHandler   = nullptr;
     dynamixel::PacketHandler *packetHandler = nullptr;
@@ -676,6 +702,20 @@ private:
         resetDeadzoneFilter();
         is_connected_ = true;
         return true;
+    }
+
+    void setTorqueAll(bool enable) {
+        if (!packetHandler || !portHandler || !is_connected_) return;
+        uint8_t err = 0;
+        if (!enable) resetDeadzoneFilter();
+        for (uint8_t id : ALL_IDS) {
+            if (id == GRIPPER_ID && !g_gripper_online) continue;
+            g_servo_is_free[id] = !enable;
+            packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, enable ? 1 : 0, &err);
+            if (!enable) {
+                packetHandler->write1ByteTxRx(portHandler, id, ADDR_LED, 0, &err);
+            }
+        }
     }
 
     void cleanupHardware() {
