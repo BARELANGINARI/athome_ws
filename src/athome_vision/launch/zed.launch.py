@@ -37,8 +37,6 @@ def generate_launch_description():
         DeclareLaunchArgument('chair_model', default_value='', description='Optional path to custom chair ONNX model'),
         DeclareLaunchArgument('enable_chair', default_value='true', description='Enable chair detection and empty/occupied classification'),
         DeclareLaunchArgument('enable_bag', default_value='true', description='Enable luggage bag detection (for Help Me Carry)'),
-        DeclareLaunchArgument('host_name', default_value='Alex', description='Default host name for pre-registration'),
-        DeclareLaunchArgument('host_photo', default_value='models/host.jpg', description='Optional photo of the host to pre-register face'),
 
         Node(
             package='athome_vision',
@@ -79,8 +77,6 @@ def generate_launch_description():
                 'chair_model': LaunchConfiguration('chair_model'),
                 'enable_chair': LaunchConfiguration('enable_chair'),
                 'enable_bag': LaunchConfiguration('enable_bag'),
-                'host_name': LaunchConfiguration('host_name'),
-                'host_photo': LaunchConfiguration('host_photo'),
             }],
         ),
     ])

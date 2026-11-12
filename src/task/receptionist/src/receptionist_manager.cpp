@@ -1392,7 +1392,7 @@ private:
                    (now() - last_wait_prompt_time_).seconds() >= WAIT_GUEST_PROMPT_SEC)
         {
           last_wait_prompt_time_ = now();
-          speakAsync("I am waiting for a guest; please stand in front of me.");
+          speakAsync("I am waiting for a guest. please stand in front of me.");
         }
         break;
 
