@@ -30,7 +30,25 @@ ament_target_dependencies(restaurant_node
   tf2_ros
 )
 target_link_libraries(restaurant_node Threads::Threads)
-install(TARGETS restaurant_node DESTINATION lib/${PROJECT_NAME})
+
+add_executable(restaurant_manager src/restaurant_manager.cpp)
+ament_target_dependencies(restaurant_manager
+  rclcpp
+  rclcpp_action
+  geometry_msgs
+  nav2_msgs
+  std_msgs
+  std_srvs
+  tf2
+  tf2_ros
+)
+target_link_libraries(restaurant_manager Threads::Threads)
+
+install(TARGETS
+  restaurant_node
+  restaurant_manager
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
