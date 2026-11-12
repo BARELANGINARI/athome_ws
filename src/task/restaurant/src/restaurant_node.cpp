@@ -1,0 +1,519 @@
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "geometry_msgs/msg/quaternion.hpp"
+#include "nav2_msgs/action/navigate_to_pose.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "std_srvs/srv/trigger.hpp"
+#include "tf2/exceptions.h"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_listener.h"
+
+namespace restaurant
+{
+
+geometry_msgs::msg::Quaternion yawToQuaternion(double yaw_deg_or_rad)
+{
+  double yaw_rad = (std::abs(yaw_deg_or_rad) > 6.2831853) ? (yaw_deg_or_rad * M_PI / 180.0) : yaw_deg_or_rad;
+  geometry_msgs::msg::Quaternion q;
+  q.x = 0.0;
+  q.y = 0.0;
+  q.z = std::sin(yaw_rad * 0.5);
+  q.w = std::cos(yaw_rad * 0.5);
+  return q;
+}
+
+// Helper parser yang fleksibel untuk berbagai format input string posisi
+bool parseCoordinates(const std::string & raw_data, double & out_x, double & out_y)
+{
+  if (raw_data.empty()) return false;
+
+  std::string data = raw_data;
+
+  // 1. Format pipeline vision (misal: "order1:bbox|x,y,z|conf")
+  if (data.find('|') != std::string::npos) {
+    std::stringstream ss(data);
+    std::string seg;
+    std::vector<std::string> parts;
+    while (std::getline(ss, seg, '|')) {
+      parts.push_back(seg);
+    }
+    if (parts.size() >= 2) {
+      data = parts[1]; // Ambil bagian koordinat x,y,z
+    }
+  }
+
+  // 2. Format JSON (misal: {"x": 1.5, "y": 2.0})
+  std::regex json_regex(R"("x"\s*:\s*([-+]?[0-9]*\.?[0-9]+)\s*,\s*"y"\s*:\s*([-+]?[0-9]*\.?[0-9]+))");
+  std::smatch json_match;
+  if (std::regex_search(data, json_match, json_regex)) {
+    try {
+      out_x = std::stod(json_match[1].str());
+      out_y = std::stod(json_match[2].str());
+      return std::isfinite(out_x) && std::isfinite(out_y);
+    } catch (...) {}
+  }
+
+  // 3. Hapus prefix jika ada label (misal: "order1: 1.5, 2.0" -> "1.5, 2.0")
+  auto colon_pos = data.find(':');
+  if (colon_pos != std::string::npos) {
+    data = data.substr(colon_pos + 1);
+  }
+
+  // Ganti koma dan karakter non-angka dengan spasi
+  for (char & c : data) {
+    if (c == ',' || c == ';' || c == '(' || c == ')' || c == '[' || c == ']') {
+      c = ' ';
+    }
+  }
+
+  std::stringstream ss(data);
+  double x_val, y_val;
+  if (ss >> x_val >> y_val) {
+    if (std::isfinite(x_val) && std::isfinite(y_val)) {
+      out_x = x_val;
+      out_y = y_val;
+      return true;
+    }
+  }
+
+  return false;
+}
+
+class RestaurantNode : public rclcpp::Node
+{
+public:
+  using NavigateToPose = nav2_msgs::action::NavigateToPose;
+  using GoalHandleNav = rclcpp_action::ClientGoalHandle<NavigateToPose>;
+
+  RestaurantNode()
+  : Node("restaurant_node")
+  {
+    // Parameter deklarasi
+    declare_parameter("origin_x", 0.0);
+    declare_parameter("origin_y", 0.0);
+    declare_parameter("origin_yaw", 0.0);
+    declare_parameter("global_frame", "map");
+    declare_parameter("base_frame", "base_link");
+    declare_parameter("order_topic", "/zed/order1");
+    declare_parameter("order_frame", "base_link"); // "base_link" (relatif thd robot) atau "map" (global)
+    declare_parameter("standoff_distance", 0.85);   // Jarak henti aman di depan orang (meter) agar tidak menabrak / masuk obstacle
+    declare_parameter("auto_navigate", false);      // Langsung navigasi saat data order masuk atau tunggu service
+    declare_parameter("nav_timeout_sec", 120.0);
+
+    origin_x_ = get_parameter("origin_x").as_double();
+    origin_y_ = get_parameter("origin_y").as_double();
+    origin_yaw_ = get_parameter("origin_yaw").as_double();
+    global_frame_ = get_parameter("global_frame").as_string();
+    base_frame_ = get_parameter("base_frame").as_string();
+    order_topic_ = get_parameter("order_topic").as_string();
+    order_frame_ = get_parameter("order_frame").as_string();
+    standoff_dist_ = get_parameter("standoff_distance").as_double();
+    auto_navigate_ = get_parameter("auto_navigate").as_bool();
+    nav_timeout_sec_ = get_parameter("nav_timeout_sec").as_double();
+
+    // TF2 Buffer & Listener untuk konversi koordinat base_link -> map
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+    // Callback groups
+    srv_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+    action_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    sub_cb_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    // Nav2 Action Client
+    nav_client_ = rclcpp_action::create_client<NavigateToPose>(
+      this, "navigate_to_pose", action_cb_group_);
+
+    // Subscription /zed/order1
+    rclcpp::SubscriptionOptions sub_opts;
+    sub_opts.callback_group = sub_cb_group_;
+    order_sub_ = create_subscription<std_msgs::msg::String>(
+      order_topic_, 10,
+      [this](const std_msgs::msg::String::SharedPtr msg) {
+        onOrderMessage(msg);
+      },
+      sub_opts);
+
+    // Service /homing
+    srv_homing_ = create_service<std_srvs::srv::Trigger>(
+      "/homing",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleHoming(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    // Service alias /restaurant/homing
+    srv_homing_alias_ = create_service<std_srvs::srv::Trigger>(
+      "/restaurant/homing",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleHoming(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    // Service /go_to_order1 untuk menggerakkan robot ke posisi orang yang memesan
+    srv_go_order1_ = create_service<std_srvs::srv::Trigger>(
+      "/go_to_order1",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleGoToOrder(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_go_order1_alias_ = create_service<std_srvs::srv::Trigger>(
+      "/restaurant/go_to_order1",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleGoToOrder(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;32m[RestaurantNode]\033[0m Ready! Subscribed to %s | Services: /homing, /go_to_order1",
+      order_topic_.c_str());
+  }
+
+private:
+  // Callback saat menerima pesan di /zed/order1
+  void onOrderMessage(const std_msgs::msg::String::SharedPtr msg)
+  {
+    double parsed_x = 0.0, parsed_y = 0.0;
+    if (!parseCoordinates(msg->data, parsed_x, parsed_y)) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 3000,
+        "[Order1] Failed parsing coordinates from message: '%s'", msg->data.c_str());
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(order_mutex_);
+      latest_order_x_ = parsed_x;
+      latest_order_y_ = parsed_y;
+      latest_order_time_ = now();
+      has_order_ = true;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;35m[Order1]\033[0m Received customer position (%s): x=%.2f, y=%.2f",
+      order_frame_.c_str(), parsed_x, parsed_y);
+
+    if (auto_navigate_ && !is_navigating_.load()) {
+      std::thread([this]() {
+        auto dummy_req = std::make_shared<std_srvs::srv::Trigger::Request>();
+        auto dummy_res = std::make_shared<std_srvs::srv::Trigger::Response>();
+        handleGoToOrder(dummy_req, dummy_res);
+      }).detach();
+    }
+  }
+
+  // Handler service /go_to_order1
+  void handleGoToOrder(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_navigating_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is currently busy with another navigation task.";
+      RCLCPP_WARN(get_logger(), "[Order1] %s", res->message.c_str());
+      return;
+    }
+
+    double ox = 0.0, oy = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(order_mutex_);
+      if (!has_order_) {
+        is_navigating_ = false;
+        res->success = false;
+        res->message = "No order position data received yet on topic " + order_topic_;
+        RCLCPP_WARN(get_logger(), "[Order1] %s", res->message.c_str());
+        return;
+      }
+      ox = latest_order_x_;
+      oy = latest_order_y_;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[Order1]\033[0m Calculating safe path and navigating to customer at (%.2f, %.2f)...",
+      ox, oy);
+
+    bool ok = navigateToPersonWithSafeStandoff(ox, oy);
+    is_navigating_ = false;
+
+    res->success = ok;
+    res->message = ok ? "Successfully arrived safely in front of customer."
+                      : "Failed or timed out navigating to customer.";
+  }
+
+  // Mengambil posisi robot saat ini pada frame map
+  bool getRobotPose(double & rx, double & ry, double & ryaw)
+  {
+    try {
+      auto trans = tf_buffer_->lookupTransform(global_frame_, base_frame_, tf2::TimePointZero);
+      rx = trans.transform.translation.x;
+      ry = trans.transform.translation.y;
+      const auto & q = trans.transform.rotation;
+      const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+      const double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+      ryaw = std::atan2(siny_cosp, cosy_cosp);
+      return true;
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_ERROR(get_logger(), "[TF] Cannot lookup %s -> %s: %s",
+        global_frame_.c_str(), base_frame_.c_str(), ex.what());
+      return false;
+    }
+  }
+
+  // Fungsi utama: Menghitung koordinat global, standoff offset, dan mengirim ke Nav2
+  bool navigateToPersonWithSafeStandoff(double px, double py)
+  {
+    double rx = 0.0, ry = 0.0, ryaw = 0.0;
+    if (!getRobotPose(rx, ry, ryaw)) {
+      RCLCPP_ERROR(get_logger(), "[Navigation] Failed to get robot current pose from TF!");
+      return false;
+    }
+
+    // 1. Transformasikan ke koordinat global (map) jika input berasal dari frame base_link
+    double target_map_x = px;
+    double target_map_y = py;
+    if (order_frame_ == "base_link") {
+      target_map_x = rx + px * std::cos(ryaw) - py * std::sin(ryaw);
+      target_map_y = ry + px * std::sin(ryaw) + py * std::cos(ryaw);
+      RCLCPP_INFO(
+        get_logger(),
+        "[Transform] base_link (%.2f, %.2f) -> map (%.2f, %.2f)",
+        px, py, target_map_x, target_map_y);
+    }
+
+    // 2. Hitung jarak dan sudut dari robot ke orang
+    const double dx = target_map_x - rx;
+    const double dy = target_map_y - ry;
+    const double dist_to_person = std::hypot(dx, dy);
+    const double angle_to_person = std::atan2(dy, dx);
+
+    // 3. Tentukan Titik Berhenti Aman (Standoff Offset)
+    // Robot berhenti sejauh standoff_dist_ (misal 0.85m) di depan orang dan menghadap langsung ke orang
+    double goal_x = target_map_x;
+    double goal_y = target_map_y;
+    double goal_yaw = angle_to_person;
+
+    if (dist_to_person > standoff_dist_) {
+      goal_x = target_map_x - standoff_dist_ * std::cos(angle_to_person);
+      goal_y = target_map_y - standoff_dist_ * std::sin(angle_to_person);
+    } else {
+      // Jika robot sudah sangat dekat dengan orang, pertahankan posisi robot sekarang dan hadapkan ke orang
+      goal_x = rx;
+      goal_y = ry;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;32m[Safe Goal]\033[0m Target Person: (%.2f, %.2f) | Goal Pose: (%.2f, %.2f, yaw=%.1f deg)",
+      target_map_x, target_map_y, goal_x, goal_y, goal_yaw * 180.0 / M_PI);
+
+    // 4. Kirim Goal Pose ke Nav2 Action Server
+    if (!nav_client_->wait_for_action_server(std::chrono::seconds(5))) {
+      RCLCPP_ERROR(get_logger(), "[Nav2] Action server 'navigate_to_pose' unavailable!");
+      return false;
+    }
+
+    NavigateToPose::Goal goal;
+    goal.pose.header.frame_id = global_frame_;
+    goal.pose.header.stamp = now();
+    goal.pose.pose.position.x = goal_x;
+    goal.pose.pose.position.y = goal_y;
+    goal.pose.pose.position.z = 0.0;
+    goal.pose.pose.orientation = yawToQuaternion(goal_yaw);
+
+    auto promise = std::make_shared<std::promise<rclcpp_action::ResultCode>>();
+    auto future = promise->get_future();
+
+    auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
+    send_opts.goal_response_callback = [this](const GoalHandleNav::SharedPtr & handle) {
+      if (!handle) {
+        RCLCPP_WARN(get_logger(), "[Nav2] Goal rejected by Nav2!");
+      } else {
+        current_goal_handle_ = handle;
+        RCLCPP_INFO(get_logger(), "[Nav2] Goal accepted! Navigating with real-time obstacle avoidance...");
+      }
+    };
+    send_opts.result_callback = [promise](const GoalHandleNav::WrappedResult & res) {
+      promise->set_value(res.code);
+    };
+
+    auto send_future = nav_client_->async_send_goal(goal, send_opts);
+    if (send_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready || !send_future.get()) {
+      RCLCPP_ERROR(get_logger(), "[Nav2] Failed sending goal to Nav2!");
+      return false;
+    }
+
+    // 5. Tunggu sampai robot tiba dengan aman (Nav2 otomatis menghindari obstacle)
+    if (future.wait_for(std::chrono::seconds(static_cast<int>(nav_timeout_sec_))) == std::future_status::ready) {
+      const auto code = future.get();
+      if (code == rclcpp_action::ResultCode::SUCCEEDED) {
+        RCLCPP_INFO(get_logger(), "\033[1;32m[Nav2] Arrived safely at customer position!\033[0m");
+        return true;
+      } else {
+        RCLCPP_WARN(get_logger(), "[Nav2] Navigation canceled or aborted by Nav2 (code %d).", static_cast<int>(code));
+        return false;
+      }
+    } else {
+      RCLCPP_ERROR(get_logger(), "[Nav2] Navigation timed out after %.1fs. Canceling goal...", nav_timeout_sec_);
+      if (current_goal_handle_) {
+        nav_client_->async_cancel_goal(current_goal_handle_);
+      }
+      return false;
+    }
+  }
+
+  // Handler Homing
+  void handleHoming(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_navigating_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is currently busy navigating.";
+      RCLCPP_WARN(get_logger(), "[Homing] %s", res->message.c_str());
+      return;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[Homing]\033[0m Navigating robot back to origin (x=%.2f, y=%.2f)...",
+      origin_x_, origin_y_);
+
+    bool ok = navigateToOrigin();
+    is_navigating_ = false;
+
+    res->success = ok;
+    res->message = ok ? "Robot successfully arrived at homing position."
+                      : "Failed or timed out navigating to homing position.";
+  }
+
+  bool navigateToOrigin()
+  {
+    if (!nav_client_->wait_for_action_server(std::chrono::seconds(5))) {
+      RCLCPP_ERROR(get_logger(), "[Homing] Nav2 action server 'navigate_to_pose' is unavailable!");
+      return false;
+    }
+
+    NavigateToPose::Goal goal;
+    goal.pose.header.frame_id = global_frame_;
+    goal.pose.header.stamp = now();
+    goal.pose.pose.position.x = origin_x_;
+    goal.pose.pose.position.y = origin_y_;
+    goal.pose.pose.position.z = 0.0;
+    goal.pose.pose.orientation = yawToQuaternion(origin_yaw_);
+
+    auto promise = std::make_shared<std::promise<rclcpp_action::ResultCode>>();
+    auto future = promise->get_future();
+
+    auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
+    send_opts.goal_response_callback = [this](const GoalHandleNav::SharedPtr & handle) {
+      if (!handle) {
+        RCLCPP_WARN(get_logger(), "[Homing] Nav2 rejected homing goal!");
+      } else {
+        current_goal_handle_ = handle;
+        RCLCPP_INFO(get_logger(), "[Homing] Nav2 accepted homing goal. Driving to home...");
+      }
+    };
+    send_opts.result_callback = [promise](const GoalHandleNav::WrappedResult & res) {
+      promise->set_value(res.code);
+    };
+
+    auto send_future = nav_client_->async_send_goal(goal, send_opts);
+    if (send_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready || !send_future.get()) {
+      RCLCPP_ERROR(get_logger(), "[Homing] Failed sending goal to Nav2 action server!");
+      return false;
+    }
+
+    if (future.wait_for(std::chrono::seconds(static_cast<int>(nav_timeout_sec_))) == std::future_status::ready) {
+      const auto code = future.get();
+      if (code == rclcpp_action::ResultCode::SUCCEEDED) {
+        RCLCPP_INFO(get_logger(), "\033[1;32m[Homing] Arrived at home position!\033[0m");
+        return true;
+      } else {
+        RCLCPP_WARN(get_logger(), "[Homing] Navigation failed or canceled (code %d).", static_cast<int>(code));
+        return false;
+      }
+    } else {
+      RCLCPP_ERROR(get_logger(), "[Homing] Navigation timed out after %.1f seconds. Canceling goal...", nav_timeout_sec_);
+      if (current_goal_handle_) {
+        nav_client_->async_cancel_goal(current_goal_handle_);
+      }
+      return false;
+    }
+  }
+
+  // Parameters
+  double origin_x_{0.0};
+  double origin_y_{0.0};
+  double origin_yaw_{0.0};
+  std::string global_frame_{"map"};
+  std::string base_frame_{"base_link"};
+  std::string order_topic_{"/zed/order1"};
+  std::string order_frame_{"base_link"};
+  double standoff_dist_{0.85};
+  bool auto_navigate_{false};
+  double nav_timeout_sec_{120.0};
+
+  // State & Data
+  std::atomic<bool> is_navigating_{false};
+  GoalHandleNav::SharedPtr current_goal_handle_;
+  std::mutex order_mutex_;
+  bool has_order_{false};
+  double latest_order_x_{0.0};
+  double latest_order_y_{0.0};
+  rclcpp::Time latest_order_time_;
+
+  // TF2
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
+  // Callback groups
+  rclcpp::CallbackGroup::SharedPtr srv_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr action_cb_group_;
+  rclcpp::CallbackGroup::SharedPtr sub_cb_group_;
+
+  // ROS Interfaces
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr order_sub_;
+  rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_homing_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_homing_alias_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order1_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order1_alias_;
+};
+
+}  // namespace restaurant
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<restaurant::RestaurantNode>();
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.spin();
+  rclcpp::shutdown();
+  return 0;
+}
