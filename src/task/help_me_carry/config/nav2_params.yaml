@@ -77,8 +77,8 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker" # Stuck detection plugin
-      required_movement_radius: 0.15     # Required movement radius (m)
-      movement_time_allowance: 20.0      # Movement time allowance (s, diberi waktu cukup untuk in-place align)
+      required_movement_radius: 0.10     # Required movement radius (m)
+      movement_time_allowance: 180.0     # Movement time allowance (s, diberi waktu leluasa untuk mengantri di belakang orang)
 
     general_goal_checker:
       stateful: True                     # Stateful goal checking

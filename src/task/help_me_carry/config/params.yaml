@@ -74,3 +74,15 @@ help_me_carry_node:
     step_back_person_distance: 2.0            # Target distance to person to stop moving back (meters)
     step_back_speed: 0.15                     # Backward speed magnitude (m/s)
     step_back_timeout: 15.0                   # Max duration for step back motion (seconds)
+
+    # -------------------------------------------------------------
+    # 8. HOMING QUEUEING (ANTRI DI BELAKANG ORANG SAAT HOMING)
+    # -------------------------------------------------------------
+    homing_queue_enabled: true                # Aktifkan perilaku antri di belakang orang saat /homing
+    homing_queue_distance: 0.90               # Jarak berhenti di belakang orang dalam antrian (meter)
+    homing_queue_resume_distance: 1.30        # Jarak ketika orang mulai menjauh / antrian maju (meter)
+    homing_queue_corridor: 0.45               # Setengah lebar koridor deteksi orang di depan path (|y| meter)
+    homing_queue_max_detect_dist: 2.20        # Jarak maksimal pemantauan orang di depan robot (meter)
+    homing_queue_crawl_speed: 0.12            # Kecepatan merayap maju mengikuti antrian saat orang melangkah (m/s)
+    homing_queue_clear_hysteresis: 1.0        # Durasi bebas orang sebelum antrian dilepas dan Nav2 jalan penuh (detik)
+    homing_timeout: 300.0                     # Batas waktu maksimal eksekusi navigasi homing (detik)
