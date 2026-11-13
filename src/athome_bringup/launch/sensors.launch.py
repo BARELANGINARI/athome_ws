@@ -19,6 +19,7 @@ def generate_launch_description():
         DeclareLaunchArgument('lidar_z', default_value='0.3', description='LiDAR Z offset from base_link (m)'),
         DeclareLaunchArgument('lidar_yaw', default_value='3.14159', description='LiDAR yaw offset from base_link (rad)'),
         DeclareLaunchArgument('camera_fps', default_value='30.0', description='ZED camera frame rate (FPS)'),
+        DeclareLaunchArgument('task', default_value='all', description='Vision task mode: help_me_carry, receptionist, restaurant, or all'),
         DeclareLaunchArgument('use_scan_filter', default_value='false', description='Enable laser scan angular filter'),
         DeclareLaunchArgument('enable_body_tracking', default_value='true', description='Enable ZED body tracking'),
         DeclareLaunchArgument('depth_minimum_distance', default_value='30.0', description='Minimum depth sensing distance (cm)'),
@@ -87,6 +88,7 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(
                 PathJoinSubstitution([FindPackageShare('athome_vision'), 'launch', 'zed.launch.py'])),
             launch_arguments={
+                'task': LaunchConfiguration('task'),
                 'camera_fps': LaunchConfiguration('camera_fps'),
                 'publish_yaw': 'true',
                 'yaw_360': LaunchConfiguration('yaw_360'),

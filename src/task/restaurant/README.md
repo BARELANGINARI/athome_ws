@@ -5,6 +5,18 @@ ros2 launch restaurant hardware.launch.py
 ros2 launch restaurant motion.launch.py
 ```
 
+## kamera / deteksi lambaian tangan
+
+Jalankan vision dalam mode restaurant agar node mendeteksi orang yang mengangkat/melambaikan tangan (kiri atau kanan) dan otomatis mempublikasikan koordinat orang terdekat yang melambai ke `/zed/order1`:
+
+```bash
+ros2 launch athome_bringup sensors.launch.py task:=restaurant
+# atau tanpa bringup:
+ros2 launch athome_vision zed.launch.py task:=restaurant
+```
+
+Gesture yang dipublikasikan ke `/zed/gesture`: `WAVE_LEFT`, `WAVE_RIGHT`, atau `NONE`.
+
 ## service
 ```bash
 ros2 service call /homing std_srvs/srv/Trigger {}

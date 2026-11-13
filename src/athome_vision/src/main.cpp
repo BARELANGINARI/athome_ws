@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -720,6 +721,65 @@ public:
     return "NONE";
   }
 
+  static bool validKeypoint(const sl::float2 & point)
+  {
+    return std::isfinite(point.x) && std::isfinite(point.y) &&
+           point.x >= 0.0f && point.y >= 0.0f;
+  }
+
+  static float keypointDistance(const sl::float2 & a, const sl::float2 & b)
+  {
+    return std::hypot(a.x - b.x, a.y - b.y);
+  }
+
+  static float poseScale(const std::vector<sl::float2> & kpt)
+  {
+    if (kpt.size() > 12 && validKeypoint(kpt[5]) && validKeypoint(kpt[12])) {
+      const float shoulder_width = keypointDistance(kpt[5], kpt[12]);
+      if (shoulder_width > 10.0f) return shoulder_width;
+    }
+    if (kpt.size() > 3 && validKeypoint(kpt[3]) && validKeypoint(kpt[0])) {
+      const float torso_length = keypointDistance(kpt[3], kpt[0]);
+      if (torso_length > 10.0f) return torso_length * 0.5f;
+    }
+    return 30.0f;
+  }
+
+  static bool isHandRaised(
+    const std::vector<sl::float2> & kpt, int shoulder, int elbow, int wrist, float margin)
+  {
+    if (shoulder >= static_cast<int>(kpt.size()) ||
+        elbow >= static_cast<int>(kpt.size()) ||
+        wrist >= static_cast<int>(kpt.size()))
+    {
+      return false;
+    }
+
+    const auto & s = kpt[static_cast<size_t>(shoulder)];
+    const auto & e = kpt[static_cast<size_t>(elbow)];
+    const auto & w = kpt[static_cast<size_t>(wrist)];
+    if (!validKeypoint(s) || !validKeypoint(e) || !validKeypoint(w)) return false;
+
+    // Image y axis grows downward: a raised hand is above the shoulder and elbow.
+    if (w.y > s.y - margin) return false;
+    if (w.y > e.y - margin * 0.5f) return false;
+    if (keypointDistance(w, e) < margin) return false;
+    return true;
+  }
+
+  static std::string detectWave(const std::vector<sl::float2> & kpt)
+  {
+    if (kpt.size() < 24) return "NONE";
+    const float margin = std::max(8.0f, poseScale(kpt) * 0.25f);
+    const bool left = isHandRaised(kpt, 5, 6, 7, margin);
+    const bool right = isHandRaised(kpt, 12, 13, 14, margin);
+    if (!left && !right) return "NONE";
+    if (left && right) {
+      return kpt[7].y <= kpt[14].y ? "WAVE_LEFT" : "WAVE_RIGHT";
+    }
+    return left ? "WAVE_LEFT" : "WAVE_RIGHT";
+  }
+
 private:
   std::vector<float> embedFace(const cv::Mat & image)
   {
@@ -945,6 +1005,13 @@ private:
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
 
+  struct WaveMemory
+  {
+    std::string side;
+    int streak{0};
+    rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
+  };
+
   void publishYaw();
   void loop();
   void processBags(const cv::Mat & bgr, const sl::Mat & cloud);
@@ -975,6 +1042,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr attributes_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr empty_seat_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr chair_dets_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr order1_publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   bool publish_yaw_{true};
@@ -1018,9 +1086,11 @@ private:
   std::vector<ChairMemory> chair_memory_;
 
   OperatorMemory op_mem_;
+  std::unordered_map<int, WaveMemory> wave_memory_;
   std::string task_mode_{"all"};
   bool is_help_me_carry_{true};
   bool is_receptionist_{true};
+  bool is_restaurant_{false};
   std::string guest_name_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_name_sub_;
 };
@@ -1072,6 +1142,10 @@ ZedNode::ZedNode()
   } else if (task == "receptionist" || task == "rec") {
     is_help_me_carry_ = false;
     is_receptionist_ = true;
+  } else if (task == "restaurant" || task == "resto" || task == "waiter") {
+    is_help_me_carry_ = false;
+    is_receptionist_ = false;
+    is_restaurant_ = true;
   }
   enable_bag_ = get_parameter("enable_bag").as_bool();
   RCLCPP_INFO(
@@ -1094,6 +1168,7 @@ ZedNode::ZedNode()
   attributes_publisher_ = create_publisher<std_msgs::msg::String>("/zed/person_attributes", 10);
   empty_seat_publisher_ = create_publisher<std_msgs::msg::String>("/zed/empty_seat", 10);
   chair_dets_publisher_ = create_publisher<std_msgs::msg::String>("/zed/chair_detections", 10);
+  order1_publisher_ = create_publisher<std_msgs::msg::String>("/zed/order1", 10);
 
   person_name_sub_ = create_subscription<std_msgs::msg::String>(
     "/zed/set_person_name", 10,
@@ -1708,11 +1783,35 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   bool first_person = true;
   std::string gesture_result = "NONE";
   std::string first_recognized_name;
+  std::string wave_result = "NONE";
+  size_t wave_idx = entries.size();
 
   for (size_t idx = 0; idx < entries.size(); ++idx) {
     const auto & entry = entries[idx];
     const auto & points = entry.body->keypoint_2d;
     std::string recognized_name = recognized_names[idx];
+
+    if (is_restaurant_) {
+      const std::string wave = AttributeAnalyzer::detectWave(points);
+      if (wave == "NONE") {
+        wave_memory_.erase(entry.id);
+      } else {
+        auto & memory = wave_memory_[entry.id];
+        if (memory.side == wave) {
+          memory.streak = std::min(memory.streak + 1, 10);
+        } else {
+          memory.side = wave;
+          memory.streak = 1;
+        }
+        memory.last_seen = current_time;
+        if (memory.streak >= 3 && entry.has_depth &&
+            (wave_idx == entries.size() || entry.range_m < entries[wave_idx].range_m))
+        {
+          wave_idx = idx;
+          wave_result = wave;
+        }
+      }
+    }
 
     // Jika sedang mendaftarkan nama tamu baru di pintu
     if (recognized_name.empty() && is_receptionist_ && !pending_register_name_.empty() && first_person) {
@@ -1745,9 +1844,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     }
 
     if (first_person) {
-      gesture_result = AttributeAnalyzer::detectGesture(points);
-      if (is_help_me_carry_ && gesture_result != "NONE") {
-        IC(entry.id, gesture_result);
+      if (!is_restaurant_) {
+        gesture_result = AttributeAnalyzer::detectGesture(points);
+        if (is_help_me_carry_ && gesture_result != "NONE") {
+          IC(entry.id, gesture_result);
+        }
       }
 
       std_msgs::msg::String attr_msg;
@@ -1801,6 +1902,30 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       } else {
         ss << "-1,-1";
       }
+    }
+  }
+
+  if (is_restaurant_) {
+    for (auto it = wave_memory_.begin(); it != wave_memory_.end(); ) {
+      if ((current_time - it->second.last_seen).seconds() > 1.0) {
+        it = wave_memory_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    gesture_result = wave_result;
+    if (wave_idx < entries.size()) {
+      const auto & customer = entries[wave_idx];
+      std::ostringstream order_ss;
+      order_ss << std::fixed << std::setprecision(2)
+               << customer.x << ", " << customer.y;
+      std_msgs::msg::String order_msg;
+      order_msg.data = order_ss.str();
+      order1_publisher_->publish(order_msg);
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Waving customer detected (%s) at %s", wave_result.c_str(), order_msg.data.c_str());
     }
   }
 

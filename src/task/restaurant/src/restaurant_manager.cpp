@@ -1093,9 +1093,13 @@ private:
     double px = 0.0, py = 0.0;
     if (parseCoordinates(message->data, px, py)) {
       std::lock_guard<std::mutex> lock(vision_mutex_);
-      waving_person_x_ = px;
-      waving_person_y_ = py;
-      has_waving_person_coords_ = true;
+      // Jangan menimpa koordinat orang yang melambai dari /zed/order1.
+      // /zed/person_label hanya menjadi fallback posisi awal.
+      if (!has_waving_person_coords_) {
+        waving_person_x_ = px;
+        waving_person_y_ = py;
+        has_waving_person_coords_ = true;
+      }
     }
   }
 

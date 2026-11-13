@@ -6,7 +6,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('task', default_value='all', description='Task filter for vision IC logging: help_me_carry, receptionist, or all'),
+        DeclareLaunchArgument('task', default_value='all', description='Task filter for vision IC logging: help_me_carry, receptionist, restaurant, or all'),
         DeclareLaunchArgument('camera_fps', default_value='30.0', description='Camera frame rate (FPS)'),
         DeclareLaunchArgument('publish_yaw', default_value='true', description='Publish IMU yaw topic'),
         DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 range instead of -180..180'),
