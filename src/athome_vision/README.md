@@ -7,6 +7,7 @@ Computer vision package powered by Stereolabs ZED SDK and ONNX YOLO object detec
 * **Person Attributes Classification:** Classifies gender, clothing color, and hair color (`/vision/person_attributes`) for Receptionist.
 * **Pointing Gesture Detection:** Detects operator arm pointing to the floor (`/vision/gesture`: `RIGHT`, `LEFT`, `NONE`) for Help Me Carry.
 * **Waving Hand Detection:** Detects a raised/waving hand (left or right) for the Restaurant task and publishes the nearest waving customer's position on `/vision/order` (`x, y` in meters) and `/vision/gesture` (`WAVE_LEFT`, `WAVE_RIGHT`, `NONE`).
+* **Person Facing Backward Detection:** Detects whether a person is facing backward (away from camera) using skeleton keypoints, shoulder/hip geometry, and root orientation, publishing nearest person coordinates on `/vision/person_back` (`x, y` in meters).
 * **Chair Occupancy Memory:** Keeps the last known chair position so a chair remains detectable and becomes `occupied` when a person sits on it even if YOLO loses the chair due to occlusion.
 * **YOLO Luggage Detection:** Detects luggage bags from RGB frames and projects 3D spatial coordinates using the point cloud.
 * **Camera Yaw:** Publishes drift-free heading on `/vision/yaw_deg` for mobile base orientation compensation.
@@ -34,6 +35,7 @@ ros2 launch athome_vision vision.launch.py task:=restaurant
 * `/vision/yaw_deg` (`std_msgs/msg/Float64`): Camera yaw angle in degrees.
 * `/vision/gesture` (`std_msgs/msg/String`): Operator pointing gesture (`RIGHT`, `LEFT`, `NONE`) or restaurant wave (`WAVE_LEFT`, `WAVE_RIGHT`, `NONE`).
 * `/vision/order` (`std_msgs/msg/String`): Nearest customer waving a hand, formatted as `"x, y"` in meters (published in restaurant mode).
+* `/vision/person_back` (`std_msgs/msg/String`): Nearest person facing backward, formatted as `"x, y"` in meters.
 * `/vision/person_label` (`std_msgs/msg/String`): Detected person 3D coordinates and skeleton keypoints.
 * `/vision/recognized_name` (`std_msgs/msg/String`): Name of the nearest detected registered person; empty when none is recognized.
 * `/vision/person_attributes` (`std_msgs/msg/String`): Detected visual attributes (`gender, shirt color, hair color`).

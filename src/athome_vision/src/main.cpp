@@ -195,6 +195,7 @@ struct PrevPerson
   bool has_pos{false};
   double x_m{0.0}, y_m{0.0}, range_m{0.0};
   bool is_sitting{false};
+  bool is_facing_back{false};
   std::vector<cv::Point2f> kpt;
   std::string clothing, hair, gender, name;
 };
@@ -796,6 +797,105 @@ public:
     return left ? "WAVE_LEFT" : "WAVE_RIGHT";
   }
 
+  static std::string detectOrientation(const sl::BodyData & body, const cv::Rect & bbox)
+  {
+    const auto & kpt = body.keypoint_2d;
+    if (kpt.size() < 34) return "FRONT";
+
+    int back_votes = 0;
+    int front_votes = 0;
+    bool is_narrow_side = false;
+
+    const float box_w = static_cast<float>(std::max(1, bbox.width));
+
+    // 1. Shoulders (LEFT_SHOULDER = 5, RIGHT_SHOULDER = 12)
+    if (validKeypoint(kpt[5]) && validKeypoint(kpt[12])) {
+      const float dx = kpt[12].x - kpt[5].x; // Right shoulder x - Left shoulder x in image
+      const float shoulder_w = std::abs(dx);
+      if (shoulder_w < 0.18f * box_w) {
+        is_narrow_side = true;
+      } else if (dx > 0.0f) {
+        back_votes += 3;
+      } else {
+        front_votes += 3;
+      }
+    }
+
+    // 2. 3D Shoulders (sl::BodyData::keypoint in RIGHT_HANDED_Z_UP_X_FWD: +Y is left)
+    if (body.keypoint.size() >= 34) {
+      const auto & p5 = body.keypoint[5];
+      const auto & p12 = body.keypoint[12];
+      if (std::isfinite(p5.y) && std::isfinite(p12.y)) {
+        const float dy = p5.y - p12.y; // Left shoulder Y - Right shoulder Y in 3D (+Y = left)
+        if (std::abs(dy) > 10.0f) {
+          if (dy > 0.0f) {
+            back_votes += 2;
+          } else {
+            front_votes += 2;
+          }
+        }
+      }
+    }
+
+    // 3. Hips (LEFT_HIP = 18, RIGHT_HIP = 22)
+    if (validKeypoint(kpt[18]) && validKeypoint(kpt[22])) {
+      const float dx = kpt[22].x - kpt[18].x;
+      const float hip_w = std::abs(dx);
+      if (hip_w >= 0.12f * box_w) {
+        if (dx > 0.0f) {
+          back_votes += 2;
+        } else {
+          front_votes += 2;
+        }
+      }
+    }
+
+    // 4. Facial landmarks (NOSE = 27, LEFT_EYE = 28, RIGHT_EYE = 30)
+    const bool has_nose = validKeypoint(kpt[27]);
+    const bool has_left_eye = validKeypoint(kpt[28]);
+    const bool has_right_eye = validKeypoint(kpt[30]);
+
+    if (has_nose && (has_left_eye || has_right_eye)) {
+      if (has_left_eye && has_right_eye) {
+        if (kpt[28].x > kpt[30].x) {
+          front_votes += 3;
+        } else {
+          back_votes += 1;
+        }
+      } else {
+        front_votes += 2;
+      }
+    } else if (!has_nose && !has_left_eye && !has_right_eye) {
+      back_votes += 1;
+    }
+
+    // 5. Global Root Orientation Quaternion from ZED SDK (heading along +X is 0 deg)
+    const auto & q = body.global_root_orientation;
+    const float q_norm_sq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    if (q_norm_sq > 0.5f && q_norm_sq < 1.5f) {
+      const float yaw = zed_vision::wrap180(
+        zed_vision::quatToYaw(q.x, q.y, q.z, q.w) * 180.0f / zed_vision::PI_F);
+      const float abs_yaw = std::abs(yaw);
+      if (abs_yaw <= 55.0f) {
+        back_votes += 3;
+      } else if (abs_yaw >= 125.0f) {
+        front_votes += 3;
+      } else if (abs_yaw >= 70.0f && abs_yaw <= 110.0f) {
+        is_narrow_side = true;
+      }
+    }
+
+    if (is_narrow_side && std::abs(back_votes - front_votes) <= 1) {
+      return "SIDE";
+    }
+    return (back_votes > front_votes) ? "BACK" : "FRONT";
+  }
+
+  static bool isFacingBack(const sl::BodyData & body, const cv::Rect & bbox)
+  {
+    return detectOrientation(body, bbox) == "BACK";
+  }
+
 private:
   std::vector<float> embedFace(const cv::Mat & image)
   {
@@ -1028,6 +1128,12 @@ private:
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
 
+  struct BackMemory
+  {
+    int streak{0};
+    rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
+  };
+
   void publishYaw();
   void loop();
   void processBags(const cv::Mat & bgr, const sl::Mat & cloud);
@@ -1060,6 +1166,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr empty_seat_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr chair_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr order_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr person_back_publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   bool publish_yaw_{true};
@@ -1104,6 +1211,9 @@ private:
 
   OperatorMemory op_mem_;
   std::unordered_map<int, WaveMemory> wave_memory_;
+  bool enable_back_detection_{true};
+  std::string person_back_topic_{"/vision/person_back"};
+  std::unordered_map<int, BackMemory> back_memory_;
   std::string task_mode_{"all"};
   bool is_help_me_carry_{true};
   bool is_receptionist_{true};
@@ -1151,6 +1261,8 @@ ZedNode::ZedNode()
   declare_parameter("face_threshold", 0.363);
   declare_parameter("host_name", std::string("Alex"));
   declare_parameter("host_photo", std::string("models/host.jpg"));
+  declare_parameter("enable_back_detection", true);
+  declare_parameter("person_back_topic", std::string("/vision/person_back"));
 
   task_mode_ = get_parameter("task").as_string();
   std::string task = task_mode_;
@@ -1188,6 +1300,10 @@ ZedNode::ZedNode()
   empty_seat_publisher_ = create_publisher<std_msgs::msg::String>("/vision/empty_seat", 10);
   chair_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/chair_detections", 10);
   order_publisher_ = create_publisher<std_msgs::msg::String>("/vision/order", 10);
+
+  enable_back_detection_ = get_parameter("enable_back_detection").as_bool();
+  person_back_topic_ = get_parameter("person_back_topic").as_string();
+  person_back_publisher_ = create_publisher<std_msgs::msg::String>(person_back_topic_, 10);
 
   person_name_sub_ = create_subscription<std_msgs::msg::String>(
     "/vision/set_person_name", 10,
@@ -1553,6 +1669,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   preview_persons_.clear();
 
   if (bodies_.body_list.empty()) {
+    back_memory_.clear();
     std_msgs::msg::String person_msg;
     person_msg.data = "NO_PERSON";
     persons_publisher_->publish(person_msg);
@@ -1856,11 +1973,29 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   std::string first_recognized_name;
   std::string wave_result = "NONE";
   size_t wave_idx = entries.size();
+  size_t back_idx = entries.size();
 
   for (size_t idx = 0; idx < entries.size(); ++idx) {
     const auto & entry = entries[idx];
     const auto & points = entry.body->keypoint_2d;
     std::string recognized_name = recognized_names[idx];
+
+    bool is_facing_back = false;
+    if (enable_back_detection_) {
+      is_facing_back = AttributeAnalyzer::isFacingBack(*entry.body, entry.bbox);
+      if (is_facing_back) {
+        auto & memory = back_memory_[entry.id];
+        memory.streak = std::min(memory.streak + 1, 10);
+        memory.last_seen = current_time;
+        if (memory.streak >= 2 && entry.has_depth &&
+            (back_idx == entries.size() || entry.range_m < entries[back_idx].range_m))
+        {
+          back_idx = idx;
+        }
+      } else {
+        back_memory_.erase(entry.id);
+      }
+    }
 
     if (is_restaurant_) {
       const std::string wave = AttributeAnalyzer::detectWave(points);
@@ -1900,6 +2035,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     person.x_m = entry.x;
     person.y_m = entry.y;
     person.range_m = entry.range_m;
+    person.is_facing_back = is_facing_back;
     person.name = recognized_name;
     for (const auto & point : points) {
       person.kpt.emplace_back(
@@ -1965,7 +2101,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     } else {
       ss << "nan,nan,nan";
     }
-    ss << "|id=" << entry.id << "|kpt=";
+    ss << "|id=" << entry.id << "|back=" << (is_facing_back ? "1" : "0") << "|kpt=";
     for (size_t k = 0; k < 34; ++k) {
       if (k > 0) ss << ",";
       if (k < points.size() && std::isfinite(points[k].x) && std::isfinite(points[k].y)) {
@@ -1997,6 +2133,31 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       RCLCPP_INFO_THROTTLE(
         get_logger(), *get_clock(), 1000,
         "Waving customer detected (%s) at %s", wave_result.c_str(), order_msg.data.c_str());
+    }
+  }
+
+  if (enable_back_detection_) {
+    for (auto it = back_memory_.begin(); it != back_memory_.end(); ) {
+      if ((current_time - it->second.last_seen).seconds() > 1.0) {
+        it = back_memory_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    if (back_idx < entries.size()) {
+      const auto & back_person = entries[back_idx];
+      std::ostringstream back_ss;
+      back_ss << std::fixed << std::setprecision(2)
+              << back_person.x << ", " << back_person.y;
+      std_msgs::msg::String back_msg;
+      back_msg.data = back_ss.str();
+      person_back_publisher_->publish(back_msg);
+      IC(back_person.id, "BACK", back_person.x, back_person.y, back_person.range_m);
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 1000,
+        "Person facing back detected [ID %d] at (%s) range: %.2fm",
+        back_person.id, back_msg.data.c_str(), back_person.range_m);
     }
   }
 
@@ -2335,6 +2496,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         label = "ID: " + std::to_string(p.id);
       }
       if (p.is_sitting) label += " [Seated]";
+      if (p.is_facing_back) label += " [Back]";
       banner(label, r.x, r.y, color,
         p.is_sitting ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0),
         cv::Scalar(255, 255, 255), 0.58, 2);
@@ -2417,12 +2579,12 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     std::string person_title;
     if (is_receptionist_ && !is_help_me_carry_) {
       if (!p0.name.empty()) {
-        person_title = p0.name + " :";
+        person_title = p0.name + (p0.is_facing_back ? " [Back] :" : " :");
       } else {
-        person_title = "Guest :";
+        person_title = std::string("Guest") + (p0.is_facing_back ? " [Back] :" : " :");
       }
     } else {
-      person_title = "Operator [ID " + std::to_string(p0.id) + "] :";
+      person_title = "Operator [ID " + std::to_string(p0.id) + "]" + (p0.is_facing_back ? " [Back] :" : " :");
     }
     hud(person_title, p0.x_m, p0.y_m, p0.range_m, cv::Scalar(0, 255, 0));
 

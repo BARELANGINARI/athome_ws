@@ -4,11 +4,14 @@ help_me_carry_node:
     # 1. TOPICS & FRAMES
     # -------------------------------------------------------------
     person_topic: "/vision/person_label"         # Topic for vision person detections
+    person_back_topic: "/vision/person_back"     # Topic for back-facing person detections
     gesture_topic: "/vision/gesture"             # Topic for pointing gesture detections
     bag_topic: "/vision/bag_detections"          # Topic for YOLO paper bag detections
     yaw_topic: "/vision/yaw_deg"                 # Topic for IMU yaw data
     cmd_vel_topic: "/cmd_vel"                 # Topic for base velocity commands
+    nav_cmd_vel_topic: "/nav_cmd_vel"         # Topic input kecepatan navigasi Nav2
     path_topic: "/following_path"             # Topic for RViz following trajectory
+    plan_topic: "/plan"                       # Topic for Nav2 global plan
     goal_update_topic: "/goal_update"         # Topic for Nav2 dynamic goal updates
     action_name: "navigate_to_pose"           # Nav2 NavigateToPose action server
     frame_map: "map"                          # Global map frame
@@ -51,10 +54,10 @@ help_me_carry_node:
     # 5. LIDAR OBSTACLE & SAFETY CORRIDOR
     # -------------------------------------------------------------
     enable_avoidance: true                    # Enable real-time LiDAR obstacle avoidance
-    obstacle_distance: 0.75                   # Distance threshold to start slowing down (meters)
+    obstacle_distance: 0.85                   # Distance threshold to start slowing down (meters, dinaikkan +10cm agar avoidance lebih berjarak)
     footprint_radius: 0.24                    # Robot self-footprint radius filter (meters)
-    min_stop_x: 0.38                          # Hard safety braking distance from robot center (meters)
-    corridor_width: 0.32                      # Front danger corridor half-width (|y| in meters)
+    min_stop_x: 0.48                          # Hard safety braking distance from robot center (meters, dinaikkan +10cm)
+    corridor_width: 0.38                      # Front danger corridor half-width (|y| in meters)
     bypass_theta_offset_deg: 10.0             # Diagonal yaw offset during lateral bypass (degrees)
     peeking_avoid_dist: 1.10                  # Distance threshold to trigger peeking avoidance when person occluded (meters)
     peeking_strafe_speed: 0.22                # Lateral strafe speed during peeking (m/s)
@@ -79,10 +82,13 @@ help_me_carry_node:
     # 8. HOMING QUEUEING (ANTRI DI BELAKANG ORANG SAAT HOMING)
     # -------------------------------------------------------------
     homing_queue_enabled: true                # Aktifkan perilaku antri di belakang orang saat /homing
-    homing_queue_distance: 0.90               # Jarak berhenti di belakang orang dalam antrian (meter)
-    homing_queue_resume_distance: 1.30        # Jarak ketika orang mulai menjauh / antrian maju (meter)
-    homing_queue_corridor: 0.45               # Setengah lebar koridor deteksi orang di depan path (|y| meter)
-    homing_queue_max_detect_dist: 2.20        # Jarak maksimal pemantauan orang di depan robot (meter)
-    homing_queue_crawl_speed: 0.12            # Kecepatan merayap maju mengikuti antrian saat orang melangkah (m/s)
-    homing_queue_clear_hysteresis: 1.0        # Durasi bebas orang sebelum antrian dilepas dan Nav2 jalan penuh (detik)
+    homing_queue_distance: 1.00               # Jarak target STOP di belakang orang antrian (1.0 meter)
+    homing_queue_resume_distance: 2.00        # Jarak batas antri CRAWL — jika > ini, langsung resume Nav2 (meter)
+    homing_queue_corridor: 1.00               # Lebar toleransi koridor path homing (meter) — orang dianggap menghalangi jika jarak ke path <= ini
+    homing_queue_max_detect_dist: 2.30        # Jarak maksimal deteksi orang (< 3 meter dari robot)
+    homing_queue_min_persons: 2               # Jumlah minimal orang berdekatan untuk dianggap antrian (opsi 4)
+    homing_queue_inter_dist: 1.80             # Jarak maksimal x, y antar orang agar dianggap antrian (meter)
+    homing_queue_crawl_speed: 0.10            # Kecepatan crawl mengikuti antrian (m/s) — lebih pelan = lebih sopan
+    homing_queue_wait_duration: 60.0           # Durasi diam antri (detik) sebelum antrian selesai & Nav2 homing lanjut
+    homing_queue_clear_hysteresis: 0.75       # Detik orang tidak terdeteksi sebelum resume Nav2 (buffer anti-flicker)
     homing_timeout: 300.0                     # Batas waktu maksimal eksekusi navigasi homing (detik)
