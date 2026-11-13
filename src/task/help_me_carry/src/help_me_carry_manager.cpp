@@ -118,7 +118,7 @@ public:
     follow_status_sub_ = create_subscription<std_msgs::msg::String>(
       "/follow/status", 10,
       std::bind(&HelpMeCarryOrchestrator::onFollowStatus, this, std::placeholders::_1),
-      options);z
+      options);
 
     bag_sub_ = create_subscription<std_msgs::msg::String>(
       "/zed/bag_detections", rclcpp::SensorDataQoS(),
