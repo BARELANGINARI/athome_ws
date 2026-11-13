@@ -2150,27 +2150,6 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         banner(attrs, r.x, r.y + r.height + 22,
           cv::Scalar(0, 180, 180), cv::Scalar(20, 30, 30), cv::Scalar(0, 255, 255), 0.48, 1);
       }
-
-      // Visualisasi titik tengah dan keypoint dinonaktifkan sementara (hanya bounding box)
-      /*
-      const int cx = r.x + r.width / 2;
-      const int cy = r.y + r.height / 2;
-      cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(0, 255, 255), -1);
-      cv::drawMarker(canvas, cv::Point(cx, cy), cv::Scalar(0, 255, 255), cv::MARKER_CROSS, 14, 2);
-      if (i == 0) cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 2);
-
-      for (size_t k = 0; k < p.kpt.size(); ++k) {
-        const auto & pt = p.kpt[k];
-        if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) continue;
-        const bool big = (k == 5 || k == 7 || k == 12 || k == 14);
-        const int kx = flip ? (W - static_cast<int>(std::lround(pt.x)))
-                            : static_cast<int>(std::lround(pt.x));
-        const int ky = static_cast<int>(std::lround(pt.y));
-        if (kx < 0 || ky < 0 || kx >= W || ky >= H) continue;
-        cv::circle(canvas, cv::Point(kx, ky), big ? 5 : 3,
-          big ? cv::Scalar(0, 200, 255) : cv::Scalar(0, 255, 0), -1);
-      }
-      */
     }
 
     if (enable_bag_) {
