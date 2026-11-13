@@ -94,8 +94,8 @@ class BarelangHriNode(Node):
     TOPIC_HRI_EVENT = "/hri/event"
     TOPIC_CMD_VEL = "cmd_vel"
     TOPIC_TTS_SAY = "/hri/tts_say"
-    TOPIC_PERSON_LABEL = "/zed/person_label"
-    TOPIC_GESTURE = "/zed/gesture"
+    TOPIC_PERSON_LABEL = "/vision/person_label"
+    TOPIC_GESTURE = "/vision/gesture"
 
     SERVICE_MAP: Dict[str, str] = {
         "follow_start": "/follow/person",
@@ -211,7 +211,7 @@ class BarelangHriNode(Node):
     def is_operator_in_front(self) -> bool:
         """
         Mengembalikan True jika operator terlihat dalam OPERATOR_GRACE_PERIOD_SEC terakhir,
-        atau jika topik kamera /zed/person_label belum aktif (mode pengujian HRI standalone).
+        atau jika topik kamera /vision/person_label belum aktif (mode pengujian HRI standalone).
         """
         if not self._person_topic_received:
             return True

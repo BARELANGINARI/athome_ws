@@ -1059,7 +1059,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr attributes_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr empty_seat_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr chair_dets_publisher_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr order1_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr order_publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   bool publish_yaw_{true};
@@ -1113,7 +1113,7 @@ private:
 };
 
 ZedNode::ZedNode()
-: Node("zed")
+: Node("vision")
 {
   declare_parameter("task", "all");
   declare_parameter("camera_fps", 30.0);
@@ -1177,20 +1177,20 @@ ZedNode::ZedNode()
   enable_body_tracking_ = get_parameter("enable_body_tracking").as_bool();
   if (camera_fps_ <= 0.0) throw std::runtime_error("camera_fps must be greater than zero");
 
-  yaw_publisher_ = create_publisher<std_msgs::msg::Float64>("/zed/yaw_deg", 10);
-  bag_dets_publisher_ = create_publisher<std_msgs::msg::String>("/zed/bag_detections", 10);
-  drink_dets_publisher_ = create_publisher<std_msgs::msg::String>("/zed/drink_detections", 10);
-  persons_publisher_ = create_publisher<std_msgs::msg::String>("/zed/person_label", 10);
+  yaw_publisher_ = create_publisher<std_msgs::msg::Float64>("/vision/yaw_deg", 10);
+  bag_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/bag_detections", 10);
+  drink_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/drink_detections", 10);
+  persons_publisher_ = create_publisher<std_msgs::msg::String>("/vision/person_label", 10);
   recognized_name_publisher_ =
-    create_publisher<std_msgs::msg::String>("/zed/recognized_name", 10);
-  gesture_publisher_ = create_publisher<std_msgs::msg::String>("/zed/gesture", 10);
-  attributes_publisher_ = create_publisher<std_msgs::msg::String>("/zed/person_attributes", 10);
-  empty_seat_publisher_ = create_publisher<std_msgs::msg::String>("/zed/empty_seat", 10);
-  chair_dets_publisher_ = create_publisher<std_msgs::msg::String>("/zed/chair_detections", 10);
-  order1_publisher_ = create_publisher<std_msgs::msg::String>("/zed/order1", 10);
+    create_publisher<std_msgs::msg::String>("/vision/recognized_name", 10);
+  gesture_publisher_ = create_publisher<std_msgs::msg::String>("/vision/gesture", 10);
+  attributes_publisher_ = create_publisher<std_msgs::msg::String>("/vision/person_attributes", 10);
+  empty_seat_publisher_ = create_publisher<std_msgs::msg::String>("/vision/empty_seat", 10);
+  chair_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/chair_detections", 10);
+  order_publisher_ = create_publisher<std_msgs::msg::String>("/vision/order", 10);
 
   person_name_sub_ = create_subscription<std_msgs::msg::String>(
-    "/zed/set_person_name", 10,
+    "/vision/set_person_name", 10,
     [this](const std_msgs::msg::String::SharedPtr msg) {
       std::string name = msg->data;
       while (!name.empty() &&
@@ -1993,7 +1993,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
                << customer.x << ", " << customer.y;
       std_msgs::msg::String order_msg;
       order_msg.data = order_ss.str();
-      order1_publisher_->publish(order_msg);
+      order_publisher_->publish(order_msg);
       RCLCPP_INFO_THROTTLE(
         get_logger(), *get_clock(), 1000,
         "Waving customer detected (%s) at %s", wave_result.c_str(), order_msg.data.c_str());

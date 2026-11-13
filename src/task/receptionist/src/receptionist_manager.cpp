@@ -157,7 +157,7 @@ public:
     // --------------------------------------------------------------------------
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/status", 10);
-    person_name_pub_ = create_publisher<std_msgs::msg::String>("/zed/set_person_name", 10);
+    person_name_pub_ = create_publisher<std_msgs::msg::String>("/vision/set_person_name", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -170,31 +170,31 @@ public:
       sub_opts);
 
     // --------------------------------------------------------------------------
-    // Subscriber Vision (Static RGB-D ZED Camera)
+    // Subscriber Vision (Static RGB-D Camera)
     // --------------------------------------------------------------------------
     person_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/person_label", rclcpp::SensorDataQoS(),
+      "/vision/person_label", rclcpp::SensorDataQoS(),
       std::bind(&ReceptionistTaskNode::onPersonLabel, this, std::placeholders::_1),
       sub_opts);
 
     drink_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/drink_detections", rclcpp::SensorDataQoS(),
+      "/vision/drink_detections", rclcpp::SensorDataQoS(),
       std::bind(&ReceptionistTaskNode::onDrinkDetections, this, std::placeholders::_1),
       sub_opts);
 
-    // Fallback ke /zed/bag_detections (tidak menghapus latest_drinks_ jika kosong)
+    // Fallback ke /vision/bag_detections (tidak menghapus latest_drinks_ jika kosong)
     object_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/bag_detections", rclcpp::SensorDataQoS(),
+      "/vision/bag_detections", rclcpp::SensorDataQoS(),
       std::bind(&ReceptionistTaskNode::onBagDetectionsFallback, this, std::placeholders::_1),
       sub_opts);
 
     attributes_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/person_attributes", 10,
+      "/vision/person_attributes", 10,
       std::bind(&ReceptionistTaskNode::onPersonAttributes, this, std::placeholders::_1),
       sub_opts);
 
     seat_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/empty_seat", 10,
+      "/vision/empty_seat", 10,
       std::bind(&ReceptionistTaskNode::onEmptySeat, this, std::placeholders::_1),
       sub_opts);
 
@@ -653,7 +653,7 @@ private:
     return "center";
   }
 
-  // Menentukan lokasi kursi kosong berdasarkan deteksi vision (/zed/empty_seat)
+  // Menentukan lokasi kursi kosong berdasarkan deteksi vision (/vision/empty_seat)
   std::string detectEmptyChairSide()
   {
     std::lock_guard<std::mutex> lock(vision_mutex_);
@@ -678,7 +678,7 @@ private:
     return "center";
   }
 
-  // Mengekstrak atribut visual dari ZED (/zed/person_attributes) secara thread-safe
+  // Mengekstrak atribut visual dari Vision (/vision/person_attributes) secara thread-safe
   void updateCurrentGuestVisualAttributes(int person_id)
   {
     std::vector<std::string> raw_attrs;
@@ -750,7 +750,7 @@ private:
     return pronoun + " " + verb + " a " + gender + ", wearing a " + shirt + ", and " + has_verb + " " + hair;
   }
 
-  // Deteksi orang terdekat di depan robot (dari ZED /zed/person_label)
+  // Deteksi orang terdekat di depan robot (dari Vision /vision/person_label)
   bool isPersonInFront() const
   {
     return person_seen_.load() &&
@@ -1038,7 +1038,7 @@ private:
       stateToString(state_.load()).c_str());
   }
 
-  // Callback deteksi orang dari ZED (/zed/person_label)
+  // Callback deteksi orang dari Vision (/vision/person_label)
   void onPersonLabel(const std_msgs::msg::String::SharedPtr message)
   {
     if (!isVisionActive() || !message || message->data.empty() ||
@@ -1130,7 +1130,7 @@ private:
     return list;
   }
 
-  // Callback utama deteksi minuman (/zed/drink_detections)
+  // Callback utama deteksi minuman (/vision/drink_detections)
   void onDrinkDetections(const std_msgs::msg::String::SharedPtr message)
   {
     if (!isVisionActive() || !message) return;
@@ -1150,7 +1150,7 @@ private:
     }
   }
 
-  // Callback fallback (/zed/bag_detections): HANYA digunakan jika /zed/drink_detections
+  // Callback fallback (/vision/bag_detections): HANYA digunakan jika /vision/drink_detections
   // tidak aktif, dan TIDAK menghapus latest_drinks_ jika kosong.
   void onBagDetectionsFallback(const std_msgs::msg::String::SharedPtr message)
   {
@@ -1160,7 +1160,7 @@ private:
     if (last_drink_msg_time_.nanoseconds() > 0 &&
         (now() - last_drink_msg_time_).seconds() < 3.0)
     {
-      return; // Abaikan karena topic utama /zed/drink_detections sedang aktif
+      return; // Abaikan karena topic utama /vision/drink_detections sedang aktif
     }
     auto parsed = parseDetectionString(message->data);
     if (!parsed.empty()) {
@@ -1168,7 +1168,7 @@ private:
     }
   }
 
-  // Callback atribut visual tamu (/zed/person_attributes)
+  // Callback atribut visual tamu (/vision/person_attributes)
   void onPersonAttributes(const std_msgs::msg::String::SharedPtr message)
   {
     if (!isVisionActive() || !message || message->data.empty()) return;
@@ -1188,7 +1188,7 @@ private:
     }
   }
 
-  // Callback deteksi kursi kosong (/zed/empty_seat: "left", "center", "right")
+  // Callback deteksi kursi kosong (/vision/empty_seat: "left", "center", "right")
   void onEmptySeat(const std_msgs::msg::String::SharedPtr message)
   {
     if (!isVisionActive() || !message || message->data.empty()) return;

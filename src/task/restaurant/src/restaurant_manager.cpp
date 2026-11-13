@@ -260,7 +260,7 @@ public:
     // --------------------------------------------------------------------------
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/restaurant/status", 10);
-    person_name_pub_ = create_publisher<std_msgs::msg::String>("/zed/set_person_name", 10);
+    person_name_pub_ = create_publisher<std_msgs::msg::String>("/vision/set_person_name", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -278,30 +278,30 @@ public:
       sub_opts);
 
     // --------------------------------------------------------------------------
-    // Subscriber Vision (ZED Camera)
+    // Subscriber Vision (Camera)
     // --------------------------------------------------------------------------
     gesture_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/gesture", 10,
+      "/vision/gesture", 10,
       std::bind(&RestaurantTaskNode::onGesture, this, std::placeholders::_1),
       sub_opts);
 
     person_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/person_label", rclcpp::SensorDataQoS(),
+      "/vision/person_label", rclcpp::SensorDataQoS(),
       std::bind(&RestaurantTaskNode::onPersonLabel, this, std::placeholders::_1),
       sub_opts);
 
     order_pos_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/order1", 10,
+      "/vision/order", 10,
       std::bind(&RestaurantTaskNode::onOrderTopic, this, std::placeholders::_1),
       sub_opts);
 
     drink_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/drink_detections", rclcpp::SensorDataQoS(),
+      "/vision/drink_detections", rclcpp::SensorDataQoS(),
       std::bind(&RestaurantTaskNode::onDrinkDetections, this, std::placeholders::_1),
       sub_opts);
 
     bag_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/bag_detections", rclcpp::SensorDataQoS(),
+      "/vision/bag_detections", rclcpp::SensorDataQoS(),
       std::bind(&RestaurantTaskNode::onBagDetections, this, std::placeholders::_1),
       sub_opts);
 
@@ -312,10 +312,10 @@ public:
       this, "navigate_to_pose", callback_group_);
 
     // Vision Services
-    zed_wave_hand_client_ = create_client<Trigger>(
-      "/zed/wave_hand", rclcpp::ServicesQoS(), callback_group_);
-    zed_capture_face_client_ = create_client<Trigger>(
-      "/zed/camera_capture_face", rclcpp::ServicesQoS(), callback_group_);
+    vision_wave_hand_client_ = create_client<Trigger>(
+      "/vision/wave_hand", rclcpp::ServicesQoS(), callback_group_);
+    vision_capture_face_client_ = create_client<Trigger>(
+      "/vision/camera_capture_face", rclcpp::ServicesQoS(), callback_group_);
 
     // Navigation helper services (dari restaurant_node jika dijalankan bersamaan)
     go_to_order1_client_ = create_client<Trigger>(
@@ -452,8 +452,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr bag_sub_;
 
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_action_client_;
-  TriggerClient::SharedPtr zed_wave_hand_client_;
-  TriggerClient::SharedPtr zed_capture_face_client_;
+  TriggerClient::SharedPtr vision_wave_hand_client_;
+  TriggerClient::SharedPtr vision_capture_face_client_;
   TriggerClient::SharedPtr go_to_order1_client_;
   TriggerClient::SharedPtr homing_client_;
   TriggerClient::SharedPtr arm_grab_simple_client_;
@@ -1049,7 +1049,7 @@ private:
       stateToString(state_.load()).c_str());
   }
 
-  // Callback deteksi lambaian tangan / gesture dari ZED (/zed/gesture)
+  // Callback deteksi lambaian tangan / gesture dari Vision (/vision/gesture)
   void onGesture(const std_msgs::msg::String::SharedPtr message)
   {
     if (!message || message->data.empty()) return;
@@ -1067,7 +1067,7 @@ private:
     }
   }
 
-  // Callback topik posisi pemesan (/zed/order1)
+  // Callback topik posisi pemesan (/vision/order)
   void onOrderTopic(const std_msgs::msg::String::SharedPtr message)
   {
     if (!message || message->data.empty()) return;
@@ -1081,7 +1081,7 @@ private:
     }
   }
 
-  // Callback deteksi orang & ekstraksi koordinat 3D (/zed/person_label)
+  // Callback deteksi orang & ekstraksi koordinat 3D (/vision/person_label)
   void onPersonLabel(const std_msgs::msg::String::SharedPtr message)
   {
     if (!message || message->data.empty() ||
@@ -1093,8 +1093,8 @@ private:
     double px = 0.0, py = 0.0;
     if (parseCoordinates(message->data, px, py)) {
       std::lock_guard<std::mutex> lock(vision_mutex_);
-      // Jangan menimpa koordinat orang yang melambai dari /zed/order1.
-      // /zed/person_label hanya menjadi fallback posisi awal.
+      // Jangan menimpa koordinat orang yang melambai dari /vision/order.
+      // /vision/person_label hanya menjadi fallback posisi awal.
       if (!has_waving_person_coords_) {
         waving_person_x_ = px;
         waving_person_y_ = py;
@@ -1439,7 +1439,7 @@ private:
         if (waved) {
           speakAsync("i'm coming", [this]() {
             callTrigger(
-              zed_wave_hand_client_, "/zed/wave_hand",
+              vision_wave_hand_client_, "/vision/wave_hand",
               [this](bool ok, const std::string & msg) {
                 double px = 0.0, py = 0.0;
                 if (parseCoordinates(msg, px, py)) {
@@ -1450,7 +1450,7 @@ private:
                 }
                 RCLCPP_INFO(
                   get_logger(),
-                  "[VISION] Service /zed/wave_hand finished (ok=%s, msg='%s')",
+                  "[VISION] Service /vision/wave_hand finished (ok=%s, msg='%s')",
                   ok ? "true" : "false", msg.c_str());
                 transitionTo(
                   RestaurantState::NAV_TO_WAVING_CUSTOMER,
@@ -1458,12 +1458,12 @@ private:
               },
               10.0);
           });
-        } else if (zed_wave_hand_client_ && zed_wave_hand_client_->service_is_ready() &&
+        } else if (vision_wave_hand_client_ && vision_wave_hand_client_->service_is_ready() &&
                    (now() - state_enter_time_).seconds() >= 2.0)
         {
-          // Jika deteksi wave disediakan langsung oleh service /zed/wave_hand
+          // Jika deteksi wave disediakan langsung oleh service /vision/wave_hand
           callTrigger(
-            zed_wave_hand_client_, "/zed/wave_hand",
+            vision_wave_hand_client_, "/vision/wave_hand",
             [this](bool ok, const std::string & msg) {
               if (ok) {
                 double px = 0.0, py = 0.0;
@@ -1476,7 +1476,7 @@ private:
                 speakAsync("i'm coming", [this]() {
                   transitionTo(
                     RestaurantState::NAV_TO_WAVING_CUSTOMER,
-                    "Customer wave detected via /zed/wave_hand");
+                    "Customer wave detected via /vision/wave_hand");
                 });
               }
             },
@@ -1589,11 +1589,11 @@ private:
           "Hello " + c_name + "! please dont move, as i want to save your facial data",
           [this]() {
             callTrigger(
-              zed_capture_face_client_, "/zed/camera_capture_face",
+              vision_capture_face_client_, "/vision/camera_capture_face",
               [this](bool ok, const std::string & msg) {
                 RCLCPP_INFO(
                   get_logger(),
-                  "[VISION] /zed/camera_capture_face finished (ok=%s, msg='%s')",
+                  "[VISION] /vision/camera_capture_face finished (ok=%s, msg='%s')",
                   ok ? "true" : "false", msg.c_str());
                 transitionTo(
                   RestaurantState::ASK_CUSTOMER_ORDER,

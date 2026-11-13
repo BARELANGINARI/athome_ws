@@ -49,6 +49,28 @@ if(NOT ONNXRUNTIME_LIB OR NOT ONNXRUNTIME_INCLUDE)
 endif()
 message(STATUS "ONNX Runtime: ${ONNXRUNTIME_LIB}")
 
+add_executable(vision src/main.cpp)
+target_include_directories(vision PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${ZED_INCLUDE_DIRS}
+  ${CUDAToolkit_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+  ${ONNXRUNTIME_INCLUDE}
+)
+ament_target_dependencies(vision
+  rclcpp std_msgs ament_index_cpp)
+target_link_libraries(vision
+  ${CUDA_cudart_LIBRARY}
+  ${OpenCV_LIBS}
+  ${ZED_LIBRARIES}
+  ${ONNXRUNTIME_LIB}
+)
+get_filename_component(ONNXRUNTIME_LIBDIR "${ONNXRUNTIME_LIB}" DIRECTORY)
+set_target_properties(vision PROPERTIES
+  INSTALL_RPATH "${ONNXRUNTIME_LIBDIR}"
+  BUILD_WITH_INSTALL_RPATH TRUE)
+
 add_executable(zed src/main.cpp)
 target_include_directories(zed PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -66,7 +88,6 @@ target_link_libraries(zed
   ${ZED_LIBRARIES}
   ${ONNXRUNTIME_LIB}
 )
-get_filename_component(ONNXRUNTIME_LIBDIR "${ONNXRUNTIME_LIB}" DIRECTORY)
 set_target_properties(zed PROPERTIES
   INSTALL_RPATH "${ONNXRUNTIME_LIBDIR}"
   BUILD_WITH_INSTALL_RPATH TRUE)
@@ -81,7 +102,7 @@ target_link_libraries(record
   ${ZED_LIBRARIES}
 )
 
-install(TARGETS zed record
+install(TARGETS vision zed record
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

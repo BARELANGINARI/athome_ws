@@ -42,8 +42,8 @@ def generate_launch_description():
 
         Node(
             package='athome_vision',
-            executable='zed',
-            name='zed',
+            executable='vision',
+            name='vision',
             output='screen',
             respawn=True,
             respawn_delay=2.0,

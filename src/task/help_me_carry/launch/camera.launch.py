@@ -23,7 +23,7 @@ def generate_launch_description():
                 PathJoinSubstitution([
                     FindPackageShare('athome_vision'),
                     'launch',
-                    'zed.launch.py',
+                    'vision.launch.py',
                 ])
             ),
             launch_arguments={

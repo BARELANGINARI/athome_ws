@@ -106,12 +106,12 @@ public:
       options);
 
     person_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/person_label", rclcpp::SensorDataQoS(),
+      "/vision/person_label", rclcpp::SensorDataQoS(),
       std::bind(&HelpMeCarryOrchestrator::onPersonLabel, this, std::placeholders::_1),
       options);
 
     gesture_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/gesture", 10,
+      "/vision/gesture", 10,
       std::bind(&HelpMeCarryOrchestrator::onGesture, this, std::placeholders::_1),
       options);
 
@@ -121,7 +121,7 @@ public:
       options);
 
     bag_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/bag_detections", rclcpp::SensorDataQoS(),
+      "/vision/bag_detections", rclcpp::SensorDataQoS(),
       std::bind(&HelpMeCarryOrchestrator::onBagDetections, this, std::placeholders::_1),
       options);
 
@@ -630,7 +630,7 @@ private:
     }
   }
 
-  // Callback deteksi tas dari kamera ZED YOLO (/zed/bag_detections)
+  // Callback deteksi tas dari kamera Vision YOLO (/vision/bag_detections)
   void onBagDetections(const std_msgs::msg::String::SharedPtr message)
   {
     if (!message || message->data.empty()) {

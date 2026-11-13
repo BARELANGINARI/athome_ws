@@ -13,7 +13,7 @@ string Filename(const string & directory)
   tm * ltm = localtime(&now);
 
   char filename[100];
-  sprintf(filename, "zed_%02d-%02d-%02d.mp4", ltm->tm_hour, ltm->tm_min, ltm->tm_sec);
+  sprintf(filename, "vision_%02d-%02d-%02d.mp4", ltm->tm_hour, ltm->tm_min, ltm->tm_sec);
 
   return directory + "/" + string(filename);
 }

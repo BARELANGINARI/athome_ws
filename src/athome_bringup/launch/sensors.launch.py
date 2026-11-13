@@ -86,7 +86,7 @@ def generate_launch_description():
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
-                PathJoinSubstitution([FindPackageShare('athome_vision'), 'launch', 'zed.launch.py'])),
+                PathJoinSubstitution([FindPackageShare('athome_vision'), 'launch', 'vision.launch.py'])),
             launch_arguments={
                 'task': LaunchConfiguration('task'),
                 'camera_fps': LaunchConfiguration('camera_fps'),

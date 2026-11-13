@@ -107,7 +107,7 @@ public:
     declare_parameter("origin_yaw", 0.0);
     declare_parameter("global_frame", "map");
     declare_parameter("base_frame", "base_link");
-    declare_parameter("order_topic", "/zed/order1");
+    declare_parameter("order_topic", "/vision/order");
     declare_parameter("order_frame", "base_link"); // "base_link" (relatif thd robot) atau "map" (global)
     declare_parameter("standoff_distance", 0.85);   // Jarak henti aman di depan orang (meter) agar tidak menabrak / masuk obstacle
     declare_parameter("auto_navigate", false);      // Langsung navigasi saat data order masuk atau tunggu service
@@ -137,7 +137,7 @@ public:
     nav_client_ = rclcpp_action::create_client<NavigateToPose>(
       this, "navigate_to_pose", action_cb_group_);
 
-    // Subscription /zed/order1
+    // Subscription /vision/order
     rclcpp::SubscriptionOptions sub_opts;
     sub_opts.callback_group = sub_cb_group_;
     order_sub_ = create_subscription<std_msgs::msg::String>(
@@ -193,7 +193,7 @@ public:
   }
 
 private:
-  // Callback saat menerima pesan di /zed/order1
+  // Callback saat menerima pesan di /vision/order
   void onOrderMessage(const std_msgs::msg::String::SharedPtr msg)
   {
     double parsed_x = 0.0, parsed_y = 0.0;
@@ -472,7 +472,7 @@ private:
   double origin_yaw_{0.0};
   std::string global_frame_{"map"};
   std::string base_frame_{"base_link"};
-  std::string order_topic_{"/zed/order1"};
+  std::string order_topic_{"/vision/order"};
   std::string order_frame_{"base_link"};
   double standoff_dist_{0.85};
   bool auto_navigate_{false};

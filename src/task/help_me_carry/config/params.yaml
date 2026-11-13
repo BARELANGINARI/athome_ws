@@ -3,10 +3,10 @@ help_me_carry_node:
     # -------------------------------------------------------------
     # 1. TOPICS & FRAMES
     # -------------------------------------------------------------
-    person_topic: "/zed/person_label"         # Topic for ZED person detections
-    gesture_topic: "/zed/gesture"             # Topic for pointing gesture detections
-    bag_topic: "/zed/bag_detections"          # Topic for YOLO paper bag detections
-    yaw_topic: "/zed/yaw_deg"                 # Topic for IMU yaw data
+    person_topic: "/vision/person_label"         # Topic for vision person detections
+    gesture_topic: "/vision/gesture"             # Topic for pointing gesture detections
+    bag_topic: "/vision/bag_detections"          # Topic for YOLO paper bag detections
+    yaw_topic: "/vision/yaw_deg"                 # Topic for IMU yaw data
     cmd_vel_topic: "/cmd_vel"                 # Topic for base velocity commands
     path_topic: "/following_path"             # Topic for RViz following trajectory
     goal_update_topic: "/goal_update"         # Topic for Nav2 dynamic goal updates

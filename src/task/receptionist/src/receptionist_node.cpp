@@ -80,8 +80,8 @@ public:
 
     // Chair search & motion parameters
     declare_parameter<std::string>("cmd_vel_topic", "cmd_vel");
-    declare_parameter<std::string>("chair_topic", "/zed/chair_detections");
-    declare_parameter<std::string>("empty_seat_topic", "/zed/empty_seat");
+    declare_parameter<std::string>("chair_topic", "/vision/chair_detections");
+    declare_parameter<std::string>("empty_seat_topic", "/vision/empty_seat");
     declare_parameter<double>("search_chair_angular_speed", 0.35);
     declare_parameter<double>("search_chair_timeout_sec", 40.0);
     declare_parameter<int>("search_chair_confirm_frames", 2);
@@ -282,7 +282,7 @@ public:
   {
     if (!msg) return;
     std::lock_guard<std::mutex> lock(chair_mutex_);
-    // /zed/empty_seat mempublikasikan sisi kursi kosong ("left", "center", "right") atau "none"
+    // /vision/empty_seat mempublikasikan sisi kursi kosong ("left", "center", "right") atau "none"
     if (!msg->data.empty() && msg->data != "none") {
       last_chair_time_ = now();
       if (latest_chair_info_.empty() || !chair_detected_) {
@@ -305,7 +305,7 @@ public:
     EmptyChairTarget target;
     if (data.empty()) return target;
 
-    // Format 1: Dari /zed/chair_detections ("chair:x,y,w,h|X,Y,Z|empty|side;...")
+    // Format 1: Dari /vision/chair_detections ("chair:x,y,w,h|X,Y,Z|empty|side;...")
     std::stringstream ss(data);
     std::string item;
     double best_dist = 999.0;
@@ -366,7 +366,7 @@ public:
       }
     }
 
-    // Format 2: Fallback jika berasal dari /zed/empty_seat (misal "empty_seat:left", "right", atau "center")
+    // Format 2: Fallback jika berasal dari /vision/empty_seat (misal "empty_seat:left", "right", atau "center")
     if (!target.valid) {
       std::string seat_str = data;
       if (seat_str.rfind("empty_seat:", 0) == 0) {
@@ -655,8 +655,8 @@ private:
 
   // Chair search parameters & tracking
   std::string cmd_vel_topic_{"cmd_vel"};
-  std::string chair_topic_{"/zed/chair_detections"};
-  std::string empty_seat_topic_{"/zed/empty_seat"};
+  std::string chair_topic_{"/vision/chair_detections"};
+  std::string empty_seat_topic_{"/vision/empty_seat"};
   double search_chair_angular_speed_{0.35};
   double search_chair_timeout_sec_{40.0};
   int search_chair_confirm_frames_{2};

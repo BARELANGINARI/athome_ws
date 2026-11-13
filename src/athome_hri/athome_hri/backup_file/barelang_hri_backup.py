@@ -166,8 +166,8 @@ class BarelangHriNode(Node):
 
         # Subscribers
         self.tts_sub = self.create_subscription(String, "/hri/tts_say", self._on_tts_say, 10)
-        self.person_label_sub = self.create_subscription(String, "/zed/person_label", self._on_person_label, 10)
-        self.gesture_sub = self.create_subscription(String, "/zed/gesture", self._on_gesture, 10)
+        self.person_label_sub = self.create_subscription(String, "/vision/person_label", self._on_person_label, 10)
+        self.gesture_sub = self.create_subscription(String, "/vision/gesture", self._on_gesture, 10)
 
         # Service Clients
         self.follow_client = self.create_client(Trigger, "/follow/person")
@@ -187,7 +187,7 @@ class BarelangHriNode(Node):
             self.loop.call_soon_threadsafe(self.on_tts_command, text)
 
     def _on_person_label(self, msg: String):
-        """Membaca topic deteksi operator dari vision (/zed/person_label)."""
+        """Membaca topic deteksi operator dari vision (/vision/person_label)."""
         data = msg.data.strip()
         if data and data != "NO_PERSON" and ("operator:" in data or "person:" in data):
             self.is_operator_in_front = True
@@ -195,7 +195,7 @@ class BarelangHriNode(Node):
             self.is_operator_in_front = False
 
     def _on_gesture(self, msg: String):
-        """Menerima gesture dari vision (/zed/gesture) lalu broadcast ke Web UI."""
+        """Menerima gesture dari vision (/vision/gesture) lalu broadcast ke Web UI."""
         gesture = msg.data.strip().upper()
         if not gesture or gesture == self.last_gesture:
             return  # skip jika tidak berubah (hemat bandwidth)

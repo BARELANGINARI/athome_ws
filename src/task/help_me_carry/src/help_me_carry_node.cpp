@@ -187,10 +187,10 @@ public:
   : Node(node_name)
   {
     // Topics & Frames
-    person_topic_ = declare_parameter<std::string>("person_topic", "/zed/person_label");
-    gesture_topic_ = declare_parameter<std::string>("gesture_topic", "/zed/gesture");
-    bag_topic_ = declare_parameter<std::string>("bag_topic", "/zed/bag_detections");
-    yaw_topic_ = declare_parameter<std::string>("yaw_topic", "/zed/yaw_deg");
+    person_topic_ = declare_parameter<std::string>("person_topic", "/vision/person_label");
+    gesture_topic_ = declare_parameter<std::string>("gesture_topic", "/vision/gesture");
+    bag_topic_ = declare_parameter<std::string>("bag_topic", "/vision/bag_detections");
+    yaw_topic_ = declare_parameter<std::string>("yaw_topic", "/vision/yaw_deg");
     cmd_vel_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
     path_topic_ = declare_parameter<std::string>("path_topic", "/following_path");
     goal_update_topic_ = declare_parameter<std::string>("goal_update_topic", "/goal_update");
@@ -1367,7 +1367,7 @@ private:
       }
     }
 
-    // 4. Calculate rotation angle using vision yaw (/zed/yaw_deg)
+    // 4. Calculate rotation angle using vision yaw (/vision/yaw_deg)
     auto get_vision_yaw = [&]() {
       std::lock_guard<std::mutex> lock(bag_mutex_);
       return current_yaw_deg_ * M_PI / 180.0;
@@ -1510,7 +1510,7 @@ private:
         break;
       }
 
-      // Check 1: Deteksi Tas dari ZED YOLO (/zed/bag_detections)
+      // Check 1: Deteksi Tas dari Vision YOLO (/vision/bag_detections)
       {
         std::lock_guard<std::mutex> lock(bag_mutex_);
         if ((now() - latest_bag_time_).seconds() < 1.0) {
@@ -1531,7 +1531,7 @@ private:
         break;
       }
 
-      // Check 2: Deteksi jarak orang target dari ZED (/zed/person_label) >= step_back_person_distance_ (2.0 m)
+      // Check 2: Deteksi jarak orang target dari Vision (/vision/person_label) >= step_back_person_distance_ (2.0 m)
       {
         std::lock_guard<std::mutex> lock(person_mutex_);
         if ((now() - latest_person_time_).seconds() < 1.0) {

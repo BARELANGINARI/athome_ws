@@ -15,7 +15,7 @@ restaurant_node:
     # -------------------------------------------------------------------------
     # 2. Customer Order / Person Navigation Settings
     # -------------------------------------------------------------------------
-    order_topic: "/zed/order1"           # Topik input posisi orang / pelanggan dari kamera
+    order_topic: "/vision/order"           # Topik input posisi orang / pelanggan dari kamera
     order_frame: "base_link"             # Frame acuan koordinat: "base_link" (relatif kamera) atau "map" (global)
     standoff_distance: 0.85              # Jarak henti aman di depan pelanggan (meter)
     auto_navigate: false                 # false: tunggu service /go_to_order1, true: langsung jalan saat topik publish

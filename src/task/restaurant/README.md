@@ -7,15 +7,15 @@ ros2 launch restaurant motion.launch.py
 
 ## kamera / deteksi lambaian tangan
 
-Jalankan vision dalam mode restaurant agar node mendeteksi orang yang mengangkat/melambaikan tangan (kiri atau kanan) dan otomatis mempublikasikan koordinat orang terdekat yang melambai ke `/zed/order1`:
+Jalankan vision dalam mode restaurant agar node mendeteksi orang yang mengangkat/melambaikan tangan (kiri atau kanan) dan otomatis mempublikasikan koordinat orang terdekat yang melambai ke `/vision/order`:
 
 ```bash
 ros2 launch restaurant camera.launch.py
 # atau langsung via athome_vision:
-ros2 launch athome_vision zed.launch.py task:=restaurant enable_yolo:=false enable_bag:=false enable_drinks:=false enable_chair:=false
+ros2 launch athome_vision vision.launch.py task:=restaurant enable_yolo:=false enable_bag:=false enable_drinks:=false enable_chair:=false
 ```
 
-Gesture yang dipublikasikan ke `/zed/gesture`: `WAVE_LEFT`, `WAVE_RIGHT`, atau `NONE`.
+Gesture yang dipublikasikan ke `/vision/gesture`: `WAVE_LEFT`, `WAVE_RIGHT`, atau `NONE`.
 
 ## service
 ```bash
@@ -27,9 +27,9 @@ ros2 service call /go_to_order1 std_srvs/srv/Trigger {}
 
 ### Navigasi ke Pelanggan (Avoid Obstacle & Safe Distance)
 1. **Input Posisi Orang dari Kamera:**
-   Kamera/Node mempublikasikan koordinat orang ke topik `/zed/order1` (`std_msgs/msg/String`), contoh:
+   Kamera/Node mempublikasikan koordinat orang ke topik `/vision/order` (`std_msgs/msg/String`), contoh:
    ```bash
-   ros2 topic pub --once /zed/order1 std_msgs/msg/String "{data: '2.0, 0.5'}"
+   ros2 topic pub --once /vision/order std_msgs/msg/String "{data: '2.0, 0.5'}"
    ```
 2. **Perintahkan Robot Menghampiri Pelanggan:**
    ```bash
