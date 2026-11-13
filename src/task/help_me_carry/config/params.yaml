@@ -56,6 +56,9 @@ help_me_carry_node:
     min_stop_x: 0.38                          # Hard safety braking distance from robot center (meters)
     corridor_width: 0.32                      # Front danger corridor half-width (|y| in meters)
     bypass_theta_offset_deg: 10.0             # Diagonal yaw offset during lateral bypass (degrees)
+    peeking_avoid_dist: 1.10                  # Distance threshold to trigger peeking avoidance when person occluded (meters)
+    peeking_strafe_speed: 0.22                # Lateral strafe speed during peeking (m/s)
+    peeking_timeout: 4.0                      # Max duration for peeking avoidance maneuver before timeout (seconds)
 
     # -------------------------------------------------------------
     # 6. KALMAN FILTER TUNING & LIDAR FUSION

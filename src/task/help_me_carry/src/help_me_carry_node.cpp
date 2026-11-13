@@ -234,6 +234,10 @@ public:
     footprint_radius_ = declare_parameter<double>("footprint_radius", 0.40);
     min_stop_x_ = declare_parameter<double>("min_stop_x", 0.38);
     corridor_width_ = declare_parameter<double>("corridor_width", 0.32);
+    bypass_theta_offset_deg_ = declare_parameter<double>("bypass_theta_offset_deg", 10.0);
+    peeking_avoid_dist_ = declare_parameter<double>("peeking_avoid_dist", 1.10);
+    peeking_strafe_speed_ = declare_parameter<double>("peeking_strafe_speed", 0.22);
+    peeking_timeout_ = declare_parameter<double>("peeking_timeout", 4.0);
 
     // Kalman Filter Tuning & 360° LiDAR Fusion
     kf_process_noise_ = declare_parameter<double>("kf_process_noise", 1.2);
@@ -577,6 +581,152 @@ private:
         status_msg.data = "TRACKING_ZED";
         follow_status_pub_->publish(status_msg);
       }
+    }
+
+    const bool camera_sees_person = person_matched;
+
+    // =========================================================================
+    // OBSTACLE AVOIDANCE & PEEKING LOGIC:
+    // Jika kamera tidak melihat orang DAN LiDAR mendeteksi obstacle di depannya,
+    // maka robot menghindar ke ruang kosong (kiri/kanan) dan rotasi 10 derajat
+    // berlawanan (jika ke kiri rotasi ke kanan 10° dan sebaliknya).
+    // =========================================================================
+    if (!camera_sees_person && enable_avoidance_) {
+      sensor_msgs::msg::LaserScan::SharedPtr scan;
+      {
+        std::lock_guard<std::mutex> lock(scan_mutex_);
+        scan = latest_scan_;
+      }
+
+      if (scan && !scan->ranges.empty()) {
+        double laser_tx = 0.0, laser_ty = 0.0, laser_yaw = 3.1415926535;
+        try {
+          auto tf_laser = tf_buffer_->lookupTransform(
+            frame_base_, scan->header.frame_id, tf2::TimePointZero);
+          laser_tx = tf_laser.transform.translation.x;
+          laser_ty = tf_laser.transform.translation.y;
+          const auto & rq = tf_laser.transform.rotation;
+          const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+          const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+          laser_yaw = std::atan2(siny, cosy);
+        } catch (const tf2::TransformException &) {
+          laser_yaw = 3.1415926535;
+        }
+
+        bool front_obstacle_detected = false;
+        double min_front_dist = 999.0;
+        double left_clearance = 0.0;
+        double right_clearance = 0.0;
+        int left_count = 0;
+        int right_count = 0;
+
+        const int num_readings = static_cast<int>(scan->ranges.size());
+        for (int i = 0; i < num_readings; ++i) {
+          const float r = scan->ranges[i];
+          if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) {
+            continue;
+          }
+
+          const double angle_laser = scan->angle_min + i * scan->angle_increment;
+          const double angle_base = normalize_angle(angle_laser + laser_yaw);
+
+          const double obs_x = laser_tx + r * std::cos(angle_base);
+          const double obs_y = laser_ty + r * std::sin(angle_base);
+
+          // Filter pantulan bodi robot
+          if (std::hypot(obs_x, obs_y) < footprint_radius_) {
+            continue;
+          }
+
+          // Deteksi obstacle di koridor depan
+          if (obs_x > footprint_radius_ && obs_x < peeking_avoid_dist_ &&
+              std::abs(obs_y) < (corridor_width_ * 1.25))
+          {
+            front_obstacle_detected = true;
+            if (obs_x < min_front_dist) {
+              min_front_dist = obs_x;
+            }
+          }
+
+          // Hitung ruang kosong di sisi kiri (+10° s/d +75°) dan kanan (-75° s/d -10°)
+          if (angle_base > 0.17 && angle_base < 1.30) {
+            left_clearance += std::min(r, 2.5f);
+            left_count++;
+          } else if (angle_base < -0.17 && angle_base > -1.30) {
+            right_clearance += std::min(r, 2.5f);
+            right_count++;
+          }
+        }
+
+        if (front_obstacle_detected) {
+          const double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
+          const double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
+          const bool strafe_left = (avg_left >= avg_right);
+
+          if (!is_peeking_avoidance_) {
+            is_peeking_avoidance_ = true;
+            peeking_start_time_ = now();
+            peeking_start_yaw_ = get_robot_heading();
+            peeking_dodge_left_ = strafe_left;
+
+            const double rot_rad = bypass_theta_offset_deg_ * M_PI / 180.0;
+            // Jika menghindar ke kiri -> rotasi ke kanan 10° (-rot_rad)
+            // Jika menghindar ke kanan -> rotasi ke kiri 10° (+rot_rad)
+            peeking_target_yaw_ = peeking_dodge_left_
+              ? normalize_angle(peeking_start_yaw_ - rot_rad)
+              : normalize_angle(peeking_start_yaw_ + rot_rad);
+
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;33m[AVOID OBSTACLE]\033[0m Kamera tidak melihat orang & Ada obstacle depan (%.2fm). Menghindar ke %s & rotasi %s %.1f°...",
+              min_front_dist,
+              peeking_dodge_left_ ? "KIRI" : "KANAN",
+              peeking_dodge_left_ ? "KANAN" : "KIRI",
+              bypass_theta_offset_deg_);
+          }
+
+          if ((now() - peeking_start_time_).seconds() <= peeking_timeout_) {
+            const double cur_yaw = get_robot_heading();
+            const double yaw_err = normalize_angle(peeking_target_yaw_ - cur_yaw);
+            const double target_wz = std::clamp(1.5 * yaw_err, -max_wz_, max_wz_);
+            const double target_vy = peeking_dodge_left_ ? peeking_strafe_speed_ : -peeking_strafe_speed_;
+            const double target_vx = 0.0; // Berhenti maju agar tidak menabrak rintangan depan
+
+            current_cmd_vx_ = (1.0 - alpha_v_) * current_cmd_vx_ + alpha_v_ * target_vx;
+            current_cmd_vy_ = (1.0 - alpha_v_) * current_cmd_vy_ + alpha_v_ * target_vy;
+            current_cmd_wz_ = (1.0 - alpha_w_) * current_cmd_wz_ + alpha_w_ * target_wz;
+
+            if (std::abs(current_cmd_vx_) < 0.015) current_cmd_vx_ = 0.0;
+            if (std::abs(current_cmd_vy_) < 0.015) current_cmd_vy_ = 0.0;
+            if (std::abs(current_cmd_wz_) < 0.02) current_cmd_wz_ = 0.0;
+
+            geometry_msgs::msg::Twist twist;
+            twist.linear.x = current_cmd_vx_;
+            twist.linear.y = current_cmd_vy_;
+            twist.angular.z = current_cmd_wz_;
+            cmd_vel_pub_->publish(twist);
+
+            std_msgs::msg::String status_msg;
+            status_msg.data = "AVOID_OBSTACLE_PEEKING";
+            follow_status_pub_->publish(status_msg);
+
+            RCLCPP_INFO_THROTTLE(
+              get_logger(), *get_clock(), 500,
+              "\033[93m[PEEKING]\033[0m Strafe %s (vy=%.2f) | Rot %s 10° (wz=%.2f, err=%.1f°) | Obs=%.2fm",
+              peeking_dodge_left_ ? "KIRI" : "KANAN", twist.linear.y,
+              peeking_dodge_left_ ? "KANAN" : "KIRI", twist.angular.z,
+              yaw_err * 180.0 / M_PI, min_front_dist);
+
+            return; // Selesai siklus ini, robot sedang aktif melakukan manuver peeking
+          } else {
+            is_peeking_avoidance_ = false;
+          }
+        } else {
+          is_peeking_avoidance_ = false;
+        }
+      }
+    } else {
+      is_peeking_avoidance_ = false;
     }
 
     // 5. 360° LiDAR EKF Fusion: If ZED loses sight of target (operator walked to the side or behind):
@@ -1053,6 +1203,7 @@ private:
     is_homing_active_ = false;
     is_nav_active_ = false;
     is_moving_ = false;
+    is_peeking_avoidance_ = false;
     current_cmd_vx_ = 0.0;
     current_cmd_vy_ = 0.0;
     current_cmd_wz_ = 0.0;
@@ -1091,6 +1242,13 @@ private:
   {
     if (!is_following_ || max_lost_time_ <= 0.0) {
       return;
+    }
+
+    if (is_peeking_avoidance_) {
+      const double elapsed = now().seconds() - last_seen_sec_;
+      if (elapsed <= peeking_timeout_ + 1.0) {
+        return; // Berikan kesempatan bagi manuver peeking obstacle untuk menemukan orang kembali
+      }
     }
 
     const double elapsed = now().seconds() - last_seen_sec_;
@@ -2079,6 +2237,16 @@ private:
   double footprint_radius_{0.40};
   double min_stop_x_{0.38};
   double corridor_width_{0.32};
+  double bypass_theta_offset_deg_{10.0};
+  double peeking_avoid_dist_{1.10};
+  double peeking_strafe_speed_{0.22};
+  double peeking_timeout_{4.0};
+
+  bool is_peeking_avoidance_{false};
+  bool peeking_dodge_left_{true};
+  double peeking_start_yaw_{0.0};
+  double peeking_target_yaw_{0.0};
+  rclcpp::Time peeking_start_time_{0, 0, RCL_ROS_TIME};
 
   double kf_process_noise_{1.2};
   double kf_measurement_noise_{0.15};
