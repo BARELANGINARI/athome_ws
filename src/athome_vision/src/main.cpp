@@ -287,7 +287,6 @@ public:
   }
 
   bool ready() const {return static_cast<bool>(session_);}
-  bool usingCuda() const {return using_cuda_;}
 
   std::vector<int64_t> inputShape()
   {
@@ -1263,7 +1262,7 @@ std::string ZedNode::resolvePath(const std::string & path) const
   }
   if (std::filesystem::exists(path)) return path;
   if (std::filesystem::exists("src/athome_vision/" + path)) return "src/athome_vision/" + path;
-  const std::string ws = "/home/dell/Documents/athome_ws/src/athome_vision/" + path;
+  const std::string ws = "/home/dell/Desktop/athome_ws/src/athome_vision/" + path;
   if (std::filesystem::exists(ws)) return ws;
   return "share/athome_vision/" + path;
 }

@@ -21,6 +21,7 @@
   <depend>tf2_ros</depend>
 
   <exec_depend>rviz2</exec_depend>
+  <exec_depend>athome_vision</exec_depend>
   <exec_depend>athome_navigation</exec_depend>
   <exec_depend>athome_bringup</exec_depend>
   <exec_depend>athome_base</exec_depend>
