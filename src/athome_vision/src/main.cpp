@@ -509,14 +509,15 @@ public:
 
     int y1, y2;
     if (waist_y > 0.0f && shoulder_y > 0.0f && waist_y > shoulder_y + 10.0f) {
-      y1 = static_cast<int>(shoulder_y);
-      y2 = static_cast<int>(waist_y);
+      const float span = waist_y - shoulder_y;
+      y1 = static_cast<int>(shoulder_y + span * 0.15f);
+      y2 = static_cast<int>(shoulder_y + span * 0.85f);
     } else {
-      y1 = bbox.y + static_cast<int>(bbox.height * 0.20);
-      y2 = bbox.y + static_cast<int>(bbox.height * 0.50);
+      y1 = bbox.y + static_cast<int>(bbox.height * 0.22f);
+      y2 = bbox.y + static_cast<int>(bbox.height * 0.48f);
     }
-    const int x1 = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.15), 0, bgr.cols);
-    const int x2 = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.85), 0, bgr.cols);
+    const int x1 = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.25f), 0, bgr.cols);
+    const int x2 = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.75f), 0, bgr.cols);
     y1 = std::clamp(y1, 0, bgr.rows);
     y2 = std::clamp(y2, 0, bgr.rows);
     if (y2 <= y1 || x2 <= x1) return "casual attire";
@@ -543,7 +544,7 @@ public:
         for (int i = 1; i < classes; ++i) {
           if (probs[static_cast<size_t>(i)] > probs[static_cast<size_t>(best)]) best = i;
         }
-        if (probs[static_cast<size_t>(best)] > 0.30f && best < static_cast<int>(color_labels_.size())) {
+        if (probs[static_cast<size_t>(best)] > 0.45f && best < static_cast<int>(color_labels_.size())) {
           std::string result = color_labels_[static_cast<size_t>(best)];
           std::transform(result.begin(), result.end(), result.begin(), ::tolower);
           if (result.find("shirt") == std::string::npos &&
@@ -558,8 +559,34 @@ public:
 
     cv::Mat hsv;
     cv::cvtColor(bgr(roi), hsv, cv::COLOR_BGR2HSV);
-    const cv::Scalar mean = cv::mean(hsv);
-    const double h = mean[0], s = mean[1], v = mean[2];
+    std::vector<cv::Vec3b> valid_pixels;
+    valid_pixels.reserve(roi.area());
+    for (int r = 0; r < hsv.rows; ++r) {
+      const cv::Vec3b * row = hsv.ptr<cv::Vec3b>(r);
+      for (int c = 0; c < hsv.cols; ++c) {
+        const cv::Vec3b & p = row[c];
+        // Skin tone filter (skip neck/chest skin)
+        if (p[0] >= 5 && p[0] <= 25 && p[1] >= 40 && p[1] <= 160 && p[2] >= 70) continue;
+        valid_pixels.push_back(p);
+      }
+    }
+
+    double h = 0, s = 0, v = 0;
+    if (!valid_pixels.empty()) {
+      double sh = 0, ss = 0, sv = 0;
+      for (const auto & p : valid_pixels) {
+        sh += p[0];
+        ss += p[1];
+        sv += p[2];
+      }
+      h = sh / valid_pixels.size();
+      s = ss / valid_pixels.size();
+      v = sv / valid_pixels.size();
+    } else {
+      const cv::Scalar mean = cv::mean(hsv);
+      h = mean[0]; s = mean[1]; v = mean[2];
+    }
+
     std::string color = "dark";
     if (v < 50.0) color = "black";
     else if (s < 35.0 && v > 180.0) color = "white";
@@ -574,58 +601,95 @@ public:
     return color + " shirt";
   }
 
-  std::string hairColor(const cv::Mat & bgr, const cv::Rect & bbox)
+  std::string hairColor(
+    const cv::Mat & bgr, const cv::Rect & bbox,
+    const std::vector<sl::float2> & kpt = {})
   {
     if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return "dark hair";
 
+    cv::Point2f eye_left, eye_right, nose;
+    cv::Rect roi;
+    if (faceLandmarks(kpt, eye_left, eye_right, nose)) {
+      const float eye_dist = std::hypot(eye_right.x - eye_left.x, eye_right.y - eye_left.y);
+      const float center_x = (eye_left.x + eye_right.x) * 0.5f;
+      const float center_y = std::min(eye_left.y, eye_right.y) - eye_dist * 0.85f;
+      const int hw = std::max(10, static_cast<int>(eye_dist * 1.5f));
+      const int hh = std::max(10, static_cast<int>(eye_dist * 1.0f));
+      const int hx = static_cast<int>(center_x - hw * 0.5f);
+      const int hy = static_cast<int>(center_y - hh * 0.5f);
+      roi = cv::Rect(hx, hy, hw, hh);
+    } else {
+      const int hw = std::max(6, static_cast<int>(bbox.width * 0.35f));
+      const int hh = std::max(6, static_cast<int>(bbox.height * 0.12f));
+      const int hx = bbox.x + static_cast<int>(bbox.width * 0.325f);
+      const int hy = bbox.y + static_cast<int>(bbox.height * 0.02f);
+      roi = cv::Rect(hx, hy, hw, hh);
+    }
+    roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+    if (roi.area() <= 0) return "dark hair";
+
     if (hair_.ready() && !hair_labels_.empty()) {
-      const int y1 = std::clamp(bbox.y, 0, bgr.rows);
-      const int y2 = std::clamp(static_cast<int>(bbox.y + bbox.height * 0.20), 0, bgr.rows);
-      const int x1 = std::clamp(static_cast<int>(bbox.x + bbox.width / 4), 0, bgr.cols);
-      const int x2 = std::clamp(static_cast<int>(bbox.x + 3 * bbox.width / 4), 0, bgr.cols);
-      if (y2 > y1 && x2 > x1) {
-        cv::Mat resized;
-        cv::resize(bgr(cv::Rect(x1, y1, x2 - x1, y2 - y1)), resized, cv::Size(224, 224));
-        cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
-        cv::Mat blob = cv::dnn::blobFromImage(
-          resized, 1.0 / 255.0, cv::Size(224, 224), cv::Scalar(0, 0, 0), false, false);
-        std::array<int64_t, 4> shape{1, 3, 224, 224};
-        std::vector<Ort::Value> outputs = hair_.run(blob, shape);
-        if (!outputs.empty()) {
-          const auto out_shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
-          const int classes = (out_shape.size() >= 2)
-            ? static_cast<int>(out_shape[1]) : static_cast<int>(hair_labels_.size());
-          std::vector<float> probs;
-          softmax(outputs.front().GetTensorData<float>(), classes, probs);
-          int best = 0;
-          for (int i = 1; i < classes; ++i) {
-            if (probs[static_cast<size_t>(i)] > probs[static_cast<size_t>(best)]) best = i;
-          }
-          if (probs[static_cast<size_t>(best)] > 0.35f && best < static_cast<int>(hair_labels_.size())) {
-            std::string result = hair_labels_[static_cast<size_t>(best)];
-            std::transform(result.begin(), result.end(), result.begin(), ::tolower);
-            return result;
-          }
+      cv::Mat resized;
+      cv::resize(bgr(roi), resized, cv::Size(224, 224));
+      cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
+      cv::Mat blob = cv::dnn::blobFromImage(
+        resized, 1.0 / 255.0, cv::Size(224, 224), cv::Scalar(0, 0, 0), false, false);
+      std::array<int64_t, 4> shape{1, 3, 224, 224};
+      std::vector<Ort::Value> outputs = hair_.run(blob, shape);
+      if (!outputs.empty()) {
+        const auto out_shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
+        const int classes = (out_shape.size() >= 2)
+          ? static_cast<int>(out_shape[1]) : static_cast<int>(hair_labels_.size());
+        std::vector<float> probs;
+        softmax(outputs.front().GetTensorData<float>(), classes, probs);
+        int best = 0;
+        for (int i = 1; i < classes; ++i) {
+          if (probs[static_cast<size_t>(i)] > probs[static_cast<size_t>(best)]) best = i;
+        }
+        if (probs[static_cast<size_t>(best)] > 0.50f && best < static_cast<int>(hair_labels_.size())) {
+          std::string result = hair_labels_[static_cast<size_t>(best)];
+          std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+          return result;
         }
       }
     }
 
-    const int hw = std::max(4, static_cast<int>(bbox.width * 0.35));
-    const int hh = std::max(4, static_cast<int>(bbox.height * 0.15));
-    const int hx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.325), 0, bgr.cols - hw);
-    const int hy = std::clamp(bbox.y, 0, bgr.rows - hh);
-    cv::Rect roi(hx, hy, hw, hh);
-    roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
-    if (roi.area() <= 0) return "dark hair";
-
     cv::Mat hsv;
     cv::cvtColor(bgr(roi), hsv, cv::COLOR_BGR2HSV);
-    const cv::Scalar mean = cv::mean(hsv);
-    const double h = mean[0], s = mean[1], v = mean[2];
-    if (v < 55.0) return "black hair";
-    if (s < 40.0 && v > 150.0) return "gray hair";
-    if (h >= 15.0 && h <= 35.0 && v > 130.0) return "blonde hair";
-    if (h >= 8.0 && h <= 30.0) return "brown hair";
+    std::vector<cv::Vec3b> hair_pixels;
+    hair_pixels.reserve(roi.area());
+    int dark_count = 0;
+    for (int r = 0; r < hsv.rows; ++r) {
+      const cv::Vec3b * row = hsv.ptr<cv::Vec3b>(r);
+      for (int c = 0; c < hsv.cols; ++c) {
+        const cv::Vec3b & p = row[c];
+        // Filter out bright background wall pixels (high value, low saturation)
+        if (p[2] > 190 && p[1] < 35) continue;
+        hair_pixels.push_back(p);
+        if (p[2] < 70) dark_count++;
+      }
+    }
+
+    if (hair_pixels.empty()) return "dark hair";
+
+    // If >= 35% of valid pixels are dark, it is dark / black hair
+    if (dark_count * 100 / static_cast<int>(hair_pixels.size()) >= 35) {
+      return "black hair";
+    }
+
+    double sum_h = 0, sum_s = 0, sum_v = 0;
+    for (const auto & p : hair_pixels) {
+      sum_h += p[0];
+      sum_s += p[1];
+      sum_v += p[2];
+    }
+    const double n = hair_pixels.size();
+    const double h = sum_h / n, s = sum_s / n, v = sum_v / n;
+
+    if (v < 65.0) return "black hair";
+    if (s < 35.0 && v > 150.0) return "gray hair";
+    if (h >= 15.0 && h <= 35.0 && s > 50.0 && v > 120.0) return "blond hair";
+    if (h >= 8.0 && h <= 30.0 && v <= 120.0) return "brown hair";
     return "dark hair";
   }
 
@@ -1910,7 +1974,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     const bool classify = is_receptionist_ && (!pending_register_name_.empty() || !recognized_name.empty());
     if (classify) {
       person.clothing = analyzer_.clothingColor(bgr, entry.bbox, points);
-      person.hair = analyzer_.hairColor(bgr, entry.bbox);
+      person.hair = analyzer_.hairColor(bgr, entry.bbox, points);
       person.gender = analyzer_.gender(points, bgr, entry.bbox);
     }
 

@@ -13,8 +13,10 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <deque>
 #include <functional>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -274,6 +276,14 @@ private:
   int camera_width_{672};
 
   // Data Persepsi Vision
+  struct VisualSample {
+    std::string gender;
+    std::string shirt;
+    std::string hair;
+  };
+  std::deque<VisualSample> visual_samples_;
+  static constexpr size_t MAX_VISUAL_SAMPLES = 60;
+
   std::mutex vision_mutex_;
   std::vector<DetectedObject> latest_drinks_;
   rclcpp::Time last_drink_msg_time_{0, 0, RCL_ROS_TIME};
@@ -402,6 +412,7 @@ private:
       latest_drinks_.clear();
       has_explicit_empty_seat_ = false;
       nearest_person_bbox_w_ = 0;
+      visual_samples_.clear();
     }
   }
 
@@ -425,6 +436,9 @@ private:
       person_seen_ = false;
       last_wait_prompt_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
       std::lock_guard<std::mutex> lock(vision_mutex_);
+      if (next_state == ReceptionistState::WAIT_GUEST) {
+        visual_samples_.clear();
+      }
       if (next_state == ReceptionistState::ASK_DRINK) {
         latest_drinks_.clear();
       }
@@ -678,44 +692,68 @@ private:
     return "center";
   }
 
-  // Mengekstrak atribut visual dari Vision (/vision/person_attributes) secara thread-safe
+  // Mengekstrak atribut visual dari Vision (/vision/person_attributes) menggunakan Majority Voting
   void updateCurrentGuestVisualAttributes(int person_id)
   {
-    std::vector<std::string> raw_attrs;
+    std::string best_gender = "male";
+    std::string best_shirt = "casual attire";
+    std::string best_hair = "dark hair";
+    size_t sample_count = 0;
+
     {
       std::lock_guard<std::mutex> v_lock(vision_mutex_);
-      raw_attrs = latest_attributes_;
+      sample_count = visual_samples_.size();
+      if (!visual_samples_.empty()) {
+        std::map<std::string, int> gender_votes;
+        std::map<std::string, int> shirt_votes;
+        std::map<std::string, int> hair_votes;
+        for (const auto & s : visual_samples_) {
+          if (!s.gender.empty()) gender_votes[s.gender]++;
+          if (!s.shirt.empty()) shirt_votes[s.shirt]++;
+          if (!s.hair.empty()) hair_votes[s.hair]++;
+        }
+        auto pick_max = [](const std::map<std::string, int> & m, const std::string & fallback) {
+          std::string winner = fallback;
+          int max_c = 0;
+          for (const auto & kv : m) {
+            if (kv.second > max_c) {
+              max_c = kv.second;
+              winner = kv.first;
+            }
+          }
+          return winner;
+        };
+        best_gender = pick_max(gender_votes, "male");
+        best_shirt = pick_max(shirt_votes, "casual attire");
+        best_hair = pick_max(hair_votes, "dark hair");
+      } else {
+        for (const auto & a : latest_attributes_) {
+          std::string lower_a = a;
+          std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
+          if (lower_a == "male" || lower_a == "female") {
+            best_gender = lower_a;
+          } else if (lower_a.find("shirt") != std::string::npos ||
+                     lower_a.find("clothes") != std::string::npos ||
+                     lower_a.find("attire") != std::string::npos)
+          {
+            best_shirt = a;
+          } else if (lower_a.find("hair") != std::string::npos) {
+            best_hair = a;
+          }
+        }
+      }
     }
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;32m[VISION]\033[0m Extracting visual attributes for person_id=%d",
-      person_id);
+      "\033[1;32m[VISION]\033[0m Voted visual attributes (%zu samples) for person_id=%d: gender=%s, shirt=%s, hair=%s",
+      sample_count, person_id, best_gender.c_str(), best_shirt.c_str(), best_hair.c_str());
 
     std::lock_guard<std::mutex> g_lock(guest_mutex_);
-    std::vector<std::string> attrs;
-    for (const auto & a : raw_attrs) {
-      if (std::find(attrs.begin(), attrs.end(), a) == attrs.end()) {
-        attrs.push_back(a);
-      }
-
-      std::string lower_a = a;
-      std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
-      if (lower_a == "male" || lower_a == "female") {
-        current_guest_.gender = lower_a;
-      } else if (lower_a.find("shirt") != std::string::npos ||
-                 lower_a.find("clothes") != std::string::npos ||
-                 lower_a.find("attire") != std::string::npos)
-      {
-        current_guest_.shirt_color = a;
-      } else if (lower_a.find("hair") != std::string::npos) {
-        current_guest_.hair_color = a;
-      }
-    }
-    if (attrs.empty()) {
-      attrs.push_back("casual attire");
-    }
-    current_guest_.attributes = attrs;
+    current_guest_.gender = best_gender;
+    current_guest_.shirt_color = best_shirt;
+    current_guest_.hair_color = best_hair;
+    current_guest_.attributes = {best_gender, best_shirt, best_hair};
   }
 
   static std::string formatPersonDescription(const PersonProfile & person)
@@ -1185,6 +1223,27 @@ private:
     }
     if (!parsed.empty()) {
       latest_attributes_ = parsed;
+      VisualSample sample;
+      for (const auto & a : parsed) {
+        std::string lower_a = a;
+        std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
+        if (lower_a == "male" || lower_a == "female") {
+          sample.gender = lower_a;
+        } else if (lower_a.find("shirt") != std::string::npos ||
+                   lower_a.find("clothes") != std::string::npos ||
+                   lower_a.find("attire") != std::string::npos)
+        {
+          sample.shirt = a;
+        } else if (lower_a.find("hair") != std::string::npos) {
+          sample.hair = a;
+        }
+      }
+      if (!sample.gender.empty() || !sample.shirt.empty() || !sample.hair.empty()) {
+        visual_samples_.push_back(sample);
+        if (visual_samples_.size() > MAX_VISUAL_SAMPLES) {
+          visual_samples_.pop_front();
+        }
+      }
     }
   }
 
