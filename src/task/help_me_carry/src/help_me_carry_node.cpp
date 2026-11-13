@@ -247,6 +247,16 @@ public:
     kf_lidar_noise_ = declare_parameter<double>("kf_lidar_noise", 0.25);
     lidar_leg_gate_ = declare_parameter<double>("lidar_leg_gate", 0.90);
 
+    // Homing Queueing Parameters
+    homing_queue_enabled_ = declare_parameter<bool>("homing_queue_enabled", true);
+    homing_queue_distance_ = declare_parameter<double>("homing_queue_distance", 0.90);
+    homing_queue_resume_distance_ = declare_parameter<double>("homing_queue_resume_distance", 1.30);
+    homing_queue_corridor_ = declare_parameter<double>("homing_queue_corridor", 0.45);
+    homing_queue_max_detect_dist_ = declare_parameter<double>("homing_queue_max_detect_dist", 2.20);
+    homing_queue_crawl_speed_ = declare_parameter<double>("homing_queue_crawl_speed", 0.12);
+    homing_queue_clear_hysteresis_ = declare_parameter<double>("homing_queue_clear_hysteresis", 1.0);
+    homing_timeout_ = declare_parameter<double>("homing_timeout", 300.0);
+
     if (bt_xml_.empty()) {
       bt_xml_ = find_bt_xml();
     }
@@ -1984,7 +1994,7 @@ private:
     rclcpp::Rate rate(20);
     int loop_count = 0;
 
-    while (rclcpp::ok() && is_homing_active_) {
+    while (rclcpp::ok()) {
       const double elapsed = (now() - t_start).seconds();
       if (elapsed > max_duration_sec) {
         RCLCPP_WARN(
@@ -2140,6 +2150,9 @@ private:
       return;
     }
 
+    is_homing_active_ = true;
+    is_homing_queuing_ = false;
+
     // 3. Goal origin point (x=0, y=0, w=1) on map frame with standard BT replanning & recovery
     NavigateToPose::Goal goal;
     goal.behavior_tree = "/opt/ros/jazzy/share/nav2_bt_navigator/behavior_trees/navigate_to_pose_w_replanning_and_recovery.xml";
@@ -2171,15 +2184,170 @@ private:
 
     auto send_future = action_client_->async_send_goal(goal, send_opts);
     if (send_future.wait_for(std::chrono::seconds(4)) != std::future_status::ready || !send_future.get()) {
+      is_homing_active_ = false;
       resp->success = false;
       resp->message = "Failed to send origin goal to Nav2.";
       return;
     }
 
-    // 4. Wait for robot to reach origin
-    if (future.wait_for(std::chrono::seconds(120)) == std::future_status::ready) {
-      const auto code = future.get();
-      if (code == rclcpp_action::ResultCode::SUCCEEDED) {
+    // 4. Monitoring loop: Nav2 navigation & Social Queuing behind person
+    rclcpp::Rate rate(20);
+    const auto t_start = now();
+    bool nav_finished = false;
+    rclcpp_action::ResultCode nav_result = rclcpp_action::ResultCode::UNKNOWN;
+    rclcpp::Time last_corridor_person_time{0, 0, RCL_ROS_TIME};
+
+    while (rclcpp::ok() && is_homing_active_) {
+      // A. Cek status navigasi Nav2
+      if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+        nav_result = future.get();
+        nav_finished = true;
+        break;
+      }
+
+      // B. Cek timeout keseluruhan homing
+      if ((now() - t_start).seconds() > homing_timeout_) {
+        RCLCPP_WARN(get_logger(), "[Homing] Waktu navigasi homing melebihi batas waktu (%.1f s).", homing_timeout_);
+        break;
+      }
+
+      // C. Social Queue Check: Cari apakah ada orang yang menghalangi path di depan robot
+      if (homing_queue_enabled_) {
+        double closest_person_x = 1e9;
+        double closest_person_y = 0.0;
+        double closest_person_dist = 1e9;
+        bool person_in_corridor = false;
+
+        // 1. Cek dari deteksi kamera ZED (latest_persons_)
+        {
+          std::lock_guard<std::mutex> lock(person_mutex_);
+          const double person_age = (now() - latest_person_time_).seconds();
+          if (person_age < 1.0) {
+            for (const auto & p : latest_persons_) {
+              if (p.x > 0.30 && p.x <= homing_queue_max_detect_dist_ &&
+                  std::abs(p.y) <= homing_queue_corridor_)
+              {
+                const double d = std::hypot(p.x, p.y);
+                if (d < closest_person_dist) {
+                  closest_person_dist = d;
+                  closest_person_x = p.x;
+                  closest_person_y = p.y;
+                  person_in_corridor = true;
+                }
+              }
+            }
+          }
+        }
+
+        // 2. Cross-check / fallback dengan LiDAR clusters jika ada rintangan orang/kaki di koridor depan
+        if (!person_in_corridor) {
+          sensor_msgs::msg::LaserScan::SharedPtr scan;
+          {
+            std::lock_guard<std::mutex> lock(scan_mutex_);
+            scan = latest_scan_;
+          }
+          if (scan && !scan->ranges.empty()) {
+            double laser_tx = 0.0, laser_ty = 0.0, laser_yaw = 0.0;
+            try {
+              auto tf_laser = tf_buffer_->lookupTransform(
+                frame_base_, scan->header.frame_id, tf2::TimePointZero);
+              laser_tx = tf_laser.transform.translation.x;
+              laser_ty = tf_laser.transform.translation.y;
+              const auto & rq = tf_laser.transform.rotation;
+              const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+              const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+              laser_yaw = std::atan2(siny, cosy);
+            } catch (...) {}
+
+            const auto clusters = extract_leg_clusters(scan, laser_tx, laser_ty, laser_yaw);
+            for (const auto & c : clusters) {
+              if (c.x > 0.30 && c.x <= homing_queue_max_detect_dist_ &&
+                  std::abs(c.y) <= homing_queue_corridor_)
+              {
+                const double d = std::hypot(c.x, c.y);
+                if (d < closest_person_dist) {
+                  closest_person_dist = d;
+                  closest_person_x = c.x;
+                  closest_person_y = c.y;
+                  person_in_corridor = true;
+                }
+              }
+            }
+          }
+        }
+
+        if (person_in_corridor) {
+          last_corridor_person_time = now();
+        }
+
+        const bool recent_person = person_in_corridor || 
+          ((now() - last_corridor_person_time).seconds() < homing_queue_clear_hysteresis_);
+
+        if (recent_person && closest_person_dist < 1e8) {
+          // Ada orang yang menghalangi path di depan! Masuk / pertahankan mode antrian
+          is_homing_queuing_ = true;
+
+          geometry_msgs::msg::Twist queue_cmd;
+          if (closest_person_dist <= homing_queue_distance_) {
+            // STOP di belakang orang (social distance terjaga)
+            queue_cmd.linear.x = 0.0;
+            queue_cmd.linear.y = 0.0;
+            queue_cmd.angular.z = 0.0;
+
+            RCLCPP_INFO_THROTTLE(
+              get_logger(), *get_clock(), 1000,
+              "\033[1;33m[Homing Queue]\033[0m Antri di belakang orang | Jarak: %.2f m (Target: %.2f m) -> Robot STOP menunggu...",
+              closest_person_dist, homing_queue_distance_);
+
+            if (follow_status_pub_) {
+              std_msgs::msg::String status_msg;
+              status_msg.data = "HOMING_QUEUING_WAIT";
+              follow_status_pub_->publish(status_msg);
+            }
+          } else {
+            // Orang di depan mulai bergerak maju perlahan dalam antrian -> Robot merayap santai mengikuti antrian
+            queue_cmd.linear.x = homing_queue_crawl_speed_;
+            queue_cmd.linear.y = 0.0;
+            const double yaw_err = std::atan2(closest_person_y, closest_person_x);
+            queue_cmd.angular.z = std::clamp(0.6 * yaw_err, -0.25, 0.25);
+
+            RCLCPP_INFO_THROTTLE(
+              get_logger(), *get_clock(), 1000,
+              "\033[1;36m[Homing Queue]\033[0m Orang di depan melangkah maju | Jarak: %.2f m -> Robot merayap antri (vx=%.2f m/s)...",
+              closest_person_dist, homing_queue_crawl_speed_);
+
+            if (follow_status_pub_) {
+              std_msgs::msg::String status_msg;
+              status_msg.data = "HOMING_QUEUING_ADVANCE";
+              follow_status_pub_->publish(status_msg);
+            }
+          }
+
+          cmd_vel_pub_->publish(queue_cmd);
+        } else {
+          // Jalur di depan bersih (tidak ada orang yang menghalangi)
+          if (is_homing_queuing_) {
+            is_homing_queuing_ = false;
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;32m[Homing Queue]\033[0m Jalur bersih! Orang sudah melangkah/minggir. Nav2 melanjutkan navigasi otomatis ke origin.");
+            if (follow_status_pub_) {
+              std_msgs::msg::String status_msg;
+              status_msg.data = "HOMING_RESUMED";
+              follow_status_pub_->publish(status_msg);
+            }
+          }
+        }
+      }
+
+      rate.sleep();
+    }
+
+    is_homing_active_ = false;
+    is_homing_queuing_ = false;
+
+    if (nav_finished) {
+      if (nav_result == rclcpp_action::ResultCode::SUCCEEDED) {
         resp->success = true;
         resp->message = "Robot arrived at starting position (origin).";
         RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
@@ -2324,6 +2492,15 @@ private:
   rclcpp::Service<Trigger>::SharedPtr rotate_safe_srv_alias_;
   rclcpp::Service<Trigger>::SharedPtr homing_srv_;
   std::atomic<bool> is_homing_active_{false};
+  std::atomic<bool> is_homing_queuing_{false};
+  bool homing_queue_enabled_{true};
+  double homing_queue_distance_{0.90};
+  double homing_queue_resume_distance_{1.30};
+  double homing_queue_corridor_{0.45};
+  double homing_queue_max_detect_dist_{2.20};
+  double homing_queue_crawl_speed_{0.12};
+  double homing_queue_clear_hysteresis_{1.0};
+  double homing_timeout_{300.0};
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
   rclcpp::CallbackGroup::SharedPtr cb_group_;
 };

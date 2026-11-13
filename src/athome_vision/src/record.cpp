@@ -13,7 +13,7 @@ string Filename(const string & directory)
   tm * ltm = localtime(&now);
 
   char filename[100];
-  sprintf(filename, "zed_%02d-%02d-%02d.avi", ltm->tm_hour, ltm->tm_min, ltm->tm_sec);
+  sprintf(filename, "zed_%02d-%02d-%02d.mp4", ltm->tm_hour, ltm->tm_min, ltm->tm_sec);
 
   return directory + "/" + string(filename);
 }
@@ -74,7 +74,7 @@ int main(int argc, char ** argv)
         string path = Filename(save_path);
         std::cout << "Recording started for " << path << "\n";
         video.open(
-          path, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), fps,
+          path, cv::VideoWriter::fourcc('m', 'p', '4', 'v'), fps,
           cv::Size(cvImage.cols, cvImage.rows));
 
         if (!video.isOpened())

@@ -10,9 +10,9 @@ ros2 launch restaurant motion.launch.py
 Jalankan vision dalam mode restaurant agar node mendeteksi orang yang mengangkat/melambaikan tangan (kiri atau kanan) dan otomatis mempublikasikan koordinat orang terdekat yang melambai ke `/zed/order1`:
 
 ```bash
-ros2 launch athome_bringup sensors.launch.py task:=restaurant
-# atau tanpa bringup:
-ros2 launch athome_vision zed.launch.py task:=restaurant
+ros2 launch restaurant camera.launch.py
+# atau langsung via athome_vision:
+ros2 launch athome_vision zed.launch.py task:=restaurant enable_yolo:=false enable_bag:=false enable_drinks:=false enable_chair:=false
 ```
 
 Gesture yang dipublikasikan ke `/zed/gesture`: `WAVE_LEFT`, `WAVE_RIGHT`, atau `NONE`.

@@ -287,7 +287,6 @@ public:
   }
 
   bool ready() const {return static_cast<bool>(session_);}
-  bool usingCuda() const {return using_cuda_;}
 
   std::vector<int64_t> inputShape()
   {
@@ -703,6 +702,23 @@ public:
     return embedFace(resized);
   }
 
+  std::vector<float> extractFaceFromImage(const cv::Mat & img)
+  {
+    if (!face_.ready() || img.empty()) return {};
+    cv::Rect roi(0, 0, img.cols, img.rows);
+    if (img.cols > img.rows) {
+      const int diff = img.cols - img.rows;
+      roi = cv::Rect(diff / 2, 0, img.rows, img.rows);
+    } else if (img.rows > img.cols) {
+      const int side = img.cols;
+      roi = cv::Rect(0, 0, side, std::min(img.rows, side));
+    }
+    cv::Mat cropped = img(roi);
+    cv::Mat resized;
+    cv::resize(cropped, resized, cv::Size(112, 112));
+    return embedFace(resized);
+  }
+
   static float matchFace(const std::vector<float> & a, const std::vector<float> & b)
   {
     if (a.empty() || b.empty() || a.size() != b.size()) return -1.0f;
@@ -1022,6 +1038,7 @@ private:
 
   std::string resolvePath(const std::string & path) const;
   void loadModels();
+  void loadPreRegisteredHost();
   void loadYolo(
     YoloDetector & detector, const std::string & model_param,
     const std::vector<std::string> & fallbacks, const std::string & name,
@@ -1132,6 +1149,8 @@ ZedNode::ZedNode()
   declare_parameter("hair_labels", std::string("models/hair_names.txt"));
   declare_parameter("face_model", std::string("models/face_recognition_sface.onnx"));
   declare_parameter("face_threshold", 0.363);
+  declare_parameter("host_name", std::string("Alex"));
+  declare_parameter("host_photo", std::string("models/host.jpg"));
 
   task_mode_ = get_parameter("task").as_string();
   std::string task = task_mode_;
@@ -1263,7 +1282,7 @@ std::string ZedNode::resolvePath(const std::string & path) const
   }
   if (std::filesystem::exists(path)) return path;
   if (std::filesystem::exists("src/athome_vision/" + path)) return "src/athome_vision/" + path;
-  const std::string ws = "/home/dell/Documents/athome_ws/src/athome_vision/" + path;
+  const std::string ws = "/home/dell/Desktop/athome_ws/src/athome_vision/" + path;
   if (std::filesystem::exists(ws)) return ws;
   return "share/athome_vision/" + path;
 }
@@ -1385,10 +1404,62 @@ void ZedNode::loadModels()
     if (analyzer_.loadFace(face_path, &err)) {
       RCLCPP_INFO(get_logger(), "Face SFace loaded: %s (threshold %.3f)",
         face_path.c_str(), face_threshold_);
+      loadPreRegisteredHost();
     } else {
       RCLCPP_WARN(get_logger(), "Face model unavailable: %s", err.c_str());
     }
   }
+}
+
+void ZedNode::loadPreRegisteredHost()
+{
+  std::string host_name = get_parameter("host_name").as_string();
+  std::string host_photo = get_parameter("host_photo").as_string();
+  if (host_name.empty() || host_photo.empty()) return;
+
+  std::string full_path = resolvePath(host_photo);
+  if (!std::filesystem::exists(full_path)) {
+    std::string fallback = resolvePath("models/" + host_photo);
+    if (std::filesystem::exists(fallback)) {
+      full_path = fallback;
+    } else {
+      RCLCPP_INFO(get_logger(),
+        "[Host Pre-Register] Info: File foto host tidak ditemukan di '%s'. Pre-registrasi dari foto dilewati.",
+        host_photo.c_str());
+      return;
+    }
+  }
+
+  cv::Mat img = cv::imread(full_path);
+  if (img.empty()) {
+    RCLCPP_WARN(get_logger(),
+      "[Host Pre-Register] Gagal membaca gambar foto host: %s", full_path.c_str());
+    return;
+  }
+
+  std::vector<float> feat = analyzer_.extractFaceFromImage(img);
+  if (feat.empty()) {
+    RCLCPP_WARN(get_logger(),
+      "[Host Pre-Register] Gagal mengekstrak fitur wajah host dari: %s", full_path.c_str());
+    return;
+  }
+
+  RegisteredPerson host_person;
+  host_person.name = host_name;
+  host_person.feature = feat;
+  host_person.feature_samples = 30; // Pre-registered with maximum confidence
+  host_person.has_color = false;
+  host_person.last_tracking_id = -1;
+  host_person.last_seen = now();
+
+  auto it = std::remove_if(registered_persons_.begin(), registered_persons_.end(),
+    [&host_name](const RegisteredPerson & p) { return p.name == host_name; });
+  registered_persons_.erase(it, registered_persons_.end());
+
+  registered_persons_.push_back(host_person);
+  RCLCPP_INFO(get_logger(),
+    "\033[1;32m[Host Pre-Register] Berhasil mendaftarkan Host '%s' dari file foto: %s (%dx%d px)\033[0m",
+    host_name.c_str(), full_path.c_str(), img.cols, img.rows);
 }
 
 void ZedNode::publishYaw()
