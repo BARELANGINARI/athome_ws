@@ -30,3 +30,16 @@ restaurant_node:
     search_timeout_sec: 35.0             # Batas waktu timeout pencarian (detik)
     cmd_vel_topic: "/cmd_vel"            # Topik kecepatan robot
     gesture_topic: "/vision/gesture"     # Topik gestur dari kamera
+
+    # -------------------------------------------------------------------------
+    # 4. Heading Alignment to Person BBox Settings
+    # -------------------------------------------------------------------------
+    align_to_person_enabled: true        # Aktifkan penyesuaian arah hadap ke bbox orang setelah sampai di tujuan
+    person_label_topic: "/vision/person_label" # Topik deteksi orang & bbox dari kamera
+    align_timeout_sec: 10.0              # Batas waktu penyesuaian arah hadap (detik)
+    align_tolerance_px: 30.0             # Toleransi selisih piksel tengah bbox terhadap tengah kamera (px)
+    align_p_gain: 0.6                    # Proportional gain untuk kecepatan sudut rotasi
+    align_min_speed: 0.12                # Kecepatan rotasi minimum untuk mengatasi friksi (rad/s)
+    align_max_speed: 0.35                # Kecepatan rotasi maksimum (rad/s)
+    camera_image_width: 672.0            # Lebar resolusi kamera dalam piksel (ZED VGA: 672 px)
+    align_invert_direction: false        # Inversi arah putar (true jika kamera terpasang terbalik)

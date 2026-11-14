@@ -44,6 +44,85 @@ geometry_msgs::msg::Quaternion yawToQuaternion(double yaw_deg_or_rad)
   return q;
 }
 
+// Struktur representasi deteksi orang beserta BBox dan koordinat 3D
+struct DetectedPerson
+{
+  int bbox_x{0};
+  int bbox_y{0};
+  int bbox_w{0};
+  int bbox_h{0};
+  double bbox_cx{0.0};
+  double bbox_cy{0.0};
+  double x{0.0};
+  double y{0.0};
+  double z{0.0};
+  bool has_3d{false};
+  int id{-1};
+  std::string label;
+};
+
+// Parser untuk topik /vision/person_label ("label:x,y,w,h|X,Y,Z|id=...;...")
+inline std::vector<DetectedPerson> parsePersonLabel(const std::string & data)
+{
+  std::vector<DetectedPerson> persons;
+  if (data.empty() || data.find("NO_PERSON") != std::string::npos) {
+    return persons;
+  }
+
+  std::stringstream ss(data);
+  std::string chunk;
+  while (std::getline(ss, chunk, ';')) {
+    if (chunk.empty()) continue;
+    auto sep1 = chunk.find(':');
+    auto bar1 = chunk.find('|');
+    if (sep1 == std::string::npos || bar1 == std::string::npos || bar1 <= sep1) continue;
+
+    DetectedPerson p;
+    p.label = chunk.substr(0, sep1);
+
+    // 1. Ekstraksi Bounding Box (x, y, w, h)
+    std::string bbox_str = chunk.substr(sep1 + 1, bar1 - sep1 - 1);
+    std::stringstream bss(bbox_str);
+    std::string val;
+    std::vector<int> bvals;
+    while (std::getline(bss, val, ',')) {
+      try { bvals.push_back(std::stoi(val)); } catch (...) {}
+    }
+    if (bvals.size() >= 4) {
+      p.bbox_x = bvals[0];
+      p.bbox_y = bvals[1];
+      p.bbox_w = bvals[2];
+      p.bbox_h = bvals[3];
+      p.bbox_cx = p.bbox_x + p.bbox_w * 0.5;
+      p.bbox_cy = p.bbox_y + p.bbox_h * 0.5;
+    }
+
+    // 2. Ekstraksi Koordinat 3D (x, y, z) jika tersedia
+    auto bar2 = chunk.find('|', bar1 + 1);
+    std::string xyz_str = (bar2 != std::string::npos) ? chunk.substr(bar1 + 1, bar2 - bar1 - 1) : chunk.substr(bar1 + 1);
+    if (xyz_str.find("nan") == std::string::npos) {
+      double px = 0.0, py = 0.0, pz = 0.0;
+      if (std::sscanf(xyz_str.c_str(), "%lf,%lf,%lf", &px, &py, &pz) >= 2) {
+        if (std::isfinite(px) && std::isfinite(py)) {
+          p.x = px;
+          p.y = -py; // Negasikan kembali agar sesuai standar ROS base_link (+Y Kiri, -Y Kanan)
+          p.z = pz;
+          p.has_3d = true;
+        }
+      }
+    }
+
+    // 3. ID pelacakan orang
+    auto id_pos = chunk.find("id=");
+    if (id_pos != std::string::npos) {
+      try { p.id = std::stoi(chunk.substr(id_pos + 3)); } catch (...) {}
+    }
+
+    persons.push_back(p);
+  }
+  return persons;
+}
+
 // Helper parser yang fleksibel untuk berbagai format input string posisi
 bool parseCoordinates(const std::string & raw_data, double & out_x, double & out_y)
 {
@@ -127,6 +206,15 @@ public:
     declare_parameter("search_timeout_sec", 35.0);      // Timeout keseluruhan fungsi search (detik)
     declare_parameter("cmd_vel_topic", "/cmd_vel");
     declare_parameter("gesture_topic", "/vision/gesture");
+    declare_parameter("align_to_person_enabled", true);
+    declare_parameter("person_label_topic", "/vision/person_label");
+    declare_parameter("align_timeout_sec", 10.0);
+    declare_parameter("align_tolerance_px", 30.0);
+    declare_parameter("align_p_gain", 0.6);
+    declare_parameter("align_min_speed", 0.12);
+    declare_parameter("align_max_speed", 0.35);
+    declare_parameter("camera_image_width", 672.0);
+    declare_parameter("align_invert_direction", false);
 
     origin_x_ = get_parameter("origin_x").as_double();
     origin_y_ = get_parameter("origin_y").as_double();
@@ -144,6 +232,15 @@ public:
     search_timeout_sec_ = get_parameter("search_timeout_sec").as_double();
     cmd_vel_topic_ = get_parameter("cmd_vel_topic").as_string();
     gesture_topic_ = get_parameter("gesture_topic").as_string();
+    align_to_person_enabled_ = get_parameter("align_to_person_enabled").as_bool();
+    person_label_topic_ = get_parameter("person_label_topic").as_string();
+    align_timeout_sec_ = get_parameter("align_timeout_sec").as_double();
+    align_tolerance_px_ = get_parameter("align_tolerance_px").as_double();
+    align_p_gain_ = get_parameter("align_p_gain").as_double();
+    align_min_speed_ = get_parameter("align_min_speed").as_double();
+    align_max_speed_ = get_parameter("align_max_speed").as_double();
+    camera_image_width_ = get_parameter("camera_image_width").as_double();
+    align_invert_direction_ = get_parameter("align_invert_direction").as_bool();
 
     // TF2 Buffer & Listener untuk konversi koordinat base_link -> map
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -176,6 +273,14 @@ public:
       gesture_topic_, 10,
       [this](const std_msgs::msg::String::SharedPtr msg) {
         onGestureMessage(msg);
+      },
+      sub_opts);
+
+    // Subscription /vision/person_label untuk membaca bounding box orang di depan robot
+    person_label_sub_ = create_subscription<std_msgs::msg::String>(
+      person_label_topic_, rclcpp::SensorDataQoS(),
+      [this](const std_msgs::msg::String::SharedPtr msg) {
+        onPersonLabelMessage(msg);
       },
       sub_opts);
 
@@ -289,6 +394,16 @@ public:
   }
 
 private:
+  // Callback saat menerima data deteksi orang beserta bounding box dari /vision/person_label
+  void onPersonLabelMessage(const std_msgs::msg::String::SharedPtr msg)
+  {
+    if (!msg || msg->data.empty()) return;
+    auto parsed = parsePersonLabel(msg->data);
+    std::lock_guard<std::mutex> lock(person_mutex_);
+    latest_persons_ = std::move(parsed);
+    latest_person_time_ = now();
+  }
+
   // Callback saat menerima pesan di /vision/order
   void onOrderMessage(const std_msgs::msg::String::SharedPtr msg)
   {
@@ -344,6 +459,142 @@ private:
     }
   }
 
+  // Menyelaraskan arah hadap robot tepat ke tengah bounding box (bbox) orang di depannya
+  bool alignHeadingToPersonInFront()
+  {
+    if (!align_to_person_enabled_) {
+      return true;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;33m[Align]\033[0m Reached destination! Detecting person bbox in front and adjusting robot heading...");
+
+    const auto start_time = now();
+    const double timeout_sec = align_timeout_sec_;
+    const double img_center_x = camera_image_width_ * 0.5;
+    const double tol_px = align_tolerance_px_;
+    int centered_count = 0;
+    rclcpp::Rate rate(20.0);
+
+    bool person_ever_seen = false;
+
+    while (rclcpp::ok()) {
+      if ((now() - start_time).seconds() > timeout_sec) {
+        RCLCPP_WARN(
+          get_logger(),
+          "[Align] Alignment timeout (%.1fs) reached. Finishing alignment.", timeout_sec);
+        break;
+      }
+
+      std::vector<DetectedPerson> current_persons;
+      rclcpp::Time ptime;
+      {
+        std::lock_guard<std::mutex> lock(person_mutex_);
+        current_persons = latest_persons_;
+        ptime = latest_person_time_;
+      }
+
+      // Filter deteksi orang yang masih segar (< 1.5 detik yang lalu)
+      bool has_fresh_person = false;
+      DetectedPerson target_person;
+      double best_score = -1e9;
+
+      if (!current_persons.empty() && (now() - ptime).seconds() < 1.5) {
+        for (const auto & p : current_persons) {
+          // Abaikan deteksi kecil/noise
+          if (p.bbox_w < 25 || p.bbox_h < 45) continue;
+
+          // Skor: prioritaskan orang terdekat (3D range kecil) atau bbox terbesar
+          double score = 0.0;
+          if (p.has_3d && p.x > 0.1 && p.x < 3.5) {
+            score = 1000.0 - std::hypot(p.x, p.y);
+          } else {
+            score = static_cast<double>(p.bbox_w * p.bbox_h);
+          }
+
+          if (score > best_score) {
+            best_score = score;
+            target_person = p;
+            has_fresh_person = true;
+          }
+        }
+      }
+
+      if (!has_fresh_person) {
+        geometry_msgs::msg::Twist stop_cmd;
+        cmd_vel_pub_->publish(stop_cmd);
+        rate.sleep();
+        continue;
+      }
+
+      person_ever_seen = true;
+
+      // Hitung selisih piksel tengah bbox terhadap tengah gambar kamera
+      // error_px > 0: orang di sebelah kiri kamera -> putar robot ke kiri (+)
+      // error_px < 0: orang di sebelah kanan kamera -> putar robot ke kanan (-)
+      double error_px = img_center_x - target_person.bbox_cx;
+      if (align_invert_direction_) {
+        error_px = -error_px;
+      }
+
+      // Cek apakah posisi tengah bbox orang sudah berada di dalam toleransi tengah kamera
+      if (std::abs(error_px) <= tol_px) {
+        centered_count++;
+        geometry_msgs::msg::Twist stop_cmd;
+        cmd_vel_pub_->publish(stop_cmd);
+
+        if (centered_count >= 3) {
+          stopRobot();
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[Align SUCCESS]\033[0m Robot perfectly aligned with customer bbox (cx=%.1f, err=%.1f px)!",
+            target_person.bbox_cx, error_px);
+          return true;
+        }
+      } else {
+        centered_count = 0;
+
+        // P-controller untuk kecepatan sudut rotasi
+        const double norm_err = error_px / img_center_x; // -1.0 .. +1.0
+        double wz = align_p_gain_ * norm_err;
+
+        // Batasi dengan kecepatan min dan max
+        wz = std::clamp(wz, -align_max_speed_, align_max_speed_);
+        if (std::abs(wz) < align_min_speed_) {
+          wz = (error_px > 0.0) ? align_min_speed_ : -align_min_speed_;
+        }
+
+        geometry_msgs::msg::Twist cmd;
+        cmd.linear.x = 0.0;
+        cmd.linear.y = 0.0;
+        cmd.angular.z = wz;
+        cmd_vel_pub_->publish(cmd);
+
+        RCLCPP_DEBUG_THROTTLE(
+          get_logger(), *get_clock(), 500,
+          "[Align] bbox cx=%.1f, err=%.1f px -> wz=%.2f rad/s",
+          target_person.bbox_cx, error_px, wz);
+      }
+
+      rate.sleep();
+    }
+
+    stopRobot();
+
+    if (person_ever_seen) {
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[1;32m[Align DONE]\033[0m Alignment finished (heading aligned close to center).");
+    } else {
+      RCLCPP_WARN(
+        get_logger(),
+        "[Align] No person bbox detected in front within timeout. Preserving Nav2 arrival heading.");
+    }
+
+    return true;
+  }
+
   // Handler service /go_to_order
   void handleGoToOrder(
     const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
@@ -383,10 +634,16 @@ private:
       ox, oy);
 
     bool ok = navigateToPersonWithSafeStandoff(ox, oy);
+    if (ok) {
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[1;36m[Order]\033[0m Reached customer position. Adjusting heading to face customer bbox...");
+      alignHeadingToPersonInFront();
+    }
     is_navigating_ = false;
 
     res->success = ok;
-    res->message = ok ? "Successfully arrived safely in front of customer."
+    res->message = ok ? "Successfully arrived safely and aligned facing customer."
                       : "Failed or timed out navigating to customer.";
   }
 
@@ -595,10 +852,16 @@ private:
       dx, dy, dyaw * 180.0 / M_PI);
 
     bool ok = navigateToMapPose(dx, dy, dyaw, "Deliver");
+    if (ok) {
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[1;36m[Deliver]\033[0m Reached customer table. Adjusting heading to face customer bbox...");
+      alignHeadingToPersonInFront();
+    }
     is_navigating_ = false;
 
     res->success = ok;
-    res->message = ok ? "Successfully arrived at customer table position for delivery."
+    res->message = ok ? "Successfully arrived at customer table and aligned facing customer."
                       : "Failed or timed out navigating to customer table.";
   }
 
@@ -943,6 +1206,22 @@ private:
   double saved_order_x_{0.0};
   double saved_order_y_{0.0};
   double saved_order_yaw_{0.0};
+
+  // Align Heading to Person BBox Settings & State
+  bool align_to_person_enabled_{true};
+  std::string person_label_topic_{"/vision/person_label"};
+  double align_timeout_sec_{10.0};
+  double align_tolerance_px_{30.0};
+  double align_p_gain_{0.6};
+  double align_min_speed_{0.12};
+  double align_max_speed_{0.35};
+  double camera_image_width_{672.0};
+  bool align_invert_direction_{false};
+
+  std::mutex person_mutex_;
+  std::vector<DetectedPerson> latest_persons_;
+  rclcpp::Time latest_person_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_label_sub_;
 };
 
 }  // namespace restaurant
