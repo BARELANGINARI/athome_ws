@@ -296,7 +296,7 @@ public:
       sub_opts);
 
     drink_sub_ = create_subscription<std_msgs::msg::String>(
-      "/vision/drink_detections", rclcpp::SensorDataQoS(),
+      "/vision/drink_detections", rclcpp::SensorDataQoS(),c
       std::bind(&RestaurantTaskNode::onDrinkDetections, this, std::placeholders::_1),
       sub_opts);
 

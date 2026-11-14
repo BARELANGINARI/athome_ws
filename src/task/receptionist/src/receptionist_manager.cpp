@@ -13,10 +13,8 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
-#include <deque>
 #include <functional>
 #include <future>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -159,7 +157,7 @@ public:
     // --------------------------------------------------------------------------
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/status", 10);
-    person_name_pub_ = create_publisher<std_msgs::msg::String>("/vision/set_person_name", 10);
+    person_name_pub_ = create_publisher<std_msgs::msg::String>("/zed/set_person_name", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -172,31 +170,31 @@ public:
       sub_opts);
 
     // --------------------------------------------------------------------------
-    // Subscriber Vision (Static RGB-D Camera)
+    // Subscriber Vision (Static RGB-D ZED Camera)
     // --------------------------------------------------------------------------
     person_sub_ = create_subscription<std_msgs::msg::String>(
-      "/vision/person_label", rclcpp::SensorDataQoS(),
+      "/zed/person_label", rclcpp::SensorDataQoS(),
       std::bind(&ReceptionistTaskNode::onPersonLabel, this, std::placeholders::_1),
       sub_opts);
 
     drink_sub_ = create_subscription<std_msgs::msg::String>(
-      "/vision/drink_detections", rclcpp::SensorDataQoS(),
+      "/zed/drink_detections", rclcpp::SensorDataQoS(),
       std::bind(&ReceptionistTaskNode::onDrinkDetections, this, std::placeholders::_1),
       sub_opts);
 
-    // Fallback ke /vision/bag_detections (tidak menghapus latest_drinks_ jika kosong)
+    // Fallback ke /zed/bag_detections (tidak menghapus latest_drinks_ jika kosong)
     object_sub_ = create_subscription<std_msgs::msg::String>(
-      "/vision/bag_detections", rclcpp::SensorDataQoS(),
+      "/zed/bag_detections", rclcpp::SensorDataQoS(),
       std::bind(&ReceptionistTaskNode::onBagDetectionsFallback, this, std::placeholders::_1),
       sub_opts);
 
     attributes_sub_ = create_subscription<std_msgs::msg::String>(
-      "/vision/person_attributes", 10,
+      "/zed/person_attributes", 10,
       std::bind(&ReceptionistTaskNode::onPersonAttributes, this, std::placeholders::_1),
       sub_opts);
 
     seat_sub_ = create_subscription<std_msgs::msg::String>(
-      "/vision/empty_seat", 10,
+      "/zed/empty_seat", 10,
       std::bind(&ReceptionistTaskNode::onEmptySeat, this, std::placeholders::_1),
       sub_opts);
 
@@ -276,14 +274,6 @@ private:
   int camera_width_{672};
 
   // Data Persepsi Vision
-  struct VisualSample {
-    std::string gender;
-    std::string shirt;
-    std::string hair;
-  };
-  std::deque<VisualSample> visual_samples_;
-  static constexpr size_t MAX_VISUAL_SAMPLES = 60;
-
   std::mutex vision_mutex_;
   std::vector<DetectedObject> latest_drinks_;
   rclcpp::Time last_drink_msg_time_{0, 0, RCL_ROS_TIME};
@@ -412,7 +402,6 @@ private:
       latest_drinks_.clear();
       has_explicit_empty_seat_ = false;
       nearest_person_bbox_w_ = 0;
-      visual_samples_.clear();
     }
   }
 
@@ -436,9 +425,6 @@ private:
       person_seen_ = false;
       last_wait_prompt_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
       std::lock_guard<std::mutex> lock(vision_mutex_);
-      if (next_state == ReceptionistState::WAIT_GUEST) {
-        visual_samples_.clear();
-      }
       if (next_state == ReceptionistState::ASK_DRINK) {
         latest_drinks_.clear();
       }
@@ -667,7 +653,7 @@ private:
     return "center";
   }
 
-  // Menentukan lokasi kursi kosong berdasarkan deteksi vision (/vision/empty_seat)
+  // Menentukan lokasi kursi kosong berdasarkan deteksi vision (/zed/empty_seat)
   std::string detectEmptyChairSide()
   {
     std::lock_guard<std::mutex> lock(vision_mutex_);
@@ -692,68 +678,44 @@ private:
     return "center";
   }
 
-  // Mengekstrak atribut visual dari Vision (/vision/person_attributes) menggunakan Majority Voting
+  // Mengekstrak atribut visual dari ZED (/zed/person_attributes) secara thread-safe
   void updateCurrentGuestVisualAttributes(int person_id)
   {
-    std::string best_gender = "male";
-    std::string best_shirt = "casual attire";
-    std::string best_hair = "dark hair";
-    size_t sample_count = 0;
-
+    std::vector<std::string> raw_attrs;
     {
       std::lock_guard<std::mutex> v_lock(vision_mutex_);
-      sample_count = visual_samples_.size();
-      if (!visual_samples_.empty()) {
-        std::map<std::string, int> gender_votes;
-        std::map<std::string, int> shirt_votes;
-        std::map<std::string, int> hair_votes;
-        for (const auto & s : visual_samples_) {
-          if (!s.gender.empty()) gender_votes[s.gender]++;
-          if (!s.shirt.empty()) shirt_votes[s.shirt]++;
-          if (!s.hair.empty()) hair_votes[s.hair]++;
-        }
-        auto pick_max = [](const std::map<std::string, int> & m, const std::string & fallback) {
-          std::string winner = fallback;
-          int max_c = 0;
-          for (const auto & kv : m) {
-            if (kv.second > max_c) {
-              max_c = kv.second;
-              winner = kv.first;
-            }
-          }
-          return winner;
-        };
-        best_gender = pick_max(gender_votes, "male");
-        best_shirt = pick_max(shirt_votes, "casual attire");
-        best_hair = pick_max(hair_votes, "dark hair");
-      } else {
-        for (const auto & a : latest_attributes_) {
-          std::string lower_a = a;
-          std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
-          if (lower_a == "male" || lower_a == "female") {
-            best_gender = lower_a;
-          } else if (lower_a.find("shirt") != std::string::npos ||
-                     lower_a.find("clothes") != std::string::npos ||
-                     lower_a.find("attire") != std::string::npos)
-          {
-            best_shirt = a;
-          } else if (lower_a.find("hair") != std::string::npos) {
-            best_hair = a;
-          }
-        }
-      }
+      raw_attrs = latest_attributes_;
     }
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;32m[VISION]\033[0m Voted visual attributes (%zu samples) for person_id=%d: gender=%s, shirt=%s, hair=%s",
-      sample_count, person_id, best_gender.c_str(), best_shirt.c_str(), best_hair.c_str());
+      "\033[1;32m[VISION]\033[0m Extracting visual attributes for person_id=%d",
+      person_id);
 
     std::lock_guard<std::mutex> g_lock(guest_mutex_);
-    current_guest_.gender = best_gender;
-    current_guest_.shirt_color = best_shirt;
-    current_guest_.hair_color = best_hair;
-    current_guest_.attributes = {best_gender, best_shirt, best_hair};
+    std::vector<std::string> attrs;
+    for (const auto & a : raw_attrs) {
+      if (std::find(attrs.begin(), attrs.end(), a) == attrs.end()) {
+        attrs.push_back(a);
+      }
+
+      std::string lower_a = a;
+      std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
+      if (lower_a == "male" || lower_a == "female") {
+        current_guest_.gender = lower_a;
+      } else if (lower_a.find("shirt") != std::string::npos ||
+                 lower_a.find("clothes") != std::string::npos ||
+                 lower_a.find("attire") != std::string::npos)
+      {
+        current_guest_.shirt_color = a;
+      } else if (lower_a.find("hair") != std::string::npos) {
+        current_guest_.hair_color = a;
+      }
+    }
+    if (attrs.empty()) {
+      attrs.push_back("casual attire");
+    }
+    current_guest_.attributes = attrs;
   }
 
   static std::string formatPersonDescription(const PersonProfile & person)
@@ -788,7 +750,7 @@ private:
     return pronoun + " " + verb + " a " + gender + ", wearing a " + shirt + ", and " + has_verb + " " + hair;
   }
 
-  // Deteksi orang terdekat di depan robot (dari Vision /vision/person_label)
+  // Deteksi orang terdekat di depan robot (dari ZED /zed/person_label)
   bool isPersonInFront() const
   {
     return person_seen_.load() &&
@@ -1076,7 +1038,7 @@ private:
       stateToString(state_.load()).c_str());
   }
 
-  // Callback deteksi orang dari Vision (/vision/person_label)
+  // Callback deteksi orang dari ZED (/zed/person_label)
   void onPersonLabel(const std_msgs::msg::String::SharedPtr message)
   {
     if (!isVisionActive() || !message || message->data.empty() ||
@@ -1168,7 +1130,7 @@ private:
     return list;
   }
 
-  // Callback utama deteksi minuman (/vision/drink_detections)
+  // Callback utama deteksi minuman (/zed/drink_detections)
   void onDrinkDetections(const std_msgs::msg::String::SharedPtr message)
   {
     if (!isVisionActive() || !message) return;
@@ -1188,7 +1150,7 @@ private:
     }
   }
 
-  // Callback fallback (/vision/bag_detections): HANYA digunakan jika /vision/drink_detections
+  // Callback fallback (/zed/bag_detections): HANYA digunakan jika /zed/drink_detections
   // tidak aktif, dan TIDAK menghapus latest_drinks_ jika kosong.
   void onBagDetectionsFallback(const std_msgs::msg::String::SharedPtr message)
   {
@@ -1198,7 +1160,7 @@ private:
     if (last_drink_msg_time_.nanoseconds() > 0 &&
         (now() - last_drink_msg_time_).seconds() < 3.0)
     {
-      return; // Abaikan karena topic utama /vision/drink_detections sedang aktif
+      return; // Abaikan karena topic utama /zed/drink_detections sedang aktif
     }
     auto parsed = parseDetectionString(message->data);
     if (!parsed.empty()) {
@@ -1206,7 +1168,7 @@ private:
     }
   }
 
-  // Callback atribut visual tamu (/vision/person_attributes)
+  // Callback atribut visual tamu (/zed/person_attributes)
   void onPersonAttributes(const std_msgs::msg::String::SharedPtr message)
   {
     if (!isVisionActive() || !message || message->data.empty()) return;
@@ -1223,31 +1185,10 @@ private:
     }
     if (!parsed.empty()) {
       latest_attributes_ = parsed;
-      VisualSample sample;
-      for (const auto & a : parsed) {
-        std::string lower_a = a;
-        std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
-        if (lower_a == "male" || lower_a == "female") {
-          sample.gender = lower_a;
-        } else if (lower_a.find("shirt") != std::string::npos ||
-                   lower_a.find("clothes") != std::string::npos ||
-                   lower_a.find("attire") != std::string::npos)
-        {
-          sample.shirt = a;
-        } else if (lower_a.find("hair") != std::string::npos) {
-          sample.hair = a;
-        }
-      }
-      if (!sample.gender.empty() || !sample.shirt.empty() || !sample.hair.empty()) {
-        visual_samples_.push_back(sample);
-        if (visual_samples_.size() > MAX_VISUAL_SAMPLES) {
-          visual_samples_.pop_front();
-        }
-      }
     }
   }
 
-  // Callback deteksi kursi kosong (/vision/empty_seat: "left", "center", "right")
+  // Callback deteksi kursi kosong (/zed/empty_seat: "left", "center", "right")
   void onEmptySeat(const std_msgs::msg::String::SharedPtr message)
   {
     if (!isVisionActive() || !message || message->data.empty()) return;
@@ -1451,7 +1392,7 @@ private:
                    (now() - last_wait_prompt_time_).seconds() >= WAIT_GUEST_PROMPT_SEC)
         {
           last_wait_prompt_time_ = now();
-          speakAsync("I am waiting for a guest. please stand in front of me.");
+          speakAsync("I am waiting for a guest; please stand in front of me.");
         }
         break;
 
@@ -1652,7 +1593,7 @@ private:
           speakAsync(prompt, [this]() {
             transitionTo(ReceptionistState::WAIT_DRINK, "Asked for favorite drink after table check");
           });
-        });
+    })};
         break;
       }
 
