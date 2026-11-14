@@ -18,5 +18,15 @@ restaurant_node:
     order_topic: "/vision/order"           # Topik input posisi orang / pelanggan dari kamera
     order_frame: "base_link"             # Frame acuan koordinat: "base_link" (relatif kamera) atau "map" (global)
     standoff_distance: 0.85              # Jarak henti aman di depan pelanggan (meter)
-    auto_navigate: false                 # false: tunggu service /go_to_order1, true: langsung jalan saat topik publish
+    auto_navigate: false                 # false: tunggu service /go_to_order, true: langsung jalan saat topik publish
     nav_timeout_sec: 120.0               # Batas waktu navigasi Nav2 sebelum timeout (detik)
+
+    # -------------------------------------------------------------------------
+    # 3. Customer Search Rotation Settings
+    # -------------------------------------------------------------------------
+    search_sweep_angle_deg: 90.0         # Sudut rotasi pencarian kiri dan kanan (derajat)
+    search_angular_speed: 0.35           # Kecepatan sudut rotasi pencarian (rad/s)
+    search_hold_time_sec: 0.5            # Durasi diam sejenak di ujung kiri/kanan (detik)
+    search_timeout_sec: 35.0             # Batas waktu timeout pencarian (detik)
+    cmd_vel_topic: "/cmd_vel"            # Topik kecepatan robot
+    gesture_topic: "/vision/gesture"     # Topik gestur dari kamera

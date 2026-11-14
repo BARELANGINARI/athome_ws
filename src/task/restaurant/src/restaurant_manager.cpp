@@ -318,6 +318,8 @@ public:
       "/vision/camera_capture_face", rclcpp::ServicesQoS(), callback_group_);
 
     // Navigation helper services (dari restaurant_node jika dijalankan bersamaan)
+    go_to_order_client_ = create_client<Trigger>(
+      "/go_to_order", rclcpp::ServicesQoS(), callback_group_);
     go_to_order1_client_ = create_client<Trigger>(
       "/go_to_order1", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
@@ -454,6 +456,7 @@ private:
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_action_client_;
   TriggerClient::SharedPtr vision_wave_hand_client_;
   TriggerClient::SharedPtr vision_capture_face_client_;
+  TriggerClient::SharedPtr go_to_order_client_;
   TriggerClient::SharedPtr go_to_order1_client_;
   TriggerClient::SharedPtr homing_client_;
   TriggerClient::SharedPtr arm_grab_simple_client_;
@@ -656,13 +659,18 @@ private:
   // Navigasi ke pelanggan yang melambaikan tangan
   void navigateToWavingCustomer(std::function<void(bool)> on_finished)
   {
-    // Prioritaskan service /go_to_order1 dari restaurant_node jika tersedia
-    if (go_to_order1_client_ && go_to_order1_client_->service_is_ready()) {
+    // Prioritaskan service /go_to_order (atau /go_to_order1) dari restaurant_node jika tersedia
+    auto active_order_client = (go_to_order_client_ && go_to_order_client_->service_is_ready())
+      ? go_to_order_client_
+      : ((go_to_order1_client_ && go_to_order1_client_->service_is_ready()) ? go_to_order1_client_ : nullptr);
+    const std::string srv_name = (active_order_client == go_to_order_client_) ? "/go_to_order" : "/go_to_order1";
+
+    if (active_order_client) {
       callTrigger(
-        go_to_order1_client_, "/go_to_order1",
-        [this, on_finished](bool ok, const std::string & msg) {
+        active_order_client, srv_name,
+        [this, srv_name, on_finished](bool ok, const std::string & msg) {
           if (!ok) {
-            RCLCPP_WARN(get_logger(), "[NAV] /go_to_order1 gagal (%s), mencoba direct Nav2...", msg.c_str());
+            RCLCPP_WARN(get_logger(), "[NAV] %s gagal (%s), mencoba direct Nav2...", srv_name.c_str(), msg.c_str());
             double wx = 1.5, wy = 0.0;
             {
               std::lock_guard<std::mutex> lock(vision_mutex_);

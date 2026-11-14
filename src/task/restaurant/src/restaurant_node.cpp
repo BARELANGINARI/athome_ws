@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -12,6 +13,7 @@
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/quaternion.hpp"
+#include "geometry_msgs/msg/twist.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -23,6 +25,13 @@
 
 namespace restaurant
 {
+
+inline double normalize_angle(double angle)
+{
+  while (angle > M_PI) angle -= 2.0 * M_PI;
+  while (angle < -M_PI) angle += 2.0 * M_PI;
+  return angle;
+}
 
 geometry_msgs::msg::Quaternion yawToQuaternion(double yaw_deg_or_rad)
 {
@@ -112,6 +121,12 @@ public:
     declare_parameter("standoff_distance", 0.85);   // Jarak henti aman di depan orang (meter) agar tidak menabrak / masuk obstacle
     declare_parameter("auto_navigate", false);      // Langsung navigasi saat data order masuk atau tunggu service
     declare_parameter("nav_timeout_sec", 120.0);
+    declare_parameter("search_sweep_angle_deg", 90.0); // Rotasi pencarian ke kiri 90 deg dan ke kanan 90 deg
+    declare_parameter("search_angular_speed", 0.35);    // Kecepatan sudut rotasi (rad/s)
+    declare_parameter("search_hold_time_sec", 0.5);     // Waktu diam sejenak di ujung kiri/kanan (detik)
+    declare_parameter("search_timeout_sec", 35.0);      // Timeout keseluruhan fungsi search (detik)
+    declare_parameter("cmd_vel_topic", "/cmd_vel");
+    declare_parameter("gesture_topic", "/vision/gesture");
 
     origin_x_ = get_parameter("origin_x").as_double();
     origin_y_ = get_parameter("origin_y").as_double();
@@ -123,6 +138,12 @@ public:
     standoff_dist_ = get_parameter("standoff_distance").as_double();
     auto_navigate_ = get_parameter("auto_navigate").as_bool();
     nav_timeout_sec_ = get_parameter("nav_timeout_sec").as_double();
+    search_sweep_angle_deg_ = get_parameter("search_sweep_angle_deg").as_double();
+    search_angular_speed_ = get_parameter("search_angular_speed").as_double();
+    search_hold_time_sec_ = get_parameter("search_hold_time_sec").as_double();
+    search_timeout_sec_ = get_parameter("search_timeout_sec").as_double();
+    cmd_vel_topic_ = get_parameter("cmd_vel_topic").as_string();
+    gesture_topic_ = get_parameter("gesture_topic").as_string();
 
     // TF2 Buffer & Listener untuk konversi koordinat base_link -> map
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -137,6 +158,9 @@ public:
     nav_client_ = rclcpp_action::create_client<NavigateToPose>(
       this, "navigate_to_pose", action_cb_group_);
 
+    // Publisher cmd_vel untuk kontrol rotasi pencarian di tempat
+    cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(cmd_vel_topic_, 10);
+
     // Subscription /vision/order
     rclcpp::SubscriptionOptions sub_opts;
     sub_opts.callback_group = sub_cb_group_;
@@ -144,6 +168,14 @@ public:
       order_topic_, 10,
       [this](const std_msgs::msg::String::SharedPtr msg) {
         onOrderMessage(msg);
+      },
+      sub_opts);
+
+    // Subscription /vision/gesture untuk mendeteksi lambaian tangan secara real-time
+    gesture_sub_ = create_subscription<std_msgs::msg::String>(
+      gesture_topic_, 10,
+      [this](const std_msgs::msg::String::SharedPtr msg) {
+        onGestureMessage(msg);
       },
       sub_opts);
 
@@ -167,8 +199,27 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
-    // Service /go_to_order1 untuk menggerakkan robot ke posisi orang yang memesan
-    srv_go_order1_ = create_service<std_srvs::srv::Trigger>(
+    // Service /go_to_order untuk menggerakkan robot ke posisi orang yang memesan
+    srv_go_order_ = create_service<std_srvs::srv::Trigger>(
+      "/go_to_order",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleGoToOrder(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_go_order_alias_ = create_service<std_srvs::srv::Trigger>(
+      "/restaurant/go_to_order",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleGoToOrder(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    // Alias kompatibilitas ke belakang untuk /go_to_order1
+    srv_go_order1_compat_ = create_service<std_srvs::srv::Trigger>(
       "/go_to_order1",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
@@ -177,7 +228,7 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
-    srv_go_order1_alias_ = create_service<std_srvs::srv::Trigger>(
+    srv_go_order1_alias_compat_ = create_service<std_srvs::srv::Trigger>(
       "/restaurant/go_to_order1",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
@@ -186,9 +237,28 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
+    // Service /search untuk memutar robot kiri 90 deg dan kanan 90 deg mencari pelanggan melambaikan tangan
+    srv_search_ = create_service<std_srvs::srv::Trigger>(
+      "/search",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleSearch(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_search_alias_ = create_service<std_srvs::srv::Trigger>(
+      "/restaurant/search",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleSearch(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;32m[RestaurantNode]\033[0m Ready! Subscribed to %s | Services: /homing, /go_to_order1",
+      "\033[1;32m[RestaurantNode]\033[0m Ready! Subscribed to %s | Services: /homing, /go_to_order, /search",
       order_topic_.c_str());
   }
 
@@ -200,7 +270,7 @@ private:
     if (!parseCoordinates(msg->data, parsed_x, parsed_y)) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 3000,
-        "[Order1] Failed parsing coordinates from message: '%s'", msg->data.c_str());
+        "[Order] Failed parsing coordinates from message: '%s'", msg->data.c_str());
       return;
     }
 
@@ -210,14 +280,17 @@ private:
       latest_order_y_ = parsed_y;
       latest_order_time_ = now();
       has_order_ = true;
+      if (is_searching_.load()) {
+        wave_seen_during_search_ = true;
+      }
     }
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;35m[Order1]\033[0m Received customer position (%s): x=%.2f, y=%.2f",
+      "\033[1;35m[Order]\033[0m Received customer position (%s): x=%.2f, y=%.2f",
       order_frame_.c_str(), parsed_x, parsed_y);
 
-    if (auto_navigate_ && !is_navigating_.load()) {
+    if (auto_navigate_ && !is_navigating_.load() && !is_searching_.load()) {
       std::thread([this]() {
         auto dummy_req = std::make_shared<std_srvs::srv::Trigger::Request>();
         auto dummy_res = std::make_shared<std_srvs::srv::Trigger::Response>();
@@ -226,15 +299,37 @@ private:
     }
   }
 
-  // Handler service /go_to_order1
+  // Callback saat menerima deteksi lambaian tangan dari /vision/gesture
+  void onGestureMessage(const std_msgs::msg::String::SharedPtr msg)
+  {
+    if (!msg || msg->data.empty()) return;
+    std::string gest = msg->data;
+    std::transform(gest.begin(), gest.end(), gest.begin(), ::toupper);
+    if (gest.find("WAVE") != std::string::npos ||
+        gest.find("RAISE") != std::string::npos)
+    {
+      if (is_searching_.load()) {
+        wave_seen_during_search_ = true;
+      }
+    }
+  }
+
+  // Handler service /go_to_order
   void handleGoToOrder(
     const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
+    if (is_searching_.load()) {
+      res->success = false;
+      res->message = "Cannot navigate: Search rotation is currently active.";
+      RCLCPP_WARN(get_logger(), "[Order] %s", res->message.c_str());
+      return;
+    }
+
     if (is_navigating_.exchange(true)) {
       res->success = false;
       res->message = "Robot is currently busy with another navigation task.";
-      RCLCPP_WARN(get_logger(), "[Order1] %s", res->message.c_str());
+      RCLCPP_WARN(get_logger(), "[Order] %s", res->message.c_str());
       return;
     }
 
@@ -245,7 +340,7 @@ private:
         is_navigating_ = false;
         res->success = false;
         res->message = "No order position data received yet on topic " + order_topic_;
-        RCLCPP_WARN(get_logger(), "[Order1] %s", res->message.c_str());
+        RCLCPP_WARN(get_logger(), "[Order] %s", res->message.c_str());
         return;
       }
       ox = latest_order_x_;
@@ -254,7 +349,7 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;36m[Order1]\033[0m Calculating safe path and navigating to customer at (%.2f, %.2f)...",
+      "\033[1;36m[Order]\033[0m Calculating safe path and navigating to customer at (%.2f, %.2f)...",
       ox, oy);
 
     bool ok = navigateToPersonWithSafeStandoff(ox, oy);
@@ -265,7 +360,7 @@ private:
                       : "Failed or timed out navigating to customer.";
   }
 
-  // Mengambil posisi robot saat ini pada frame map
+  // Mengambil posisi robot saat ini pada frame map (atau odom sebagai fallback)
   bool getRobotPose(double & rx, double & ry, double & ryaw)
   {
     try {
@@ -278,9 +373,22 @@ private:
       ryaw = std::atan2(siny_cosp, cosy_cosp);
       return true;
     } catch (const tf2::TransformException & ex) {
-      RCLCPP_ERROR(get_logger(), "[TF] Cannot lookup %s -> %s: %s",
-        global_frame_.c_str(), base_frame_.c_str(), ex.what());
-      return false;
+      try {
+        auto trans = tf_buffer_->lookupTransform("odom", base_frame_, tf2::TimePointZero);
+        rx = trans.transform.translation.x;
+        ry = trans.transform.translation.y;
+        const auto & q = trans.transform.rotation;
+        const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+        const double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+        ryaw = std::atan2(siny_cosp, cosy_cosp);
+        return true;
+      } catch (const tf2::TransformException & ex2) {
+        RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "[TF] Cannot lookup transform (%s or odom -> %s): %s",
+          global_frame_.c_str(), base_frame_.c_str(), ex.what());
+        return false;
+      }
     }
   }
 
@@ -391,6 +499,13 @@ private:
     const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
+    if (is_searching_.load()) {
+      res->success = false;
+      res->message = "Cannot homing: Search rotation is currently active.";
+      RCLCPP_WARN(get_logger(), "[Homing] %s", res->message.c_str());
+      return;
+    }
+
     if (is_navigating_.exchange(true)) {
       res->success = false;
       res->message = "Robot is currently busy navigating.";
@@ -466,6 +581,247 @@ private:
     }
   }
 
+  // Menghentikan pergerakan robot dengan mempublikasikan nol pada /cmd_vel
+  void stopRobot()
+  {
+    geometry_msgs::msg::Twist stop_twist;
+    stop_twist.linear.x = 0.0;
+    stop_twist.linear.y = 0.0;
+    stop_twist.linear.z = 0.0;
+    stop_twist.angular.x = 0.0;
+    stop_twist.angular.y = 0.0;
+    stop_twist.angular.z = 0.0;
+    for (int i = 0; i < 3; ++i) {
+      cmd_vel_pub_->publish(stop_twist);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+
+  // Menghitung kecepatan sudut rotasi proporsional dengan clamping
+  double computeAngularVel(double cur_yaw, double target_yaw)
+  {
+    const double err = normalize_angle(target_yaw - cur_yaw);
+    double wz = std::clamp(1.5 * err, -search_angular_speed_, search_angular_speed_);
+    const double min_speed = 0.12;
+    if (std::abs(wz) < min_speed && std::abs(err) > 0.02) {
+      wz = (err > 0.0) ? min_speed : -min_speed;
+    }
+    return wz;
+  }
+
+  // Handler service /search: Memutar robot ke kiri 90 deg lalu ke kanan 90 deg
+  // Jika saat rotasi melihat orang melambaikan tangan, service langsung berhenti dan success
+  void handleSearch(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_navigating_.load()) {
+      res->success = false;
+      res->message = "Cannot search: Robot is currently navigating.";
+      RCLCPP_WARN(get_logger(), "[Search] %s", res->message.c_str());
+      return;
+    }
+
+    if (is_searching_.exchange(true)) {
+      res->success = false;
+      res->message = "Search is already running.";
+      RCLCPP_WARN(get_logger(), "[Search] %s", res->message.c_str());
+      return;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;33m[Search]\033[0m Starting search rotation (Left: %.1f deg, Right: %.1f deg)...",
+      search_sweep_angle_deg_, search_sweep_angle_deg_);
+
+    wave_seen_during_search_ = false;
+    const auto search_start_time = now();
+
+    double rx = 0.0, ry = 0.0, initial_yaw = 0.0;
+    if (!getRobotPose(rx, ry, initial_yaw)) {
+      stopRobot();
+      is_searching_ = false;
+      res->success = false;
+      res->message = "Failed to get robot pose from TF before search.";
+      RCLCPP_ERROR(get_logger(), "[Search] %s", res->message.c_str());
+      return;
+    }
+
+    const double sweep_rad = search_sweep_angle_deg_ * M_PI / 180.0;
+    const double target_left = normalize_angle(initial_yaw + sweep_rad);
+    const double target_right = normalize_angle(initial_yaw - sweep_rad);
+    const double target_center = initial_yaw;
+
+    enum class SearchPhase {
+      CHECK_FRONT,
+      SWEEP_LEFT,
+      HOLD_LEFT,
+      RETURN_FROM_LEFT,
+      SWEEP_RIGHT,
+      HOLD_RIGHT,
+      RETURN_FROM_RIGHT,
+      DONE
+    };
+
+    SearchPhase phase = SearchPhase::CHECK_FRONT;
+    rclcpp::Time phase_start_time = now();
+    rclcpp::Rate rate(20.0);
+
+    bool wave_found = false;
+
+    while (rclcpp::ok() && is_searching_.load()) {
+      // 1. Cek timeout keseluruhan
+      if ((now() - search_start_time).seconds() > search_timeout_sec_) {
+        RCLCPP_WARN(get_logger(), "[Search] Timeout %.1fs reached.", search_timeout_sec_);
+        break;
+      }
+
+      // 2. Cek apakah orang melambaikan tangan terdeteksi secara real-time
+      if (wave_seen_during_search_.load()) {
+        wave_found = true;
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;32m[Search]\033[0m Waving customer detected during search rotation! Stopping rotation immediately.");
+        break;
+      }
+
+      // Ambil heading robot terkini
+      double cur_x = 0.0, cur_y = 0.0, cur_yaw = 0.0;
+      if (!getRobotPose(cur_x, cur_y, cur_yaw)) {
+        rate.sleep();
+        continue;
+      }
+
+      geometry_msgs::msg::Twist cmd;
+
+      switch (phase) {
+        case SearchPhase::CHECK_FRONT: {
+          cmd_vel_pub_->publish(cmd); // Diam sejenak cek depan
+          if ((now() - phase_start_time).seconds() >= 0.4) {
+            phase = SearchPhase::SWEEP_LEFT;
+            phase_start_time = now();
+            RCLCPP_INFO(get_logger(), "[Search] Sweeping Left to +%.1f deg...", search_sweep_angle_deg_);
+          }
+          break;
+        }
+
+        case SearchPhase::SWEEP_LEFT: {
+          const double err = normalize_angle(target_left - cur_yaw);
+          if (std::abs(err) <= 0.05 || (now() - phase_start_time).seconds() > 10.0) {
+            cmd_vel_pub_->publish(cmd); // Stop sejenak
+            phase = SearchPhase::HOLD_LEFT;
+            phase_start_time = now();
+            RCLCPP_INFO(get_logger(), "[Search] Reached Left position. Holding for visual detection...");
+          } else {
+            cmd.angular.z = computeAngularVel(cur_yaw, target_left);
+            cmd_vel_pub_->publish(cmd);
+          }
+          break;
+        }
+
+        case SearchPhase::HOLD_LEFT: {
+          cmd_vel_pub_->publish(cmd); // Diam di posisi kiri
+          if ((now() - phase_start_time).seconds() >= search_hold_time_sec_) {
+            phase = SearchPhase::RETURN_FROM_LEFT;
+            phase_start_time = now();
+            RCLCPP_INFO(get_logger(), "[Search] Returning to center from left...");
+          }
+          break;
+        }
+
+        case SearchPhase::RETURN_FROM_LEFT: {
+          const double err = normalize_angle(target_center - cur_yaw);
+          if (std::abs(err) <= 0.06 || (now() - phase_start_time).seconds() > 10.0) {
+            cmd_vel_pub_->publish(cmd); // Stop
+            phase = SearchPhase::SWEEP_RIGHT;
+            phase_start_time = now();
+            RCLCPP_INFO(get_logger(), "[Search] At center. Sweeping Right to -%.1f deg...", search_sweep_angle_deg_);
+          } else {
+            cmd.angular.z = computeAngularVel(cur_yaw, target_center);
+            cmd_vel_pub_->publish(cmd);
+          }
+          break;
+        }
+
+        case SearchPhase::SWEEP_RIGHT: {
+          const double err = normalize_angle(target_right - cur_yaw);
+          if (std::abs(err) <= 0.05 || (now() - phase_start_time).seconds() > 10.0) {
+            cmd_vel_pub_->publish(cmd); // Stop
+            phase = SearchPhase::HOLD_RIGHT;
+            phase_start_time = now();
+            RCLCPP_INFO(get_logger(), "[Search] Reached Right position. Holding for visual detection...");
+          } else {
+            cmd.angular.z = computeAngularVel(cur_yaw, target_right);
+            cmd_vel_pub_->publish(cmd);
+          }
+          break;
+        }
+
+        case SearchPhase::HOLD_RIGHT: {
+          cmd_vel_pub_->publish(cmd); // Diam di posisi kanan
+          if ((now() - phase_start_time).seconds() >= search_hold_time_sec_) {
+            phase = SearchPhase::RETURN_FROM_RIGHT;
+            phase_start_time = now();
+            RCLCPP_INFO(get_logger(), "[Search] Returning to center from right...");
+          }
+          break;
+        }
+
+        case SearchPhase::RETURN_FROM_RIGHT: {
+          const double err = normalize_angle(target_center - cur_yaw);
+          if (std::abs(err) <= 0.06 || (now() - phase_start_time).seconds() > 10.0) {
+            cmd_vel_pub_->publish(cmd); // Stop
+            phase = SearchPhase::DONE;
+            RCLCPP_INFO(get_logger(), "[Search] Rotation search sweep finished.");
+          } else {
+            cmd.angular.z = computeAngularVel(cur_yaw, target_center);
+            cmd_vel_pub_->publish(cmd);
+          }
+          break;
+        }
+
+        case SearchPhase::DONE:
+          break;
+      }
+
+      if (phase == SearchPhase::DONE) {
+        break;
+      }
+
+      rate.sleep();
+    }
+
+    stopRobot();
+    is_searching_ = false;
+
+    if (wave_found) {
+      double ox = 0.0, oy = 0.0;
+      bool has_coords = false;
+      {
+        std::lock_guard<std::mutex> lock(order_mutex_);
+        if (has_order_) {
+          ox = latest_order_x_;
+          oy = latest_order_y_;
+          has_coords = true;
+        }
+      }
+
+      res->success = true;
+      if (has_coords) {
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "Waving customer found at (x=%.2f, y=%.2f)!", ox, oy);
+        res->message = buf;
+      } else {
+        res->message = "Waving customer detected during search rotation!";
+      }
+      RCLCPP_INFO(get_logger(), "\033[1;32m[Search SUCCESS]\033[0m %s", res->message.c_str());
+    } else {
+      res->success = false;
+      res->message = "Search rotation completed. No waving customer detected.";
+      RCLCPP_INFO(get_logger(), "\033[1;33m[Search FINISHED]\033[0m %s", res->message.c_str());
+    }
+  }
+
   // Parameters
   double origin_x_{0.0};
   double origin_y_{0.0};
@@ -478,8 +834,18 @@ private:
   bool auto_navigate_{false};
   double nav_timeout_sec_{120.0};
 
+  // Search Settings & State
+  double search_sweep_angle_deg_{90.0};
+  double search_angular_speed_{0.35};
+  double search_hold_time_sec_{0.5};
+  double search_timeout_sec_{35.0};
+  std::string cmd_vel_topic_{"/cmd_vel"};
+  std::string gesture_topic_{"/vision/gesture"};
+
   // State & Data
   std::atomic<bool> is_navigating_{false};
+  std::atomic<bool> is_searching_{false};
+  std::atomic<bool> wave_seen_during_search_{false};
   GoalHandleNav::SharedPtr current_goal_handle_;
   std::mutex order_mutex_;
   bool has_order_{false};
@@ -498,11 +864,17 @@ private:
 
   // ROS Interfaces
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr order_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_homing_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_homing_alias_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order1_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order1_alias_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order_alias_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order1_compat_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order1_alias_compat_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_search_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_search_alias_;
 };
 
 }  // namespace restaurant
