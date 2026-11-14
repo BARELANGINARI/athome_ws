@@ -322,6 +322,8 @@ public:
       "/go_to_order", rclcpp::ServicesQoS(), callback_group_);
     go_to_order1_client_ = create_client<Trigger>(
       "/go_to_order1", rclcpp::ServicesQoS(), callback_group_);
+    deliver_order_client_ = create_client<Trigger>(
+      "/deliver_order", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
       "/homing", rclcpp::ServicesQoS(), callback_group_);
 
@@ -458,6 +460,7 @@ private:
   TriggerClient::SharedPtr vision_capture_face_client_;
   TriggerClient::SharedPtr go_to_order_client_;
   TriggerClient::SharedPtr go_to_order1_client_;
+  TriggerClient::SharedPtr deliver_order_client_;
   TriggerClient::SharedPtr homing_client_;
   TriggerClient::SharedPtr arm_grab_simple_client_;
   TriggerClient::SharedPtr arm_release_client_;
@@ -1912,6 +1915,43 @@ private:
         {
           return;
         }
+
+        // Prioritaskan pemanggilan service /deliver_order dari restaurant_node
+        if (deliver_order_client_ && deliver_order_client_->service_is_ready()) {
+          callTrigger(
+            deliver_order_client_, "/deliver_order",
+            [this](bool ok, const std::string & msg) {
+              if (!ok) {
+                RCLCPP_WARN(
+                  get_logger(),
+                  "[NAV] Service /deliver_order gagal (%s), fallback ke koordinat internal...",
+                  msg.c_str());
+                double cx = 0.0, cy = 0.0, cyaw = 0.0;
+                {
+                  std::lock_guard<std::mutex> lock(customer_mutex_);
+                  cx = current_customer_.map_x;
+                  cy = current_customer_.map_y;
+                  cyaw = current_customer_.map_yaw;
+                }
+                navigateToMapPoseAsync(cx, cy, cyaw, [this](bool success) {
+                  if (!success) {
+                    RCLCPP_WARN(get_logger(), "[NAV] Gagal navigasi fallback ke posisi pelanggan, mencoba ulang...");
+                    return;
+                  }
+                  transitionTo(
+                    RestaurantState::GREET_DELIVERY_CUSTOMER,
+                    "Arrived at customer position for delivery (fallback)");
+                });
+                return;
+              }
+              transitionTo(
+                RestaurantState::GREET_DELIVERY_CUSTOMER,
+                "Arrived at customer position for delivery via /deliver_order");
+            },
+            nav_timeout_sec_);
+          break;
+        }
+
         double cx = 0.0, cy = 0.0, cyaw = 0.0;
         {
           std::lock_guard<std::mutex> lock(customer_mutex_);

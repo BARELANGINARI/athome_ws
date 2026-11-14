@@ -256,9 +256,35 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
+    // Service /deliver_order untuk kembali ke koordinat pelanggan yang telah disimpan saat /go_to_order
+    srv_deliver_order_ = create_service<std_srvs::srv::Trigger>(
+      "/deliver_order",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleDeliverOrder(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_deliver_order_alias_ = create_service<std_srvs::srv::Trigger>(
+      "/restaurant/deliver_order",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleDeliverOrder(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    // Publisher pose pelanggan tersimpan untuk visualisasi RViz
+    rclcpp::QoS latched_qos(1);
+    latched_qos.transient_local();
+    latched_qos.reliable();
+    saved_pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>(
+      "/restaurant/saved_order_pose", latched_qos);
+
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;32m[RestaurantNode]\033[0m Ready! Subscribed to %s | Services: /homing, /go_to_order, /search",
+      "\033[1;32m[RestaurantNode]\033[0m Ready! Subscribed to %s | Services: /search, /go_to_order, /deliver_order, /homing",
       order_topic_.c_str());
   }
 
@@ -396,7 +422,63 @@ private:
     }
   }
 
-  // Fungsi utama: Menghitung koordinat global, standoff offset, dan mengirim ke Nav2
+  // Mengirim target pose ke Nav2 Action Server dengan penghindaran rintangan dinamis secara real-time
+  bool navigateToMapPose(double target_x, double target_y, double target_yaw, const std::string & label)
+  {
+    if (!nav_client_->wait_for_action_server(std::chrono::seconds(5))) {
+      RCLCPP_ERROR(get_logger(), "[%s] Nav2 action server 'navigate_to_pose' is unavailable!", label.c_str());
+      return false;
+    }
+
+    NavigateToPose::Goal goal;
+    goal.pose.header.frame_id = global_frame_;
+    goal.pose.header.stamp = now();
+    goal.pose.pose.position.x = target_x;
+    goal.pose.pose.position.y = target_y;
+    goal.pose.pose.position.z = 0.0;
+    goal.pose.pose.orientation = yawToQuaternion(target_yaw);
+
+    auto promise = std::make_shared<std::promise<rclcpp_action::ResultCode>>();
+    auto future = promise->get_future();
+
+    auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
+    send_opts.goal_response_callback = [this, label](const GoalHandleNav::SharedPtr & handle) {
+      if (!handle) {
+        RCLCPP_WARN(get_logger(), "[%s] Nav2 rejected goal!", label.c_str());
+      } else {
+        current_goal_handle_ = handle;
+        RCLCPP_INFO(get_logger(), "[%s] Nav2 accepted goal! Navigating with real-time obstacle avoidance...", label.c_str());
+      }
+    };
+    send_opts.result_callback = [promise](const GoalHandleNav::WrappedResult & res) {
+      promise->set_value(res.code);
+    };
+
+    auto send_future = nav_client_->async_send_goal(goal, send_opts);
+    if (send_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready || !send_future.get()) {
+      RCLCPP_ERROR(get_logger(), "[%s] Failed sending goal to Nav2 action server!", label.c_str());
+      return false;
+    }
+
+    if (future.wait_for(std::chrono::seconds(static_cast<int>(nav_timeout_sec_))) == std::future_status::ready) {
+      const auto code = future.get();
+      if (code == rclcpp_action::ResultCode::SUCCEEDED) {
+        RCLCPP_INFO(get_logger(), "\033[1;32m[%s] Arrived safely at destination position!\033[0m", label.c_str());
+        return true;
+      } else {
+        RCLCPP_WARN(get_logger(), "[%s] Navigation canceled or aborted by Nav2 (code %d).", label.c_str(), static_cast<int>(code));
+        return false;
+      }
+    } else {
+      RCLCPP_ERROR(get_logger(), "[%s] Navigation timed out after %.1fs. Canceling goal...", label.c_str(), nav_timeout_sec_);
+      if (current_goal_handle_) {
+        nav_client_->async_cancel_goal(current_goal_handle_);
+      }
+      return false;
+    }
+  }
+
+  // Fungsi utama: Menghitung koordinat global, standoff offset, menyimpan koordinat untuk deliver_order, dan mengirim ke Nav2
   bool navigateToPersonWithSafeStandoff(double px, double py)
   {
     double rx = 0.0, ry = 0.0, ryaw = 0.0;
@@ -443,59 +525,81 @@ private:
       "\033[1;32m[Safe Goal]\033[0m Target Person: (%.2f, %.2f) | Goal Pose: (%.2f, %.2f, yaw=%.1f deg)",
       target_map_x, target_map_y, goal_x, goal_y, goal_yaw * 180.0 / M_PI);
 
-    // 4. Kirim Goal Pose ke Nav2 Action Server
-    if (!nav_client_->wait_for_action_server(std::chrono::seconds(5))) {
-      RCLCPP_ERROR(get_logger(), "[Nav2] Action server 'navigate_to_pose' unavailable!");
-      return false;
+    // 4. Simpan koordinat tujuan ini agar bisa digunakan kembali oleh service /deliver_order
+    {
+      std::lock_guard<std::mutex> lock(saved_order_mutex_);
+      saved_order_x_ = goal_x;
+      saved_order_y_ = goal_y;
+      saved_order_yaw_ = goal_yaw;
+      has_saved_order_ = true;
     }
 
-    NavigateToPose::Goal goal;
-    goal.pose.header.frame_id = global_frame_;
-    goal.pose.header.stamp = now();
-    goal.pose.pose.position.x = goal_x;
-    goal.pose.pose.position.y = goal_y;
-    goal.pose.pose.position.z = 0.0;
-    goal.pose.pose.orientation = yawToQuaternion(goal_yaw);
-
-    auto promise = std::make_shared<std::promise<rclcpp_action::ResultCode>>();
-    auto future = promise->get_future();
-
-    auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
-    send_opts.goal_response_callback = [this](const GoalHandleNav::SharedPtr & handle) {
-      if (!handle) {
-        RCLCPP_WARN(get_logger(), "[Nav2] Goal rejected by Nav2!");
-      } else {
-        current_goal_handle_ = handle;
-        RCLCPP_INFO(get_logger(), "[Nav2] Goal accepted! Navigating with real-time obstacle avoidance...");
-      }
-    };
-    send_opts.result_callback = [promise](const GoalHandleNav::WrappedResult & res) {
-      promise->set_value(res.code);
-    };
-
-    auto send_future = nav_client_->async_send_goal(goal, send_opts);
-    if (send_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready || !send_future.get()) {
-      RCLCPP_ERROR(get_logger(), "[Nav2] Failed sending goal to Nav2!");
-      return false;
+    // Publikasikan juga ke topic /restaurant/saved_order_pose untuk visualisasi di RViz
+    if (saved_pose_pub_) {
+      geometry_msgs::msg::PoseStamped p;
+      p.header.frame_id = global_frame_;
+      p.header.stamp = now();
+      p.pose.position.x = goal_x;
+      p.pose.position.y = goal_y;
+      p.pose.position.z = 0.0;
+      p.pose.orientation = yawToQuaternion(goal_yaw);
+      saved_pose_pub_->publish(p);
     }
 
-    // 5. Tunggu sampai robot tiba dengan aman (Nav2 otomatis menghindari obstacle)
-    if (future.wait_for(std::chrono::seconds(static_cast<int>(nav_timeout_sec_))) == std::future_status::ready) {
-      const auto code = future.get();
-      if (code == rclcpp_action::ResultCode::SUCCEEDED) {
-        RCLCPP_INFO(get_logger(), "\033[1;32m[Nav2] Arrived safely at customer position!\033[0m");
-        return true;
-      } else {
-        RCLCPP_WARN(get_logger(), "[Nav2] Navigation canceled or aborted by Nav2 (code %d).", static_cast<int>(code));
-        return false;
-      }
-    } else {
-      RCLCPP_ERROR(get_logger(), "[Nav2] Navigation timed out after %.1fs. Canceling goal...", nav_timeout_sec_);
-      if (current_goal_handle_) {
-        nav_client_->async_cancel_goal(current_goal_handle_);
-      }
-      return false;
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;34m[Order Caching]\033[0m Saved customer delivery pose: (x=%.2f, y=%.2f, yaw=%.1f deg) for /deliver_order",
+      goal_x, goal_y, goal_yaw * 180.0 / M_PI);
+
+    // 5. Kirim Goal Pose ke Nav2 Action Server
+    return navigateToMapPose(goal_x, goal_y, goal_yaw, "Order");
+  }
+
+  // Handler service /deliver_order: Berlayar kembali ke koordinat pelanggan yang telah disimpan
+  void handleDeliverOrder(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_searching_.load()) {
+      res->success = false;
+      res->message = "Cannot deliver: Search rotation is currently active.";
+      RCLCPP_WARN(get_logger(), "[Deliver] %s", res->message.c_str());
+      return;
     }
+
+    if (is_navigating_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is currently busy with another navigation task.";
+      RCLCPP_WARN(get_logger(), "[Deliver] %s", res->message.c_str());
+      return;
+    }
+
+    double dx = 0.0, dy = 0.0, dyaw = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(saved_order_mutex_);
+      if (!has_saved_order_) {
+        is_navigating_ = false;
+        res->success = false;
+        res->message = "No saved customer order position found. Please call /go_to_order first!";
+        RCLCPP_WARN(get_logger(), "[Deliver] %s", res->message.c_str());
+        return;
+      }
+      dx = saved_order_x_;
+      dy = saved_order_y_;
+      dyaw = saved_order_yaw_;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[Deliver]\033[0m Navigating robot back to customer table at (x=%.2f, y=%.2f, yaw=%.1f deg)...",
+      dx, dy, dyaw * 180.0 / M_PI);
+
+    bool ok = navigateToMapPose(dx, dy, dyaw, "Deliver");
+    is_navigating_ = false;
+
+    res->success = ok;
+    res->message = ok ? "Successfully arrived at customer table position for delivery."
+                      : "Failed or timed out navigating to customer table.";
   }
 
   // Handler Homing
@@ -532,57 +636,7 @@ private:
 
   bool navigateToOrigin()
   {
-    if (!nav_client_->wait_for_action_server(std::chrono::seconds(5))) {
-      RCLCPP_ERROR(get_logger(), "[Homing] Nav2 action server 'navigate_to_pose' is unavailable!");
-      return false;
-    }
-
-    NavigateToPose::Goal goal;
-    goal.pose.header.frame_id = global_frame_;
-    goal.pose.header.stamp = now();
-    goal.pose.pose.position.x = origin_x_;
-    goal.pose.pose.position.y = origin_y_;
-    goal.pose.pose.position.z = 0.0;
-    goal.pose.pose.orientation = yawToQuaternion(origin_yaw_);
-
-    auto promise = std::make_shared<std::promise<rclcpp_action::ResultCode>>();
-    auto future = promise->get_future();
-
-    auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
-    send_opts.goal_response_callback = [this](const GoalHandleNav::SharedPtr & handle) {
-      if (!handle) {
-        RCLCPP_WARN(get_logger(), "[Homing] Nav2 rejected homing goal!");
-      } else {
-        current_goal_handle_ = handle;
-        RCLCPP_INFO(get_logger(), "[Homing] Nav2 accepted homing goal. Driving to home...");
-      }
-    };
-    send_opts.result_callback = [promise](const GoalHandleNav::WrappedResult & res) {
-      promise->set_value(res.code);
-    };
-
-    auto send_future = nav_client_->async_send_goal(goal, send_opts);
-    if (send_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready || !send_future.get()) {
-      RCLCPP_ERROR(get_logger(), "[Homing] Failed sending goal to Nav2 action server!");
-      return false;
-    }
-
-    if (future.wait_for(std::chrono::seconds(static_cast<int>(nav_timeout_sec_))) == std::future_status::ready) {
-      const auto code = future.get();
-      if (code == rclcpp_action::ResultCode::SUCCEEDED) {
-        RCLCPP_INFO(get_logger(), "\033[1;32m[Homing] Arrived at home position!\033[0m");
-        return true;
-      } else {
-        RCLCPP_WARN(get_logger(), "[Homing] Navigation failed or canceled (code %d).", static_cast<int>(code));
-        return false;
-      }
-    } else {
-      RCLCPP_ERROR(get_logger(), "[Homing] Navigation timed out after %.1f seconds. Canceling goal...", nav_timeout_sec_);
-      if (current_goal_handle_) {
-        nav_client_->async_cancel_goal(current_goal_handle_);
-      }
-      return false;
-    }
+    return navigateToMapPose(origin_x_, origin_y_, origin_yaw_, "Homing");
   }
 
   // Menghentikan pergerakan robot dengan mempublikasikan nol pada /cmd_vel
@@ -879,6 +933,16 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order1_alias_compat_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_search_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_search_alias_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_deliver_order_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_deliver_order_alias_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr saved_pose_pub_;
+
+  // Saved Customer Order Pose (cached during /go_to_order for /deliver_order)
+  std::mutex saved_order_mutex_;
+  bool has_saved_order_{false};
+  double saved_order_x_{0.0};
+  double saved_order_y_{0.0};
+  double saved_order_yaw_{0.0};
 };
 
 }  // namespace restaurant
