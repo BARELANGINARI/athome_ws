@@ -20,6 +20,7 @@
 #include "nav_msgs/msg/path.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
+#include "nav2_msgs/srv/clear_entire_costmap.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/float64.hpp"
@@ -271,8 +272,9 @@ public:
     kf_lidar_noise_ = declare_parameter<double>("kf_lidar_noise", 0.25);
     lidar_leg_gate_ = declare_parameter<double>("lidar_leg_gate", 0.90);
 
-    // Homing Queueing Parameters
+    // Homing Queueing & Search Parameters
     homing_queue_enabled_ = declare_parameter<bool>("homing_queue_enabled", true);
+    homing_queue_search_enabled_ = declare_parameter<bool>("homing_queue_search_enabled", true);
     homing_queue_distance_ = declare_parameter<double>("homing_queue_distance", 1.00);
     homing_queue_resume_distance_ = declare_parameter<double>("homing_queue_resume_distance", 1.40);
     homing_queue_corridor_ = declare_parameter<double>("homing_queue_corridor", 1.00);
@@ -283,6 +285,25 @@ public:
     homing_queue_wait_duration_ = declare_parameter<double>("homing_queue_wait_duration", 5.0);
     homing_queue_clear_hysteresis_ = declare_parameter<double>("homing_queue_clear_hysteresis", 0.75);
     homing_timeout_ = declare_parameter<double>("homing_timeout", 300.0);
+
+    // Dynamic Parameter Reconfiguration Callback
+    param_cb_handle_ = add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & params) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        for (const auto & p : params) {
+          if (p.get_name() == "homing_queue_enabled" || p.get_name() == "enable_queue") {
+            homing_queue_enabled_ = p.as_bool();
+            RCLCPP_INFO(get_logger(), "\033[1;33m[PARAM]\033[0m homing_queue_enabled diatur menjadi: %s",
+              homing_queue_enabled_ ? "TRUE (Fungsi antri AKTIF)" : "FALSE (Fungsi antri MATI)");
+          } else if (p.get_name() == "homing_queue_search_enabled" || p.get_name() == "enable_search") {
+            homing_queue_search_enabled_ = p.as_bool();
+            RCLCPP_INFO(get_logger(), "\033[1;33m[PARAM]\033[0m homing_queue_search_enabled diatur menjadi: %s",
+              homing_queue_search_enabled_ ? "TRUE (Fungsi search AKTIF)" : "FALSE (Fungsi search MATI)");
+          }
+        }
+        return result;
+      });
 
     if (bt_xml_.empty()) {
       bt_xml_ = find_bt_xml();
@@ -300,6 +321,11 @@ public:
       path_topic_, rclcpp::QoS(10));
     follow_status_pub_ = create_publisher<std_msgs::msg::String>(
       "/follow/status", rclcpp::QoS(10));
+
+    clear_global_costmap_client_ = create_client<nav2_msgs::srv::ClearEntireCostmap>(
+      "/global_costmap/clear_entirely_global_costmap");
+    clear_local_costmap_client_ = create_client<nav2_msgs::srv::ClearEntireCostmap>(
+      "/local_costmap/clear_entirely_local_costmap");
 
     cb_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     rclcpp::SubscriptionOptions sub_options;
@@ -394,6 +420,21 @@ public:
         if (msg && !msg->poses.empty() && is_homing_active_) {
           std::lock_guard<std::mutex> lock(homing_plan_mutex_);
           latest_homing_plan_ = msg;
+          // Teruskan path baru ke topic visualisasi (/following_path)
+          path_pub_->publish(*msg);
+
+          double path_len = 0.0;
+          for (size_t i = 1; i < msg->poses.size(); ++i) {
+            path_len += std::hypot(
+              msg->poses[i].pose.position.x - msg->poses[i - 1].pose.position.x,
+              msg->poses[i].pose.position.y - msg->poses[i - 1].pose.position.y);
+          }
+
+          RCLCPP_INFO_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "\033[1;36m[Homing Path]\033[0m Path homing aktif diperbarui: %zu waypoints | Panjang rute = %.2fm | Tujuan=(%.2f, %.2f)",
+            msg->poses.size(), path_len,
+            msg->poses.back().pose.position.x, msg->poses.back().pose.position.y);
         }
       },
       sub_options);
@@ -2261,6 +2302,24 @@ private:
   }
 
   // ===========================================================================
+  // HELPER: Bersihkan costmap Nav2 (global & local) dari jejak antrian lama
+  // agar global planner langsung mendapatkan jalur terpendek dan terbersih
+  // ===========================================================================
+  void clear_costmaps()
+  {
+    if (clear_global_costmap_client_ && clear_global_costmap_client_->service_is_ready()) {
+      auto req = std::make_shared<nav2_msgs::srv::ClearEntireCostmap::Request>();
+      clear_global_costmap_client_->async_send_request(req);
+      RCLCPP_INFO(get_logger(), "[Homing Queue] Global costmap dibersihkan untuk kalkulasi path baru.");
+    }
+    if (clear_local_costmap_client_ && clear_local_costmap_client_->service_is_ready()) {
+      auto req = std::make_shared<nav2_msgs::srv::ClearEntireCostmap::Request>();
+      clear_local_costmap_client_->async_send_request(req);
+      RCLCPP_INFO(get_logger(), "[Homing Queue] Local costmap dibersihkan untuk kalkulasi path baru.");
+    }
+  }
+
+  // ===========================================================================
   // CALLBACK: Kecepatan dari Nav2 (/nav_cmd_vel)
   // Meneruskan perintah Nav2 ke base driver (/cmd_vel) dengan kontrol orientasi hadap antrian
   // ===========================================================================
@@ -2590,11 +2649,16 @@ private:
     double queue_cmd_vy_smooth = 0.0;
     double queue_cmd_wz_smooth = 0.0;
 
+    get_parameter("homing_queue_enabled", homing_queue_enabled_);
+    get_parameter("homing_queue_search_enabled", homing_queue_search_enabled_);
+
     RCLCPP_INFO(
       get_logger(),
-      "[Homing] Loop monitoring aktif | "
+      "[Homing] Loop monitoring aktif | queue_enabled=%s | search_enabled=%s | "
       "stop_dist=%.2fm | resume_dist=%.2fm | corridor=%.2fm | max_detect=%.2fm | "
       "wait_dur=%.1fs | crawl=%.2fm/s",
+      homing_queue_enabled_ ? "true" : "false",
+      homing_queue_search_enabled_ ? "true" : "false",
       homing_queue_distance_, homing_queue_resume_distance_,
       homing_queue_corridor_, homing_queue_max_detect_dist_,
       homing_queue_wait_duration_, homing_queue_crawl_speed_);
@@ -2619,6 +2683,17 @@ private:
 
       // ── C. Social Queue Check ──────────────────────────────────────────────
       if (!homing_queue_enabled_) {
+        // Jika fungsi antri dimatikan via parameter:
+        // Jika sebelumnya sedang antri, batalkan dan lanjutkan navigasi Nav2
+        if (is_homing_queuing_ || queue_engaged) {
+          is_homing_queuing_ = false;
+          queue_engaged      = false;
+          queue_completed    = true;
+          is_queue_search_active_ = false;
+          search_state = QueueSearchState::INACTIVE;
+          send_homing_goal_to_nav2(nav_promise, nav_future);
+          nav_goal_active_ = true;
+        }
         rate.sleep();
         continue;
       }
@@ -2887,120 +2962,124 @@ private:
       }
 
       // ── LOGIKA PENCARIAN ANTRIAN (SEARCH SWEEP KIRI/KANAN +-20 DEG DI TEMPAT) ───────────
-      // Sesuai permintaan user:
-      // "rotasi kiri dan kanan di tempat sekitar kiri 20derajat dan kanan 20derajat,
-      // tujuan untuk mencari multi back untuk antri, dan digunakan saat robot sudah mulai
-      // mengikuti path atau sudah menyesuaikan theta robot pada path, fungsi ini loop setiap 5detik
-      // sekali sampai mendapatkan antri"
-
-      // 1. Jika antrian sudah terkonfirmasi saat sedang search: langsung batalkan search!
-      if (queue_engaged && search_state != QueueSearchState::INACTIVE) {
-        search_state = QueueSearchState::INACTIVE;
-        is_queue_search_active_ = false;
-        RCLCPP_INFO(
-          get_logger(),
-          "\033[1;32m[Homing Queue Search]\033[0m ANTRIAN DITEMUKAN SAAT SEARCH! Search dihentikan langsung & masuk fungsi antri.");
-      }
-
-      // 2. Deteksi kapan robot sudah selesai menyelaraskan theta pada path & mulai melaju di path
-      if (!has_started_following_path && nav_goal_active_ && !queue_engaged && !is_homing_queuing_) {
-        double cur_vx = 0.0;
-        {
-          std::lock_guard<std::mutex> lock(cmd_vel_mon_mutex_);
-          cur_vx = monitored_cmd_vel_.linear.x;
-        }
-        if (cur_vx > 0.05) {
-          has_started_following_path = true;
-          last_search_time = now();
+      // Dikontrol oleh parameter: homing_queue_search_enabled (true = search sweep aktif, false = mati)
+      if (homing_queue_search_enabled_) {
+        // 1. Jika antrian sudah terkonfirmasi saat sedang search: langsung batalkan search!
+        if (queue_engaged && search_state != QueueSearchState::INACTIVE) {
+          search_state = QueueSearchState::INACTIVE;
+          is_queue_search_active_ = false;
           RCLCPP_INFO(
             get_logger(),
-            "\033[1;35m[Homing Queue Search]\033[0m Robot mulai melaju pada path (theta sejajar). Timer search aktif (interval 5.0s).");
+            "\033[1;32m[Homing Queue Search]\033[0m ANTRIAN DITEMUKAN SAAT SEARCH! Search dihentikan langsung & masuk fungsi antri.");
         }
-      }
 
-      // 3. Picu pencarian setiap 5 detik sekali jika antrian belum ditemukan
-      if (has_started_following_path && !queue_engaged && !queue_completed && !is_homing_queuing_ && nav_goal_active_) {
-        if (search_state == QueueSearchState::INACTIVE && (now() - last_search_time).seconds() >= kSearchIntervalSec) {
-          search_state = QueueSearchState::SWEEP_LEFT;
-          is_queue_search_active_ = true;
-          search_center_yaw = get_robot_heading();
-          RCLCPP_INFO(
-            get_logger(),
-            "\033[1;35m[Homing Queue Search]\033[0m Interval 5s tercapai! Memulai sweep search antrian (~20 deg kiri & kanan di tempat)...");
-        }
-      }
-
-      // 4. Eksekusi gerakan sweep pencarian jika search aktif
-      if (search_state != QueueSearchState::INACTIVE) {
-        const double cur_yaw = get_robot_heading();
-        geometry_msgs::msg::Twist search_twist;
-
-        if (search_state == QueueSearchState::SWEEP_LEFT) {
-          const double target_left = normalize_angle(search_center_yaw + kSearchSweepAngle);
-          const double err = normalize_angle(target_left - cur_yaw);
-          if (std::abs(err) <= 0.05) {
-            search_state = QueueSearchState::HOLD_LEFT;
-            search_hold_start_time = now();
-            cmd_vel_pub_->publish(search_twist); // stop sejenak
-          } else {
-            double wz = std::clamp(1.20 * err, -0.32, 0.32);
-            if (std::abs(wz) < 0.12) wz = (err > 0.0) ? 0.12 : -0.12;
-            search_twist.angular.z = wz;
-            cmd_vel_pub_->publish(search_twist);
+        // 2. Deteksi kapan robot sudah selesai menyelaraskan theta pada path & mulai melaju di path
+        if (!has_started_following_path && nav_goal_active_ && !queue_engaged && !is_homing_queuing_) {
+          double cur_vx = 0.0;
+          {
+            std::lock_guard<std::mutex> lock(cmd_vel_mon_mutex_);
+            cur_vx = monitored_cmd_vel_.linear.x;
           }
-          rate.sleep();
-          continue;
-
-        } else if (search_state == QueueSearchState::HOLD_LEFT) {
-          cmd_vel_pub_->publish(search_twist); // diam sejenak untuk frame kamera
-          if ((now() - search_hold_start_time).seconds() >= 0.25) {
-            search_state = QueueSearchState::SWEEP_RIGHT;
-          }
-          rate.sleep();
-          continue;
-
-        } else if (search_state == QueueSearchState::SWEEP_RIGHT) {
-          const double target_right = normalize_angle(search_center_yaw - kSearchSweepAngle);
-          const double err = normalize_angle(target_right - cur_yaw);
-          if (std::abs(err) <= 0.05) {
-            search_state = QueueSearchState::HOLD_RIGHT;
-            search_hold_start_time = now();
-            cmd_vel_pub_->publish(search_twist); // stop sejenak
-          } else {
-            double wz = std::clamp(1.20 * err, -0.32, 0.32);
-            if (std::abs(wz) < 0.12) wz = (err > 0.0) ? 0.12 : -0.12;
-            search_twist.angular.z = wz;
-            cmd_vel_pub_->publish(search_twist);
-          }
-          rate.sleep();
-          continue;
-
-        } else if (search_state == QueueSearchState::HOLD_RIGHT) {
-          cmd_vel_pub_->publish(search_twist); // diam sejenak
-          if ((now() - search_hold_start_time).seconds() >= 0.25) {
-            search_state = QueueSearchState::RETURN_CENTER;
-          }
-          rate.sleep();
-          continue;
-
-        } else if (search_state == QueueSearchState::RETURN_CENTER) {
-          const double err = normalize_angle(search_center_yaw - cur_yaw);
-          if (std::abs(err) <= 0.06) {
-            cmd_vel_pub_->publish(search_twist); // stop
-            search_state = QueueSearchState::INACTIVE;
-            is_queue_search_active_ = false;
+          if (cur_vx > 0.05) {
+            has_started_following_path = true;
             last_search_time = now();
             RCLCPP_INFO(
               get_logger(),
-              "\033[1;35m[Homing Queue Search]\033[0m Sweep search selesai (belum ada antrian). Melanjutkan path Nav2.");
-          } else {
-            double wz = std::clamp(1.20 * err, -0.32, 0.32);
-            if (std::abs(wz) < 0.12) wz = (err > 0.0) ? 0.12 : -0.12;
-            search_twist.angular.z = wz;
-            cmd_vel_pub_->publish(search_twist);
+              "\033[1;35m[Homing Queue Search]\033[0m Robot mulai melaju pada path (theta sejajar). Timer search aktif (interval 5.0s).");
           }
-          rate.sleep();
-          continue;
+        }
+
+        // 3. Picu pencarian setiap 5 detik sekali jika antrian belum ditemukan
+        if (has_started_following_path && !queue_engaged && !queue_completed && !is_homing_queuing_ && nav_goal_active_) {
+          if (search_state == QueueSearchState::INACTIVE && (now() - last_search_time).seconds() >= kSearchIntervalSec) {
+            search_state = QueueSearchState::SWEEP_LEFT;
+            is_queue_search_active_ = true;
+            search_center_yaw = get_robot_heading();
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;35m[Homing Queue Search]\033[0m Interval 5s tercapai! Memulai sweep search antrian (~20 deg kiri & kanan di tempat)...");
+          }
+        }
+
+        // 4. Eksekusi gerakan sweep pencarian jika search aktif
+        if (search_state != QueueSearchState::INACTIVE) {
+          const double cur_yaw = get_robot_heading();
+          geometry_msgs::msg::Twist search_twist;
+
+          if (search_state == QueueSearchState::SWEEP_LEFT) {
+            const double target_left = normalize_angle(search_center_yaw + kSearchSweepAngle);
+            const double err = normalize_angle(target_left - cur_yaw);
+            if (std::abs(err) <= 0.05) {
+              search_state = QueueSearchState::HOLD_LEFT;
+              search_hold_start_time = now();
+              cmd_vel_pub_->publish(search_twist); // stop sejenak
+            } else {
+              double wz = std::clamp(1.20 * err, -0.32, 0.32);
+              if (std::abs(wz) < 0.12) wz = (err > 0.0) ? 0.12 : -0.12;
+              search_twist.angular.z = wz;
+              cmd_vel_pub_->publish(search_twist);
+            }
+            rate.sleep();
+            continue;
+
+          } else if (search_state == QueueSearchState::HOLD_LEFT) {
+            cmd_vel_pub_->publish(search_twist); // diam sejenak untuk frame kamera
+            if ((now() - search_hold_start_time).seconds() >= 0.25) {
+              search_state = QueueSearchState::SWEEP_RIGHT;
+            }
+            rate.sleep();
+            continue;
+
+          } else if (search_state == QueueSearchState::SWEEP_RIGHT) {
+            const double target_right = normalize_angle(search_center_yaw - kSearchSweepAngle);
+            const double err = normalize_angle(target_right - cur_yaw);
+            if (std::abs(err) <= 0.05) {
+              search_state = QueueSearchState::HOLD_RIGHT;
+              search_hold_start_time = now();
+              cmd_vel_pub_->publish(search_twist); // stop sejenak
+            } else {
+              double wz = std::clamp(1.20 * err, -0.32, 0.32);
+              if (std::abs(wz) < 0.12) wz = (err > 0.0) ? 0.12 : -0.12;
+              search_twist.angular.z = wz;
+              cmd_vel_pub_->publish(search_twist);
+            }
+            rate.sleep();
+            continue;
+
+          } else if (search_state == QueueSearchState::HOLD_RIGHT) {
+            cmd_vel_pub_->publish(search_twist); // diam sejenak
+            if ((now() - search_hold_start_time).seconds() >= 0.25) {
+              search_state = QueueSearchState::RETURN_CENTER;
+            }
+            rate.sleep();
+            continue;
+
+          } else if (search_state == QueueSearchState::RETURN_CENTER) {
+            const double err = normalize_angle(search_center_yaw - cur_yaw);
+            if (std::abs(err) <= 0.06) {
+              cmd_vel_pub_->publish(search_twist); // stop
+              search_state = QueueSearchState::INACTIVE;
+              is_queue_search_active_ = false;
+              last_search_time = now();
+              RCLCPP_INFO(
+                get_logger(),
+                "\033[1;35m[Homing Queue Search]\033[0m Sweep search selesai (belum ada antrian). Melanjutkan path Nav2.");
+            } else {
+              double wz = std::clamp(1.20 * err, -0.32, 0.32);
+              if (std::abs(wz) < 0.12) wz = (err > 0.0) ? 0.12 : -0.12;
+              search_twist.angular.z = wz;
+              cmd_vel_pub_->publish(search_twist);
+            }
+            rate.sleep();
+            continue;
+          }
+        }
+      } else {
+        // Jika parameter homing_queue_search_enabled bernilai false:
+        // Pastikan gerakan sweep tidak pernah aktif
+        if (search_state != QueueSearchState::INACTIVE) {
+          search_state = QueueSearchState::INACTIVE;
+          is_queue_search_active_ = false;
         }
       }
 
@@ -3349,10 +3428,11 @@ private:
 
           // Hitung jarak robot saat ini ke titik koordinat homing (origin)
           double dist_to_homing = 1e9;
+          double rx = 0.0, ry = 0.0;
           try {
             auto trans = tf_buffer_->lookupTransform(frame_map_, frame_base_, tf2::TimePointZero);
-            const double rx = trans.transform.translation.x;
-            const double ry = trans.transform.translation.y;
+            rx = trans.transform.translation.x;
+            ry = trans.transform.translation.y;
             const double ox = origin_recorded_ ? origin_x_ : 0.0;
             const double oy = origin_recorded_ ? origin_y_ : 0.0;
             dist_to_homing = std::hypot(rx - ox, ry - oy);
@@ -3371,19 +3451,33 @@ private:
             nav_result = rclcpp_action::ResultCode::SUCCEEDED;
             break;
           } else {
-            // KASUS B: Robot belum di posisi homing -> lanjutkan navigasi Nav2 menuju posisi homing
+            // KASUS B: Robot belum di posisi homing -> buat rute baru & update path ke titik homing
+            // Sesuai permintaan user:
+            // "buat path ulang ke titik homing, karena bisa saja setelah sampai akhir antrian,
+            //  robot dapat path yang lebih dekat, jadi update path homing setelah selesai antri"
             RCLCPP_INFO(
               get_logger(),
-              "\033[1;32m[Homing Queue]\033[0m ANTRIAN SUDAH TIDAK ADA! Melanjutkan navigasi Nav2 ke posisi homing (jarak=%.2fm)...",
-              dist_to_homing);
+              "\033[1;32m[Homing Queue]\033[0m ANTRIAN SELESAI / SUDAH TIDAK ADA! "
+              "Membuat path baru ke titik homing dari posisi akhir antrian (%.2f, %.2f) -> jarak ke homing: %.2fm.",
+              rx, ry, dist_to_homing);
 
+            // 1. Bersihkan costmap dari jejak rintangan orang antrian yang lama agar path lurus bersih
+            clear_costmaps();
+
+            // 2. Reset plan lama agar path homing benar-benar baru
+            {
+              std::lock_guard<std::mutex> lock(homing_plan_mutex_);
+              latest_homing_plan_.reset();
+            }
+
+            // 3. Kirim goal baru ke Nav2 untuk mengkalkulasi rute terpendek dari posisi saat ini
             if (!send_homing_goal_to_nav2(nav_promise, nav_future)) {
-              RCLCPP_ERROR(get_logger(), "[Homing] Gagal mengirim ulang goal Nav2 ke posisi homing!");
+              RCLCPP_ERROR(get_logger(), "[Homing] Gagal mengirim goal Nav2 baru ke posisi homing!");
               break;
             }
             nav_goal_active_ = true;
 
-            std_msgs::msg::String st; st.data = "HOMING_RESUMED";
+            std_msgs::msg::String st; st.data = "HOMING_PATH_UPDATED_AFTER_QUEUE";
             follow_status_pub_->publish(st);
           }
         }
@@ -3561,6 +3655,7 @@ private:
   std::atomic<bool> is_homing_active_{false};
   std::atomic<bool> is_homing_queuing_{false};
   bool homing_queue_enabled_{true};
+  bool homing_queue_search_enabled_{true};
   double homing_queue_distance_{1.00};
   double homing_queue_resume_distance_{1.40};
   double homing_queue_corridor_{1.00};
@@ -3588,6 +3683,9 @@ private:
   double queue_facing_wz_{0.0};
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
   rclcpp::CallbackGroup::SharedPtr cb_group_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
+  rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_global_costmap_client_;
+  rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_local_costmap_client_;
 };
 
 int main(int argc, char ** argv)

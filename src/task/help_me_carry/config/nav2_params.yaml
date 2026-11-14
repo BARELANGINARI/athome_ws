@@ -131,7 +131,7 @@ controller_server:
       forward_prune_distance: 0.8        # KUNCI: Batasi path di depan robot max 0.8m agar target GoalDist tidak tembus dinding ke ruang sebelah
       shorten_transformed_plan: True     # Potong plan sesuai batas local costmap
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"] # GoalAlign dihapus; GoalDist diberi bobot kecil agar robot maju menyusuri path tanpa memotong dinding
-      BaseObstacle.scale: 0.05           # Obstacle proximity penalty weight (dinaikkan dari 0.02 ke 0.05 agar manuver hindar rintangan lebih tegas & berjarak)
+      BaseObstacle.scale: 0.02           # Obstacle proximity penalty weight (dinaikkan dari 0.02 ke 0.05 agar manuver hindar rintangan lebih tegas & berjarak)
       PathDist.scale: 32.0               # Bobot ketat mengikuti garis jalur path (mencegah jalan memotong dinding)
       GoalDist.scale: 6.0                # Bobot dorong maju kontinu agar robot melaju maju menyusuri path sambil berbelok
       PathAlign.scale: 42.0              # KUNCI: Bobot penjajaran hadap ditingkatkan dominan ke 42.0 agar moncong robot tegas menghadap lurus ke depan path
@@ -174,7 +174,7 @@ local_costmap:
           obstacle_min_range: 0.22       # Min obstacle marking range (m, diselaraskan dengan bodi 0.22m agar rintangan dekat tidak terhapus)
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Safety buffer layer around obstacles
-        cost_scaling_factor: 15.0        # Exponential cost decay factor (diturunkan ke 15.0 agar radius tolak rintangan menyebar lebih lebar)
+        cost_scaling_factor: 25.0        # Exponential cost decay factor (diturunkan ke 15.0 agar radius tolak rintangan menyebar lebih lebar)
         inflation_radius: 0.35           # Inflation radius dinaikkan +10cm (dari 0.35m ke 0.45m) agar avoidance lebih berjarak
       always_send_full_costmap: True     # Send full costmap on publish
 

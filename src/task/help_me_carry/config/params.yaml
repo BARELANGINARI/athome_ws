@@ -79,9 +79,10 @@ help_me_carry_node:
     step_back_timeout: 15.0                   # Max duration for step back motion (seconds)
 
     # -------------------------------------------------------------
-    # 8. HOMING QUEUEING (ANTRI DI BELAKANG ORANG SAAT HOMING)
+    # 8. HOMING QUEUEING & SEARCH (ANTRI & CARI ANTRIAN SAAT HOMING)
     # -------------------------------------------------------------
-    homing_queue_enabled: true                # Aktifkan perilaku antri di belakang orang saat /homing
+    homing_queue_enabled: true                # true = aktifkan perilaku antri saat /homing, false = matikan (langsung ke origin tanpa antri)
+    homing_queue_search_enabled: true         # true = aktifkan fungsi search sweep (+-20 deg kiri & kanan setiap 5s), false = matikan search sweep
     homing_queue_distance: 1.00               # Jarak target STOP di belakang orang antrian (1.0 meter)
     homing_queue_resume_distance: 2.00        # Jarak batas antri CRAWL — jika > ini, langsung resume Nav2 (meter)
     homing_queue_corridor: 1.00               # Lebar toleransi koridor path homing (meter) — orang dianggap menghalangi jika jarak ke path <= ini
