@@ -274,10 +274,14 @@ private:
       return;
     }
 
+    // Kamera vision membalik sumbu Y (-point.y), kita negasikan kembali (-parsed_y)
+    // agar sesuai dengan standar koordinat ROS base_link (+Y = Kiri, -Y = Kanan)
+    const double corrected_y = -parsed_y;
+
     {
       std::lock_guard<std::mutex> lock(order_mutex_);
       latest_order_x_ = parsed_x;
-      latest_order_y_ = parsed_y;
+      latest_order_y_ = corrected_y;
       latest_order_time_ = now();
       has_order_ = true;
       if (is_searching_.load()) {
@@ -287,8 +291,8 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;35m[Order]\033[0m Received customer position (%s): x=%.2f, y=%.2f",
-      order_frame_.c_str(), parsed_x, parsed_y);
+      "\033[1;35m[Order]\033[0m Received customer position (%s): x=%.2f, y=%.2f (raw vision y=%.2f)",
+      order_frame_.c_str(), parsed_x, corrected_y, parsed_y);
 
     if (auto_navigate_ && !is_navigating_.load() && !is_searching_.load()) {
       std::thread([this]() {

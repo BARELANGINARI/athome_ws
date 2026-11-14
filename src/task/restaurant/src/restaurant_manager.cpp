@@ -1083,7 +1083,7 @@ private:
     if (parseCoordinates(message->data, px, py)) {
       std::lock_guard<std::mutex> lock(vision_mutex_);
       waving_person_x_ = px;
-      waving_person_y_ = py;
+      waving_person_y_ = -py; // Negasikan kembali agar sesuai standar ROS base_link (+Y kiri, -Y kanan)
       has_waving_person_coords_ = true;
       wave_detected_ = true;
     }
@@ -1105,7 +1105,7 @@ private:
       // /vision/person_label hanya menjadi fallback posisi awal.
       if (!has_waving_person_coords_) {
         waving_person_x_ = px;
-        waving_person_y_ = py;
+        waving_person_y_ = -py;
         has_waving_person_coords_ = true;
       }
     }
