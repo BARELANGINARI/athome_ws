@@ -1593,7 +1593,7 @@ private:
           speakAsync(prompt, [this]() {
             transitionTo(ReceptionistState::WAIT_DRINK, "Asked for favorite drink after table check");
           });
-    })};
+        });
         break;
       }
 

@@ -296,7 +296,7 @@ public:
       sub_opts);
 
     drink_sub_ = create_subscription<std_msgs::msg::String>(
-      "/vision/drink_detections", rclcpp::SensorDataQoS(),c
+      "/vision/drink_detections", rclcpp::SensorDataQoS(),
       std::bind(&RestaurantTaskNode::onDrinkDetections, this, std::placeholders::_1),
       sub_opts);
 
@@ -339,9 +339,9 @@ public:
     arm_relax_client_ = create_client<Trigger>(
       "/arm/relax", rclcpp::ServicesQoS(), callback_group_);
 
-    // Timer siklus FSM (10 Hz / 100 ms)
+    // Timer siklus FSM (10 Hz / 100 ms) menggunakan default MutuallyExclusive group
     fsm_timer_ = create_wall_timer(
-      100ms, std::bind(&RestaurantTaskNode::fsmTick, this), callback_group_);
+      100ms, std::bind(&RestaurantTaskNode::fsmTick, this));
 
     task_start_time_ = now();
     state_enter_time_ = now();
@@ -566,14 +566,15 @@ private:
       last_nav_goal_yaw_ = goal_yaw;
     }
 
+    nav_busy_ = true;
+
     if (!nav_action_client_->wait_for_action_server(2s)) {
+      nav_busy_ = false;
       RCLCPP_ERROR(get_logger(), "[Nav2] Action server 'navigate_to_pose' tidak tersedia!");
       last_nav_fail_time_ = now();
       if (on_finished) on_finished(false);
       return;
     }
-
-    nav_busy_ = true;
 
     NavigateToPose::Goal goal;
     goal.pose.header.frame_id = global_frame_;
@@ -1068,13 +1069,12 @@ private:
     if (gest.empty() || gest == "none") return;
 
     if (gest.find("wave") != std::string::npos ||
-        gest.find("left") != std::string::npos ||
-        gest.find("right") != std::string::npos ||
-        gest.find("raise") != std::string::npos ||
-        gest.find("hand") != std::string::npos)
+        gest.find("raise") != std::string::npos)
     {
       std::lock_guard<std::mutex> lock(vision_mutex_);
-      wave_detected_ = true;
+      if (has_waving_person_coords_) {
+        wave_detected_ = true;
+      }
     }
   }
 
@@ -1140,7 +1140,7 @@ private:
       }
       if (coords.size() >= 2 && std::isfinite(coords[0]) && std::isfinite(coords[1])) {
         item.x = coords[0];
-        item.y = coords[1];
+        item.y = -coords[1]; // Negasikan sumbu Y dari athome_vision agar sesuai base_link (+Y kiri, -Y kanan)
         item.z = (coords.size() >= 3 && std::isfinite(coords[2])) ? coords[2] : 0.0;
         item.has_3d = true;
       }
@@ -1221,8 +1221,11 @@ private:
       return;
     }
 
+    service_busy_ = true;
+
     if (!client->service_is_ready()) {
       if (!client->wait_for_service(1s)) {
+        service_busy_ = false;
         RCLCPP_WARN(
           get_logger(), "[SERVICE] Service %s belum tersedia.",
           service_name.c_str());
@@ -1449,25 +1452,31 @@ private:
 
         if (waved) {
           speakAsync("i'm coming", [this]() {
-            callTrigger(
-              vision_wave_hand_client_, "/vision/wave_hand",
-              [this](bool ok, const std::string & msg) {
-                double px = 0.0, py = 0.0;
-                if (parseCoordinates(msg, px, py)) {
-                  std::lock_guard<std::mutex> lock(vision_mutex_);
-                  waving_person_x_ = px;
-                  waving_person_y_ = py;
-                  has_waving_person_coords_ = true;
-                }
-                RCLCPP_INFO(
-                  get_logger(),
-                  "[VISION] Service /vision/wave_hand finished (ok=%s, msg='%s')",
-                  ok ? "true" : "false", msg.c_str());
-                transitionTo(
-                  RestaurantState::NAV_TO_WAVING_CUSTOMER,
-                  "Wave hand processed, navigating to customer");
-              },
-              10.0);
+            if (vision_wave_hand_client_ && vision_wave_hand_client_->service_is_ready()) {
+              callTrigger(
+                vision_wave_hand_client_, "/vision/wave_hand",
+                [this](bool ok, const std::string & msg) {
+                  double px = 0.0, py = 0.0;
+                  if (parseCoordinates(msg, px, py)) {
+                    std::lock_guard<std::mutex> lock(vision_mutex_);
+                    waving_person_x_ = px;
+                    waving_person_y_ = -py;
+                    has_waving_person_coords_ = true;
+                  }
+                  RCLCPP_INFO(
+                    get_logger(),
+                    "[VISION] Service /vision/wave_hand finished (ok=%s, msg='%s')",
+                    ok ? "true" : "false", msg.c_str());
+                  transitionTo(
+                    RestaurantState::NAV_TO_WAVING_CUSTOMER,
+                    "Wave hand processed, navigating to customer");
+                },
+                10.0);
+            } else {
+              transitionTo(
+                RestaurantState::NAV_TO_WAVING_CUSTOMER,
+                "Wave hand detected via vision topic, navigating to customer");
+            }
           });
         } else if (vision_wave_hand_client_ && vision_wave_hand_client_->service_is_ready() &&
                    (now() - state_enter_time_).seconds() >= 2.0)
@@ -1481,7 +1490,7 @@ private:
                 if (parseCoordinates(msg, px, py)) {
                   std::lock_guard<std::mutex> lock(vision_mutex_);
                   waving_person_x_ = px;
-                  waving_person_y_ = py;
+                  waving_person_y_ = -py;
                   has_waving_person_coords_ = true;
                 }
                 speakAsync("i'm coming", [this]() {
@@ -1596,21 +1605,32 @@ private:
           std::lock_guard<std::mutex> lock(customer_mutex_);
           c_name = current_customer_.name;
         }
+        if (person_name_pub_ && !c_name.empty()) {
+          std_msgs::msg::String msg;
+          msg.data = c_name;
+          person_name_pub_->publish(msg);
+        }
         speakAsync(
           "Hello " + c_name + "! please dont move, as i want to save your facial data",
           [this]() {
-            callTrigger(
-              vision_capture_face_client_, "/vision/camera_capture_face",
-              [this](bool ok, const std::string & msg) {
-                RCLCPP_INFO(
-                  get_logger(),
-                  "[VISION] /vision/camera_capture_face finished (ok=%s, msg='%s')",
-                  ok ? "true" : "false", msg.c_str());
-                transitionTo(
-                  RestaurantState::ASK_CUSTOMER_ORDER,
-                  "Facial data capture completed");
-              },
-              10.0);
+            if (vision_capture_face_client_ && vision_capture_face_client_->service_is_ready()) {
+              callTrigger(
+                vision_capture_face_client_, "/vision/camera_capture_face",
+                [this](bool ok, const std::string & msg) {
+                  RCLCPP_INFO(
+                    get_logger(),
+                    "[VISION] /vision/camera_capture_face finished (ok=%s, msg='%s')",
+                    ok ? "true" : "false", msg.c_str());
+                  transitionTo(
+                    RestaurantState::ASK_CUSTOMER_ORDER,
+                    "Facial data capture completed");
+                },
+                10.0);
+            } else {
+              transitionTo(
+                RestaurantState::ASK_CUSTOMER_ORDER,
+                "Facial data registered via /vision/set_person_name");
+            }
           });
         break;
       }
