@@ -32,6 +32,7 @@ def generate_launch_description():
             name="tts_engine",
             output="screen",
             emulate_tty=True,
+            parameters=[LaunchConfiguration("params_file")],
         ),
         Node(
             package="help_me_carry",

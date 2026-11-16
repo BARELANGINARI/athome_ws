@@ -83,7 +83,7 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # 2. Restaurant Node (provides /homing and /go_to_order1 services)
+        # 2. Restaurant Node (provides /homing and /go_to_order services)
         Node(
             package='restaurant',
             executable='restaurant_node',

@@ -116,7 +116,7 @@ public:
         // Menambahkan service untuk motion arm
 
         ambil_tas_srv_ = this->create_service<std_srvs::srv::Trigger>(
-            "/arm/ambil_tas_simple",
+            "/arm/motion_task_1",
             std::bind(&ArmMotionServer::handleAmbilTas, this, std::placeholders::_1, std::placeholders::_2)
         );
 
@@ -172,7 +172,7 @@ public:
 
         RCLCPP_INFO(this->get_logger(), "Arm Motion Server ready.");
         RCLCPP_INFO(this->get_logger(), "Port: %s, Baudrate: %d", port_name_.c_str(), baudrate_);
-        RCLCPP_INFO(this->get_logger(), "Services: /arm/ambil_tas_simple, /arm/letakkan_tas, /arm/play_motion, /arm/point_position, /arm/free, /arm/relax");
+        RCLCPP_INFO(this->get_logger(), "Services: /arm/motion_tas_1, /arm/letakkan_tas, /arm/play_motion, /arm/point_position, /arm/free, /arm/relax");
 
         // Initialize hardware connection
         if (initHardware()) {
@@ -765,7 +765,7 @@ private:
 
         RCLCPP_INFO(this->get_logger(), "[Service Call] Received trigger to execute motion 'ambil_tas'...");
         std::string err;
-        if (runMotionByName("ambil_tas_simple", err)) {
+        if (runMotionByName("motion_task_1", err)) {
             response->success = true;
             response->message = "Motion ambil_tas executed successfully.";
             RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());

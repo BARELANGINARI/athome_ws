@@ -12,7 +12,7 @@ echo " 1. Pastikan node kamera sudah menyala (camera.launch.py)"
 echo " 2. Pastikan Host berada di depan kamera ZED (~1.2 - 1.8m)"
 echo "===================================================================="
 
-ros2 topic pub --once /zed/set_person_name std_msgs/msg/String "{data: '${HOST_NAME}'}"
+ros2 topic pub --once /vision/set_person_name std_msgs/msg/String "{data: '${HOST_NAME}'}"
 
 echo ""
 echo "Perintah pendaftaran dikirim!"

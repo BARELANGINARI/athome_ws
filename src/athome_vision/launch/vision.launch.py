@@ -17,7 +17,7 @@ def generate_launch_description():
         DeclareLaunchArgument('mirror', default_value='true', description='Mirror display preview horizontally'),
         DeclareLaunchArgument('yolo_model', default_value='models/yolov8n_sim.onnx', description='Path to YOLO ONNX model'),
         DeclareLaunchArgument('yolo_classes', default_value='models/coco_names.txt', description='Path to COCO class labels file'),
-        DeclareLaunchArgument('yolo_conf', default_value='0.25', description='YOLO confidence threshold'),
+        DeclareLaunchArgument('yolo_conf', default_value='0.50', description='YOLO confidence threshold'),
         DeclareLaunchArgument('yolo_nms', default_value='0.45', description='YOLO NMS IoU threshold'),
         DeclareLaunchArgument('yolo_size', default_value='640', description='YOLO input image dimension'),
         DeclareLaunchArgument('yolo_min_area', default_value='1500.0', description='Minimum bounding box area (pixels)'),
@@ -39,11 +39,13 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_bag', default_value='true', description='Enable luggage bag detection (for Help Me Carry)'),
         DeclareLaunchArgument('host_name', default_value='Alex', description='Default host name for pre-registration'),
         DeclareLaunchArgument('host_photo', default_value='models/host.jpg', description='Optional photo of the host to pre-register face'),
+        DeclareLaunchArgument('enable_back_detection', default_value='true', description='Enable person facing back detection'),
+        DeclareLaunchArgument('person_back_topic', default_value='/vision/person_back', description='Topic for person facing back coordinates'),
 
         Node(
             package='athome_vision',
-            executable='zed',
-            name='zed',
+            executable='vision',
+            name='vision',
             output='screen',
             respawn=True,
             respawn_delay=2.0,
@@ -81,6 +83,8 @@ def generate_launch_description():
                 'enable_bag': LaunchConfiguration('enable_bag'),
                 'host_name': LaunchConfiguration('host_name'),
                 'host_photo': LaunchConfiguration('host_photo'),
+                'enable_back_detection': LaunchConfiguration('enable_back_detection'),
+                'person_back_topic': LaunchConfiguration('person_back_topic'),
             }],
         ),
     ])

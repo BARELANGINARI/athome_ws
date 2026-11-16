@@ -20,8 +20,8 @@ receptionist_node:
 
     # Search chair settings
     cmd_vel_topic: "cmd_vel"
-    chair_topic: "/zed/chair_detections"
-    empty_seat_topic: "/zed/empty_seat"
+    chair_topic: "/vision/chair_detections"
+    empty_seat_topic: "/vision/empty_seat"
     search_chair_angular_speed: 0.35
     search_chair_timeout_sec: 40.0
     search_chair_confirm_frames: 2

@@ -260,7 +260,7 @@ public:
     // --------------------------------------------------------------------------
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/restaurant/status", 10);
-    person_name_pub_ = create_publisher<std_msgs::msg::String>("/zed/set_person_name", 10);
+    person_name_pub_ = create_publisher<std_msgs::msg::String>("/vision/set_person_name", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -278,30 +278,30 @@ public:
       sub_opts);
 
     // --------------------------------------------------------------------------
-    // Subscriber Vision (ZED Camera)
+    // Subscriber Vision (Camera)
     // --------------------------------------------------------------------------
     gesture_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/gesture", 10,
+      "/vision/gesture", 10,
       std::bind(&RestaurantTaskNode::onGesture, this, std::placeholders::_1),
       sub_opts);
 
     person_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/person_label", rclcpp::SensorDataQoS(),
+      "/vision/person_label", rclcpp::SensorDataQoS(),
       std::bind(&RestaurantTaskNode::onPersonLabel, this, std::placeholders::_1),
       sub_opts);
 
     order_pos_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/order1", 10,
+      "/vision/order", 10,
       std::bind(&RestaurantTaskNode::onOrderTopic, this, std::placeholders::_1),
       sub_opts);
 
     drink_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/drink_detections", rclcpp::SensorDataQoS(),
+      "/vision/drink_detections", rclcpp::SensorDataQoS(),
       std::bind(&RestaurantTaskNode::onDrinkDetections, this, std::placeholders::_1),
       sub_opts);
 
     bag_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/bag_detections", rclcpp::SensorDataQoS(),
+      "/vision/bag_detections", rclcpp::SensorDataQoS(),
       std::bind(&RestaurantTaskNode::onBagDetections, this, std::placeholders::_1),
       sub_opts);
 
@@ -312,14 +312,18 @@ public:
       this, "navigate_to_pose", callback_group_);
 
     // Vision Services
-    zed_wave_hand_client_ = create_client<Trigger>(
-      "/zed/wave_hand", rclcpp::ServicesQoS(), callback_group_);
-    zed_capture_face_client_ = create_client<Trigger>(
-      "/zed/camera_capture_face", rclcpp::ServicesQoS(), callback_group_);
+    vision_wave_hand_client_ = create_client<Trigger>(
+      "/vision/wave_hand", rclcpp::ServicesQoS(), callback_group_);
+    vision_capture_face_client_ = create_client<Trigger>(
+      "/vision/camera_capture_face", rclcpp::ServicesQoS(), callback_group_);
 
     // Navigation helper services (dari restaurant_node jika dijalankan bersamaan)
+    go_to_order_client_ = create_client<Trigger>(
+      "/go_to_order", rclcpp::ServicesQoS(), callback_group_);
     go_to_order1_client_ = create_client<Trigger>(
       "/go_to_order1", rclcpp::ServicesQoS(), callback_group_);
+    deliver_order_client_ = create_client<Trigger>(
+      "/deliver_order", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
       "/homing", rclcpp::ServicesQoS(), callback_group_);
 
@@ -335,9 +339,9 @@ public:
     arm_relax_client_ = create_client<Trigger>(
       "/arm/relax", rclcpp::ServicesQoS(), callback_group_);
 
-    // Timer siklus FSM (10 Hz / 100 ms)
+    // Timer siklus FSM (10 Hz / 100 ms) menggunakan default MutuallyExclusive group
     fsm_timer_ = create_wall_timer(
-      100ms, std::bind(&RestaurantTaskNode::fsmTick, this), callback_group_);
+      100ms, std::bind(&RestaurantTaskNode::fsmTick, this));
 
     task_start_time_ = now();
     state_enter_time_ = now();
@@ -452,9 +456,11 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr bag_sub_;
 
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_action_client_;
-  TriggerClient::SharedPtr zed_wave_hand_client_;
-  TriggerClient::SharedPtr zed_capture_face_client_;
+  TriggerClient::SharedPtr vision_wave_hand_client_;
+  TriggerClient::SharedPtr vision_capture_face_client_;
+  TriggerClient::SharedPtr go_to_order_client_;
   TriggerClient::SharedPtr go_to_order1_client_;
+  TriggerClient::SharedPtr deliver_order_client_;
   TriggerClient::SharedPtr homing_client_;
   TriggerClient::SharedPtr arm_grab_simple_client_;
   TriggerClient::SharedPtr arm_release_client_;
@@ -560,14 +566,15 @@ private:
       last_nav_goal_yaw_ = goal_yaw;
     }
 
+    nav_busy_ = true;
+
     if (!nav_action_client_->wait_for_action_server(2s)) {
+      nav_busy_ = false;
       RCLCPP_ERROR(get_logger(), "[Nav2] Action server 'navigate_to_pose' tidak tersedia!");
       last_nav_fail_time_ = now();
       if (on_finished) on_finished(false);
       return;
     }
-
-    nav_busy_ = true;
 
     NavigateToPose::Goal goal;
     goal.pose.header.frame_id = global_frame_;
@@ -656,13 +663,18 @@ private:
   // Navigasi ke pelanggan yang melambaikan tangan
   void navigateToWavingCustomer(std::function<void(bool)> on_finished)
   {
-    // Prioritaskan service /go_to_order1 dari restaurant_node jika tersedia
-    if (go_to_order1_client_ && go_to_order1_client_->service_is_ready()) {
+    // Prioritaskan service /go_to_order (atau /go_to_order1) dari restaurant_node jika tersedia
+    auto active_order_client = (go_to_order_client_ && go_to_order_client_->service_is_ready())
+      ? go_to_order_client_
+      : ((go_to_order1_client_ && go_to_order1_client_->service_is_ready()) ? go_to_order1_client_ : nullptr);
+    const std::string srv_name = (active_order_client == go_to_order_client_) ? "/go_to_order" : "/go_to_order1";
+
+    if (active_order_client) {
       callTrigger(
-        go_to_order1_client_, "/go_to_order1",
-        [this, on_finished](bool ok, const std::string & msg) {
+        active_order_client, srv_name,
+        [this, srv_name, on_finished](bool ok, const std::string & msg) {
           if (!ok) {
-            RCLCPP_WARN(get_logger(), "[NAV] /go_to_order1 gagal (%s), mencoba direct Nav2...", msg.c_str());
+            RCLCPP_WARN(get_logger(), "[NAV] %s gagal (%s), mencoba direct Nav2...", srv_name.c_str(), msg.c_str());
             double wx = 1.5, wy = 0.0;
             {
               std::lock_guard<std::mutex> lock(vision_mutex_);
@@ -1049,7 +1061,7 @@ private:
       stateToString(state_.load()).c_str());
   }
 
-  // Callback deteksi lambaian tangan / gesture dari ZED (/zed/gesture)
+  // Callback deteksi lambaian tangan / gesture dari Vision (/vision/gesture)
   void onGesture(const std_msgs::msg::String::SharedPtr message)
   {
     if (!message || message->data.empty()) return;
@@ -1057,17 +1069,16 @@ private:
     if (gest.empty() || gest == "none") return;
 
     if (gest.find("wave") != std::string::npos ||
-        gest.find("left") != std::string::npos ||
-        gest.find("right") != std::string::npos ||
-        gest.find("raise") != std::string::npos ||
-        gest.find("hand") != std::string::npos)
+        gest.find("raise") != std::string::npos)
     {
       std::lock_guard<std::mutex> lock(vision_mutex_);
-      wave_detected_ = true;
+      if (has_waving_person_coords_) {
+        wave_detected_ = true;
+      }
     }
   }
 
-  // Callback topik posisi pemesan (/zed/order1)
+  // Callback topik posisi pemesan (/vision/order)
   void onOrderTopic(const std_msgs::msg::String::SharedPtr message)
   {
     if (!message || message->data.empty()) return;
@@ -1075,13 +1086,13 @@ private:
     if (parseCoordinates(message->data, px, py)) {
       std::lock_guard<std::mutex> lock(vision_mutex_);
       waving_person_x_ = px;
-      waving_person_y_ = py;
+      waving_person_y_ = -py; // Negasikan kembali agar sesuai standar ROS base_link (+Y kiri, -Y kanan)
       has_waving_person_coords_ = true;
       wave_detected_ = true;
     }
   }
 
-  // Callback deteksi orang & ekstraksi koordinat 3D (/zed/person_label)
+  // Callback deteksi orang & ekstraksi koordinat 3D (/vision/person_label)
   void onPersonLabel(const std_msgs::msg::String::SharedPtr message)
   {
     if (!message || message->data.empty() ||
@@ -1093,11 +1104,11 @@ private:
     double px = 0.0, py = 0.0;
     if (parseCoordinates(message->data, px, py)) {
       std::lock_guard<std::mutex> lock(vision_mutex_);
-      // Jangan menimpa koordinat orang yang melambai dari /zed/order1.
-      // /zed/person_label hanya menjadi fallback posisi awal.
+      // Jangan menimpa koordinat orang yang melambai dari /vision/order.
+      // /vision/person_label hanya menjadi fallback posisi awal.
       if (!has_waving_person_coords_) {
         waving_person_x_ = px;
-        waving_person_y_ = py;
+        waving_person_y_ = -py;
         has_waving_person_coords_ = true;
       }
     }
@@ -1129,7 +1140,7 @@ private:
       }
       if (coords.size() >= 2 && std::isfinite(coords[0]) && std::isfinite(coords[1])) {
         item.x = coords[0];
-        item.y = coords[1];
+        item.y = -coords[1]; // Negasikan sumbu Y dari athome_vision agar sesuai base_link (+Y kiri, -Y kanan)
         item.z = (coords.size() >= 3 && std::isfinite(coords[2])) ? coords[2] : 0.0;
         item.has_3d = true;
       }
@@ -1210,8 +1221,11 @@ private:
       return;
     }
 
+    service_busy_ = true;
+
     if (!client->service_is_ready()) {
       if (!client->wait_for_service(1s)) {
+        service_busy_ = false;
         RCLCPP_WARN(
           get_logger(), "[SERVICE] Service %s belum tersedia.",
           service_name.c_str());
@@ -1438,45 +1452,51 @@ private:
 
         if (waved) {
           speakAsync("i'm coming", [this]() {
-            callTrigger(
-              zed_wave_hand_client_, "/zed/wave_hand",
-              [this](bool ok, const std::string & msg) {
-                double px = 0.0, py = 0.0;
-                if (parseCoordinates(msg, px, py)) {
-                  std::lock_guard<std::mutex> lock(vision_mutex_);
-                  waving_person_x_ = px;
-                  waving_person_y_ = py;
-                  has_waving_person_coords_ = true;
-                }
-                RCLCPP_INFO(
-                  get_logger(),
-                  "[VISION] Service /zed/wave_hand finished (ok=%s, msg='%s')",
-                  ok ? "true" : "false", msg.c_str());
-                transitionTo(
-                  RestaurantState::NAV_TO_WAVING_CUSTOMER,
-                  "Wave hand processed, navigating to customer");
-              },
-              10.0);
+            if (vision_wave_hand_client_ && vision_wave_hand_client_->service_is_ready()) {
+              callTrigger(
+                vision_wave_hand_client_, "/vision/wave_hand",
+                [this](bool ok, const std::string & msg) {
+                  double px = 0.0, py = 0.0;
+                  if (parseCoordinates(msg, px, py)) {
+                    std::lock_guard<std::mutex> lock(vision_mutex_);
+                    waving_person_x_ = px;
+                    waving_person_y_ = -py;
+                    has_waving_person_coords_ = true;
+                  }
+                  RCLCPP_INFO(
+                    get_logger(),
+                    "[VISION] Service /vision/wave_hand finished (ok=%s, msg='%s')",
+                    ok ? "true" : "false", msg.c_str());
+                  transitionTo(
+                    RestaurantState::NAV_TO_WAVING_CUSTOMER,
+                    "Wave hand processed, navigating to customer");
+                },
+                10.0);
+            } else {
+              transitionTo(
+                RestaurantState::NAV_TO_WAVING_CUSTOMER,
+                "Wave hand detected via vision topic, navigating to customer");
+            }
           });
-        } else if (zed_wave_hand_client_ && zed_wave_hand_client_->service_is_ready() &&
+        } else if (vision_wave_hand_client_ && vision_wave_hand_client_->service_is_ready() &&
                    (now() - state_enter_time_).seconds() >= 2.0)
         {
-          // Jika deteksi wave disediakan langsung oleh service /zed/wave_hand
+          // Jika deteksi wave disediakan langsung oleh service /vision/wave_hand
           callTrigger(
-            zed_wave_hand_client_, "/zed/wave_hand",
+            vision_wave_hand_client_, "/vision/wave_hand",
             [this](bool ok, const std::string & msg) {
               if (ok) {
                 double px = 0.0, py = 0.0;
                 if (parseCoordinates(msg, px, py)) {
                   std::lock_guard<std::mutex> lock(vision_mutex_);
                   waving_person_x_ = px;
-                  waving_person_y_ = py;
+                  waving_person_y_ = -py;
                   has_waving_person_coords_ = true;
                 }
                 speakAsync("i'm coming", [this]() {
                   transitionTo(
                     RestaurantState::NAV_TO_WAVING_CUSTOMER,
-                    "Customer wave detected via /zed/wave_hand");
+                    "Customer wave detected via /vision/wave_hand");
                 });
               }
             },
@@ -1585,21 +1605,32 @@ private:
           std::lock_guard<std::mutex> lock(customer_mutex_);
           c_name = current_customer_.name;
         }
+        if (person_name_pub_ && !c_name.empty()) {
+          std_msgs::msg::String msg;
+          msg.data = c_name;
+          person_name_pub_->publish(msg);
+        }
         speakAsync(
           "Hello " + c_name + "! please dont move, as i want to save your facial data",
           [this]() {
-            callTrigger(
-              zed_capture_face_client_, "/zed/camera_capture_face",
-              [this](bool ok, const std::string & msg) {
-                RCLCPP_INFO(
-                  get_logger(),
-                  "[VISION] /zed/camera_capture_face finished (ok=%s, msg='%s')",
-                  ok ? "true" : "false", msg.c_str());
-                transitionTo(
-                  RestaurantState::ASK_CUSTOMER_ORDER,
-                  "Facial data capture completed");
-              },
-              10.0);
+            if (vision_capture_face_client_ && vision_capture_face_client_->service_is_ready()) {
+              callTrigger(
+                vision_capture_face_client_, "/vision/camera_capture_face",
+                [this](bool ok, const std::string & msg) {
+                  RCLCPP_INFO(
+                    get_logger(),
+                    "[VISION] /vision/camera_capture_face finished (ok=%s, msg='%s')",
+                    ok ? "true" : "false", msg.c_str());
+                  transitionTo(
+                    RestaurantState::ASK_CUSTOMER_ORDER,
+                    "Facial data capture completed");
+                },
+                10.0);
+            } else {
+              transitionTo(
+                RestaurantState::ASK_CUSTOMER_ORDER,
+                "Facial data registered via /vision/set_person_name");
+            }
           });
         break;
       }
@@ -1904,6 +1935,43 @@ private:
         {
           return;
         }
+
+        // Prioritaskan pemanggilan service /deliver_order dari restaurant_node
+        if (deliver_order_client_ && deliver_order_client_->service_is_ready()) {
+          callTrigger(
+            deliver_order_client_, "/deliver_order",
+            [this](bool ok, const std::string & msg) {
+              if (!ok) {
+                RCLCPP_WARN(
+                  get_logger(),
+                  "[NAV] Service /deliver_order gagal (%s), fallback ke koordinat internal...",
+                  msg.c_str());
+                double cx = 0.0, cy = 0.0, cyaw = 0.0;
+                {
+                  std::lock_guard<std::mutex> lock(customer_mutex_);
+                  cx = current_customer_.map_x;
+                  cy = current_customer_.map_y;
+                  cyaw = current_customer_.map_yaw;
+                }
+                navigateToMapPoseAsync(cx, cy, cyaw, [this](bool success) {
+                  if (!success) {
+                    RCLCPP_WARN(get_logger(), "[NAV] Gagal navigasi fallback ke posisi pelanggan, mencoba ulang...");
+                    return;
+                  }
+                  transitionTo(
+                    RestaurantState::GREET_DELIVERY_CUSTOMER,
+                    "Arrived at customer position for delivery (fallback)");
+                });
+                return;
+              }
+              transitionTo(
+                RestaurantState::GREET_DELIVERY_CUSTOMER,
+                "Arrived at customer position for delivery via /deliver_order");
+            },
+            nav_timeout_sec_);
+          break;
+        }
+
         double cx = 0.0, cy = 0.0, cyaw = 0.0;
         {
           std::lock_guard<std::mutex> lock(customer_mutex_);

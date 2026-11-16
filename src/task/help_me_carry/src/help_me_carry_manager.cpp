@@ -106,12 +106,12 @@ public:
       options);
 
     person_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/person_label", rclcpp::SensorDataQoS(),
+      "/vision/person_label", rclcpp::SensorDataQoS(),
       std::bind(&HelpMeCarryOrchestrator::onPersonLabel, this, std::placeholders::_1),
       options);
 
     gesture_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/gesture", 10,
+      "/vision/gesture", 10,
       std::bind(&HelpMeCarryOrchestrator::onGesture, this, std::placeholders::_1),
       options);
 
@@ -121,7 +121,7 @@ public:
       options);
 
     bag_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/bag_detections", rclcpp::SensorDataQoS(),
+      "/vision/bag_detections", rclcpp::SensorDataQoS(),
       std::bind(&HelpMeCarryOrchestrator::onBagDetections, this, std::placeholders::_1),
       options);
 
@@ -137,7 +137,7 @@ public:
     align_bag_client_ = create_client<Trigger>(
       "/task/align_bag", rclcpp::ServicesQoS(), callback_group_);
     grab_bag_client_ = create_client<Trigger>(
-      "/arm/ambil_tas_simple", rclcpp::ServicesQoS(), callback_group_);
+      "/arm/motion_task_1", rclcpp::ServicesQoS(), callback_group_);
     put_down_bag_client_ = create_client<Trigger>(
       "/arm/letakkan_tas", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
@@ -163,7 +163,7 @@ private:
   // Konstanta Timeout & Grace Period
   // STATUS FSM
   // ----------------------------------------------------------------------------
-  static constexpr double GLOBAL_TIMEOUT_SEC       = 300.0;  // Batas waktu total tugas (5 menit)
+  static constexpr double GLOBAL_TIMEOUT_SEC       = 600.0;  // Batas waktu total tugas (10 menit)
   static constexpr double OPERATOR_TIMEOUT_SEC     = 5.0;    // Toleransi oklusi rintangan sebelum masuk recovery
   static constexpr double FOLLOW_GRACE_PERIOD_SEC  = 2.0;    // Masa tenggang deteksi hilang saat awal follow
   static constexpr double ARRIVED_GRACE_PERIOD_SEC = 5.0;    // Jeda abaikan perintah arrived saat awal follow
@@ -630,7 +630,7 @@ private:
     }
   }
 
-  // Callback deteksi tas dari kamera ZED YOLO (/zed/bag_detections)
+  // Callback deteksi tas dari kamera Vision YOLO (/vision/bag_detections)
   void onBagDetections(const std_msgs::msg::String::SharedPtr message)
   {
     if (!message || message->data.empty()) {
@@ -830,7 +830,7 @@ private:
               if (follow_prompt_count_ < 3 && state_.load() == TaskState::FOLLOW_OPERATOR)
               {
                 follow_prompt_next_time_ = now() + rclcpp::Duration::from_seconds(
-                  FOLLOW_PROMPT_INTERVAL_SEC
+                  15.0
                 );
               }
             }
@@ -980,7 +980,7 @@ private:
       case TaskState::GRASP_BAG:
         busy_ = true;
         callTrigger(
-          grab_bag_client_, "/arm/ambil_tas",
+          grab_bag_client_, "/arm/motion_task_1",
           [this](bool success, const std::string & message) {
             // busy_ TIDAK dilepas di sini: speakAsync menjaga kunci sampai TTS selesai,
             // lalu transisi state (dan aksi berikutnya) dieksekusi di callback on_done.

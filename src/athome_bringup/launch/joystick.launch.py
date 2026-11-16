@@ -17,7 +17,7 @@ def generate_launch_description():
         DeclareLaunchArgument('launch_nucleo', default_value='false', description='Launch STM32 Nucleo hardware base and lifter driver (default false to prevent collision with mapping/hardware)'),
         DeclareLaunchArgument('stm_ip', default_value='192.168.0.4', description='STM32 Nucleo IP address'),
         DeclareLaunchArgument('stm_port', default_value='2002', description='STM32 Nucleo UDP port'),
-        DeclareLaunchArgument('use_yaw_topic', default_value='false', description='Use /zed/yaw_deg instead of internal IMU'),
+        DeclareLaunchArgument('use_yaw_topic', default_value='false', description='Use /vision/yaw_deg instead of internal IMU'),
         DeclareLaunchArgument('smoothing_enable', default_value='true', description='Enable motor acceleration smoothing'),
         DeclareLaunchArgument('joy_id', default_value='0', description='Joystick device ID (e.g. 0 for /dev/input/js0)'),
         DeclareLaunchArgument('cmd_vel_topic', default_value='/cmd_vel', description='Output velocity topic'),
