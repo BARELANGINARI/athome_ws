@@ -84,6 +84,80 @@ class VadFrameMetrics:
     is_paused: bool
 
 
+def find_usb_mic_index() -> Optional[int]:
+    """Cari indeks perangkat input audio yang mengandung 'usb' via SoundDevice atau PyAudio."""
+    if HAS_SOUNDDEVICE:
+        try:
+            for idx, info in enumerate(sd.query_devices()):
+                if (
+                    info.get("max_input_channels", 0) > 0
+                    and "usb" in str(info.get("name", "")).lower()
+                ):
+                    return idx
+        except Exception:
+            pass
+
+    if HAS_PYAUDIO:
+        try:
+            with no_c_stderr():
+                pa = pyaudio.PyAudio()
+                try:
+                    for idx in range(pa.get_device_count()):
+                        info = pa.get_device_info_by_index(idx)
+                        if (
+                            info.get("maxInputChannels", 0) > 0
+                            and "usb" in str(info.get("name", "")).lower()
+                        ):
+                            return idx
+                finally:
+                    pa.terminate()
+        except Exception:
+            pass
+
+    return None
+
+
+def resolve_mic_device_index(
+    configured_index: Optional[int],
+) -> Tuple[Optional[int], bool]:
+    """Resolve mic index (>=0 explicit, <0/None auto-detect USB mic)."""
+    if configured_index is not None and int(configured_index) >= 0:
+        return int(configured_index), False
+    detected = find_usb_mic_index()
+    return (detected, True) if detected is not None else (None, False)
+
+
+def resolve_speaker_device_index(configured_index: Optional[int]) -> Optional[int]:
+    """Resolve output speaker index (>=0 explicit, <0/None system default)."""
+    if configured_index is not None and int(configured_index) >= 0:
+        return int(configured_index)
+    return None
+
+
+def format_vad_meter(
+    metrics: VadFrameMetrics, thresh_dbfs: float, thresh_flatness: float
+) -> str:
+    """Format terminal meter string for real-time VAD frame telemetry."""
+    is_voice = (metrics.dbfs_speech > thresh_dbfs) and (
+        metrics.flatness < thresh_flatness
+    )
+    bars = int(max(0, min(15, (metrics.dbfs_speech + 60) / 3.33)))
+    bar_str = "#" * bars + "-" * (15 - bars)
+
+    if is_voice:
+        status = "\033[1;32m[VOICE DETECTED]\033[0m"
+    elif metrics.is_speaking:
+        status = "\033[1;33m[HOLD / HANGOVER]\033[0m"
+    else:
+        status = "\033[2m[SILENCE / NOISE]\033[0m"
+
+    return (
+        f"[VAD METER] [{bar_str}] {metrics.dbfs_speech:5.1f} dBFS "
+        f"(min: {thresh_dbfs:.1f}) | Flatness: {metrics.flatness:.2f} "
+        f"(max: {thresh_flatness:.2f}) | {status}"
+    )
+
+
 class AudioSpeechQueue:
     """Antrean pemutaran TTS asinkron dengan pencegah duplikasi (cooldown) dan estimasi durasi."""
 
@@ -98,12 +172,14 @@ class AudioSpeechQueue:
         default_cooldown: float = 3.0,
         min_gap: float = 0.5,
         enable_local_speaker: bool = True,
+        speaker_device_index: Optional[int] = None,
     ) -> None:
         self.tts = tts_engine
         self.broadcast_func = broadcast_func
         self.default_cooldown = default_cooldown
         self.min_gap = min_gap
         self.enable_local_speaker = enable_local_speaker
+        self.speaker_device_index = speaker_device_index
         self.queue: asyncio.Queue[QueueItem] = asyncio.Queue()
         self.last_spoken_time: Dict[str, float] = {}
         self.global_last_spoken_time: float = 0.0
@@ -138,7 +214,9 @@ class AudioSpeechQueue:
         )
 
     @staticmethod
-    def _play_wav_locally(wav_base64: str) -> bool:
+    def _play_wav_locally(
+        wav_base64: str, device_index: Optional[int] = None
+    ) -> bool:
         """Memutar audio WAV Base64 ke speaker lokal menggunakan SoundDevice atau PyAudio."""
         if not wav_base64:
             return False
@@ -152,7 +230,7 @@ class AudioSpeechQueue:
                         np.frombuffer(frames, dtype=np.int16).astype(np.float32)
                         / 32768.0
                     )
-                    sd.play(audio_np, samplerate=rate)
+                    sd.play(audio_np, samplerate=rate, device=device_index)
                     sd.wait()
                     time.sleep(0.1)
                     return True
@@ -160,12 +238,22 @@ class AudioSpeechQueue:
                     with no_c_stderr():
                         pa = pyaudio.PyAudio()
                         try:
+                            out_idx = device_index
+                            if out_idx is not None:
+                                dev_cnt = pa.get_device_count()
+                                if out_idx < 0 or out_idx >= dev_cnt or pa.get_device_info_by_index(out_idx).get("maxOutputChannels", 0) <= 0:
+                                    logger.warning(
+                                        "Device speaker index %s tidak valid; menggunakan output default sistem.",
+                                        out_idx,
+                                    )
+                                    out_idx = None
                             chunk = 4096
                             stream = pa.open(
                                 format=pa.get_format_from_width(wf.getsampwidth()),
                                 channels=wf.getnchannels(),
                                 rate=wf.getframerate(),
                                 output=True,
+                                output_device_index=out_idx,
                                 frames_per_buffer=chunk,
                             )
                             data = wf.readframes(chunk)
@@ -210,7 +298,11 @@ class AudioSpeechQueue:
                 duration = self._estimate_duration(wav_base64, text)
                 t0 = time.time()
                 if self.enable_local_speaker and wav_base64:
-                    await asyncio.to_thread(self._play_wav_locally, wav_base64)
+                    await asyncio.to_thread(
+                        self._play_wav_locally,
+                        wav_base64,
+                        self.speaker_device_index,
+                    )
                 elapsed = time.time() - t0
                 remaining = max(0.0, duration - elapsed)
                 await asyncio.sleep(
@@ -336,6 +428,27 @@ class LocalMicListener:
         else:
             self._b_band, self._a_band = None, None
 
+    def update_vad_params(
+        self,
+        *,
+        threshold_dbfs: Optional[float] = None,
+        threshold_flatness: Optional[float] = None,
+        pre_roll_frames: Optional[int] = None,
+        hangover_frames: Optional[int] = None,
+        min_speech_frames: Optional[int] = None,
+    ) -> None:
+        """Perbarui parameter VAD secara aman tanpa mengulang stream audio."""
+        if threshold_dbfs is not None:
+            self.threshold_dbfs = float(threshold_dbfs)
+        if threshold_flatness is not None:
+            self.threshold_flatness = float(threshold_flatness)
+        if pre_roll_frames is not None:
+            self.pre_roll_frames = max(0, int(pre_roll_frames))
+        if hangover_frames is not None:
+            self.hangover_frames = max(1, int(hangover_frames))
+        if min_speech_frames is not None:
+            self.min_speech_frames = max(1, int(min_speech_frames))
+
     def _compute_features(
         self, signal: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray, float, float, float]:
@@ -393,123 +506,219 @@ class LocalMicListener:
         elif HAS_PYAUDIO:
             self._listen_with_pyaudio()
 
-    def _listen_with_sounddevice(self) -> None:
-        audio_queue: queue.Queue[np.ndarray] = queue.Queue()
-        hw_rate = self.sample_rate
-        if self.device_index is not None:
-            try:
-                dev_info = sd.query_devices(self.device_index)
-                candidate = int(dev_info.get("default_samplerate", self.sample_rate))
-                try:
-                    sd.check_input_settings(device=self.device_index, channels=1, dtype="float32", samplerate=self.sample_rate)
-                except Exception:
-                    hw_rate = candidate
-            except Exception:
-                pass
-        else:
-            try:
-                default_dev = sd.default.device[0]
-                dev_info = sd.query_devices(default_dev)
-                candidate = int(dev_info.get("default_samplerate", self.sample_rate))
-                try:
-                    sd.check_input_settings(device=default_dev, channels=1, dtype="float32", samplerate=self.sample_rate)
-                except Exception:
-                    hw_rate = candidate
-            except Exception:
-                pass
-
-        hw_block_size = int(hw_rate * self.block_duration)
-        need_resample = hw_rate != self.sample_rate
-        if need_resample:
+    def _resample_to_target(
+        self, sig: np.ndarray, hw_rate: int
+    ) -> np.ndarray:
+        """Resample 1D float32 audio frame from hw_rate to self.sample_rate."""
+        if hw_rate == self.sample_rate or len(sig) == 0:
+            return sig
+        if HAS_SCIPY:
             g = gcd(self.sample_rate, hw_rate)
             up_factor = self.sample_rate // g
             down_factor = hw_rate // g
+            return resample_poly(sig, up_factor, down_factor).astype(np.float32)
+        if hw_rate % self.sample_rate == 0:
+            return sig[:: hw_rate // self.sample_rate].astype(np.float32)
+        x_old = np.linspace(0.0, 1.0, num=len(sig), endpoint=False)
+        x_new = np.linspace(0.0, 1.0, num=self.block_size, endpoint=False)
+        return np.interp(x_new, x_old, sig).astype(np.float32)
 
-        def audio_callback(
-            indata: np.ndarray, frames: int, time_info: Any, status: Any
-        ) -> None:
-            if status:
-                logger.debug("SoundDevice status: %s", status)
-            sig = indata[:, 0].copy()
-            if need_resample:
-                if HAS_SCIPY:
-                    sig = resample_poly(sig, up_factor, down_factor).astype(np.float32)
-                elif hw_rate % self.sample_rate == 0:
-                    sig = sig[::hw_rate // self.sample_rate]
-            audio_queue.put(sig)
-
+    @staticmethod
+    def _build_pyaudio_candidates(
+        pa: Any, preferred_index: Optional[int]
+    ) -> List[Optional[int]]:
+        """Build ordered input device index candidates ending with mixer/default fallbacks."""
+        candidates: List[Optional[int]] = []
+        dev_count = 0
         try:
-            with sd.InputStream(
-                samplerate=hw_rate,
-                channels=1,
-                dtype="float32",
-                blocksize=hw_block_size,
-                device=self.device_index,
-                callback=audio_callback,
-            ):
-                logger.info(
-                    "Mikrofon lokal aktif via SoundDevice (HW: %d Hz -> VAD: %d Hz, block=%d, dbfs_thresh=%.1f dBFS, flatness_max=%.2f).",
-                    hw_rate,
-                    self.sample_rate,
-                    self.block_size,
-                    self.threshold_dbfs,
-                    self.threshold_flatness,
+            dev_count = pa.get_device_count()
+        except Exception:
+            dev_count = 0
+
+        if preferred_index is not None:
+            if 0 <= preferred_index < dev_count:
+                try:
+                    pref_info = pa.get_device_info_by_index(preferred_index)
+                    if pref_info.get("maxInputChannels", 0) > 0:
+                        candidates.append(preferred_index)
+                    else:
+                        logger.warning(
+                            "Device mic index %s ('%s') memiliki 0 channel input (kemungkinan terkunci PipeWire); beralih ke fallback mixer/default.",
+                            preferred_index,
+                            pref_info.get("name", "?"),
+                        )
+                except Exception:
+                    pass
+            else:
+                logger.warning(
+                    "Device mic index %s di luar jangkauan (total=%d); beralih ke fallback mixer/default.",
+                    preferred_index,
+                    dev_count,
                 )
-                self._run_vad_state_machine(audio_queue)
-        except Exception as exc:
-            logger.warning(
-                "Gagal membuka mikrofon via SoundDevice (%s). Mencoba fallback PyAudio...",
-                exc,
-            )
-            if HAS_PYAUDIO and self.enabled:
-                self._listen_with_pyaudio()
-        finally:
-            logger.info("Mikrofon lokal dinonaktifkan.")
+
+        fallback_names = ("pipewire", "pulse", "default")
+        name_matches: Dict[str, Optional[int]] = {k: None for k in fallback_names}
+        try:
+            for idx in range(dev_count):
+                info = pa.get_device_info_by_index(idx)
+                if info.get("maxInputChannels", 0) <= 0:
+                    continue
+                dev_name = str(info.get("name", "")).strip().lower()
+                for target in fallback_names:
+                    if target == dev_name and name_matches[target] is None:
+                        name_matches[target] = idx
+        except Exception:
+            pass
+
+        for target in fallback_names:
+            idx = name_matches[target]
+            if idx is not None and idx not in candidates:
+                candidates.append(idx)
+
+        if None not in candidates:
+            candidates.append(None)
+        return candidates
+
+    def _listen_with_sounddevice(self) -> None:
+        dev_candidates: List[Optional[int]] = [self.device_index]
+        if self.device_index is not None:
+            dev_candidates.append(None)
+
+        opened_any = False
+        for idx_pos, active_device in enumerate(dev_candidates):
+            audio_queue: queue.Queue[np.ndarray] = queue.Queue()
+            hw_rate = self.sample_rate
+            try:
+                query_dev = (
+                    active_device
+                    if active_device is not None
+                    else sd.default.device[0]
+                )
+                dev_info = sd.query_devices(query_dev)
+                candidate_rate = int(
+                    dev_info.get("default_samplerate", self.sample_rate)
+                )
+                try:
+                    sd.check_input_settings(
+                        device=query_dev,
+                        channels=1,
+                        dtype="float32",
+                        samplerate=self.sample_rate,
+                    )
+                except Exception:
+                    hw_rate = candidate_rate
+            except Exception:
+                pass
+
+            hw_block_size = int(hw_rate * self.block_duration)
+
+            def audio_callback(
+                indata: np.ndarray, frames: int, time_info: Any, status: Any
+            ) -> None:
+                if status:
+                    logger.debug("SoundDevice status: %s", status)
+                sig = self._resample_to_target(indata[:, 0].copy(), hw_rate)
+                audio_queue.put(sig)
+
+            try:
+                with sd.InputStream(
+                    samplerate=hw_rate,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=hw_block_size,
+                    device=active_device,
+                    callback=audio_callback,
+                ):
+                    if idx_pos > 0:
+                        logger.warning(
+                            "Device mic index %s tidak tersedia di SoundDevice; dialihkan ke device default.",
+                            self.device_index,
+                        )
+                    logger.info(
+                        "Mikrofon lokal aktif via SoundDevice (device=%s, HW: %d Hz -> VAD: %d Hz, block=%d, dbfs_thresh=%.1f dBFS, flatness_max=%.2f).",
+                        active_device if active_device is not None else "default",
+                        hw_rate,
+                        self.sample_rate,
+                        self.block_size,
+                        self.threshold_dbfs,
+                        self.threshold_flatness,
+                    )
+                    opened_any = True
+                    self._run_vad_state_machine(audio_queue)
+                    break
+            except Exception as exc:
+                logger.warning(
+                    "Gagal membuka mikrofon via SoundDevice (device=%s): %s",
+                    active_device if active_device is not None else "default",
+                    exc,
+                )
+
+        if not opened_any and HAS_PYAUDIO and self.enabled:
+            logger.info("Mencoba fallback ke PyAudio...")
+            self._listen_with_pyaudio()
+            return
+        logger.info("Mikrofon lokal dinonaktifkan.")
 
     def _listen_with_pyaudio(self) -> None:
         stream = None
         hw_rate = self.sample_rate
         hw_block = self.block_size
+        opened_device: Optional[int] = self.device_index
         pa = None
         try:
             with no_c_stderr():
                 pa = pyaudio.PyAudio()
-                cand_rates = []
-                if self.device_index is not None:
-                    try:
-                        dev_info = pa.get_device_info_by_index(self.device_index)
-                        def_rate = int(dev_info.get("defaultSampleRate", 0))
-                        if def_rate > 0:
-                            cand_rates.append(def_rate)
-                    except Exception:
-                        pass
-                for r in (48000, 44100, self.sample_rate):
-                    if r not in cand_rates:
-                        cand_rates.append(r)
+                for cand_device in self._build_pyaudio_candidates(
+                    pa, self.device_index
+                ):
+                    cand_rates = []
+                    if cand_device is not None:
+                        try:
+                            dev_info = pa.get_device_info_by_index(cand_device)
+                            def_rate = int(dev_info.get("defaultSampleRate", 0))
+                            if def_rate > 0:
+                                cand_rates.append(def_rate)
+                        except Exception:
+                            pass
+                    for r in (48000, 44100, self.sample_rate):
+                        if r not in cand_rates:
+                            cand_rates.append(r)
 
-                for cand_rate in cand_rates:
-                    try:
-                        cand_block = int(cand_rate * self.BLOCK_DURATION)
-                        stream = pa.open(
-                            format=pyaudio.paInt16,
-                            channels=1,
-                            rate=cand_rate,
-                            input=True,
-                            input_device_index=self.device_index,
-                            frames_per_buffer=cand_block,
-                        )
-                        hw_rate = cand_rate
-                        hw_block = cand_block
+                    for cand_rate in cand_rates:
+                        try:
+                            cand_block = int(cand_rate * self.BLOCK_DURATION)
+                            stream = pa.open(
+                                format=pyaudio.paInt16,
+                                channels=1,
+                                rate=cand_rate,
+                                input=True,
+                                input_device_index=cand_device,
+                                frames_per_buffer=cand_block,
+                            )
+                            hw_rate = cand_rate
+                            hw_block = cand_block
+                            opened_device = cand_device
+                            break
+                        except Exception:
+                            continue
+
+                    if stream is not None:
                         break
-                    except Exception:
-                        continue
+                    if cand_device == self.device_index and self.device_index is not None:
+                        logger.warning(
+                            "Device mic index %s tidak bisa dibuka di PyAudio (kemungkinan dipakai/terkunci PipeWire); mencoba fallback ke mixer/default.",
+                            self.device_index,
+                        )
 
             if stream is None:
-                logger.error("Gagal membuka mikrofon lokal via PyAudio pada semua sample rate.")
+                logger.error(
+                    "Gagal membuka mikrofon lokal via PyAudio pada semua device & sample rate."
+                )
                 return
 
             logger.info(
-                "Mikrofon lokal aktif via PyAudio (%d Hz -> %d Hz, block=%d, dbfs_thresh=%.1f dBFS, flatness_max=%.2f).",
+                "Mikrofon lokal aktif via PyAudio (device=%s, %d Hz -> %d Hz, block=%d, dbfs_thresh=%.1f dBFS, flatness_max=%.2f).",
+                opened_device if opened_device is not None else "default",
                 hw_rate,
                 self.sample_rate,
                 self.block_size,
@@ -519,24 +728,28 @@ class LocalMicListener:
 
             audio_queue: queue.Queue[np.ndarray] = queue.Queue()
             self._init_vad_state()
+            consecutive_read_errors = 0
             while self.enabled:
                 try:
                     pcm_bytes = stream.read(
                         hw_block, exception_on_overflow=False
                     )
-                except Exception:
-                    time.sleep(0.01)
+                    consecutive_read_errors = 0
+                except Exception as exc:
+                    consecutive_read_errors += 1
+                    if consecutive_read_errors == 1 or consecutive_read_errors % 100 == 0:
+                        logger.warning(
+                            "Gagal membaca frame audio dari mikrofon (count=%d): %s",
+                            consecutive_read_errors,
+                            exc,
+                        )
+                    time.sleep(0.02)
                     continue
                 sig = (
                     np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
                     / 32768.0
                 )
-                if hw_rate != self.sample_rate and len(sig) > 0:
-                    x_old = np.linspace(0.0, 1.0, num=len(sig), endpoint=False)
-                    x_new = np.linspace(
-                        0.0, 1.0, num=self.block_size, endpoint=False
-                    )
-                    sig = np.interp(x_new, x_old, sig).astype(np.float32)
+                sig = self._resample_to_target(sig, hw_rate)
                 audio_queue.put(sig)
                 while not audio_queue.empty():
                     self._process_vad_frame(audio_queue.get_nowait())
@@ -562,6 +775,8 @@ class LocalMicListener:
         self._speech_buffer: List[np.ndarray] = []
         self._pre_roll_buffer: deque[np.ndarray] = deque(maxlen=self.pre_roll_frames)
         self._silence_counter = 0
+        self._zero_signal_frames = 0
+        self._zero_signal_warned = False
 
     def _run_vad_state_machine(
         self, audio_queue: "queue.Queue[np.ndarray]"
@@ -584,6 +799,7 @@ class LocalMicListener:
                 self._speech_buffer.clear()
                 self._is_speaking = False
                 self._silence_counter = 0
+            self._zero_signal_frames = 0
             if self.on_frame_metrics:
                 self.on_frame_metrics(
                     VadFrameMetrics(
@@ -597,6 +813,18 @@ class LocalMicListener:
                     )
                 )
             return
+
+        if dbfs <= -99.5:
+            self._zero_signal_frames += 1
+            if self._zero_signal_frames == 100 and not self._zero_signal_warned:
+                self._zero_signal_warned = True
+                logger.warning(
+                    "Input mikrofon hanya membaca sinyal nol (-100 dBFS). "
+                    "Periksa apakah mic dalam kondisi MUTE atau capture volume 0 di OS / ALSA mixer."
+                )
+        else:
+            self._zero_signal_frames = 0
+            self._zero_signal_warned = False
 
         # Logika Keputusan VAD (Kombinasi Energy Speech-Band & Spectral Flatness)
         frame_is_voice = (dbfs_speech > self.threshold_dbfs) and (

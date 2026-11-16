@@ -3,7 +3,7 @@ from enum import Enum, auto
 import logging
 import threading
 import time
-from typing import Callable, Dict, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Set, Tuple, Union
 
 from geometry_msgs.msg import Twist
 import numpy as np
@@ -17,7 +17,16 @@ import websockets
 from athome_hri.audio_io import (
     AudioSpeechQueue,
     LocalMicListener,
+    VadFrameMetrics,
     VadVisualizer,
+    format_vad_meter,
+    resolve_mic_device_index,
+    resolve_speaker_device_index,
+)
+from athome_hri.config import (
+    apply_param_updates,
+    configure_hri_logging,
+    declare_hri_parameters,
 )
 from athome_hri.intent_recognizer import IntentRecognizer
 from athome_hri.stt_engine import SpeechToText
@@ -26,39 +35,7 @@ from athome_hri.web_server import WebServer
 
 logger = logging.getLogger("athome_hri.coordinator")
 
-# =====================================================================
-# 0. DEFAULT KONFIGURASI INPUT AUDIO & SERVER (Sesuai record_stream_visualize.py)
-# =====================================================================
-ENABLE_LOCAL_MIC: bool = True
-ENABLE_WS_AUDIO: bool = True
-ENABLE_VISUALIZER: bool = True
-MIC_DEVICE_INDEX: Optional[int] = 9 # USB AUDIO (hw:2,0)
-THRESHOLD_DBFS: float = -40.0
-THRESHOLD_FLATNESS: float = 0.40
-PRE_ROLL_FRAMES: int = 10      # 300 ms sebelum suara terdeteksi
-HANGOVER_FRAMES: int = 25      # 750 ms tunggu hening sebelum potong kalimat
-MIN_SPEECH_FRAMES: int = 15    # 450 ms minimal durasi bicara
-WHISPER_MODEL_SIZE: str = "deepdml/faster-whisper-large-v3-turbo-ct2"
-HTTP_PORT: int = 8000
-WS_PORT: int = 8765
 WS_MAX_SIZE_BYTES: int = 10 * 1024 * 1024
-
-
-def find_usb_mic_index() -> Optional[int]:
-    """Mencari indeks input audio PyAudio yang mengandung 'usb'."""
-    try:
-        import pyaudio
-        p = pyaudio.PyAudio()
-        dev_idx = None
-        for i in range(p.get_device_count()):
-            info = p.get_device_info_by_index(i)
-            if info.get("maxInputChannels", 0) > 0 and "usb" in info.get("name", "").lower():
-                dev_idx = i
-                break
-        p.terminate()
-        return dev_idx
-    except Exception:
-        return None
 
 
 # =====================================================================
@@ -108,6 +85,31 @@ class BarelangHriNode(Node):
     VALID_POINTING_GESTURES: Tuple[str, str] = ("LEFT", "RIGHT")
     OPERATOR_GRACE_PERIOD_SEC: float = 3.0
 
+    _PARAM_NAMES = (
+        "mic_device_index",
+        "speaker_device_index",
+        "enable_local_mic",
+        "enable_ws_audio",
+        "enable_visualizer",
+        "enable_live_meter",
+        "enable_local_speaker",
+        "threshold_dbfs",
+        "threshold_flatness",
+        "pre_roll_frames",
+        "hangover_frames",
+        "min_speech_frames",
+        "whisper_model",
+        "stt_language",
+        "tts_model",
+        "nlu_threshold",
+        "http_port",
+        "ws_port",
+    )
+    _LEGACY_ALIASES = {
+        "device_index": "mic_device_index",
+        "language": "stt_language",
+    }
+
     def __init__(
         self,
         async_loop: asyncio.AbstractEventLoop,
@@ -118,52 +120,49 @@ class BarelangHriNode(Node):
         self.loop = async_loop
         self.on_tts_command = on_tts_command
         self.on_gesture_changed = on_gesture_changed
+        self._runtime_updaters: Dict[str, Callable[[Any], None]] = {}
 
-        # Deklarasi parameter ROS 2 (Sesuai record_stream_visualize.py)
-        self.declare_parameter("enable_local_mic", ENABLE_LOCAL_MIC)
-        self.declare_parameter("enable_ws_audio", ENABLE_WS_AUDIO)
-        self.declare_parameter("enable_visualizer", ENABLE_VISUALIZER)
-        self.declare_parameter("mic_device_index", MIC_DEVICE_INDEX if MIC_DEVICE_INDEX is not None else -1)
-        self.declare_parameter("threshold_dbfs", THRESHOLD_DBFS)
-        self.declare_parameter("threshold_flatness", THRESHOLD_FLATNESS)
-        self.declare_parameter("pre_roll_frames", PRE_ROLL_FRAMES)
-        self.declare_parameter("hangover_frames", HANGOVER_FRAMES)
-        self.declare_parameter("min_speech_frames", MIN_SPEECH_FRAMES)
-        self.declare_parameter("whisper_model", WHISPER_MODEL_SIZE)
+        params = declare_hri_parameters(
+            self,
+            self._PARAM_NAMES,
+            legacy_aliases=self._LEGACY_ALIASES,
+        )
 
-        self.enable_local_mic: bool = bool(
-            self.get_parameter("enable_local_mic").value
-        )
-        self.enable_ws_audio: bool = bool(self.get_parameter("enable_ws_audio").value)
-        self.enable_visualizer: bool = bool(
-            self.get_parameter("enable_visualizer").value
-        )
-        raw_mic_idx = self.get_parameter("mic_device_index").value
-        if raw_mic_idx is not None and int(raw_mic_idx) >= 0:
-            self.mic_device_index: Optional[int] = int(raw_mic_idx)
-        else:
-            self.mic_device_index = find_usb_mic_index()
-            if self.mic_device_index is not None:
-                self.get_logger().info(f"Otomatis mendeteksi USB Mic pada index {self.mic_device_index}")
+        self.enable_local_mic: bool = bool(params["enable_local_mic"])
+        self.enable_ws_audio: bool = bool(params["enable_ws_audio"])
+        self.enable_visualizer: bool = bool(params["enable_visualizer"])
+        self.enable_live_meter: bool = bool(params["enable_live_meter"])
+        self.enable_local_speaker: bool = bool(params["enable_local_speaker"])
 
-        self.threshold_dbfs: float = float(
-            self.get_parameter("threshold_dbfs").value
+        resolved_mic, auto_detected = resolve_mic_device_index(
+            params["mic_device_index"]
         )
-        self.threshold_flatness: float = float(
-            self.get_parameter("threshold_flatness").value
+        self.mic_device_index: Optional[int] = resolved_mic
+        if auto_detected:
+            self.get_logger().info(
+                f"Otomatis mendeteksi USB Mic pada index {self.mic_device_index}"
+            )
+        elif self.mic_device_index is None:
+            self.get_logger().warn(
+                "USB Mic tidak terdeteksi; menggunakan perangkat input audio default sistem."
+            )
+
+        self.speaker_device_index: Optional[int] = resolve_speaker_device_index(
+            params["speaker_device_index"]
         )
-        self.pre_roll_frames: int = int(
-            self.get_parameter("pre_roll_frames").value
-        )
-        self.hangover_frames: int = int(
-            self.get_parameter("hangover_frames").value
-        )
-        self.min_speech_frames: int = int(
-            self.get_parameter("min_speech_frames").value
-        )
-        self.whisper_model: str = str(
-            self.get_parameter("whisper_model").value
-        )
+        self.threshold_dbfs: float = float(params["threshold_dbfs"])
+        self.threshold_flatness: float = float(params["threshold_flatness"])
+        self.pre_roll_frames: int = int(params["pre_roll_frames"])
+        self.hangover_frames: int = int(params["hangover_frames"])
+        self.min_speech_frames: int = int(params["min_speech_frames"])
+        self.whisper_model: str = str(params["whisper_model"])
+        self.stt_language: str = str(params["stt_language"])
+        self.tts_model: str = str(params["tts_model"])
+        self.nlu_threshold: float = float(params["nlu_threshold"])
+        self.http_port: int = int(params["http_port"])
+        self.ws_port: int = int(params["ws_port"])
+
+        self.add_on_set_parameters_callback(self._on_params_changed)
 
         # Vision & Gesture State
         self._person_topic_received: bool = False
@@ -190,6 +189,56 @@ class BarelangHriNode(Node):
             for key, srv_name in self.SERVICE_MAP.items()
         }
         self.get_logger().info("BarelangHriNode Task Manager aktif.")
+
+    def register_runtime_updaters(
+        self, updaters: Dict[str, Callable[[Any], None]]
+    ) -> None:
+        """Daftarkan callback pembaruan runtime untuk komponen audio/HRI."""
+        self._runtime_updaters = dict(updaters)
+
+    def _on_params_changed(self, params):
+        attr_casts: Dict[str, Callable[[Any], Any]] = {
+            "enable_local_mic": bool,
+            "enable_ws_audio": bool,
+            "enable_live_meter": bool,
+            "enable_local_speaker": bool,
+            "speaker_device_index": lambda v: resolve_speaker_device_index(int(v)),
+            "threshold_dbfs": float,
+            "threshold_flatness": float,
+            "hangover_frames": int,
+            "min_speech_frames": int,
+            "stt_language": str,
+            "nlu_threshold": float,
+        }
+        updaters: Dict[str, Callable[[Any], None]] = {}
+        for attr, cast in attr_casts.items():
+
+            def _make_handler(a: str = attr, c: Callable[[Any], Any] = cast):
+                def _apply(raw_val: Any) -> None:
+                    val = c(raw_val)
+                    setattr(self, a, val)
+                    hook = self._runtime_updaters.get(a)
+                    if hook is not None:
+                        hook(val)
+
+                return _apply
+
+            updaters[attr] = _make_handler()
+
+        return apply_param_updates(
+            params,
+            updaters,
+            node_logger=self.get_logger(),
+            restart_required=(
+                "mic_device_index",
+                "enable_visualizer",
+                "pre_roll_frames",
+                "whisper_model",
+                "tts_model",
+                "http_port",
+                "ws_port",
+            ),
+        )
 
     def stop_robot(self) -> None:
         """Mengirim perintah kecepatan nol (Twist kosong) untuk menghentikan base robot."""
@@ -354,27 +403,73 @@ class HriCoordinator:
         )
 
         self.visualizer = VadVisualizer(self.mic_listener)
-        self.mic_listener.on_frame_metrics = self.visualizer.push_frame
+        self.mic_listener.on_frame_metrics = self._on_frame_metrics
 
         self.stt = SpeechToText(
             model_size=self.ros_node.whisper_model,
+            language=self.ros_node.stt_language,
             on_asr_result=self.visualizer.update_asr_status,
         )
-        self.tts = TextToSpeech()
-        self.nlu = IntentRecognizer(threshold=0.68)
+        self.tts = TextToSpeech(model_filename=self.ros_node.tts_model)
+        self.nlu = IntentRecognizer(threshold=self.ros_node.nlu_threshold)
         self.web = WebServer(
-            http_port=HTTP_PORT,
-            ws_port=WS_PORT,
+            http_port=self.ros_node.http_port,
+            ws_port=self.ros_node.ws_port,
             on_audio_received=self.handle_ws_audio,
             on_text_received=self.handle_text,
         )
-        self.audio_queue = AudioSpeechQueue(self.tts, self.web.broadcast_ui)
+        self.audio_queue = AudioSpeechQueue(
+            self.tts,
+            self.web.broadcast_ui,
+            enable_local_speaker=self.ros_node.enable_local_speaker,
+            speaker_device_index=self.ros_node.speaker_device_index,
+        )
         self.audio_queue.start(loop)
+
+        self.ros_node.register_runtime_updaters(
+            {
+                "enable_local_mic": lambda v: setattr(self, "enable_local_mic", v),
+                "enable_ws_audio": lambda v: setattr(self, "enable_ws_audio", v),
+                "enable_local_speaker": lambda v: setattr(
+                    self.audio_queue, "enable_local_speaker", v
+                ),
+                "speaker_device_index": lambda v: setattr(
+                    self.audio_queue, "speaker_device_index", v
+                ),
+                "threshold_dbfs": lambda v: self.mic_listener.update_vad_params(
+                    threshold_dbfs=v
+                ),
+                "threshold_flatness": lambda v: self.mic_listener.update_vad_params(
+                    threshold_flatness=v
+                ),
+                "hangover_frames": lambda v: self.mic_listener.update_vad_params(
+                    hangover_frames=v
+                ),
+                "min_speech_frames": lambda v: self.mic_listener.update_vad_params(
+                    min_speech_frames=v
+                ),
+                "stt_language": lambda v: setattr(self.stt, "language", v),
+                "nlu_threshold": lambda v: setattr(self.nlu, "threshold", v),
+            }
+        )
 
         if self.enable_local_mic:
             if self.enable_visualizer:
                 self.visualizer.start(loop)
             self.mic_listener.start()
+
+    def _on_frame_metrics(self, metrics: VadFrameMetrics) -> None:
+        if self.enable_visualizer:
+            self.visualizer.push_frame(metrics)
+        if self.ros_node.enable_live_meter:
+            self.ros_node.get_logger().info(
+                format_vad_meter(
+                    metrics,
+                    self.mic_listener.threshold_dbfs,
+                    self.mic_listener.threshold_flatness,
+                ),
+                throttle_duration_sec=0.25,
+            )
 
     def shutdown(self) -> None:
         """Membersihkan resource audio, visualisasi, server HTTP, dan node ROS 2 saat aplikasi berhenti."""
@@ -558,16 +653,8 @@ class HriCoordinator:
 # =====================================================================
 # 4. ENTRY POINT
 # =====================================================================
-def _configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-
 async def main() -> None:
-    _configure_logging()
+    configure_hri_logging()
     rclpy.init()
     loop = asyncio.get_running_loop()
     coordinator = HriCoordinator(loop)
@@ -597,7 +684,7 @@ async def main() -> None:
         async with websockets.serve(
             coordinator.web.ws_handler,
             "0.0.0.0",
-            WS_PORT,
+            coordinator.ros_node.ws_port,
             max_size=WS_MAX_SIZE_BYTES,
         ):
             await asyncio.Future()
