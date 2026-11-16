@@ -178,82 +178,6 @@ cv::Scalar extractTorsoColor(const cv::Mat & bgr, const cv::Rect & bbox)
   return cv::mean(hsv);
 }
 
-std::string classifyPaperBagColor(const cv::Mat & bgr, const cv::Rect & bbox)
-{
-  if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return "kertas_padi";
-
-  // Ambil 60% area tengah bounding box untuk menghindari latar belakang / lantai
-  const int rw = std::max(4, static_cast<int>(bbox.width * 0.6f));
-  const int rh = std::max(4, static_cast<int>(bbox.height * 0.6f));
-  const int rx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.2f), 0, bgr.cols - rw);
-  const int ry = std::clamp(bbox.y + static_cast<int>(bbox.height * 0.2f), 0, bgr.rows - rh);
-
-  cv::Rect roi(rx, ry, rw, rh);
-  roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
-  if (roi.area() <= 16) return "kertas_padi";
-
-  cv::Mat hsv;
-  cv::cvtColor(bgr(roi), hsv, cv::COLOR_BGR2HSV);
-
-  int count_hitam = 0;
-  int count_navy = 0;
-  int count_hijau_stabilo = 0;
-  int count_oren_stabilo = 0;
-  int count_kertas_padi = 0;
-
-  for (int r = 0; r < hsv.rows; ++r) {
-    const cv::Vec3b * row = hsv.ptr<cv::Vec3b>(r);
-    for (int c = 0; c < hsv.cols; ++c) {
-      const int h = row[c][0];
-      const int s = row[c][1];
-      const int v = row[c][2];
-
-      // 1. Hitam: Value sangat rendah atau gelap dengan saturasi rendah
-      if (v < 55 || (v < 75 && s < 60)) {
-        count_hitam++;
-      }
-      // 2. Biru Navy: Rona biru pekat (H: 95-135), saturasi cukup, value sedang/gelap
-      else if (h >= 95 && h <= 135 && s >= 55 && v >= 40 && v <= 165) {
-        count_navy++;
-      }
-      // 3. Hijau Stabilo: Lime/fluorescent green (H: 35-85), saturasi & value tinggi
-      else if (h >= 35 && h <= 85 && s >= 75 && v >= 120) {
-        count_hijau_stabilo++;
-      }
-      // 4. Oren Stabilo: Fluorescent orange, sangat menyala (S >= 140, V >= 145)
-      else if (h >= 8 && h <= 25 && s >= 140 && v >= 145) {
-        count_oren_stabilo++;
-      }
-      // 5. Kertas Padi: Coklat kraft / krem samson, saturasi matte/rendah-sedang
-      else if (h >= 8 && h <= 32 && s >= 25 && s < 135 && v >= 60 && v <= 220) {
-        count_kertas_padi++;
-      }
-    }
-  }
-
-  // Pilih kategori dengan jumlah piksel terbanyak (Pixel Voting)
-  int max_count = count_kertas_padi;
-  std::string best_color = "kertas_padi";
-
-  if (count_oren_stabilo > max_count) {
-    max_count = count_oren_stabilo;
-    best_color = "oren_stabilo";
-  }
-  if (count_hijau_stabilo > max_count) {
-    max_count = count_hijau_stabilo;
-    best_color = "hijau_stabilo";
-  }
-  if (count_navy > max_count) {
-    max_count = count_navy;
-    best_color = "biru_navy";
-  }
-  if (count_hitam > max_count) {
-    max_count = count_hitam;
-    best_color = "hitam";
-  }
-
-  return best_color;
-}
 
 }
 
@@ -280,7 +204,6 @@ struct PrevPerson
 struct PrevBag
 {
   cv::Rect bbox;
-  std::string color{"kertas_padi"};
   bool has_pos{false};
   double x_m{0.0}, y_m{0.0}, range_m{0.0};
 };
@@ -476,11 +399,18 @@ public:
         const std::string name = labelOf(id);
         if (!name.empty() && wanted.count(name) > 0) return true;
         if (classes == 80) {
-          if (wanted.count("bag") > 0 && (id == 24 || id == 26)) return true;
+          if (wanted.count("bag") > 0 && (id == 24 || id == 26 || id == 28)) return true;
           if (wanted.count("chair") > 0 && (id == 56 || id == 57)) return true;
         }
         return false;
       };
+
+    std::vector<int> wanted_ids;
+    if (classes > 1 && !wanted.empty()) {
+      for (int c = 0; c < classes; ++c) {
+        if (isWanted(c)) wanted_ids.push_back(c);
+      }
+    }
 
     std::vector<cv::Rect> boxes;
     std::vector<float> scores;
@@ -489,9 +419,22 @@ public:
     for (int i = 0; i < count; ++i) {
       const float * row = transposed.ptr<float>(i);
       float score = 0.0f;
-      int class_id = 0;
+      int class_id = -1;
       if (classes == 1) {
         score = row[4];
+        class_id = 0;
+      } else if (!wanted_ids.empty()) {
+        float max_wanted_score = 0.0f;
+        int best_wanted_id = -1;
+        for (int wid : wanted_ids) {
+          const float s = row[4 + wid];
+          if (s > max_wanted_score) {
+            max_wanted_score = s;
+            best_wanted_id = wid;
+          }
+        }
+        score = max_wanted_score;
+        class_id = best_wanted_id;
       } else {
         cv::Mat scores_row(1, classes, CV_32F, const_cast<float *>(row + 4));
         cv::Point best;
@@ -500,7 +443,7 @@ public:
         score = static_cast<float>(max_score);
         class_id = best.x;
       }
-      if (score < conf_ || !isWanted(class_id)) continue;
+      if (class_id < 0 || score < conf_ || !isWanted(class_id)) continue;
 
       const float cx = row[0], cy = row[1], w = row[2], h = row[3];
       const int left = std::max(0, std::min(static_cast<int>((cx - 0.5f * w) * x_factor), bgr.cols - 1));
@@ -1348,13 +1291,14 @@ private:
   bool enable_chair_{true};
   std::vector<std::string> bag_labels_;
   std::vector<std::string> chair_labels_;
-  double yolo_min_area_{1500.0};
+  double yolo_min_area_{500.0};
   double drink_min_area_{100.0};
   int yolo_stride_{2};
   int yolo_frame_{0};
   int drink_frame_{0};
   int chair_frame_{0};
   std::vector<YoloDetection> last_bag_dets_;
+  int bag_missing_streak_{0};
   std::vector<YoloDetection> last_drink_dets_;
   std::vector<YoloDetection> last_chair_dets_;
   std::vector<ChairMemory> chair_memory_;
@@ -1387,12 +1331,12 @@ ZedNode::ZedNode()
   declare_parameter("mirror", true);
   declare_parameter("yolo_model", std::string("models/yolov8n_sim.onnx"));
   declare_parameter("yolo_classes", std::string("models/coco_names.txt"));
-  declare_parameter("yolo_conf", 0.50);
+  declare_parameter("yolo_conf", 0.10);
   declare_parameter("yolo_nms", 0.45);
   declare_parameter("yolo_size", 640);
   declare_parameter("yolo_stride", 2);
-  declare_parameter("bag_labels", std::vector<std::string>{"bag", "backpack", "handbag"});
-  declare_parameter("yolo_min_area", 1500.0);
+  declare_parameter("bag_labels", std::vector<std::string>{"bag", "backpack", "handbag", "suitcase"});
+  declare_parameter("yolo_min_area", 500.0);
   declare_parameter("drink_min_area", 100.0);
   declare_parameter("drink_conf", 0.20);
   declare_parameter("botol_model", std::string("models/water.onnx"));
@@ -1591,8 +1535,17 @@ void ZedNode::loadModels()
 
   if (enable_yolo_) {
     const std::string model_param = get_parameter("yolo_model").as_string();
-    const std::string model_path = resolvePath(model_param);
-    if (model_param.empty() || !std::filesystem::exists(model_path)) {
+    std::string model_path = resolvePath(model_param);
+    if (!std::filesystem::exists(model_path)) {
+      for (const auto & fb : {"models/paper_bag.onnx", "models/yolov8n_sim.onnx"}) {
+        const std::string candidate = resolvePath(fb);
+        if (std::filesystem::exists(candidate)) {
+          model_path = candidate;
+          break;
+        }
+      }
+    }
+    if (model_path.empty() || !std::filesystem::exists(model_path)) {
       RCLCPP_WARN(get_logger(), "YOLO model not found: %s", model_path.c_str());
       enable_yolo_ = false;
     } else {
@@ -1751,15 +1704,25 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
   preview_bags_.clear();
   if (!enable_bag_) return;
 
-  std::vector<YoloDetection> dets = last_bag_dets_;
   if (enable_yolo_ && yolo_.ready() && yolo_frame_++ % yolo_stride_ == 0) {
-    yolo_.detect(bgr, bag_labels_, dets);
-    last_bag_dets_ = dets;
+    std::vector<YoloDetection> current_dets;
+    yolo_.detect(bgr, bag_labels_, current_dets);
+    if (!current_dets.empty()) {
+      last_bag_dets_ = current_dets;
+      bag_missing_streak_ = 0;
+    } else {
+      bag_missing_streak_++;
+      // Tahan deteksi hingga 6 frame (~0.2 detik) untuk mencegah kedip/flicker
+      if (bag_missing_streak_ > 6) {
+        last_bag_dets_.clear();
+      }
+    }
   }
+
+  std::vector<YoloDetection> dets = last_bag_dets_;
 
   struct BagEntry {
     YoloDetection det;
-    std::string color;
     bool ok{false};
     double x{0.0}, y{0.0}, z{0.0};
     double dist{1e9};
@@ -1768,11 +1731,23 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
 
   for (const auto & det : dets) {
     if (static_cast<double>(det.rect.area()) < yolo_min_area_) continue;
+
+    // Filter bentuk rasio aspek: tas berdiri atau mendekati bujur sangkar (bukan kotak ceper / bilah tipis)
+    const float aspect = static_cast<float>(det.rect.width) / static_cast<float>(std::max(1, det.rect.height));
+    if (aspect > 2.2f || aspect < 0.35f) continue;
+
     double x = 0.0, y = 0.0, z = 0.0;
     const bool ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
+
+    // Filter ukuran fisik 3D: tas kertas nyata maksimal lebar 65cm dan tinggi 70cm
+    if (ok && std::isfinite(z) && z > 0.3) {
+      const double real_w = (det.rect.width * z) / 530.0;
+      const double real_h = (det.rect.height * z) / 530.0;
+      if (real_w > 0.65 || real_h > 0.70) continue;
+    }
+
     const double dist = (ok && std::isfinite(x) && std::isfinite(y)) ? std::hypot(x, y) : 1e9;
-    const std::string color = zed_vision::classifyPaperBagColor(bgr, det.rect);
-    bag_entries.push_back({det, color, ok, x, y, z, dist});
+    bag_entries.push_back({det, ok, x, y, z, dist});
   }
 
   // Urutkan tas berdasarkan jarak 3D terdekat ke terluar
@@ -1783,14 +1758,14 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
   std::string data;
   for (const auto & b : bag_entries) {
     const double valid_dist = (b.dist < 1e8) ? b.dist : 0.0;
-    preview_bags_.push_back({b.det.rect, b.color, b.ok, b.x, b.y, valid_dist});
+    preview_bags_.push_back({b.det.rect, b.ok, b.x, b.y, valid_dist});
     if (is_help_me_carry_ && b.ok) {
-      IC(b.det.label, b.color, b.x, b.y, valid_dist);
+      IC(b.det.label, b.x, b.y, valid_dist);
     }
     if (!data.empty()) data += ";";
     data += cv::format("bag:%d,%d,%d,%d|", b.det.rect.x, b.det.rect.y, b.det.rect.width, b.det.rect.height);
-    data += b.ok ? cv::format("%.2f,%.2f,%.2f|%.2f|%s", b.x, b.y, b.z, b.det.score, b.color.c_str())
-                 : cv::format("nan,nan,nan|%.2f|%s", b.det.score, b.color.c_str());
+    data += b.ok ? cv::format("%.2f,%.2f,%.2f|%.2f", b.x, b.y, b.z, b.det.score)
+                 : cv::format("nan,nan,nan|%.2f", b.det.score);
   }
 
   std_msgs::msg::String msg;
@@ -2783,7 +2758,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         const int cy = r.y + r.height / 2;
         cv::circle(canvas, cv::Point(cx, cy), 4, cv::Scalar(255, 0, 255), -1);
         cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(255, 0, 255), 2);
-        std::string text = "Bag [" + b.color + "]";
+        std::string text = "Bag";
         if (b.has_pos) text += cv::format(" (%.2fm, %.2fm)", b.x_m, b.y_m);
         banner(text, r.x, r.y, cv::Scalar(255, 0, 255),
           cv::Scalar(125, 40, 81), cv::Scalar(253, 168, 208), 0.52, 1);
@@ -2853,8 +2828,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     if (enable_bag_) {
       const PrevBag b0 = (!preview_bags_.empty() && preview_bags_[0].has_pos)
         ? preview_bags_[0] : PrevBag{};
-      std::string bag_title = b0.color.empty() ? "Bag :" : "Bag [" + b0.color + "] :";
-      hud(bag_title, b0.x_m, b0.y_m, b0.range_m, cv::Scalar(255, 0, 255));
+      hud("Bag :", b0.x_m, b0.y_m, b0.range_m, cv::Scalar(255, 0, 255));
     }
     if (!preview_drinks_.empty() && preview_drinks_[0].has_pos) {
       hud(preview_drinks_[0].label + " :", preview_drinks_[0].x_m,

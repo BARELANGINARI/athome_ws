@@ -13,7 +13,7 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_fps', default_value='30.0', description='Camera frame rate (FPS)'),
         DeclareLaunchArgument('depth_minimum_distance', default_value='30.0', description='Minimum depth sensing distance (cm)'),
         DeclareLaunchArgument('image_stride', default_value='2', description='Publish preview image every N frames'),
-        DeclareLaunchArgument('yolo_conf', default_value='0.50', description='YOLO confidence threshold'),
+        DeclareLaunchArgument('yolo_conf', default_value='0.60', description='YOLO confidence threshold'),
         DeclareLaunchArgument('debug_window', default_value='true', description='Show OpenCV preview visualization window'),
         DeclareLaunchArgument('mirror', default_value='false', description='Mirror display preview horizontally'),
         DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 deg range (default: true)'),

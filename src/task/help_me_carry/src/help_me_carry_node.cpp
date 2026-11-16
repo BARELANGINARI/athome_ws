@@ -232,7 +232,7 @@ public:
     max_range_ = declare_parameter<double>("max_follow_range", 3.0);
     max_lost_time_ = declare_parameter<double>("max_lost_time", 3.0);
     occlusion_timeout_ = declare_parameter<double>("occlusion_timeout", 1.5);
-    step_back_person_distance_ = declare_parameter<double>("step_back_person_distance", 1.5);
+    step_back_person_distance_ = declare_parameter<double>("step_back_person_distance", 1.2);
     step_back_speed_ = declare_parameter<double>("step_back_speed", 0.15);
     step_back_timeout_ = declare_parameter<double>("step_back_timeout", 15.0);
 
@@ -3732,7 +3732,7 @@ private:
   std::vector<Person> latest_persons_;
   rclcpp::Time latest_person_time_{0, 0, RCL_ROS_TIME};
 
-  double step_back_person_distance_{1.5};
+  double step_back_person_distance_{1.2};
   double step_back_speed_{0.25};
   double step_back_timeout_{30.0};
 
