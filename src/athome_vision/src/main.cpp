@@ -178,6 +178,83 @@ cv::Scalar extractTorsoColor(const cv::Mat & bgr, const cv::Rect & bbox)
   return cv::mean(hsv);
 }
 
+std::string classifyPaperBagColor(const cv::Mat & bgr, const cv::Rect & bbox)
+{
+  if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return "kertas_padi";
+
+  // Ambil 60% area tengah bounding box untuk menghindari latar belakang / lantai
+  const int rw = std::max(4, static_cast<int>(bbox.width * 0.6f));
+  const int rh = std::max(4, static_cast<int>(bbox.height * 0.6f));
+  const int rx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.2f), 0, bgr.cols - rw);
+  const int ry = std::clamp(bbox.y + static_cast<int>(bbox.height * 0.2f), 0, bgr.rows - rh);
+
+  cv::Rect roi(rx, ry, rw, rh);
+  roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+  if (roi.area() <= 16) return "kertas_padi";
+
+  cv::Mat hsv;
+  cv::cvtColor(bgr(roi), hsv, cv::COLOR_BGR2HSV);
+
+  int count_hitam = 0;
+  int count_navy = 0;
+  int count_hijau_stabilo = 0;
+  int count_oren_stabilo = 0;
+  int count_kertas_padi = 0;
+
+  for (int r = 0; r < hsv.rows; ++r) {
+    const cv::Vec3b * row = hsv.ptr<cv::Vec3b>(r);
+    for (int c = 0; c < hsv.cols; ++c) {
+      const int h = row[c][0];
+      const int s = row[c][1];
+      const int v = row[c][2];
+
+      // 1. Hitam: Value sangat rendah atau gelap dengan saturasi rendah
+      if (v < 55 || (v < 75 && s < 60)) {
+        count_hitam++;
+      }
+      // 2. Biru Navy: Rona biru pekat (H: 95-135), saturasi cukup, value sedang/gelap
+      else if (h >= 95 && h <= 135 && s >= 55 && v >= 40 && v <= 165) {
+        count_navy++;
+      }
+      // 3. Hijau Stabilo: Lime/fluorescent green (H: 35-85), saturasi & value tinggi
+      else if (h >= 35 && h <= 85 && s >= 75 && v >= 120) {
+        count_hijau_stabilo++;
+      }
+      // 4. Oren Stabilo: Fluorescent orange, sangat menyala (S >= 140, V >= 145)
+      else if (h >= 8 && h <= 25 && s >= 140 && v >= 145) {
+        count_oren_stabilo++;
+      }
+      // 5. Kertas Padi: Coklat kraft / krem samson, saturasi matte/rendah-sedang
+      else if (h >= 8 && h <= 32 && s >= 25 && s < 135 && v >= 60 && v <= 220) {
+        count_kertas_padi++;
+      }
+    }
+  }
+
+  // Pilih kategori dengan jumlah piksel terbanyak (Pixel Voting)
+  int max_count = count_kertas_padi;
+  std::string best_color = "kertas_padi";
+
+  if (count_oren_stabilo > max_count) {
+    max_count = count_oren_stabilo;
+    best_color = "oren_stabilo";
+  }
+  if (count_hijau_stabilo > max_count) {
+    max_count = count_hijau_stabilo;
+    best_color = "hijau_stabilo";
+  }
+  if (count_navy > max_count) {
+    max_count = count_navy;
+    best_color = "biru_navy";
+  }
+  if (count_hitam > max_count) {
+    max_count = count_hitam;
+    best_color = "hitam";
+  }
+
+  return best_color;
+}
+
 }
 
 struct YoloDetection
@@ -203,6 +280,7 @@ struct PrevPerson
 struct PrevBag
 {
   cv::Rect bbox;
+  std::string color{"kertas_padi"};
   bool has_pos{false};
   double x_m{0.0}, y_m{0.0}, range_m{0.0};
 };
@@ -1679,20 +1757,40 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
     last_bag_dets_ = dets;
   }
 
-  std::string data;
+  struct BagEntry {
+    YoloDetection det;
+    std::string color;
+    bool ok{false};
+    double x{0.0}, y{0.0}, z{0.0};
+    double dist{1e9};
+  };
+  std::vector<BagEntry> bag_entries;
+
   for (const auto & det : dets) {
     if (static_cast<double>(det.rect.area()) < yolo_min_area_) continue;
     double x = 0.0, y = 0.0, z = 0.0;
     const bool ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
-    const double dist = ok ? std::hypot(x, y) : 0.0;
-    preview_bags_.push_back({det.rect, ok, x, y, dist});
-    if (is_help_me_carry_ && ok) {
-      IC(det.label, x, y, dist);
+    const double dist = (ok && std::isfinite(x) && std::isfinite(y)) ? std::hypot(x, y) : 1e9;
+    const std::string color = zed_vision::classifyPaperBagColor(bgr, det.rect);
+    bag_entries.push_back({det, color, ok, x, y, z, dist});
+  }
+
+  // Urutkan tas berdasarkan jarak 3D terdekat ke terluar
+  std::sort(bag_entries.begin(), bag_entries.end(), [](const BagEntry & a, const BagEntry & b) {
+    return a.dist < b.dist;
+  });
+
+  std::string data;
+  for (const auto & b : bag_entries) {
+    const double valid_dist = (b.dist < 1e8) ? b.dist : 0.0;
+    preview_bags_.push_back({b.det.rect, b.color, b.ok, b.x, b.y, valid_dist});
+    if (is_help_me_carry_ && b.ok) {
+      IC(b.det.label, b.color, b.x, b.y, valid_dist);
     }
     if (!data.empty()) data += ";";
-    data += cv::format("bag:%d,%d,%d,%d|", det.rect.x, det.rect.y, det.rect.width, det.rect.height);
-    data += ok ? cv::format("%.2f,%.2f,%.2f|%.2f", x, y, z, det.score)
-               : cv::format("nan,nan,nan|%.2f", det.score);
+    data += cv::format("bag:%d,%d,%d,%d|", b.det.rect.x, b.det.rect.y, b.det.rect.width, b.det.rect.height);
+    data += b.ok ? cv::format("%.2f,%.2f,%.2f|%.2f|%s", b.x, b.y, b.z, b.det.score, b.color.c_str())
+                 : cv::format("nan,nan,nan|%.2f|%s", b.det.score, b.color.c_str());
   }
 
   std_msgs::msg::String msg;
@@ -2685,7 +2783,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         const int cy = r.y + r.height / 2;
         cv::circle(canvas, cv::Point(cx, cy), 4, cv::Scalar(255, 0, 255), -1);
         cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(255, 0, 255), 2);
-        std::string text = "Bag";
+        std::string text = "Bag [" + b.color + "]";
         if (b.has_pos) text += cv::format(" (%.2fm, %.2fm)", b.x_m, b.y_m);
         banner(text, r.x, r.y, cv::Scalar(255, 0, 255),
           cv::Scalar(125, 40, 81), cv::Scalar(253, 168, 208), 0.52, 1);
@@ -2755,7 +2853,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     if (enable_bag_) {
       const PrevBag b0 = (!preview_bags_.empty() && preview_bags_[0].has_pos)
         ? preview_bags_[0] : PrevBag{};
-      hud("Bag :", b0.x_m, b0.y_m, b0.range_m, cv::Scalar(255, 0, 255));
+      std::string bag_title = b0.color.empty() ? "Bag :" : "Bag [" + b0.color + "] :";
+      hud(bag_title, b0.x_m, b0.y_m, b0.range_m, cv::Scalar(255, 0, 255));
     }
     if (!preview_drinks_.empty() && preview_drinks_[0].has_pos) {
       hud(preview_drinks_[0].label + " :", preview_drinks_[0].x_m,
