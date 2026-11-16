@@ -398,7 +398,7 @@ public:
         const std::string name = labelOf(id);
         if (!name.empty() && wanted.count(name) > 0) return true;
         if (classes == 80) {
-          if (wanted.count("bag") > 0 && (id == 24 || id == 26 || id == 28)) return true;
+          if (wanted.count("bag") > 0 && (id == 24 || id == 26)) return true;
           if (wanted.count("chair") > 0 && (id == 56 || id == 57)) return true;
         }
         return false;
@@ -1198,6 +1198,14 @@ private:
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
 
+  struct PersonNameMemory
+  {
+    std::string confirmed_name;
+    std::string candidate_name;
+    int candidate_streak{0};
+    rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
+  };
+
   void publishYaw();
   void loop();
   void processBags(const cv::Mat & bgr, const sl::Mat & cloud);
@@ -1278,6 +1286,7 @@ private:
   bool enable_back_detection_{true};
   std::string person_back_topic_{"/vision/person_back"};
   std::unordered_map<int, BackMemory> back_memory_;
+  std::unordered_map<int, PersonNameMemory> name_memory_;
   std::string task_mode_{"all"};
   bool is_help_me_carry_{true};
   bool is_receptionist_{true};
@@ -1300,11 +1309,11 @@ ZedNode::ZedNode()
   declare_parameter("mirror", true);
   declare_parameter("yolo_model", std::string("models/yolov8n_sim.onnx"));
   declare_parameter("yolo_classes", std::string("models/coco_names.txt"));
-  declare_parameter("yolo_conf", 0.25);
+  declare_parameter("yolo_conf", 0.50);
   declare_parameter("yolo_nms", 0.45);
   declare_parameter("yolo_size", 640);
   declare_parameter("yolo_stride", 2);
-  declare_parameter("bag_labels", std::vector<std::string>{"bag", "backpack", "handbag", "suitcase"});
+  declare_parameter("bag_labels", std::vector<std::string>{"bag", "backpack", "handbag"});
   declare_parameter("yolo_min_area", 1500.0);
   declare_parameter("drink_min_area", 100.0);
   declare_parameter("drink_conf", 0.20);
@@ -1899,10 +1908,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           }
         }
         updated = true;
-        if (person.feature_samples >= 3) {
+        if (person.feature_samples >= 5) {
+          person.feature_samples = 30; // Kunci template registrasi agar kebal drift / kontaminasi
           RCLCPP_INFO(get_logger(),
-            "Locked face & clothing for \"%s\" (body id %d, %d face samples)",
-            pending_register_name_.c_str(), target->id, person.feature_samples);
+            "Locked face & clothing for \"%s\" (body id %d, template locked)",
+            pending_register_name_.c_str(), target->id);
           pending_register_name_.clear();
         }
         break;
@@ -1917,10 +1927,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       new_person.has_color = (target->bbox.width > 20);
       new_person.last_tracking_id = target->id;
       new_person.last_seen = current_time;
-      registered_persons_.push_back(new_person);
-      if (new_person.feature_samples >= 3) {
+      if (new_person.feature_samples >= 5) {
+        new_person.feature_samples = 30;
         pending_register_name_.clear();
       }
+      registered_persons_.push_back(new_person);
     }
   } else if (!pending_register_name_.empty() && is_receptionist_ && entries.empty()) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
@@ -1944,90 +1955,179 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     entry_feats[i].has_torso = (entries[i].bbox.width > 20 && entries[i].bbox.height > 40);
   }
 
-  // Hitung matriks kecocokan (affinity) antara entry terdeteksi dan profil terdaftar
-  struct PersonMatch {
+  // --------------------------------------------------------------------------
+  // MULTI-TARGET PERSON MATCHING (Face-First, Contrastive Margin & Anti-Swap)
+  // --------------------------------------------------------------------------
+
+  // TAHAP 1: Matriks kemiripan wajah untuk semua entry dan profil
+  std::vector<std::vector<float>> face_sim(
+    entries.size(), std::vector<float>(registered_persons_.size(), -1.0f));
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (entry_feats[i].face_feat.empty()) continue;
+    for (size_t j = 0; j < registered_persons_.size(); ++j) {
+      if (registered_persons_[j].feature.empty()) continue;
+      face_sim[i][j] = AttributeAnalyzer::matchFace(
+        entry_feats[i].face_feat, registered_persons_[j].feature);
+    }
+  }
+
+  // TAHAP 2: Face-First Assignment dengan Contrastive Margin
+  struct FaceCandidate {
     size_t entry_idx;
     size_t profile_idx;
-    double score;
+    float sim;
+    float margin; // Selisih dengan profil terbaik kedua untuk entry ini
   };
-  std::vector<PersonMatch> matches;
+  std::vector<FaceCandidate> face_candidates;
 
   for (size_t i = 0; i < entries.size(); ++i) {
+    if (entry_feats[i].face_feat.empty()) continue;
+
+    int best_j = -1;
+    float best_sim = -1.0f;
+    float second_sim = -1.0f;
+
     for (size_t j = 0; j < registered_persons_.size(); ++j) {
-      const auto & prof = registered_persons_[j];
-      const auto & feat = entry_feats[i];
-      double score = 0.0;
+      const float s = face_sim[i][j];
+      if (s > best_sim) {
+        second_sim = best_sim;
+        best_sim = s;
+        best_j = static_cast<int>(j);
+      } else if (s > second_sim) {
+        second_sim = s;
+      }
+    }
 
-      // 1. Face Cosine Similarity (SFace 128-D)
-      if (!prof.feature.empty() && !feat.face_feat.empty()) {
-        const float sim = AttributeAnalyzer::matchFace(feat.face_feat, prof.feature);
-        if (sim >= static_cast<float>(face_threshold_)) {
-          score += 2.5 + (sim - face_threshold_) * 5.0;
-        } else if (sim >= 0.25f) {
-          score += (sim - face_threshold_) * 1.5;
-        } else {
-          score -= 2.5; // Penalti kuat jika wajah berbeda
+    if (best_j >= 0 && best_sim >= static_cast<float>(face_threshold_)) {
+      const float margin = (second_sim > 0.0f) ? (best_sim - second_sim) : 1.0f;
+      face_candidates.push_back({i, static_cast<size_t>(best_j), best_sim, margin});
+    }
+  }
+
+  // Urutkan kandidat wajah berdasarkan similarity tertinggi dan margin terbaik
+  std::sort(face_candidates.begin(), face_candidates.end(),
+    [](const FaceCandidate & a, const FaceCandidate & b) {
+      if (std::abs(a.sim - b.sim) > 0.04f) {
+        return a.sim > b.sim;
+      }
+      return a.margin > b.margin;
+    });
+
+  std::vector<std::string> raw_recognized_names(entries.size(), "");
+  std::vector<bool> profile_assigned(registered_persons_.size(), false);
+
+  // Kunci profil yang terverifikasi wajah terlebih dahulu (Face Anchoring)
+  for (const auto & fc : face_candidates) {
+    if (raw_recognized_names[fc.entry_idx].empty() && !profile_assigned[fc.profile_idx]) {
+      raw_recognized_names[fc.entry_idx] = registered_persons_[fc.profile_idx].name;
+      profile_assigned[fc.profile_idx] = true;
+
+      auto & prof = registered_persons_[fc.profile_idx];
+      prof.last_tracking_id = entries[fc.entry_idx].id;
+      prof.last_seen = current_time;
+
+      // Update terkontrol (hanya jika similarity sangat tinggi >= 0.50)
+      if (!entry_feats[fc.entry_idx].face_feat.empty() && prof.feature_samples < 30) {
+        if (fc.sim >= 0.50f) {
+          float norm_sq = 0.0f;
+          for (size_t k = 0; k < prof.feature.size(); ++k) {
+            prof.feature[k] = prof.feature[k] * 0.95f + entry_feats[fc.entry_idx].face_feat[k] * 0.05f;
+            norm_sq += prof.feature[k] * prof.feature[k];
+          }
+          const float inv_norm = 1.0f / std::sqrt(std::max(norm_sq, 1e-6f));
+          for (size_t k = 0; k < prof.feature.size(); ++k) {
+            prof.feature[k] *= inv_norm;
+          }
+          prof.feature_samples++;
         }
-      }
-
-      // 2. Torso Clothing Color Similarity (HSV)
-      if (prof.has_color && feat.has_torso) {
-        double dh = std::min(std::abs(feat.torso_hsv[0] - prof.torso_hsv[0]),
-                             180.0 - std::abs(feat.torso_hsv[0] - prof.torso_hsv[0]));
-        double ds = std::abs(feat.torso_hsv[1] - prof.torso_hsv[1]);
-        double dv = std::abs(feat.torso_hsv[2] - prof.torso_hsv[2]);
-        double color_dist = (dh / 90.0) * 0.6 + (ds / 255.0) * 0.2 + (dv / 255.0) * 0.2;
-        if (color_dist < 0.30) {
-          score += 1.5 * (1.0 - color_dist / 0.30);
-        } else if (color_dist > 0.55) {
-          score -= 1.8; // Penalti kuat jika warna pakaian jelas berbeda
-        }
-      }
-
-      // 3. Tracking ID continuity (ZED Tracker ID)
-      if (prof.last_tracking_id == entries[i].id &&
-          (current_time - prof.last_seen).seconds() < 5.0)
-      {
-        score += 2.0;
-      }
-
-      if (score > 0.5) {
-        matches.push_back({i, j, score});
       }
     }
   }
 
-  // Urutkan skor tertinggi ke terendah
-  std::sort(matches.begin(), matches.end(), [](const PersonMatch & a, const PersonMatch & b) {
-    return a.score > b.score;
-  });
+  // TAHAP 3: Fallback Re-ID untuk orang yang wajahnya tidak terlihat (menghadap samping/belakang)
+  // Hanya gunakan profil yang BELUM terpakai oleh orang berwajah jelas
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (!raw_recognized_names[i].empty()) continue; // Sudah dikenali dari wajah
 
-  // Pencocokan Eksklusif 1-ke-1 (Orang A dan B tidak bisa tertukar/saling rebut)
-  std::vector<std::string> recognized_names(entries.size(), "");
-  std::vector<bool> profile_assigned(registered_persons_.size(), false);
+    for (size_t j = 0; j < registered_persons_.size(); ++j) {
+      if (profile_assigned[j]) continue; // Jangan curi profil orang lain!
+      const auto & prof = registered_persons_[j];
 
-  for (const auto & m : matches) {
-    if (recognized_names[m.entry_idx].empty() && !profile_assigned[m.profile_idx]) {
-      recognized_names[m.entry_idx] = registered_persons_[m.profile_idx].name;
-      profile_assigned[m.profile_idx] = true;
-
-      auto & prof = registered_persons_[m.profile_idx];
-      prof.last_tracking_id = entries[m.entry_idx].id;
-      prof.last_seen = current_time;
-
-      // Akumulasikan embedding wajah jika kualitas embedding bagus
-      if (!entry_feats[m.entry_idx].face_feat.empty() && prof.feature_samples < 30) {
-        float norm_sq = 0.0f;
-        for (size_t k = 0; k < prof.feature.size(); ++k) {
-          prof.feature[k] = prof.feature[k] * 0.90f + entry_feats[m.entry_idx].face_feat[k] * 0.10f;
-          norm_sq += prof.feature[k] * prof.feature[k];
-        }
-        const float inv_norm = 1.0f / std::sqrt(std::max(norm_sq, 1e-6f));
-        for (size_t k = 0; k < prof.feature.size(); ++k) {
-          prof.feature[k] *= inv_norm;
-        }
-        prof.feature_samples++;
+      // Jika wajah entry terdeteksi tapi tidak cocok dengan profil j, tolak mutlak
+      if (!entry_feats[i].face_feat.empty() && face_sim[i][j] < static_cast<float>(face_threshold_)) {
+        continue;
       }
+
+      bool id_matched = (prof.last_tracking_id == entries[i].id &&
+                         (current_time - prof.last_seen).seconds() < 3.0);
+      bool color_matched = false;
+
+      if (prof.has_color && entry_feats[i].has_torso) {
+        double dh = std::min(std::abs(entry_feats[i].torso_hsv[0] - prof.torso_hsv[0]),
+                             180.0 - std::abs(entry_feats[i].torso_hsv[0] - prof.torso_hsv[0]));
+        double ds = std::abs(entry_feats[i].torso_hsv[1] - prof.torso_hsv[1]);
+        double dv = std::abs(entry_feats[i].torso_hsv[2] - prof.torso_hsv[2]);
+        double color_dist = (dh / 90.0) * 0.6 + (ds / 255.0) * 0.2 + (dv / 255.0) * 0.2;
+        color_matched = (color_dist < 0.30);
+      }
+
+      if (id_matched && color_matched) {
+        raw_recognized_names[i] = prof.name;
+        profile_assigned[j] = true;
+        break;
+      }
+    }
+  }
+
+  // TAHAP 4: Temporal Name Smoothing & Anti-Flicker Filter per Body ID
+  std::vector<std::string> recognized_names(entries.size(), "");
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const int body_id = entries[i].id;
+    auto & mem = name_memory_[body_id];
+    const std::string & raw_name = raw_recognized_names[i];
+
+    if (!raw_name.empty()) {
+      if (mem.confirmed_name.empty()) {
+        mem.candidate_name = raw_name;
+        mem.candidate_streak = 1;
+        mem.confirmed_name = raw_name;
+        mem.last_seen = current_time;
+      } else if (raw_name == mem.confirmed_name) {
+        mem.candidate_streak = 0;
+        mem.last_seen = current_time;
+      } else {
+        // Nama berbeda terdeteksi -> Butuh debounce minimal 3 frame berturut-turut untuk ganti
+        if (raw_name == mem.candidate_name) {
+          mem.candidate_streak++;
+        } else {
+          mem.candidate_name = raw_name;
+          mem.candidate_streak = 1;
+        }
+
+        if (mem.candidate_streak >= 3) {
+          mem.confirmed_name = raw_name;
+          mem.candidate_streak = 0;
+          mem.last_seen = current_time;
+        }
+      }
+    } else {
+      // Wajah tidak tampak di frame ini; tahan nama terkonfirmasi sebelumnya hingga 1.5 detik
+      if (!mem.confirmed_name.empty() && (current_time - mem.last_seen).seconds() < 1.5) {
+        // Pertahankan mem.confirmed_name
+      } else {
+        mem.confirmed_name.clear();
+      }
+    }
+
+    recognized_names[i] = mem.confirmed_name;
+  }
+
+  // Bersihkan name_memory_ yang sudah tidak terlihat lebih dari 5.0 detik
+  for (auto it = name_memory_.begin(); it != name_memory_.end(); ) {
+    if ((current_time - it->second.last_seen).seconds() > 5.0) {
+      it = name_memory_.erase(it);
+    } else {
+      ++it;
     }
   }
 

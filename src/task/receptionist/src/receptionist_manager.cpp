@@ -157,7 +157,7 @@ public:
     // --------------------------------------------------------------------------
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/status", 10);
-    person_name_pub_ = create_publisher<std_msgs::msg::String>("/zed/set_person_name", 10);
+    person_name_pub_ = create_publisher<std_msgs::msg::String>("/vision/set_person_name", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -173,28 +173,28 @@ public:
     // Subscriber Vision (Static RGB-D ZED Camera)
     // --------------------------------------------------------------------------
     person_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/person_label", rclcpp::SensorDataQoS(),
+      "/vision/person_label", rclcpp::SensorDataQoS(),
       std::bind(&ReceptionistTaskNode::onPersonLabel, this, std::placeholders::_1),
       sub_opts);
 
     drink_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/drink_detections", rclcpp::SensorDataQoS(),
+      "/vision/drink_detections", rclcpp::SensorDataQoS(),
       std::bind(&ReceptionistTaskNode::onDrinkDetections, this, std::placeholders::_1),
       sub_opts);
 
-    // Fallback ke /zed/bag_detections (tidak menghapus latest_drinks_ jika kosong)
+    // Fallback ke /vision/bag_detections (tidak menghapus latest_drinks_ jika kosong)
     object_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/bag_detections", rclcpp::SensorDataQoS(),
+      "/vision/bag_detections", rclcpp::SensorDataQoS(),
       std::bind(&ReceptionistTaskNode::onBagDetectionsFallback, this, std::placeholders::_1),
       sub_opts);
 
     attributes_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/person_attributes", 10,
+      "/vision/person_attributes", 10,
       std::bind(&ReceptionistTaskNode::onPersonAttributes, this, std::placeholders::_1),
       sub_opts);
 
     seat_sub_ = create_subscription<std_msgs::msg::String>(
-      "/zed/empty_seat", 10,
+      "/vision/empty_seat", 10,
       std::bind(&ReceptionistTaskNode::onEmptySeat, this, std::placeholders::_1),
       sub_opts);
 
