@@ -777,7 +777,7 @@ private:
           return;
         }
         speakAsync(
-          "Im ready, please say Hello Robot to start the robot",
+          "I am ready, please say Hello Robot to start the robot",
           [this]() {
             transitionTo(TaskState::WAIT_WAKEWORD, "TTS, ready waiting for wakeword");
           }
@@ -790,7 +790,7 @@ private:
       case TaskState::WAIT_WAKEWORD:
         if (wakeword_requested_.exchange(false)) {
           speakAsync(
-            "Hello, I'm Barelang Inari from Batam State Polytechnic, I want to help you to carry the luggage.",
+            "Hello, I am Barelang Inari from Batam State Polytechnic, I want to help you to carry the luggage.",
             [this]() {
               transitionTo(TaskState::CHECK_OPERATOR_PRESENCE, "Greeting completed, checking operator");
             });
