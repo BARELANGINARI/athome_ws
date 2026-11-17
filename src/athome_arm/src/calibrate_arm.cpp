@@ -44,7 +44,7 @@
 #define LOW_TORQUE_VAL          600     // ~58% max torque to support arm against gravity
 #define INITIAL_SAFE_DEG        15.0    // Initial conservative limit (+/- 15 deg)
 #define FULL_WORK_RANGE_DEG     260.0   // Max work range (J1 & J2)
-#define FULL_GRIP_OPEN_DEG      80.0    // Full open range Gripper ID 6 (~780 ticks)
+#define FULL_GRIP_OPEN_DEG      110.0    // Full open range Gripper ID 6 (~780 ticks)
 
 const uint8_t SERVO_IDS[] = {1, 4, 5, 6};
 

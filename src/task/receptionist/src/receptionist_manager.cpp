@@ -132,6 +132,17 @@ public:
     declare_parameter<std::string>("host.hair_color", "black");
     declare_parameter<int>("camera_width", 672);
 
+    declare_parameter<double>("global_timeout_sec", 600.0);
+    declare_parameter<double>("dialog_reprompt_sec", 12.0);
+    declare_parameter<double>("wait_guest_prompt_sec", 8.0);
+    declare_parameter<double>("vision_initial_settle_sec", 1.2);
+    declare_parameter<double>("min_sit_wait_sec", 4.0);
+    declare_parameter<double>("person_freshness_sec", 2.0);
+    declare_parameter<double>("tts_min_timeout_sec", 4.0);
+    declare_parameter<double>("tts_sec_per_word", 0.5);
+    declare_parameter<double>("tts_timeout_margin_sec", 2.0);
+    declare_parameter<double>("nav_retry_cooldown_sec", 2.0);
+
     host_.id = "host";
     host_.name = get_parameter("host.name").as_string();
     host_.drink = get_parameter("host.drink").as_string();
@@ -145,6 +156,18 @@ public:
       host_.hair_color + " hair"
     };
     camera_width_ = get_parameter("camera_width").as_int();
+
+    global_timeout_sec_ = get_parameter("global_timeout_sec").as_double();
+    dialog_reprompt_sec_ = get_parameter("dialog_reprompt_sec").as_double();
+    wait_guest_prompt_sec_ = get_parameter("wait_guest_prompt_sec").as_double();
+    vision_initial_settle_sec_ = get_parameter("vision_initial_settle_sec").as_double();
+    min_sit_wait_sec_ = get_parameter("min_sit_wait_sec").as_double();
+    person_freshness_sec_ = get_parameter("person_freshness_sec").as_double();
+    tts_min_timeout_sec_ = get_parameter("tts_min_timeout_sec").as_double();
+    tts_sec_per_word_ = get_parameter("tts_sec_per_word").as_double();
+    tts_timeout_margin_sec_ = get_parameter("tts_timeout_margin_sec").as_double();
+    nav_retry_cooldown_sec_ = get_parameter("nav_retry_cooldown_sec").as_double();
+    tts_timeout_sec_ = tts_min_timeout_sec_;
 
     callback_group_ = create_callback_group(
       rclcpp::CallbackGroupType::Reentrant);
@@ -243,18 +266,18 @@ public:
 
 private:
   // ----------------------------------------------------------------------------
-  // Konstanta Waktu & Parameter
+  // Parameter Waktu & Timeout (Dapat dikonfigurasi via YAML)
   // ----------------------------------------------------------------------------
-  static constexpr double GLOBAL_TIMEOUT_SEC        = 600.0;
-  static constexpr double DIALOG_REPROMPT_SEC       = 12.0;
-  static constexpr double WAIT_GUEST_PROMPT_SEC     = 8.0;
-  static constexpr double VISION_INITIAL_SETTLE_SEC = 1.2;
-  static constexpr double MIN_SIT_WAIT_SEC          = 4.0;
-  static constexpr double PERSON_FRESHNESS_SEC      = 2.0;
-  static constexpr double TTS_MIN_TIMEOUT_SEC       = 4.0;
-  static constexpr double TTS_SEC_PER_WORD          = 0.5;
-  static constexpr double TTS_TIMEOUT_MARGIN_SEC    = 2.0;
-  static constexpr double NAV_RETRY_COOLDOWN_SEC    = 2.0;
+  double global_timeout_sec_{600.0};
+  double dialog_reprompt_sec_{12.0};
+  double wait_guest_prompt_sec_{8.0};
+  double vision_initial_settle_sec_{1.2};
+  double min_sit_wait_sec_{4.0};
+  double person_freshness_sec_{2.0};
+  double tts_min_timeout_sec_{4.0};
+  double tts_sec_per_word_{0.5};
+  double tts_timeout_margin_sec_{2.0};
+  double nav_retry_cooldown_sec_{2.0};
 
   // ----------------------------------------------------------------------------
   // Variabel State & Memory Store Host / Guests
@@ -305,7 +328,7 @@ private:
   rclcpp::Time last_nav_fail_time_{0, 0, RCL_ROS_TIME};
 
   std::mutex tts_mutex_;
-  double tts_timeout_sec_{TTS_MIN_TIMEOUT_SEC};
+  double tts_timeout_sec_{4.0};
   std::function<void()> pending_tts_done_;
 
   std::mutex srv_mutex_;
@@ -754,13 +777,13 @@ private:
   bool isPersonInFront() const
   {
     return person_seen_.load() &&
-           (now() - last_person_seen_time_).seconds() < PERSON_FRESHNESS_SEC;
+           (now() - last_person_seen_time_).seconds() < person_freshness_sec_;
   }
 
   // ============================================================================
   // HELPER TEXT-TO-SPEECH (TTS) & SPEECH-TO-TEXT (STT) SLOT PARSING
   // ============================================================================
-  static double estimateTtsTimeout(const std::string & text)
+  double estimateTtsTimeout(const std::string & text) const
   {
     size_t words = 0;
     bool in_word = false;
@@ -773,8 +796,8 @@ private:
       }
     }
     return std::max(
-      TTS_MIN_TIMEOUT_SEC,
-      static_cast<double>(words) * TTS_SEC_PER_WORD + TTS_TIMEOUT_MARGIN_SEC);
+      tts_min_timeout_sec_,
+      static_cast<double>(words) * tts_sec_per_word_ + tts_timeout_margin_sec_);
   }
 
   void speakAsync(const std::string & text, std::function<void()> on_done = nullptr)
@@ -1282,7 +1305,7 @@ private:
     const ReceptionistState current_state = state_.load();
 
     // 1. Global timeout watchdog
-    if ((now() - task_start_time_).seconds() > GLOBAL_TIMEOUT_SEC &&
+    if ((now() - task_start_time_).seconds() > global_timeout_sec_ &&
         current_state != ReceptionistState::COMPLETED &&
         current_state != ReceptionistState::ABORTED)
     {
@@ -1363,7 +1386,7 @@ private:
       // ------------------------------------------------------------------------
       case ReceptionistState::NAV_TO_DOOR:
         if (last_nav_fail_time_.nanoseconds() > 0 &&
-            (now() - last_nav_fail_time_).seconds() < NAV_RETRY_COOLDOWN_SEC)
+            (now() - last_nav_fail_time_).seconds() < nav_retry_cooldown_sec_)
         {
           return;
         }
@@ -1379,7 +1402,7 @@ private:
 
       case ReceptionistState::WAIT_GUEST:
         // Beri waktu kamera ZED settle setelah tiba di pintu
-        if ((now() - state_enter_time_).seconds() < VISION_INITIAL_SETTLE_SEC) {
+        if ((now() - state_enter_time_).seconds() < vision_initial_settle_sec_) {
           return;
         }
         if (isPersonInFront()) {
@@ -1389,7 +1412,7 @@ private:
               transitionTo(ReceptionistState::ASK_NAME, "Guest detected and greeted at entrance");
             });
         } else if (last_wait_prompt_time_.nanoseconds() == 0 ||
-                   (now() - last_wait_prompt_time_).seconds() >= WAIT_GUEST_PROMPT_SEC)
+                   (now() - last_wait_prompt_time_).seconds() >= wait_guest_prompt_sec_)
         {
           last_wait_prompt_time_ = now();
           speakAsync("I am waiting for a guest; please stand in front of me.");
@@ -1434,7 +1457,7 @@ private:
             state_enter_time_ = now();
             speakAsync("I am sorry, I did not catch your name. May I please have your name?");
           }
-        } else if ((now() - state_enter_time_).seconds() > DIALOG_REPROMPT_SEC) {
+        } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
           speakAsync("May I please have your name?");
         }
@@ -1482,7 +1505,7 @@ private:
             state_enter_time_ = now();
             speakAsync("I am sorry, I did not catch that. What is your main interest or hobby?");
           }
-        } else if ((now() - state_enter_time_).seconds() > DIALOG_REPROMPT_SEC) {
+        } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
           speakAsync("Could you please tell me your main interest or hobby?");
         }
@@ -1544,11 +1567,11 @@ private:
             state_enter_time_ = now();
             speakAsync("Please say yes if it is, or no if it is not.");
           }
-        } else if ((now() - state_enter_time_).seconds() > DIALOG_REPROMPT_SEC) {
+        } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           RCLCPP_INFO(
             get_logger(),
             "\033[1;33m[DIALOG CONFIRM]\033[0m Confirmation timeout (%.1fs without speech), reprompting.",
-            DIALOG_REPROMPT_SEC);
+            dialog_reprompt_sec_);
           state_enter_time_ = now();
           speakAsync("Please say yes if it is, or no if it is not.");
         }
@@ -1559,7 +1582,7 @@ private:
       // ------------------------------------------------------------------------
       case ReceptionistState::NAV_TO_BEVERAGE:
         if (last_nav_fail_time_.nanoseconds() > 0 &&
-            (now() - last_nav_fail_time_).seconds() < NAV_RETRY_COOLDOWN_SEC)
+            (now() - last_nav_fail_time_).seconds() < nav_retry_cooldown_sec_)
         {
           return;
         }
@@ -1575,7 +1598,7 @@ private:
 
       case ReceptionistState::ASK_DRINK: {
         // FIX: Tunggu kamera ZED settle setelah robot berhenti di meja minuman
-        if ((now() - state_enter_time_).seconds() < VISION_INITIAL_SETTLE_SEC) {
+        if ((now() - state_enter_time_).seconds() < vision_initial_settle_sec_) {
           return;
         }
 
@@ -1630,7 +1653,7 @@ private:
             state_enter_time_ = now();
             speakAsync("I am sorry, I did not catch that. What is your favorite drink?");
           }
-        } else if ((now() - state_enter_time_).seconds() > DIALOG_REPROMPT_SEC) {
+        } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
           speakAsync("What is your favorite drink?");
         }
@@ -1666,7 +1689,7 @@ private:
       // ------------------------------------------------------------------------
       case ReceptionistState::NAV_TO_LIVING_ROOM: {
         if (last_nav_fail_time_.nanoseconds() > 0 &&
-            (now() - last_nav_fail_time_).seconds() < NAV_RETRY_COOLDOWN_SEC)
+            (now() - last_nav_fail_time_).seconds() < nav_retry_cooldown_sec_)
         {
           return;
         }
@@ -1839,7 +1862,7 @@ private:
       // ------------------------------------------------------------------------
       case ReceptionistState::OFFER_SEAT: {
         // Tunggu kamera ZED settle setelah tiba di living room
-        if ((now() - state_enter_time_).seconds() < VISION_INITIAL_SETTLE_SEC) {
+        if ((now() - state_enter_time_).seconds() < vision_initial_settle_sec_) {
           return;
         }
 
@@ -1881,10 +1904,10 @@ private:
       }
 
       case ReceptionistState::WAIT_GUEST_SIT: {
-        // FIX: Beri waktu minimal (MIN_SIT_WAIT_SEC = 4.0s) agar tamu berjalan ke kursi,
+        // FIX: Beri waktu minimal (min_sit_wait_sec_ = 4.0s) agar tamu berjalan ke kursi,
         // sehingga Host yang sudah duduk tidak langsung memicu state ini selesai dalam 100ms.
         const double wait_elapsed = (now() - state_enter_time_).seconds();
-        if (wait_elapsed < MIN_SIT_WAIT_SEC) {
+        if (wait_elapsed < min_sit_wait_sec_) {
           return;
         }
 

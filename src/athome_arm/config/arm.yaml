@@ -10,8 +10,8 @@ arm_motion_server:
 
     gripper:
       id: 6
-      max_open_deg: 80.0
-      default_release_deg: 65.0
+      max_open_deg: 110.0
+      default_release_deg: 110.0
       closing_speed: 60
       load_threshold: 170
       step_ticks: 4
@@ -21,9 +21,14 @@ arm_motion_server:
       confirm_count: 3
       compliance_slope: 50
 
-    calibration:
-      servo_1: { center_tick: 802, cw_limit: 10, ccw_limit: 1010 }
-      servo_4: { center_tick: 809, cw_limit: 10, ccw_limit: 1010 }
-      servo_5: { center_tick: 221, cw_limit: 10, ccw_limit: 1010 }
-      servo_6: { center_tick: 506, cw_limit: 491, ccw_limit: 779 }
+    # calibration:
+    #   servo_1: { center_tick: 802, cw_limit: 10, ccw_limit: 1010 }
+    #   servo_4: { center_tick: 809, cw_limit: 10, ccw_limit: 1010 }
+    #   servo_5: { center_tick: 221, cw_limit: 10, ccw_limit: 1010 }
+    #   servo_6: { center_tick: 506, cw_limit: 491, ccw_limit: 779 }
 
+    calibration:
+      servo_1: { center_tick: 521, cw_limit: 10, ccw_limit: 1010 }
+      servo_4: { center_tick: 185, cw_limit: 10, ccw_limit: 1010 }
+      servo_5: { center_tick: 834, cw_limit: 10, ccw_limit: 1010 }
+      servo_6: { center_tick: 348, cw_limit: 333, ccw_limit: 730 }

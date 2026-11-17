@@ -61,9 +61,11 @@ src/athome_arm/
 ├── CMakeLists.txt
 ├── package.xml
 ├── README.md
+├── config/
+│   └── arm.yaml              # ROS 2 parameter configuration (gripper & servo calibration)
 ├── include/
 │   └── athome_arm/
-│       └── calibration_data.h    # Servo calibration values
+│       └── calibration_data.h    # Servo calibration values (firmware limits)
 ├── src/
 │   ├── arm_motion_server.cpp     # ROS 2 service node for motion playback
 │   ├── learn_motion.cpp          # Offline CLI for motion teaching

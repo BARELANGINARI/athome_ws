@@ -37,4 +37,17 @@ receptionist_manager:
       name: "Alex"
       drink: "Coke"
       interest: "Robotics"
+      gender: "male"
+      shirt_color: "black"
+      hair_color: "black"
     camera_width: 672
+    global_timeout_sec: 600.0
+    dialog_reprompt_sec: 12.0
+    wait_guest_prompt_sec: 8.0
+    vision_initial_settle_sec: 1.2
+    min_sit_wait_sec: 4.0
+    person_freshness_sec: 2.0
+    tts_min_timeout_sec: 4.0
+    tts_sec_per_word: 0.5
+    tts_timeout_margin_sec: 2.0
+    nav_retry_cooldown_sec: 2.0
