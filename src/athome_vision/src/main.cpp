@@ -394,8 +394,12 @@ public:
       };
 
     auto isWanted = [&](int id) {
-        if (classes == 1) return true;
         if (wanted.empty()) return true;
+        if (classes == 1) {
+          const std::string name = labelOf(id);
+          return (!name.empty() && wanted.count(name) > 0) ||
+                 wanted.count(default_label_) > 0;
+        }
         const std::string name = labelOf(id);
         if (!name.empty() && wanted.count(name) > 0) return true;
         if (classes == 80) {
@@ -1313,7 +1317,8 @@ private:
   bool is_help_me_carry_{true};
   bool is_receptionist_{true};
   bool is_restaurant_{false};
-  std::string guest_name_;
+  double person_max_dist_{2.8};
+  double bag_max_dist_{2.5};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_name_sub_;
 };
 
@@ -1326,6 +1331,8 @@ ZedNode::ZedNode()
   declare_parameter("yaw_360", true);
   declare_parameter("enable_body_tracking", true);
   declare_parameter("depth_minimum_distance", 30.0);
+  declare_parameter("person_max_dist", 2.8);
+  declare_parameter("bag_max_dist", 2.5);
   declare_parameter("enable_yolo", true);
   declare_parameter("debug_window", false);
   declare_parameter("mirror", true);
@@ -1410,7 +1417,6 @@ ZedNode::ZedNode()
         name.pop_back();
       }
       while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) name.erase(name.begin());
-      guest_name_ = name;
       pending_register_name_ = name;
       if (!name.empty()) {
         RCLCPP_INFO(get_logger(), "Guest name set: \"%s\"", name.c_str());
@@ -1469,6 +1475,8 @@ ZedNode::ZedNode()
   enable_chair_ = get_parameter("enable_chair").as_bool();
   enable_drinks_ = get_parameter("enable_drinks").as_bool();
   face_threshold_ = get_parameter("face_threshold").as_double();
+  person_max_dist_ = get_parameter("person_max_dist").as_double();
+  bag_max_dist_ = get_parameter("bag_max_dist").as_double();
 
   loadModels();
 
@@ -1721,13 +1729,13 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
 
   std::vector<YoloDetection> dets = last_bag_dets_;
 
-  struct BagEntry {
+  struct BagCandidate {
     YoloDetection det;
     bool ok{false};
     double x{0.0}, y{0.0}, z{0.0};
     double dist{1e9};
   };
-  std::vector<BagEntry> bag_entries;
+  std::vector<BagCandidate> candidates;
 
   for (const auto & det : dets) {
     if (static_cast<double>(det.rect.area()) < yolo_min_area_) continue;
@@ -1736,8 +1744,34 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
     const float aspect = static_cast<float>(det.rect.width) / static_cast<float>(std::max(1, det.rect.height));
     if (aspect > 2.2f || aspect < 0.35f) continue;
 
+    const float centroid_bagX = det.rect.x + det.rect.width * 0.5f;
+    const float centroid_bagY = det.rect.y + det.rect.height * 0.5f;
+    sl::float4 point{NAN, NAN, NAN, NAN};
+
+    if (centroid_bagX >= 0 && centroid_bagX < cloud.getWidth() &&
+        centroid_bagY >= 0 && centroid_bagY < cloud.getHeight())
+    {
+      cloud.getValue(static_cast<int>(centroid_bagX), static_cast<int>(centroid_bagY), &point);
+    }
+
     double x = 0.0, y = 0.0, z = 0.0;
-    const bool ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
+    bool ok = false;
+
+    if (std::isfinite(point.z)) {
+      IC(point.x, point.z, point.y);
+      x = (point.x + zed_vision::kOffsetX) / zed_vision::kOffsetScale;
+      y = (-point.y + zed_vision::kOffsetY) / zed_vision::kOffsetScale;
+      z = (point.z + zed_vision::kOffsetZ) / zed_vision::kOffsetScale;
+      ok = true;
+    } else {
+      if (zed_vision::get3dCoordinates(det.rect, cloud, point) && std::isfinite(point.z)) {
+        IC(point.x, point.z, point.y);
+        x = (point.x + zed_vision::kOffsetX) / zed_vision::kOffsetScale;
+        y = (-point.y + zed_vision::kOffsetY) / zed_vision::kOffsetScale;
+        z = (point.z + zed_vision::kOffsetZ) / zed_vision::kOffsetScale;
+        ok = true;
+      }
+    }
 
     // Filter ukuran fisik 3D: tas kertas nyata maksimal lebar 65cm dan tinggi 70cm
     if (ok && std::isfinite(z) && z > 0.3) {
@@ -1747,23 +1781,33 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
     }
 
     const double dist = (ok && std::isfinite(x) && std::isfinite(y)) ? std::hypot(x, y) : 1e9;
-    bag_entries.push_back({det, ok, x, y, z, dist});
+    if (ok && dist > bag_max_dist_) continue;
+    candidates.push_back({det, ok, x, y, z, dist});
   }
 
-  // Urutkan tas berdasarkan jarak 3D terdekat ke terluar
-  std::sort(bag_entries.begin(), bag_entries.end(), [](const BagEntry & a, const BagEntry & b) {
-    return a.dist < b.dist;
-  });
+  // Urutkan kandidat tas berdasarkan jarak 3D terdekat (dengan tie-breaker confidence jika jarak sangat dekat)
+  if (!candidates.empty()) {
+    std::sort(candidates.begin(), candidates.end(), [](const BagCandidate & a, const BagCandidate & b) {
+      if (std::abs(a.dist - b.dist) < 0.20) {
+        return a.det.score > b.det.score;
+      }
+      return a.dist < b.dist;
+    });
+  }
 
+  // Ambil HANYA 2 tas terdekat
+  const size_t max_bags = std::min<size_t>(2, candidates.size());
   std::string data;
-  for (const auto & b : bag_entries) {
+  for (size_t i = 0; i < max_bags; ++i) {
+    const auto & b = candidates[i];
     const double valid_dist = (b.dist < 1e8) ? b.dist : 0.0;
     preview_bags_.push_back({b.det.rect, b.ok, b.x, b.y, valid_dist});
     if (is_help_me_carry_ && b.ok) {
       IC(b.det.label, b.x, b.y, valid_dist);
     }
     if (!data.empty()) data += ";";
-    data += cv::format("bag:%d,%d,%d,%d|", b.det.rect.x, b.det.rect.y, b.det.rect.width, b.det.rect.height);
+    data += cv::format("bag:%d,%d,%d,%d|",
+      b.det.rect.x, b.det.rect.y, b.det.rect.width, b.det.rect.height);
     data += b.ok ? cv::format("%.2f,%.2f,%.2f|%.2f", b.x, b.y, b.z, b.det.score)
                  : cv::format("nan,nan,nan|%.2f", b.det.score);
   }
@@ -1942,7 +1986,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     }
   }
 
-  if (!pending_register_name_.empty() && !entries.empty() && is_receptionist_) {
+  if (!pending_register_name_.empty() && !entries.empty() && (is_receptionist_ || is_restaurant_)) {
     const PersonEntry * target = &entries.front();
     std::vector<float> feature;
     for (const auto & candidate : entries) {
@@ -1953,6 +1997,49 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         break;
       }
     }
+
+    // Simpan foto capture pelanggan / tamu untuk HMI Display (athome_face)
+    try {
+      cv::Rect crop_roi = target->bbox;
+      cv::Rect face_roi = AttributeAnalyzer::faceRegion(target->bbox, target->body->keypoint_2d, bgr.cols, bgr.rows);
+      if (face_roi.width > 20 && face_roi.height > 20) {
+        int pad_x = static_cast<int>(face_roi.width * 0.35f);
+        int pad_y = static_cast<int>(face_roi.height * 0.40f);
+        crop_roi = cv::Rect(
+          std::max(0, face_roi.x - pad_x),
+          std::max(0, face_roi.y - pad_y),
+          std::min(bgr.cols - std::max(0, face_roi.x - pad_x), face_roi.width + pad_x * 2),
+          std::min(bgr.rows - std::max(0, face_roi.y - pad_y), face_roi.height + pad_y * 2)
+        );
+      } else {
+        crop_roi.height = std::min(bgr.rows - crop_roi.y, static_cast<int>(crop_roi.height * 0.55f));
+      }
+      crop_roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+      if (crop_roi.width > 20 && crop_roi.height > 20) {
+        cv::Mat crop_img = bgr(crop_roi).clone();
+        std::vector<std::string> save_dirs = {
+          "src/athome_face/web/captures",
+          "/home/dell/Documents/athome_ws/src/athome_face/web/captures"
+        };
+        try {
+          const std::string share_path = ament_index_cpp::get_package_share_directory("athome_face");
+          save_dirs.push_back(share_path + "/web/captures");
+        } catch (...) {}
+
+        for (const auto & dir : save_dirs) {
+          try {
+            std::filesystem::create_directories(dir);
+            cv::imwrite(dir + "/customer_latest.jpg", crop_img);
+            if (!pending_register_name_.empty()) {
+              std::string safe_name = pending_register_name_;
+              std::replace(safe_name.begin(), safe_name.end(), ' ', '_');
+              cv::imwrite(dir + "/customer_" + safe_name + ".jpg", crop_img);
+            }
+          } catch (...) {}
+        }
+      }
+    } catch (...) {}
+
     const cv::Scalar torso_hsv = zed_vision::extractTorsoColor(bgr, target->bbox);
     bool updated = false;
     for (auto & person : registered_persons_) {
@@ -2006,7 +2093,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
       registered_persons_.push_back(new_person);
     }
-  } else if (!pending_register_name_.empty() && is_receptionist_ && entries.empty()) {
+  } else if (!pending_register_name_.empty() && (is_receptionist_ || is_restaurant_) && entries.empty()) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
       "Guest \"%s\" pending registration: no person detected",
       pending_register_name_.c_str());
@@ -2224,7 +2311,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         auto & memory = back_memory_[entry.id];
         memory.streak = std::min(memory.streak + 1, 10);
         memory.last_seen = current_time;
-        if (memory.streak >= 2 && entry.has_depth &&
+        if (memory.streak >= 2 && entry.has_depth && entry.range_m <= person_max_dist_ &&
             (back_idx == entries.size() || entry.range_m < entries[back_idx].range_m))
         {
           back_idx = idx;
@@ -2256,8 +2343,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
     }
 
-    // Jika sedang mendaftarkan nama tamu baru di pintu
-    if (recognized_name.empty() && is_receptionist_ && !pending_register_name_.empty() && first_person) {
+    // Jika sedang mendaftarkan nama tamu baru di pintu / restoran
+    if (recognized_name.empty() && (is_receptionist_ || is_restaurant_) && !pending_register_name_.empty() && first_person) {
       recognized_name = pending_register_name_;
     }
 
@@ -2713,9 +2800,9 @@ void ZedNode::showPreview(const cv::Mat & bgr)
           cv::FONT_HERSHEY_SIMPLEX, scale, fg, thickness, cv::LINE_AA);
       };
 
-    for (size_t i = 0; i < std::min<size_t>(4, preview_persons_.size()); ++i) {
+    for (size_t i = 0; i < std::min<size_t>(2, preview_persons_.size()); ++i) {
       const auto & p = preview_persons_[i];
-      if (p.has_pos && p.range_m > 4.5) continue;
+      if (p.has_pos && p.range_m > person_max_dist_) continue;
       cv::Rect r = flipRect(p.bbox);
       r &= cv::Rect(0, 0, W, H);
       if (r.width <= 0 || r.height <= 0) continue;
@@ -2748,20 +2835,20 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     }
 
     if (enable_bag_) {
-      for (size_t i = 0; i < std::min<size_t>(3, preview_bags_.size()); ++i) {
+      for (size_t i = 0; i < std::min<size_t>(2, preview_bags_.size()); ++i) {
         const auto & b = preview_bags_[i];
         cv::Rect r = flipRect(b.bbox);
         r &= cv::Rect(0, 0, W, H);
         if (r.width <= 0 || r.height <= 0) continue;
-        cv::rectangle(canvas, r, cv::Scalar(255, 0, 255), 2);
+        cv::rectangle(canvas, r, cv::Scalar(0, 69, 255), 2);
         const int cx = r.x + r.width / 2;
         const int cy = r.y + r.height / 2;
-        cv::circle(canvas, cv::Point(cx, cy), 4, cv::Scalar(255, 0, 255), -1);
-        cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(255, 0, 255), 2);
-        std::string text = "Bag";
+        cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(155, 0, 0), -1);
+        cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
+        std::string text = (preview_bags_.size() > 1) ? cv::format("Bag %zu", i + 1) : "Bag";
         if (b.has_pos) text += cv::format(" (%.2fm, %.2fm)", b.x_m, b.y_m);
-        banner(text, r.x, r.y, cv::Scalar(255, 0, 255),
-          cv::Scalar(125, 40, 81), cv::Scalar(253, 168, 208), 0.52, 1);
+        banner(text, r.x, r.y, cv::Scalar(0, 69, 255),
+          cv::Scalar(0, 40, 150), cv::Scalar(255, 255, 255), 0.52, 1);
       }
     }
 
@@ -2826,9 +2913,15 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     hud(person_title, p0.x_m, p0.y_m, p0.range_m, cv::Scalar(0, 255, 0));
 
     if (enable_bag_) {
-      const PrevBag b0 = (!preview_bags_.empty() && preview_bags_[0].has_pos)
-        ? preview_bags_[0] : PrevBag{};
-      hud("Bag :", b0.x_m, b0.y_m, b0.range_m, cv::Scalar(255, 0, 255));
+      if (preview_bags_.empty()) {
+        hud("Bag :", 0.0, 0.0, 0.0, cv::Scalar(0, 69, 255));
+      } else {
+        for (size_t i = 0; i < std::min<size_t>(2, preview_bags_.size()); ++i) {
+          const auto & b = preview_bags_[i];
+          const std::string title = (preview_bags_.size() > 1) ? cv::format("Bag %zu :", i + 1) : "Bag :";
+          hud(title, b.x_m, b.y_m, b.range_m, cv::Scalar(0, 69, 255));
+        }
+      }
     }
     if (!preview_drinks_.empty() && preview_drinks_[0].has_pos) {
       hud(preview_drinks_[0].label + " :", preview_drinks_[0].x_m,

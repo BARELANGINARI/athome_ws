@@ -1,0 +1,39 @@
+vision:
+  ros__parameters:
+    task: "all"
+    camera_fps: 30.0
+    publish_yaw: true
+    yaw_360: true
+    depth_minimum_distance: 30.0
+    enable_body_tracking: true
+    enable_yolo: true
+    debug_window: false
+    mirror: true
+    yolo_model: "models/paper_bag.onnx"
+    yolo_classes: "models/paper_bag_classes.txt"
+    yolo_conf: 0.60
+    yolo_nms: 0.45
+    yolo_size: 640
+    yolo_min_area: 500.0
+    gender_model: "models/gender_model_weights.onnx"
+    color_model: "models/color_model.onnx"
+    color_labels: "models/color_names.txt"
+    hair_model: "models/hair_model.onnx"
+    hair_labels: "models/hair_names.txt"
+    face_model: "models/face_recognition_sface.onnx"
+    face_threshold: 0.363
+    botol_model: "models/water.onnx"
+    cracker_model: "models/cheezit.onnx"
+    pringles_model: "models/pringles_ chips _can.onnx"
+    drink_min_area: 100.0
+    drink_conf: 0.20
+    enable_drinks: true
+    chair_model: ""
+    enable_chair: true
+    enable_bag: true
+    host_name: "Alex"
+    host_photo: "models/host.jpg"
+    enable_back_detection: true
+    person_back_topic: "/vision/person_back"
+    person_max_dist: 2.8
+    bag_max_dist: 2.5

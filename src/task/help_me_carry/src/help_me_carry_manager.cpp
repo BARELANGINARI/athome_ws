@@ -147,6 +147,26 @@ public:
     fsm_timer_ = create_wall_timer(
       100ms, std::bind(&HelpMeCarryOrchestrator::fsmTick, this), callback_group_);
 
+    // Parameter konfigurasi FSM & watchdog
+    declare_parameter<double>("global_timeout_sec", 600.0);
+    declare_parameter<double>("operator_timeout_sec", 5.0);
+    declare_parameter<double>("follow_grace_period_sec", 2.0);
+    declare_parameter<double>("arrived_grace_period_sec", 5.0);
+    declare_parameter<double>("tts_min_timeout_sec", 4.0);
+    declare_parameter<double>("tts_sec_per_word", 0.5);
+    declare_parameter<double>("tts_timeout_margin_sec", 2.0);
+    declare_parameter<double>("follow_prompt_interval_sec", 3.0);
+
+    global_timeout_sec_ = get_parameter("global_timeout_sec").as_double();
+    operator_timeout_sec_ = get_parameter("operator_timeout_sec").as_double();
+    follow_grace_period_sec_ = get_parameter("follow_grace_period_sec").as_double();
+    arrived_grace_period_sec_ = get_parameter("arrived_grace_period_sec").as_double();
+    tts_min_timeout_sec_ = get_parameter("tts_min_timeout_sec").as_double();
+    tts_sec_per_word_ = get_parameter("tts_sec_per_word").as_double();
+    tts_timeout_margin_sec_ = get_parameter("tts_timeout_margin_sec").as_double();
+    follow_prompt_interval_sec_ = get_parameter("follow_prompt_interval_sec").as_double();
+    tts_timeout_sec_ = tts_min_timeout_sec_;
+
     task_start_time_ = now();
     state_enter_time_ = now();
 
@@ -160,17 +180,17 @@ public:
 
 private:
   // ----------------------------------------------------------------------------
-  // Konstanta Timeout & Grace Period
+  // Parameter Timeout & Grace Period (Dapat dikonfigurasi via YAML)
   // STATUS FSM
   // ----------------------------------------------------------------------------
-  static constexpr double GLOBAL_TIMEOUT_SEC       = 600.0;  // Batas waktu total tugas (10 menit)
-  static constexpr double OPERATOR_TIMEOUT_SEC     = 5.0;    // Toleransi oklusi rintangan sebelum masuk recovery
-  static constexpr double FOLLOW_GRACE_PERIOD_SEC  = 2.0;    // Masa tenggang deteksi hilang saat awal follow
-  static constexpr double ARRIVED_GRACE_PERIOD_SEC = 5.0;    // Jeda abaikan perintah arrived saat awal follow
-  static constexpr double TTS_MIN_TIMEOUT_SEC      = 4.0;    // Batas minimal watchdog TTS
-  static constexpr double TTS_SEC_PER_WORD         = 0.5;    // Estimasi durasi ucapan per kata
-  static constexpr double TTS_TIMEOUT_MARGIN_SEC   = 2.0;    // Margin sintesis + latensi playback
-  static constexpr double FOLLOW_PROMPT_INTERVAL_SEC = 3.0;
+  double global_timeout_sec_{600.0};
+  double operator_timeout_sec_{5.0};
+  double follow_grace_period_sec_{2.0};
+  double arrived_grace_period_sec_{5.0};
+  double tts_min_timeout_sec_{4.0};
+  double tts_sec_per_word_{0.5};
+  double tts_timeout_margin_sec_{2.0};
+  double follow_prompt_interval_sec_{3.0};
   // ----------------------------------------------------------------------------
   // Status Variabel Atomic & Waktu
   // ----------------------------------------------------------------------------
@@ -196,7 +216,7 @@ private:
 
   std::mutex data_mutex_;
   std::mutex tts_mutex_;              // Proteksi state TTS (ditulis dari thread callback service)
-  double tts_timeout_sec_{TTS_MIN_TIMEOUT_SEC};
+  double tts_timeout_sec_{4.0};
   std::string last_command_;
   std::function<void()> pending_tts_done_;
   bool bag_prompt_sent_{false};
@@ -283,8 +303,8 @@ private:
   // ----------------------------------------------------------------------------
   // Helper: Text-to-Speech (TTS) Asinkron
   // ----------------------------------------------------------------------------
-  // Estimasi batas waktu TTS berdasarkan jumlah kata (~0.5 s/kata + margin 3 s, minimal 6 s)
-  static double estimateTtsTimeout(const std::string & text)
+  // Estimasi batas waktu TTS berdasarkan jumlah kata (~0.5 s/kata + margin 2 s, minimal 4 s)
+  double estimateTtsTimeout(const std::string & text) const
   {
     size_t words = 0;
     bool in_word = false;
@@ -296,7 +316,7 @@ private:
         ++words;
       }
     }
-    return std::max(TTS_MIN_TIMEOUT_SEC, static_cast<double>(words) * TTS_SEC_PER_WORD + TTS_TIMEOUT_MARGIN_SEC);
+    return std::max(tts_min_timeout_sec_, static_cast<double>(words) * tts_sec_per_word_ + tts_timeout_margin_sec_);
   }
 
   // Mengucapkan teks; FSM terkunci (busy_) sampai /hri/tts_done diterima.
@@ -571,11 +591,11 @@ private:
     if (current_state == TaskState::FOLLOW_OPERATOR) {
       if (matchIntent(command, "ARRIVED", getArrivedCorpus())) {
         // Abaikan perintah arrived jika masih dalam masa jeda awal follow
-        if ((now() - state_enter_time_).seconds() < ARRIVED_GRACE_PERIOD_SEC) {
+        if ((now() - state_enter_time_).seconds() < arrived_grace_period_sec_) {
           RCLCPP_WARN(
             get_logger(),
             "[NLU IGNORED] Perintah ARRIVED diabaikan: masa tunggu follow aktif (< %.1f s).",
-            ARRIVED_GRACE_PERIOD_SEC);
+            arrived_grace_period_sec_);
           return;
         }
         arrived_requested_ = true;
@@ -696,7 +716,7 @@ private:
     const TaskState current_state = state_.load();
 
     // Watchdog: Cek batas waktu global seluruh task
-    if ((now() - task_start_time_).seconds() > GLOBAL_TIMEOUT_SEC &&
+    if ((now() - task_start_time_).seconds() > global_timeout_sec_ &&
       current_state != TaskState::COMPLETED && current_state != TaskState::ABORTED)
     {
       RCLCPP_ERROR(get_logger(), "Global task timeout reached.");
@@ -707,8 +727,8 @@ private:
 
     // Watchdog: Deteksi operator hilang saat following (berdasarkan timeout / status tracker LOST)
     if (current_state == TaskState::FOLLOW_OPERATOR &&
-      (now() - state_enter_time_).seconds() > FOLLOW_GRACE_PERIOD_SEC &&
-      (tracker_lost_.load() || (now() - last_operator_seen_time_).seconds() > OPERATOR_TIMEOUT_SEC))
+      (now() - state_enter_time_).seconds() > follow_grace_period_sec_ &&
+      (tracker_lost_.load() || (now() - last_operator_seen_time_).seconds() > operator_timeout_sec_))
     {
       operator_seen_ = false;
       transitionTo(TaskState::RECOVER_OPERATOR, "Operator lost (timeout > 5s or tracker lost)");
@@ -837,7 +857,7 @@ private:
           );
           break;
         }
-        if ((now() - state_enter_time_).seconds() > ARRIVED_GRACE_PERIOD_SEC &&
+        if ((now() - state_enter_time_).seconds() > arrived_grace_period_sec_ &&
             arrived_requested_.exchange(false))
         {
           busy_ = true;

@@ -41,6 +41,8 @@ def generate_launch_description():
         DeclareLaunchArgument('host_photo', default_value='models/host.jpg', description='Optional photo of the host to pre-register face'),
         DeclareLaunchArgument('enable_back_detection', default_value='true', description='Enable person facing back detection'),
         DeclareLaunchArgument('person_back_topic', default_value='/vision/person_back', description='Topic for person facing back coordinates'),
+        DeclareLaunchArgument('person_max_dist', default_value='2.8', description='Maximum distance (m) to detect and bbox person'),
+        DeclareLaunchArgument('bag_max_dist', default_value='2.5', description='Maximum distance (m) to detect and bbox bag'),
 
         Node(
             package='athome_vision',
@@ -85,6 +87,8 @@ def generate_launch_description():
                 'host_photo': LaunchConfiguration('host_photo'),
                 'enable_back_detection': LaunchConfiguration('enable_back_detection'),
                 'person_back_topic': LaunchConfiguration('person_back_topic'),
+                'person_max_dist': LaunchConfiguration('person_max_dist'),
+                'bag_max_dist': LaunchConfiguration('bag_max_dist'),
             }],
         ),
     ])
