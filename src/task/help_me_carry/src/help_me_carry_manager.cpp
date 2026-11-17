@@ -773,7 +773,7 @@ private:
       // State 0: INIT - Menunggu TTS Engine siap
       // ------------------------------------------------------------------------
       case TaskState::INIT:
-        if (tts_pub_->get_subscription_count() == 0) {
+        if (this->count_publishers("/hri/tts_done") == 0) {
           return;
         }
         speakAsync(
