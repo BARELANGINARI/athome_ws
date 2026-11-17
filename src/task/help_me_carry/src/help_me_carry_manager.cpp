@@ -777,7 +777,7 @@ private:
           return;
         }
         speakAsync(
-          "I am ready, please say Hello Robot to start the robot",
+          "I am ready, please say Hello Robot to start the robot!",
           [this]() {
             transitionTo(TaskState::WAIT_WAKEWORD, "TTS, ready waiting for wakeword");
           }
@@ -790,7 +790,7 @@ private:
       case TaskState::WAIT_WAKEWORD:
         if (wakeword_requested_.exchange(false)) {
           speakAsync(
-            "Hello, I am Barelang Inari from Batam State Polytechnic, I want to help you to carry the luggage.",
+            "Hello, I am Barelang Inari from Batam State Polytechnic! I want to help you to carry the luggage!",
             [this]() {
               transitionTo(TaskState::CHECK_OPERATOR_PRESENCE, "Greeting completed, checking operator");
             });
@@ -804,7 +804,7 @@ private:
         if (isOperatorInFront()) {
           RCLCPP_INFO(get_logger(), "\033[1;32m[ZED VISION]\033[0m Operator terdeteksi di depan.");
           speakAsync(
-            "If you are ready, please guide me to the place, and say follow me.",
+            "If you are ready? please guide me to the place, and say follow me!",
             [this]() {
               transitionTo(TaskState::WAIT_START_COMMAND, "Operator in front confirmed");
             });
@@ -812,7 +812,7 @@ private:
           if ((now() - last_operator_warn_time_).seconds() > 4.0) {
             last_operator_warn_time_ = now();
             RCLCPP_WARN(get_logger(), "\033[1;33m[ZED VISION]\033[0m Operator belum terlihat di depan.");
-            speakAsync("i cant see you, please stand in front of me");
+            speakAsync("i cant see you! please stand in front of me!");
           }
         }
         break;
