@@ -22,6 +22,7 @@ DEFAULT_HRI_PARAMS: Dict[str, Any] = {
     "whisper_model": "deepdml/faster-whisper-large-v3-turbo-ct2",
     "stt_language": "en",
     "tts_model": "en_US-lessac-medium.onnx",
+    "tts_use_cuda": True,
     "nlu_threshold": 0.68,
     "http_port": 8000,
     "ws_port": 8765,
