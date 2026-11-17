@@ -6,7 +6,17 @@
 //            Mengatur interaksi HRI (TTS/STT), deteksi operator (ZED camera),
 //            following person via Nav2, deteksi gesture tas, manipulasi lengan,
 //            dan autonomous homing.
-// edit : 2 nov 2026 22.02
+//
+// Alur State FSM:
+//   INIT -> WAIT_WAKEWORD -> CHECK_OPERATOR_PRESENCE -> WAIT_START_COMMAND
+//     -> FOLLOW_OPERATOR (atau RECOVER_OPERATOR jika operator hilang)
+//     -> ARRIVED -> WAIT_BAG_POINTING -> GRASP_BAG -> RETURN_TO_START
+//     -> PUT_DOWN_BAG -> COMPLETED
+//
+// Mekanisme Sinkronisasi:
+//   - Flag `busy_` mengunci transisi FSM selama aksi asinkron (TTS / service).
+//   - Flag `speaking_` membisukan input STT (`canListen()`) selama robot bicara
+//     hingga `/hri/tts_done` diterima (dilengkapi watchdog timeout otomatis).
 // ==============================================================================
 
 #include <algorithm>
@@ -46,6 +56,7 @@ enum class TaskState {
   ABORTED                   // Tugas dibatalkan karena timeout / error kritis
 };
 
+// Mengonversi enum TaskState menjadi string yang mudah dibaca pada log terminal
 static std::string stateToString(TaskState state)
 {
   switch (state) {
@@ -340,6 +351,8 @@ private:
     RCLCPP_INFO(get_logger(), "\033[1;35m[TTS SAY]\033[0m \"%s\" | Mic: \033[1;31m[MUTED]\033[0m", text.c_str());
   }
 
+  // Menangani konfirmasi selesai bicara dari /hri/tts_done (atau watchdog timeout),
+  // melepas kunci FSM (`speaking_`, `busy_`), lalu mengeksekusi callback lanjutan.
   void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
   {
     std::function<void()> callback;
@@ -372,6 +385,7 @@ private:
   }
 
   // Normalisasi string: ubah ke lowercase, hilangkan tanda baca, dan rapikan spasi
+  // agar pencocokan NLU konsisten terhadap variasi tanda baca STT.
   static std::string normalize(std::string text)
   {
     std::string clean;
@@ -711,6 +725,7 @@ private:
   // ============================================================================
   // 6. MAIN FINITE STATE MACHINE (FSM TICK)
   // ============================================================================
+  // Dieksekusi periodik oleh fsm_timer_ untuk mengevaluasi watchdog dan state aktif.
   void fsmTick()
   {
     const TaskState current_state = state_.load();
@@ -770,9 +785,10 @@ private:
     // --------------------------------------------------------------------------
     switch (state_.load()) {
       // ------------------------------------------------------------------------
-      // State 0: INIT - Menunggu TTS Engine siap
+      // State 0: INIT - Menunggu TTS Engine siap (/hri/tts_done & /hri/tts_say aktif)
       // ------------------------------------------------------------------------
       case TaskState::INIT:
+        // Pastikan tts_engine_node sudah siap (mempublish /hri/tts_done) sebelum menyapa
         if (this->count_publishers("/hri/tts_done") == 0 || tts_pub_->get_subscription_count() == 0) {
           return;
         }
@@ -844,9 +860,11 @@ private:
         break;
 
       // ------------------------------------------------------------------------
-      // State 4: FOLLOW_OPERATOR - Mengikuti operator (Grace period 5 detik aktif) = grace periode-> kondisi dimana robot tidak menerima inputan darimanapun
+      // State 4: FOLLOW_OPERATOR - Mengikuti operator sambil mengingatkan perintah tiba
+      // (Grace period: abaikan perintah tiba di awal agar tidak salah transisi)
       // ------------------------------------------------------------------------
       case TaskState::FOLLOW_OPERATOR:
+        // Ingatkan operator maksimal 3 kali dengan jeda 15 detik setelah TTS selesai
         if (follow_prompt_count_ < 3 && !speaking_.load() && now() >= follow_prompt_next_time_) {
           ++follow_prompt_count_;
           speakAsync(
@@ -953,6 +971,7 @@ private:
         if (!gesture_confirmed_) {
           if (detected_gesture_ != "NONE") {
             gesture_confirmed_ = true;
+            // Sisi kamera berlawanan dengan orientasi kiri/kanan operator yang menghadap robot
             const std::string side = (detected_gesture_ == "LEFT") ? "right" : "left";
             RCLCPP_INFO(
               get_logger(),

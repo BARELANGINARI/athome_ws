@@ -202,3 +202,5 @@ class TextToSpeech:
         except Exception as exc:
             logger.error("Audio synthesis failed for '%s': %s", text, exc)
             return ""
+
+# lokasi file cache wav nya disimpan ~/.cache/athome_hri/tts_cache/
