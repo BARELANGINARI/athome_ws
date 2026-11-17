@@ -13,6 +13,7 @@ src/
 ├── athome_vision/        # ZED camera: body tracking, YOLO bag detection, gesture
 ├── athome_arm/           # Dynamixel AX-18A robotic arm motion server & CLI tools
 ├── athome_hri/           # Speech interaction (Faster-Whisper, Piper TTS) & Web GUI
+├── athome_face/          # Animated robot face GUI & WebSocket ROS 2 bridge
 └── task/
     ├── help_me_carry/    # Person following, bag alignment, and homing
     └── receptionist/     # Waypoint navigation (door & living room)
@@ -106,3 +107,15 @@ ros2 launch help_me_carry hri.launch.py
 ```bash
 ros2 launch receptionist receptionist.launch.py
 ```
+
+### 6. Robot Face Display (athome_face)
+```bash
+# Launch face server & buka di browser (http://localhost:8080)
+ros2 launch athome_face face.launch.py
+
+# Publish ekspresi via CLI
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'HAPPY'}"
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'FOLLOWING'}"
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'IDLE'}"
+```
+*Dokumentasi lengkap daftar ekspresi dan kontrol HRI: lihat [athome_face/README.md](file:///home/revaldo/Documents/athome-ws/src/athome_face/README.md).*

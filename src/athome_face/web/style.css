@@ -130,6 +130,7 @@ html, body {
   height: 25px;
   margin-bottom: 8px;
   z-index: 10;
+  transition: transform var(--transition-speed) ease;
 }
 
 .eyebrow {
@@ -190,6 +191,78 @@ html, body {
 
 .eyes-wrap.breathing {
   animation: breathing 4.5s ease-in-out infinite;
+}
+
+.listen-arcs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  opacity: 0;
+  transition: opacity 0.35s ease, transform 0.35s ease;
+  pointer-events: none;
+}
+
+.listen-arcs.left {
+  flex-direction: row-reverse;
+}
+
+.listen-arcs.right {
+  flex-direction: row;
+}
+
+.listen-arcs.active {
+  opacity: 1;
+}
+
+.listen-arcs .arc {
+  display: block;
+  border: 3.5px solid transparent;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+
+.listen-arcs.left .arc {
+  border-left-color: #00f2ff;
+}
+
+.listen-arcs.right .arc {
+  border-right-color: #00f2ff;
+}
+
+.listen-arcs .arc-1 {
+  width: 22px;
+  height: 48px;
+}
+
+.listen-arcs .arc-2 {
+  width: 32px;
+  height: 74px;
+}
+
+.listen-arcs .arc-3 {
+  width: 44px;
+  height: 102px;
+}
+
+.listen-arcs.active .arc {
+  animation: arc-listen-pulse 1.3s ease-in-out infinite;
+}
+
+.listen-arcs.active .arc-3 { animation-delay: 0.0s; }
+.listen-arcs.active .arc-2 { animation-delay: 0.2s; }
+.listen-arcs.active .arc-1 { animation-delay: 0.4s; }
+
+@keyframes arc-listen-pulse {
+  0%, 100% {
+    opacity: 0.2;
+    transform: scale(0.9);
+    filter: drop-shadow(0 0 3px rgba(0, 242, 255, 0.3));
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+    filter: drop-shadow(0 0 14px rgba(0, 242, 255, 0.95));
+  }
 }
 
 .eye-socket {
@@ -265,20 +338,28 @@ html, body {
 }
 
 .mouth-wrap {
-  margin-top: 18px;
+  position: relative;
+  width: 100%;
   height: 35px;
+  margin-top: 18px;
   display: flex;
   justify-content: center;
   align-items: center;
+  transition: transform var(--transition-speed) ease;
 }
 
 .mouth-wave {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
   gap: 5px;
   height: 24px;
   opacity: 0;
-  transition: opacity 0.3s;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
 }
 
 .mouth-wave.active {
@@ -306,6 +387,9 @@ html, body {
 .mouth-wave.active .wave-bar:nth-child(5) { animation: wave-bounce 0.6s ease-in-out infinite 0.15s; }
 
 .mouth-smile {
+  position: absolute;
+  left: 50%;
+  top: 50%;
   width: 45px;
   height: 16px;
   border: 4px solid transparent;
@@ -313,13 +397,82 @@ html, body {
   border-radius: 0 0 35px 35px;
   box-shadow: 0 4px 10px rgba(0, 255, 213, 0.6);
   opacity: 0;
-  transform: translateY(-8px) scale(0.6);
-  transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(0.6);
+  transition: opacity 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275),
+              transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 
 .mouth-smile.active {
   opacity: 1;
-  transform: translateY(0) scale(1);
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.mouth-listen {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(0.7);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275),
+              transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.mouth-listen.active {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.mouth-listen .listen-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #00f2ff;
+  box-shadow: 0 0 10px #00f2ff;
+}
+
+.mouth-listen.active .listen-dot {
+  animation: listen-dot-wave 1.2s ease-in-out infinite;
+}
+
+.mouth-listen.active .listen-dot:nth-child(1) { animation-delay: 0.0s; }
+.mouth-listen.active .listen-dot:nth-child(2) { animation-delay: 0.18s; }
+.mouth-listen.active .listen-dot:nth-child(3) { animation-delay: 0.36s; }
+.mouth-listen.active .listen-dot:nth-child(4) { animation-delay: 0.54s; }
+
+@keyframes listen-dot-wave {
+  0%, 100% {
+    transform: scale(0.75) translateY(0);
+    opacity: 0.35;
+    background: #0099ff;
+    box-shadow: 0 0 6px #0099ff;
+  }
+  50% {
+    transform: scale(1.4) translateY(-5px);
+    opacity: 1;
+    background: #00ffd5;
+    box-shadow: 0 0 16px #00ffd5;
+  }
+}
+
+.pupil.listening-pulse {
+  animation: pupil-listen 1.8s ease-in-out infinite;
+}
+
+@keyframes pupil-listen {
+  0%, 100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.75;
+    transform: scale(1.12);
+  }
 }
 
 .speech-bubble {

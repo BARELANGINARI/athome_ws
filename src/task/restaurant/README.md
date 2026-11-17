@@ -4,6 +4,8 @@
 ros2 launch restaurant hardware.launch.py
 ros2 launch restaurant motion.launch.py
 ros2 launch restaurant camera.launch.py
+ros2 launch restaurant hri.launch.py
+
 ```
 
 ## Daftar Service

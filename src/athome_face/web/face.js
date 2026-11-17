@@ -27,6 +27,12 @@
   const fxBadge = document.getElementById("fx-badge");
   const mouthWave = document.getElementById("mouth-wave");
   const mouthSmile = document.getElementById("mouth-smile");
+  const mouthListen = document.getElementById("mouth-listen");
+  const listenArcsLeft = document.getElementById("listen-arcs-left");
+  const listenArcsRight = document.getElementById("listen-arcs-right");
+  const eyesContainer = document.getElementById("eyes-container");
+  const eyebrowsWrap = document.querySelector(".eyebrows-wrap");
+  const mouthWrap = document.querySelector(".mouth-wrap");
   const speechBubble = document.getElementById("speech-bubble");
   const speechText = document.getElementById("speech-text");
   const emotionLabel = document.getElementById("current-emotion-label");
@@ -49,6 +55,7 @@
   let scanTimer = null;
   let ws = null;
   let isSpeechActive = false;
+  let subtitleTimer = null;
 
   function triggerBlink(durationMs = 140, onDone = null) {
     if (isBlinking) return;
@@ -141,6 +148,15 @@
 
     mouthWave.classList.remove("active");
     mouthSmile.classList.remove("active");
+    if (mouthListen) mouthListen.classList.remove("active");
+    if (listenArcsLeft) listenArcsLeft.classList.remove("active");
+    if (listenArcsRight) listenArcsRight.classList.remove("active");
+
+    leftPupil.classList.remove("listening-pulse");
+    rightPupil.classList.remove("listening-pulse");
+    if (eyesContainer) eyesContainer.style.transform = "none";
+    if (eyebrowsWrap) eyebrowsWrap.style.transform = "none";
+    if (mouthWrap) mouthWrap.style.transform = "none";
 
     leftPupil.setAttribute("rx", "35");
     leftPupil.setAttribute("ry", "45");
@@ -158,6 +174,8 @@
 
     leftEyeShape.setAttribute("fill", "url(#grad-cyan)");
     rightEyeShape.setAttribute("fill", "url(#grad-cyan)");
+
+    hideSubtitle();
   }
 
   function setEmotion(emotion) {
@@ -210,13 +228,29 @@
       case "LISTENING":
         leftEyeShape.setAttribute("d", PATH_WIDE);
         rightEyeShape.setAttribute("d", PATH_WIDE);
-        leftPupil.setAttribute("rx", "45");
-        leftPupil.setAttribute("ry", "55");
-        rightPupil.setAttribute("rx", "45");
-        rightPupil.setAttribute("ry", "55");
-        mouthWave.classList.add("active");
-        leftBrow.style.transform = "translateY(-10px)";
-        rightBrow.style.transform = "translateY(-10px)";
+        leftPupil.setAttribute("rx", "42");
+        leftPupil.setAttribute("ry", "50");
+        rightPupil.setAttribute("rx", "42");
+        rightPupil.setAttribute("ry", "50");
+        leftPupil.classList.add("listening-pulse");
+        rightPupil.classList.add("listening-pulse");
+        movePupils(0, -10);
+
+        // Head tilt menyimak pembicara
+        if (eyesContainer) eyesContainer.style.transform = "rotate(3.5deg) translateY(-4px)";
+        if (eyebrowsWrap) eyebrowsWrap.style.transform = "rotate(3.5deg) translateY(-4px)";
+        if (mouthWrap) mouthWrap.style.transform = "rotate(3.5deg) translateY(-4px)";
+
+        // Alis menyimak attentive & curious
+        leftBrow.style.transform = "translateY(-18px) rotate(-6deg)";
+        rightBrow.style.transform = "translateY(-8px) rotate(4deg)";
+
+        // Indikator telinga/sensor audio gelombang suara aktif
+        if (listenArcsLeft) listenArcsLeft.classList.add("active");
+        if (listenArcsRight) listenArcsRight.classList.add("active");
+
+        // Indikator mic listening dots (tidak menggunakan mouthWave bicara)
+        if (mouthListen) mouthListen.classList.add("active");
         break;
 
       case "SPEAKING":
@@ -405,12 +439,27 @@
   }
 
   function showSubtitle(text) {
+    clearTimeout(subtitleTimer);
     speechText.innerText = text;
     speechBubble.classList.add("active");
+
+    // Auto-hide subtitle setelah durasi bicara wajar jika tidak ada ekspresi baru
+    const durationMs = Math.max(4500, Math.min(10000, text.length * 120));
+    subtitleTimer = setTimeout(() => {
+      hideSubtitle();
+    }, durationMs);
   }
 
   function hideSubtitle() {
-    speechBubble.classList.remove("active");
+    clearTimeout(subtitleTimer);
+    if (speechBubble) {
+      speechBubble.classList.remove("active");
+    }
+    setTimeout(() => {
+      if (speechBubble && !speechBubble.classList.contains("active")) {
+        speechText.innerText = "";
+      }
+    }, 350);
   }
 
   function toggleFullscreen() {
