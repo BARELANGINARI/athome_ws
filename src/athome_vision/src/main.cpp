@@ -1954,7 +1954,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     const sl::BodyData * body{nullptr};
     int id{-1};
     cv::Rect bbox;
-    std::string label{"operator"};
+    std::string label{"person"};
     double x{0.0}, y{0.0}, z{0.0};
     bool has_depth{false};
     double range_m{std::numeric_limits<double>::infinity()};
@@ -2020,6 +2020,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     op_mem_.active = true;
     op_mem_.stable_id = 0;
     op_mem_.vx = op_mem_.vy = 0.0;
+    entries[0].label = "operator";
     if (entries[0].has_depth) {
       op_mem_.x = entries[0].x;
       op_mem_.y = entries[0].y;
@@ -2050,13 +2051,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     const cv::Scalar hsv = zed_vision::extractTorsoColor(bgr, op.bbox);
     op_mem_.torso_hsv = 0.85 * op_mem_.torso_hsv + 0.15 * hsv;
     op_mem_.has_color = true;
-  }
 
-  if (!entries.empty()) {
-    entries.front().label = "operator";
-    if (is_help_me_carry_ && entries.front().has_depth) {
-      const auto & person = entries.front();
-      IC(person.id, person.label, person.x, person.y, person.dist);
+    if (is_help_me_carry_ && op.has_depth) {
+      IC(op.id, op.label, op.x, op.y, op.dist);
     }
   }
 
@@ -2489,7 +2486,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         label = first_person ? "guest" : "person";
       }
     } else {
-      label = first_person ? "operator" : "person";
+      label = entry.label;
     }
     first_person = false;
     ss << label << ":" << entry.bbox.x << "," << entry.bbox.y << ","

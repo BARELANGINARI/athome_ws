@@ -613,60 +613,73 @@ private:
     if (!candidates.empty()) {
       auto target_it = candidates.end();
 
-      // 1. If KF is active and target ID is locked:
-      if (kf_.is_initialized() && locked_person_id_ >= 0) {
-        // Find candidate with matching ID
-        auto locked_it = std::find_if(candidates.begin(), candidates.end(), [this](const Candidate & c) {
-          return c.id == locked_person_id_;
-        });
+      // KASUS A: Robot SUDAH PERNAH mengunci target sebelumnya (has_target_history_ == true && kf_.is_initialized())
+      // Prinsip utama: FOKUS PADA POSISI TERAKHIR TARGET. JANGAN PERNAH SWITCH KE ORANG LAIN HANYA KARENA LEBIH DEKAT KE ROBOT!
+      if (has_target_history_ && kf_.is_initialized()) {
+        const double time_since_seen = now().seconds() - last_seen_sec_;
+        // Toleransi displacement yang masuk akal dari estimasi posisi target terakhir
+        // Maksimum perpindahan dari posisi terakhir adalah 0.80m saat normal, dan bertambah sedikit jika target sempat hilang sebentar (maksimal 1.20m)
+        const double gate_limit = std::min(1.20, 0.45 + 0.50 * std::min(time_since_seen, 1.5));
 
-        if (locked_it != candidates.end()) {
-          // Validate spatial consistency via Kalman gate
-          const double dist_to_kf = kf_.distance_to(locked_it->rel_x, locked_it->rel_y);
-          const double gate_radius = kf_.get_gate_radius(1.2, 2.5);
-          if (dist_to_kf <= gate_radius) {
-            target_it = locked_it;
-          } else {
-            RCLCPP_WARN_THROTTLE(
-              get_logger(), *get_clock(), 1000,
-              "[FOLLOW] ID %d detected outside KF gate (dist=%.2f m > gate=%.2f m). Seeking re-lock...",
-              locked_person_id_, dist_to_kf, gate_radius);
+        // 1. Prioritaskan jika kandidat memiliki ID yang sama persis DENGAN jarak yang konsisten ke posisi KF
+        if (locked_person_id_ >= 0) {
+          auto locked_it = std::find_if(candidates.begin(), candidates.end(), [this](const Candidate & c) {
+            return c.id == locked_person_id_;
+          });
+          if (locked_it != candidates.end()) {
+            const double dist_to_kf = kf_.distance_to(locked_it->rel_x, locked_it->rel_y);
+            if (dist_to_kf <= gate_limit) {
+              target_it = locked_it;
+            } else {
+              RCLCPP_WARN_THROTTLE(
+                get_logger(), *get_clock(), 1000,
+                "[FOLLOW] Locked ID %d melompat terlalu jauh (dist=%.2f m > gate=%.2f m). Menolak pergantian mendadak.",
+                locked_person_id_, dist_to_kf, gate_limit);
+            }
           }
         }
 
-        // 2. If locked ID not found (occluded or changed by ZED):
-        // Find candidate nearest to Kalman Filter estimate (Spatial Association)
+        // 2. Jika ID sama tidak ditemukan (misal ZED re-assign ID atau sempat terhalang):
+        // Cari kandidat yang PALING DEKAT KE POSISI TERAKHIR TARGET (bukan ke robot!)
         if (target_it == candidates.end()) {
-          double min_kf_dist = 999.0;
+          double best_dist_to_target = 999.0;
           auto best_cand = candidates.end();
+
           for (auto it = candidates.begin(); it != candidates.end(); ++it) {
-            const double d = kf_.distance_to(it->rel_x, it->rel_y);
-            if (d < min_kf_dist) {
-              min_kf_dist = d;
+            const double dist_to_target = kf_.distance_to(it->rel_x, it->rel_y);
+            if (dist_to_target < best_dist_to_target) {
+              best_dist_to_target = dist_to_target;
               best_cand = it;
             }
           }
 
-          // Check if nearest candidate is within Kalman gate radius
-          const double re_gate_radius = kf_.get_gate_radius(0.85, 2.0);
-          if (best_cand != candidates.end() && min_kf_dist <= re_gate_radius) {
+          // Verifikasi apakah kandidat terbaik ini benar-benar berada di dekat posisi terakhir target
+          if (best_cand != candidates.end() && best_dist_to_target <= gate_limit) {
             RCLCPP_INFO(
               get_logger(),
-              "\033[93m[FOLLOW] Re-lock target via Kalman Gate: old ID %d -> new ID %d (KF dist=%.2f m <= gate=%.2f m)\033[0m",
-              locked_person_id_, best_cand->id, min_kf_dist, re_gate_radius);
+              "\033[93m[FOLLOW] Mengunci kembali target di dekat posisi terakhir: old ID %d -> new ID %d (selisih posisi = %.2f m <= toleransi %.2f m)\033[0m",
+              locked_person_id_, best_cand->id, best_dist_to_target, gate_limit);
             target_it = best_cand;
             locked_person_id_ = target_it->id;
+          } else {
+            // Target asli kemungkinan sedang terhalang / keluar dari pandangan.
+            // PENTING: JANGAN PERNAH mengambil orang asing lain yang lebih dekat ke robot!
+            RCLCPP_WARN_THROTTLE(
+              get_logger(), *get_clock(), 1500,
+              "[FOLLOW] Target asli di (%.2f, %.2f) terhalang. Menolak %zu orang lain karena di luar toleransi (jarak terdekat ke target = %.2f m > %.2f m).",
+              kf_.x(), kf_.y(), candidates.size(), best_dist_to_target, gate_limit);
           }
         }
       }
-
-      // 3. If no target locked or lost for too long (> max_lost_time_):
-      const double time_since_seen = now().seconds() - last_seen_sec_;
-      if (target_it == candidates.end() && (!kf_.is_initialized() || locked_person_id_ < 0 || time_since_seen > max_lost_time_)) {
-        target_it = std::find_if(candidates.begin(), candidates.end(), [](const Candidate & c) {
+      // KASUS B: Robot BARU PERTAMA KALI mencari target untuk di-follow (!has_target_history_)
+      else {
+        // Cari orang yang berlabel operator, atau orang terdekat di depan robot (jarak <= 2.5 m)
+        auto op_it = std::find_if(candidates.begin(), candidates.end(), [](const Candidate & c) {
           return c.is_operator;
         });
-        if (target_it == candidates.end()) {
+        if (op_it != candidates.end()) {
+          target_it = op_it;
+        } else {
           auto closest_it = std::min_element(candidates.begin(), candidates.end(), [](const Candidate & a, const Candidate & b) {
             return a.dist < b.dist;
           });
@@ -678,9 +691,10 @@ private:
         if (target_it != candidates.end()) {
           RCLCPP_INFO(
             get_logger(),
-            "\033[92m[FOLLOW] Target lock initialized: [ID %d] dist=%.2f m | bearing=%+.1f deg\033[0m",
+            "\033[92m[FOLLOW] Inisialisasi kunci target awal: [ID %d] dist=%.2f m | bearing=%+.1f deg\033[0m",
             target_it->id, target_it->dist, target_it->bearing * 180.0 / M_PI);
           locked_person_id_ = target_it->id;
+          has_target_history_ = true;
           kf_.init(target_it->rel_x, target_it->rel_y);
         }
       }
@@ -690,6 +704,10 @@ private:
         kf_.updateZED(target_it->rel_x, target_it->rel_y);
         person_matched = true;
         is_predicting = false;
+        has_target_history_ = true;
+        locked_person_id_ = target_it->id;
+        last_target_rel_x_ = target_it->rel_x;
+        last_target_rel_y_ = target_it->rel_y;
         rel_x = kf_.x();
         rel_y = kf_.y();
         raw_dist = std::hypot(rel_x, rel_y);
@@ -1298,6 +1316,9 @@ private:
     kf_.reset();
     has_last_filter_time_ = false;
     locked_person_id_ = -1;
+    has_target_history_ = false;
+    last_target_rel_x_ = 0.0;
+    last_target_rel_y_ = 0.0;
     is_following_ = true;
     is_nav_active_ = false;
     is_moving_ = false;
@@ -1326,6 +1347,9 @@ private:
     current_cmd_vy_ = 0.0;
     current_cmd_wz_ = 0.0;
     locked_person_id_ = -1;
+    has_target_history_ = false;
+    last_target_rel_x_ = 0.0;
+    last_target_rel_y_ = 0.0;
     prev_bearing_ = 0.0;
     filtered_bearing_ = 0.0;
     has_prev_bearing_ = false;
@@ -1384,6 +1408,7 @@ private:
       kf_.reset();
       has_last_filter_time_ = false;
       locked_person_id_ = -1;
+      has_target_history_ = false;
       is_moving_ = false;
       current_cmd_vx_ = 0.0;
       current_cmd_vy_ = 0.0;
@@ -3515,6 +3540,9 @@ private:
   double lidar_leg_gate_{0.90};
 
   int locked_person_id_{-1};
+  bool has_target_history_{false};
+  double last_target_rel_x_{0.0};
+  double last_target_rel_y_{0.0};
   std::atomic<bool> is_following_{false};
   std::atomic<bool> is_nav_active_{false};
   bool is_moving_{false};
