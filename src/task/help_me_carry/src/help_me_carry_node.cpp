@@ -17,6 +17,7 @@
 #include "geometry_msgs/msg/quaternion.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
@@ -444,6 +445,14 @@ public:
       },
       sub_options);
 
+    map_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+      "/map", rclcpp::QoS(1).transient_local().reliable(),
+      [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(map_mutex_);
+        latest_map_ = msg;
+      },
+      sub_options);
+
     start_srv_ = create_service<Trigger>(
       "/follow/person",
       [this](const std::shared_ptr<Trigger::Request>, std::shared_ptr<Trigger::Response> resp) {
@@ -534,6 +543,174 @@ public:
   }
 
 private:
+  bool find_unmapped_or_doorway_opening(
+    const sensor_msgs::msg::LaserScan::SharedPtr & scan,
+    double laser_tx, double laser_ty, double laser_yaw,
+    double direct_bearing, double direct_dist,
+    double & best_angle, double & best_depth, double & clearance_diff)
+  {
+    if (!scan || scan->ranges.empty()) return false;
+
+    struct ScanPt {
+      double x;
+      double y;
+      double r;
+      double angle_base;
+    };
+
+    std::vector<ScanPt> pts;
+    pts.reserve(scan->ranges.size());
+    const int num_readings = static_cast<int>(scan->ranges.size());
+    for (int i = 0; i < num_readings; ++i) {
+      const float r = scan->ranges[i];
+      if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) continue;
+      const double angle_laser = scan->angle_min + i * scan->angle_increment;
+      const double angle_base = normalize_angle(angle_laser + laser_yaw);
+      const double ox = laser_tx + r * std::cos(angle_base);
+      const double oy = laser_ty + r * std::sin(angle_base);
+      if (std::hypot(ox, oy) < footprint_radius_) continue;
+      pts.push_back({ox, oy, static_cast<double>(r), angle_base});
+    }
+
+    if (pts.empty()) return false;
+
+    // 1. Check if direct line-of-sight to operator is blocked by a wall or obstacle
+    bool wall_blocking = false;
+    double min_front_obs = 999.0;
+    for (const auto & p : pts) {
+      if (std::abs(normalize_angle(p.angle_base - direct_bearing)) < 0.28) {
+        if (p.r < (direct_dist - 0.35) && p.r < 2.2) {
+          wall_blocking = true;
+        }
+      }
+      if (p.x > footprint_radius_ && p.x < obstacle_distance_ && std::abs(p.y) < corridor_width_) {
+        if (p.x < min_front_obs) min_front_obs = p.x;
+      }
+    }
+    if (min_front_obs < obstacle_distance_ && direct_dist > (min_front_obs + 0.30)) {
+      wall_blocking = true;
+    }
+
+    // Check /map if operator is in unmapped space
+    bool op_in_unmapped_map = false;
+    nav_msgs::msg::OccupancyGrid::SharedPtr map_ptr;
+    {
+      std::lock_guard<std::mutex> lock(map_mutex_);
+      map_ptr = latest_map_;
+    }
+    double rx_w = 0.0, ry_w = 0.0, ryaw_w = 0.0;
+    bool has_map_pose = false;
+    try {
+      auto trans = tf_buffer_->lookupTransform(frame_map_, frame_base_, tf2::TimePointZero);
+      rx_w = trans.transform.translation.x;
+      ry_w = trans.transform.translation.y;
+      const auto & rq = trans.transform.rotation;
+      const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+      const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+      ryaw_w = std::atan2(siny, cosy);
+      has_map_pose = true;
+    } catch (...) {}
+
+    if (map_ptr && has_map_pose) {
+      const double op_wx = rx_w + direct_dist * std::cos(ryaw_w + direct_bearing);
+      const double op_wy = ry_w + direct_dist * std::sin(ryaw_w + direct_bearing);
+      const double res = map_ptr->info.resolution;
+      const double ox = map_ptr->info.origin.position.x;
+      const double oy = map_ptr->info.origin.position.y;
+      const int mx = static_cast<int>((op_wx - ox) / res);
+      const int my = static_cast<int>((op_wy - oy) / res);
+      if (mx < 0 || mx >= static_cast<int>(map_ptr->info.width) ||
+          my < 0 || my >= static_cast<int>(map_ptr->info.height)) {
+        op_in_unmapped_map = true;
+      } else {
+        const int8_t cell = map_ptr->data[my * map_ptr->info.width + mx];
+        if (cell == -1 || cell >= 50) {
+          op_in_unmapped_map = true;
+        }
+      }
+    }
+
+    // If direct line-of-sight is unobstructed and not behind unmapped wall, normal follow suffices
+    if (!wall_blocking && !op_in_unmapped_map) {
+      return false;
+    }
+
+    // 2. Search for open corridors / doorways (gaps) in the LiDAR scan
+    const double w_corridor = footprint_radius_ + 0.12; // 0.36m half-width -> 0.72m door opening
+    double highest_score = -999.0;
+    double chosen_angle = 0.0;
+    double chosen_depth = 0.0;
+    double chosen_clearance_diff = 0.0;
+    bool found_candidate = false;
+
+    // Evaluate candidate angles from -120 deg to +120 deg in steps of ~2.5 deg
+    for (double alpha = -2.10; alpha <= 2.10; alpha += 0.045) {
+      const double cos_a = std::cos(alpha);
+      const double sin_a = std::sin(alpha);
+      double forward_clear = 4.0;
+      double min_left = 999.0;
+      double min_right = 999.0;
+
+      for (const auto & p : pts) {
+        const double d_long = p.x * cos_a + p.y * sin_a;
+        const double d_lat = -p.x * sin_a + p.y * cos_a;
+
+        if (d_long < footprint_radius_ * 0.7) continue;
+
+        if (std::abs(d_lat) < w_corridor) {
+          if (d_long < forward_clear) forward_clear = d_long;
+        } else if (d_lat >= w_corridor && d_lat < (w_corridor + 0.60) && d_long < 2.2) {
+          if (d_lat < min_left) min_left = d_lat;
+        } else if (d_lat <= -w_corridor && d_lat > -(w_corridor + 0.60) && d_long < 2.2) {
+          if (-d_lat < min_right) min_right = -d_lat;
+        }
+      }
+
+      // Candidate must offer clear passage of at least 1.30m
+      if (forward_clear >= 1.30) {
+        bool leads_to_unmapped = false;
+        if (map_ptr && has_map_pose) {
+          const double test_wx = rx_w + 1.8 * std::cos(ryaw_w + alpha);
+          const double test_wy = ry_w + 1.8 * std::sin(ryaw_w + alpha);
+          const double res = map_ptr->info.resolution;
+          const double ox = map_ptr->info.origin.position.x;
+          const double oy = map_ptr->info.origin.position.y;
+          const int mx = static_cast<int>((test_wx - ox) / res);
+          const int my = static_cast<int>((test_wy - oy) / res);
+          if (mx < 0 || mx >= static_cast<int>(map_ptr->info.width) ||
+              my < 0 || my >= static_cast<int>(map_ptr->info.height)) {
+            leads_to_unmapped = true;
+          } else if (map_ptr->data[my * map_ptr->info.width + mx] == -1) {
+            leads_to_unmapped = true;
+          }
+        }
+
+        const double angle_diff = std::abs(normalize_angle(alpha - direct_bearing));
+        double score = forward_clear - 1.15 * angle_diff;
+        if (leads_to_unmapped) {
+          score += 1.20; // Bonus for doorway leading into unmapped area
+        }
+
+        if (score > highest_score) {
+          highest_score = score;
+          chosen_angle = alpha;
+          chosen_depth = forward_clear;
+          chosen_clearance_diff = (min_left < 900.0 && min_right < 900.0) ? (min_left - min_right) : 0.0;
+          found_candidate = true;
+        }
+      }
+    }
+
+    if (found_candidate) {
+      best_angle = chosen_angle;
+      best_depth = chosen_depth;
+      clearance_diff = chosen_clearance_diff;
+      return true;
+    }
+
+    return false;
+  }
+
   void on_person_detected(const std_msgs::msg::String::SharedPtr msg)
   {
     if (!is_following_) {
@@ -662,11 +839,20 @@ private:
 
       // 3. If no target locked or lost for too long (> max_lost_time_):
       const double time_since_seen = now().seconds() - last_seen_sec_;
-      if (target_it == candidates.end() && (!kf_.is_initialized() || locked_person_id_ < 0 || time_since_seen > max_lost_time_)) {
-        target_it = std::find_if(candidates.begin(), candidates.end(), [](const Candidate & c) {
-          return c.is_operator;
-        });
-        if (target_it == candidates.end()) {
+      const double allowed_max_lost = is_navigating_doorway_ ? 5.0 : max_lost_time_;
+      if (target_it == candidates.end() && (!kf_.is_initialized() || locked_person_id_ < 0 || time_since_seen > allowed_max_lost)) {
+        // Prioritaskan operator terdekat di depan robot
+        double min_op_dist = 999.0;
+        auto best_op_it = candidates.end();
+        for (auto it = candidates.begin(); it != candidates.end(); ++it) {
+          if (it->is_operator && it->dist < min_op_dist) {
+            min_op_dist = it->dist;
+            best_op_it = it;
+          }
+        }
+        if (best_op_it != candidates.end()) {
+          target_it = best_op_it;
+        } else {
           auto closest_it = std::min_element(candidates.begin(), candidates.end(), [](const Candidate & a, const Candidate & b) {
             return a.dist < b.dist;
           });
@@ -678,7 +864,7 @@ private:
         if (target_it != candidates.end()) {
           RCLCPP_INFO(
             get_logger(),
-            "\033[92m[FOLLOW] Target lock initialized: [ID %d] dist=%.2f m | bearing=%+.1f deg\033[0m",
+            "\033[92m[FOLLOW] Target lock initialized: [ID %d] dist=%.2f m | bearing=%+.1f deg (nearest operator)\033[0m",
             target_it->id, target_it->dist, target_it->bearing * 180.0 / M_PI);
           locked_person_id_ = target_it->id;
           kf_.init(target_it->rel_x, target_it->rel_y);
@@ -908,8 +1094,9 @@ private:
     // 6. Handle total occlusion (neither ZED nor LiDAR found target):
     if (!person_matched) {
       const double elapsed = now().seconds() - last_seen_sec_;
-      // DEAD-RECKONING: Track Kalman Filter prediction during short occlusion!
-      if (kf_.is_initialized() && elapsed <= occlusion_timeout_) {
+      // DEAD-RECKONING: Track Kalman Filter prediction during short occlusion / doorway traversal!
+      const double allowed_occlusion = is_navigating_doorway_ ? 4.5 : occlusion_timeout_;
+      if (kf_.is_initialized() && elapsed <= allowed_occlusion) {
         person_matched = true;
         is_predicting = true;
         rel_x = kf_.x();
@@ -1023,159 +1210,174 @@ private:
     double target_wz = 0.0;
     std::string status_str = "STOP";
 
-    // ---------------------------------------------------------------------
-    // A. ANGULAR ROTATION CONTROL: LOCK HEADING TO OPERATOR (ANTI-HUNTING)
-    // ---------------------------------------------------------------------
-    // Continuous smooth deadband:
-    const double deadband = is_moving_ ? deadband_moving_ : deadband_stop_;
-    double eff_bearing = 0.0;
-    if (direct_bearing > deadband) {
-      eff_bearing = direct_bearing - deadband;
-    } else if (direct_bearing < -deadband) {
-      eff_bearing = direct_bearing + deadband;
+    // 1. Ambil data LiDAR terbaru untuk deteksi rute dan penghindaran halangan
+    sensor_msgs::msg::LaserScan::SharedPtr scan;
+    {
+      std::lock_guard<std::mutex> lock(scan_mutex_);
+      scan = latest_scan_;
     }
 
-    // PD Controller for yaw:
-    target_wz = std::clamp(kp_yaw_ * eff_bearing + kd_yaw_ * d_bearing, -max_wz_, max_wz_);
+    double laser_tx = 0.0, laser_ty = 0.0, laser_yaw = 3.1415926535;
+    if (scan && !scan->ranges.empty()) {
+      try {
+        auto tf_laser = tf_buffer_->lookupTransform(
+          frame_base_, scan->header.frame_id, tf2::TimePointZero);
+        laser_tx = tf_laser.transform.translation.x;
+        laser_ty = tf_laser.transform.translation.y;
+        const auto & rq = tf_laser.transform.rotation;
+        const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
+        const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
+        laser_yaw = std::atan2(siny, cosy);
+      } catch (const tf2::TransformException &) {
+        laser_yaw = 3.1415926535;
+      }
+    }
+
+    // 2. Evaluasi apakah operator berada di luar dinding / terhalang rintangan
+    //    dan cari lorong/pintu keluar menuju area belum ter-mapping jika ada.
+    double best_opening_angle = 0.0;
+    double best_opening_depth = 0.0;
+    double opening_clearance_diff = 0.0;
+    bool navigating_opening = false;
+
+    if (scan && !scan->ranges.empty() && enable_avoidance_) {
+      navigating_opening = find_unmapped_or_doorway_opening(
+        scan, laser_tx, laser_ty, laser_yaw,
+        direct_bearing, direct_dist,
+        best_opening_angle, best_opening_depth, opening_clearance_diff);
+    }
+    is_navigating_doorway_ = navigating_opening;
 
     // ---------------------------------------------------------------------
-    // B. LINEAR TRANSLATION CONTROL: SIMULTANEOUS FORWARD AND ROTATION
+    // A. ANGULAR ROTATION CONTROL: HADAP LORONG PINTU ATAU OPERATOR
+    // ---------------------------------------------------------------------
+    if (navigating_opening) {
+      // Rotasi mengarah ke lorong pintu/pintu keluar yang aman
+      const double eff_bearing = best_opening_angle;
+      target_wz = std::clamp(kp_yaw_ * eff_bearing, -max_wz_, max_wz_);
+    } else {
+      // Continuous smooth deadband hadap operator langsung
+      const double deadband = is_moving_ ? deadband_moving_ : deadband_stop_;
+      double eff_bearing = 0.0;
+      if (direct_bearing > deadband) {
+        eff_bearing = direct_bearing - deadband;
+      } else if (direct_bearing < -deadband) {
+        eff_bearing = direct_bearing + deadband;
+      }
+      target_wz = std::clamp(kp_yaw_ * eff_bearing + kd_yaw_ * d_bearing, -max_wz_, max_wz_);
+    }
+
+    // ---------------------------------------------------------------------
+    // B. LINEAR TRANSLATION & OMNI LATERAL CONTROL
     // ---------------------------------------------------------------------
     if (is_moving_) {
-      // Forward speed proportional to distance error
       double v_desired = kp_dist_ * (direct_dist - stop_distance_);
       v_desired = std::clamp(v_desired, min_vx_, max_vx_);
 
-      // Limit speed during dead-reckoning occlusion
       if (is_predicting) {
         v_desired = std::min(v_desired, occlusion_max_vx_);
       }
 
-      // Target vx simultaneously with turning towards operator
-      if (std::abs(direct_bearing) > 1.10) {
-        // Operator is far to the side (>63 deg) or behind robot: in-place rotate first!
-        target_vx = 0.0;
+      if (navigating_opening) {
+        // Maju menyusuri lorong/pintu menuju area unmapped
+        target_vx = std::clamp(v_desired * std::max(0.15, std::cos(best_opening_angle)), 0.08, max_vx_ * 0.75);
+        // Omni centering di antara kusen pintu kiri dan kanan
+        target_vy = std::clamp(0.22 * opening_clearance_diff, -max_vy_, max_vy_);
+        status_str = "NAVIGATING DOORWAY / UNMAPPED OPENING";
       } else {
-        target_vx = v_desired * std::max(0.15, std::cos(direct_bearing));
+        // Follow operator langsung
+        if (std::abs(direct_bearing) > 1.10) {
+          target_vx = 0.0;
+        } else {
+          target_vx = v_desired * std::max(0.15, std::cos(direct_bearing));
+        }
+        target_vy = 0.0;
+        status_str = is_predicting ? "KALMAN PREDICTING (OCCLUDED)" : "FOLLOWING OPERATOR";
       }
-      target_vy = 0.0;
-      status_str = is_predicting ? "KALMAN PREDICTING (OCCLUDED)" : "FOLLOWING OPERATOR";
 
-      // --- ROBUST LIDAR OBSTACLE & WALL AVOIDANCE ---
-      bool obstacle_detected = false;
-      if (enable_avoidance_) {
-        sensor_msgs::msg::LaserScan::SharedPtr scan;
-        {
-          std::lock_guard<std::mutex> lock(scan_mutex_);
-          scan = latest_scan_;
+      // -------------------------------------------------------------------
+      // C. AVOIDANCE OBSTACLE MUTLAK (PENGHINDARAN HALANGAN WAJIB & AMAN)
+      // -------------------------------------------------------------------
+      if (scan && !scan->ranges.empty() && enable_avoidance_) {
+        double min_front_x = 999.0;
+        double min_critical_dist = 999.0;
+        double rep_y = 0.0;
+        double left_clearance = 0.0;
+        double right_clearance = 0.0;
+        int left_count = 0;
+        int right_count = 0;
+
+        const int num_readings = static_cast<int>(scan->ranges.size());
+        for (int i = 0; i < num_readings; ++i) {
+          const float r = scan->ranges[i];
+          if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) continue;
+
+          const double angle_laser = scan->angle_min + i * scan->angle_increment;
+          const double angle_base = normalize_angle(angle_laser + laser_yaw);
+
+          const double obs_x = laser_tx + r * std::cos(angle_base);
+          const double obs_y = laser_ty + r * std::sin(angle_base);
+
+          const double d_bot = std::hypot(obs_x, obs_y);
+          if (d_bot < footprint_radius_) continue; // filter refleksi bodi robot
+
+          if (d_bot < min_critical_dist) min_critical_dist = d_bot;
+
+          // Jangan anggap kaki operator sebagai halangan jika garis pandang langsung bebas
+          if (!navigating_opening && std::abs(angle_base - direct_bearing) < 0.30 && std::abs(r - direct_dist) < 0.40) {
+            continue;
+          }
+
+          // Bahaya koridor depan
+          if (obs_x > footprint_radius_ && std::abs(obs_y) < corridor_width_) {
+            if (obs_x < min_front_x) min_front_x = obs_x;
+          }
+
+          // Ruang kosong samping kiri/kanan
+          if (angle_base > 0.15 && angle_base < 1.20) {
+            left_clearance += std::min(r, 2.0f);
+            left_count++;
+          } else if (angle_base < -0.15 && angle_base > -1.20) {
+            right_clearance += std::min(r, 2.0f);
+            right_count++;
+          }
+
+          // Gaya repulsif lateral
+          if (obs_x > footprint_radius_ * 0.8 && r < obstacle_distance_) {
+            const double weight = (1.0 / std::max(0.20f, r)) - (1.0 / obstacle_distance_);
+            rep_y -= weight * std::sin(angle_base);
+          }
         }
 
-        if (scan && !scan->ranges.empty()) {
-          // Lookup transform from base_link to lidar sensor frame
-          // Default yaw = 3.14159 rad because Lidar is mounted backwards (180 deg)
-          double laser_tx = 0.0;
-          double laser_ty = 0.0;
-          double laser_yaw = 3.1415926535;
-          try {
-            auto tf_laser = tf_buffer_->lookupTransform(
-              frame_base_, scan->header.frame_id, tf2::TimePointZero);
-            laser_tx = tf_laser.transform.translation.x;
-            laser_ty = tf_laser.transform.translation.y;
-            const auto & rq = tf_laser.transform.rotation;
-            const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
-            const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
-            laser_yaw = std::atan2(siny, cosy);
-          } catch (const tf2::TransformException &) {
-            laser_yaw = 3.1415926535;
+        // 1. HARD BRAKING DEPAN (MUTLAK)
+        if (min_front_x <= min_stop_x_) {
+          target_vx = 0.0;
+          if (min_front_x <= (footprint_radius_ + 0.08)) {
+            target_vx = -0.06; // Micro-step back jika terlalu menempel halangan
           }
+        } else if (min_front_x < obstacle_distance_) {
+          const double brake_ratio = (min_front_x - min_stop_x_) / (obstacle_distance_ - min_stop_x_);
+          target_vx *= std::clamp(brake_ratio, 0.0, 1.0);
+        }
 
-          double rep_y = 0.0;
-          double min_front_x = 999.0;
-          double left_clearance = 0.0;
-          double right_clearance = 0.0;
-          int left_count = 0;
-          int right_count = 0;
-
-          const int num_readings = static_cast<int>(scan->ranges.size());
-          for (int i = 0; i < num_readings; ++i) {
-            const float r = scan->ranges[i];
-            if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) {
-              continue;
-            }
-
-            // Calculate beam angle in robot frame (base_link)
-            const double angle_laser = scan->angle_min + i * scan->angle_increment;
-            double angle_base = angle_laser + laser_yaw;
-            angle_base = std::atan2(std::sin(angle_base), std::cos(angle_base));
-
-            // Obstacle coordinate in base_link
-            const double obs_x = laser_tx + r * std::cos(angle_base);
-            const double obs_y = laser_ty + r * std::sin(angle_base);
-
-            // 1. FILTER ROBOT FOOTPRINT: Ignore robot body reflections
-            if (std::hypot(obs_x, obs_y) < footprint_radius_) {
-              continue;
-            }
-
-            // 2. Evaluate ONLY front sector in base_link (-75 deg to +75 deg)
-            if (angle_base < -1.30 || angle_base > 1.30) {
-              continue;
-            }
-
-            // 3. Evaluate left vs right front clearance
-            if (angle_base > 0.15 && angle_base < 1.20) {
-              left_clearance += std::min(r, 2.0f);
-              left_count++;
-            } else if (angle_base < -0.15 && angle_base > -1.20) {
-              right_clearance += std::min(r, 2.0f);
-              right_count++;
-            }
-
-            // 4. FILTER OPERATOR: Do not treat operator's legs as obstacle
-            if (std::abs(angle_base - direct_bearing) < 0.30 && std::abs(r - direct_dist) < 0.40) {
-              continue;
-            }
-
-            // 5. Danger corridor in front of robot
-            if (obs_x > footprint_radius_ && obs_x < obstacle_distance_ && std::abs(obs_y) < corridor_width_) {
-              obstacle_detected = true;
-              if (obs_x < min_front_x) {
-                min_front_x = obs_x;
-              }
-            }
-
-            // Lateral repulsive force (Y) for obstacle avoidance
-            if (obs_x > footprint_radius_ * 0.8 && r < obstacle_distance_) {
-              const double weight = (1.0 / std::max(0.20f, r)) - (1.0 / obstacle_distance_);
-              rep_y -= weight * std::sin(angle_base);
-            }
+        // 2. PERIMETER BODI KRITIS (MUTLAK)
+        if (min_critical_dist < (footprint_radius_ + 0.10)) {
+          target_vx = 0.0;
+          if (std::abs(rep_y) > 0.1) {
+            target_vy = std::clamp(0.22 * rep_y, -max_vy_, max_vy_);
           }
-
-          if (obstacle_detected) {
-            // 1. HARD SAFETY STOP / BRAKING:
-            if (min_front_x <= min_stop_x_) {
-              target_vx = 0.0;
-            } else if (min_front_x < obstacle_distance_) {
-              // Progressive braking approaching obstacle
-              double brake_ratio = (min_front_x - min_stop_x_) / (obstacle_distance_ - min_stop_x_);
-              target_vx *= std::clamp(brake_ratio, 0.0, 1.0);
-            }
-
-            // 2. TANGENTIAL STRAFE VIA OMNI (Avoid towards open space):
-            if (std::abs(rep_y) < 0.4) {
-              double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
-              double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
-              rep_y = (avg_left >= avg_right) ? 1.5 : -1.5;
-            }
-
-            double avoid_vy = std::clamp(0.22 * rep_y, -max_vy_, max_vy_);
-            target_vy = avoid_vy;
-            status_str = "AVOIDING WALL/OBSTACLE";
+        } else if (!navigating_opening && min_front_x < obstacle_distance_) {
+          if (std::abs(rep_y) < 0.4) {
+            double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
+            double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
+            rep_y = (avg_left >= avg_right) ? 1.5 : -1.5;
           }
+          target_vy = std::clamp(0.22 * rep_y, -max_vy_, max_vy_);
+          status_str = "AVOIDING WALL/OBSTACLE";
         }
       }
 
-      target_vx = std::clamp(target_vx, 0.0, max_vx_);
+      target_vx = std::clamp(target_vx, -0.06, max_vx_);
       target_vy = std::clamp(target_vy, -max_vy_, max_vy_);
     } else {
       target_vx = 0.0;
@@ -1307,6 +1509,7 @@ private:
     prev_bearing_ = 0.0;
     filtered_bearing_ = 0.0;
     has_prev_bearing_ = false;
+    is_navigating_doorway_ = false;
     last_seen_sec_ = now().seconds();
 
     resp->success = true;
@@ -1322,6 +1525,7 @@ private:
     is_nav_active_ = false;
     is_moving_ = false;
     is_peeking_avoidance_ = false;
+    is_navigating_doorway_ = false;
     current_cmd_vx_ = 0.0;
     current_cmd_vy_ = 0.0;
     current_cmd_wz_ = 0.0;
@@ -3816,6 +4020,10 @@ private:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
   rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_global_costmap_client_;
   rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_local_costmap_client_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
+  std::mutex map_mutex_;
+  nav_msgs::msg::OccupancyGrid::SharedPtr latest_map_;
+  bool is_navigating_doorway_{false};
 };
 
 int main(int argc, char ** argv)
