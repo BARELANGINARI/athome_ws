@@ -2099,9 +2099,13 @@ private:
           if (ans == 1) {
             publishCustomerHmi(false);
             publishExpression("HAPPY");
-            transitionTo(
-              RestaurantState::NAV_DELIVER_TO_CUSTOMER,
-              "Tray order confirmed (yes robot), proceeding to point 9");
+            speakAsync(
+              "Alright, thank you, I will deliver this order to the customer.",
+              [this]() {
+                transitionTo(
+                  RestaurantState::NAV_DELIVER_TO_CUSTOMER,
+                  "Tray order confirmed (yes robot), proceeding to point 9");
+              });
           } else if (ans == -1) {
             transitionTo(
               RestaurantState::WAIT_TRAY_RETRY_3S,
