@@ -394,8 +394,12 @@ public:
       };
 
     auto isWanted = [&](int id) {
-        if (classes == 1) return true;
         if (wanted.empty()) return true;
+        if (classes == 1) {
+          const std::string name = labelOf(id);
+          return (!name.empty() && wanted.count(name) > 0) ||
+                 wanted.count(default_label_) > 0;
+        }
         const std::string name = labelOf(id);
         if (!name.empty() && wanted.count(name) > 0) return true;
         if (classes == 80) {
@@ -1313,7 +1317,6 @@ private:
   bool is_help_me_carry_{true};
   bool is_receptionist_{true};
   bool is_restaurant_{false};
-  std::string guest_name_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_name_sub_;
 };
 
@@ -1410,7 +1413,6 @@ ZedNode::ZedNode()
         name.pop_back();
       }
       while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) name.erase(name.begin());
-      guest_name_ = name;
       pending_register_name_ = name;
       if (!name.empty()) {
         RCLCPP_INFO(get_logger(), "Guest name set: \"%s\"", name.c_str());
