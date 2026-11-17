@@ -19,7 +19,11 @@ except ImportError:
 class TextToSpeech:
     """Text-to-speech synthesis module to 16-bit mono WAV (Base64) via Piper TTS."""
 
-    def __init__(self, model_filename: str = "en_US-lessac-medium.onnx") -> None:
+    def __init__(
+        self,
+        model_filename: str = "en_US-lessac-medium.onnx",
+        use_cuda: bool = True,
+    ) -> None:
         self.piper: Optional["PiperVoice"] = None
         if not HAS_PIPER:
             logger.warning("piper-tts is not installed. TTS disabled.")
@@ -33,9 +37,19 @@ class TextToSpeech:
             return
 
         try:
-            logger.info("Loading Piper TTS model from: %s", model_path)
-            self.piper = PiperVoice.load(model_path)
-            logger.info("Piper TTS ready.")
+            logger.info("Loading Piper TTS model from: %s (use_cuda=%s)", model_path, use_cuda)
+            if use_cuda:
+                try:
+                    self.piper = PiperVoice.load(model_path, use_cuda=True)
+                    logger.info("Piper TTS ready on GPU (CUDA).")
+                    return
+                except Exception as cuda_exc:
+                    logger.warning(
+                        "Failed to initialize Piper TTS on CUDA (%s). Falling back to CPU.",
+                        cuda_exc,
+                    )
+            self.piper = PiperVoice.load(model_path, use_cuda=False)
+            logger.info("Piper TTS ready on CPU.")
         except Exception as exc:
             logger.error("Failed to load Piper model: %s", exc)
 
