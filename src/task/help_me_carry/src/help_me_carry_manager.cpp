@@ -776,7 +776,12 @@ private:
         if (tts_pub_->get_subscription_count() == 0) {
           return;
         }
-        transitionTo(TaskState::WAIT_WAKEWORD, "TTS ready, waiting for wakeword");
+        speakAsync(
+          "Im ready, please say Hello Robot to start the robot",
+          [this]() {
+            transitionTo(TaskState::WAIT_WAKEWORD, "TTS, ready waiting for wakeword");
+          }
+        );
         break;
 
       // ------------------------------------------------------------------------
