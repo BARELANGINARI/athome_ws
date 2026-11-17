@@ -27,7 +27,7 @@
 
     # Text-to-Speech (Piper)
     tts_model: "en_US-lessac-medium.onnx"
-    tts_use_cuda: true
+    tts_use_cuda: false
 
     # Web Server & NLU (Standalone Barelang HRI Server)
     nlu_threshold: 0.68
