@@ -83,11 +83,11 @@ help_me_carry_node:
     # -------------------------------------------------------------
     homing_queue_enabled: true                # true = aktifkan perilaku antri saat /homing, false = matikan (langsung ke origin tanpa antri)
     homing_queue_search_enabled: true         # true = aktifkan fungsi search sweep (+-20 deg kiri & kanan setiap 5s), false = matikan search sweep
-    homing_queue_start_delay: 10.0            # Durasi awal (detik) fokus navigasi homing dulu sebelum search & antri aktif
+    homing_queue_start_delay: 15.0            # Durasi awal (detik) fokus navigasi homing dulu sebelum search & antri aktif
     homing_queue_distance: 1.00               # Jarak target STOP di belakang orang antrian (1.0 meter)
     homing_queue_resume_distance: 1.70        # Jarak batas antri CRAWL — jika > ini, langsung resume Nav2 (meter)
     homing_queue_corridor: 1.00               # Lebar toleransi koridor path homing (meter) — orang dianggap menghalangi jika jarak ke path <= ini
-    homing_queue_max_detect_dist: 3.20        # Jarak maksimal deteksi orang (< 3.2 meter dari robot)
+    homing_queue_max_detect_dist: 2.30        # Jarak maksimal deteksi orang (< 3.2 meter dari robot)
     homing_queue_min_persons: 2               # Jumlah minimal orang berdekatan untuk dianggap antrian (opsi 4)
     homing_queue_inter_dist: 1.80             # Jarak maksimal x, y antar orang agar dianggap antrian (meter)
     homing_queue_crawl_speed: 0.10            # Kecepatan crawl mengikuti antrian (m/s) — lebih pelan = lebih sopan

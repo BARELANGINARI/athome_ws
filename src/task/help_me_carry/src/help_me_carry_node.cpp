@@ -278,13 +278,13 @@ public:
     homing_queue_distance_ = declare_parameter<double>("homing_queue_distance", 1.00);
     homing_queue_resume_distance_ = declare_parameter<double>("homing_queue_resume_distance", 1.50);
     homing_queue_corridor_ = declare_parameter<double>("homing_queue_corridor", 1.00);
-    homing_queue_max_detect_dist_ = declare_parameter<double>("homing_queue_max_detect_dist", 3.20);
+    homing_queue_max_detect_dist_ = declare_parameter<double>("homing_queue_max_detect_dist", 2.30);
     homing_queue_min_persons_ = declare_parameter<int>("homing_queue_min_persons", 2);
     homing_queue_inter_dist_ = declare_parameter<double>("homing_queue_inter_dist", 1.80);
     homing_queue_crawl_speed_ = declare_parameter<double>("homing_queue_crawl_speed", 0.10);
     homing_queue_wait_duration_ = declare_parameter<double>("homing_queue_wait_duration", 5.0);
     homing_queue_clear_hysteresis_ = declare_parameter<double>("homing_queue_clear_hysteresis", 0.75);
-    homing_queue_start_delay_ = declare_parameter<double>("homing_queue_start_delay", 10.0);
+    homing_queue_start_delay_ = declare_parameter<double>("homing_queue_start_delay", 15.0);
     homing_timeout_ = declare_parameter<double>("homing_timeout", 300.0);
 
     // Dynamic Parameter Reconfiguration Callback
@@ -3788,13 +3788,13 @@ private:
   double homing_queue_distance_{1.00};
   double homing_queue_resume_distance_{1.50};
   double homing_queue_corridor_{1.00};
-  double homing_queue_max_detect_dist_{3.20};
+  double homing_queue_max_detect_dist_{2.30};
   int homing_queue_min_persons_{2};
   double homing_queue_inter_dist_{1.80};
   double homing_queue_crawl_speed_{0.10};
   double homing_queue_wait_duration_{5.0};
   double homing_queue_clear_hysteresis_{0.75};
-  double homing_queue_start_delay_{12.0};
+  double homing_queue_start_delay_{15.0};
   double homing_timeout_{300.0};
   std::string person_back_topic_{"/vision/person_back"};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_back_sub_;

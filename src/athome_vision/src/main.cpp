@@ -1053,6 +1053,7 @@ private:
     }
   }
 
+public:
   static cv::Rect faceRegion(
     const cv::Rect & bbox, const std::vector<sl::float2> & kpt, int cols, int rows)
   {
@@ -1093,6 +1094,7 @@ private:
     return cv::Rect(x1, y1, x2 - x1, y2 - y1);
   }
 
+private:
   static cv::Mat letterboxBlob(
     const cv::Mat & bgr, const cv::Rect & roi, int size, bool nhwc)
   {
