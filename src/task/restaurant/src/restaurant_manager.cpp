@@ -234,6 +234,14 @@ public:
     declare_parameter<double>("order1_detect_timeout_sec", 8.0);
     declare_parameter<int>("max_customers", 2);
 
+    declare_parameter<double>("global_timeout_sec", 900.0);
+    declare_parameter<double>("dialog_reprompt_sec", 12.0);
+    declare_parameter<double>("wave_reprompt_sec", 10.0);
+    declare_parameter<double>("tts_min_timeout_sec", 4.0);
+    declare_parameter<double>("tts_sec_per_word", 0.5);
+    declare_parameter<double>("tts_timeout_margin_sec", 2.0);
+    declare_parameter<double>("nav_retry_cooldown_sec", 2.0);
+
     origin_x_ = get_parameter("origin_x").as_double();
     origin_y_ = get_parameter("origin_y").as_double();
     origin_yaw_ = get_parameter("origin_yaw").as_double();
@@ -246,6 +254,15 @@ public:
     nav_timeout_sec_ = get_parameter("nav_timeout_sec").as_double();
     order1_detect_timeout_sec_ = get_parameter("order1_detect_timeout_sec").as_double();
     max_customers_ = std::max(1, static_cast<int>(get_parameter("max_customers").as_int()));
+
+    global_timeout_sec_ = get_parameter("global_timeout_sec").as_double();
+    dialog_reprompt_sec_ = get_parameter("dialog_reprompt_sec").as_double();
+    wave_reprompt_sec_ = get_parameter("wave_reprompt_sec").as_double();
+    tts_min_timeout_sec_ = get_parameter("tts_min_timeout_sec").as_double();
+    tts_sec_per_word_ = get_parameter("tts_sec_per_word").as_double();
+    tts_timeout_margin_sec_ = get_parameter("tts_timeout_margin_sec").as_double();
+    nav_retry_cooldown_sec_ = get_parameter("nav_retry_cooldown_sec").as_double();
+    tts_timeout_sec_ = tts_min_timeout_sec_;
 
     // TF2 Buffer & Listener
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -261,6 +278,8 @@ public:
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/restaurant/status", 10);
     person_name_pub_ = create_publisher<std_msgs::msg::String>("/vision/set_person_name", 10);
+    hmi_customer_pub_ = create_publisher<std_msgs::msg::String>("/hmi/customer_display", 10);
+    face_expression_pub_ = create_publisher<std_msgs::msg::String>("/robot/expression", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -359,15 +378,15 @@ public:
 
 private:
   // ----------------------------------------------------------------------------
-  // Konstanta Waktu & Timeout
+  // Parameter Waktu & Timeout (Dapat dikonfigurasi via YAML)
   // ----------------------------------------------------------------------------
-  static constexpr double GLOBAL_TIMEOUT_SEC     = 900.0;
-  static constexpr double DIALOG_REPROMPT_SEC    = 12.0;
-  static constexpr double WAVE_REPROMPT_SEC      = 10.0;
-  static constexpr double TTS_MIN_TIMEOUT_SEC    = 4.0;
-  static constexpr double TTS_SEC_PER_WORD       = 0.5;
-  static constexpr double TTS_TIMEOUT_MARGIN_SEC = 2.0;
-  static constexpr double NAV_RETRY_COOLDOWN_SEC = 2.0;
+  double global_timeout_sec_{900.0};
+  double dialog_reprompt_sec_{12.0};
+  double wave_reprompt_sec_{10.0};
+  double tts_min_timeout_sec_{4.0};
+  double tts_sec_per_word_{0.5};
+  double tts_timeout_margin_sec_{2.0};
+  double nav_retry_cooldown_sec_{2.0};
 
   // ----------------------------------------------------------------------------
   // Parameter & State Variables
@@ -425,7 +444,7 @@ private:
   rclcpp::Time last_nav_fail_time_{0, 0, RCL_ROS_TIME};
 
   std::mutex tts_mutex_;
-  double tts_timeout_sec_{TTS_MIN_TIMEOUT_SEC};
+  double tts_timeout_sec_{4.0};
   std::function<void()> pending_tts_done_;
 
   std::mutex srv_mutex_;
@@ -445,6 +464,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tts_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr person_name_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr hmi_customer_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr face_expression_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
@@ -484,6 +505,45 @@ private:
       status_pub_->publish(msg);
     }
     RCLCPP_INFO(get_logger(), "\033[1;32m[RESTAURANT STATUS]\033[0m %s", text.c_str());
+  }
+
+  void publishCustomerHmi(bool show)
+  {
+    if (!hmi_customer_pub_) return;
+    std_msgs::msg::String msg;
+    if (show) {
+      std::string name, o1, o2;
+      int c_idx = 1;
+      {
+        std::lock_guard<std::mutex> lock(customer_mutex_);
+        name = current_customer_.name;
+        o1 = current_customer_.order_1;
+        o2 = current_customer_.order_2;
+        c_idx = customer_idx_;
+      }
+      std::ostringstream ss;
+      ss << "{\"action\":\"show\","
+         << "\"customer_idx\":" << c_idx << ","
+         << "\"name\":\"" << name << "\","
+         << "\"order1\":\"" << o1 << "\","
+         << "\"order2\":\"" << o2 << "\","
+         << "\"image_url\":\"captures/customer_latest.jpg\"}";
+      msg.data = ss.str();
+    } else {
+      msg.data = "{\"action\":\"hide\"}";
+    }
+    hmi_customer_pub_->publish(msg);
+    RCLCPP_INFO(get_logger(), "\033[1;36m[HMI DISPLAY]\033[0m Customer Order Card -> %s", show ? "SHOW" : "HIDE");
+  }
+
+  void publishExpression(const std::string & expr)
+  {
+    if (face_expression_pub_) {
+      std_msgs::msg::String msg;
+      msg.data = expr;
+      face_expression_pub_->publish(msg);
+      RCLCPP_INFO(get_logger(), "\033[1;35m[FACE EXPR]\033[0m Robot Eye Expression -> %s", expr.c_str());
+    }
   }
 
   void initCurrentCustomer(int idx)
@@ -530,6 +590,59 @@ private:
     state_enter_time_ = now();
     has_new_utterance_ = false;
     state_ = next_state;
+
+    // Sinkronisasi ekspresi mata robot ke HMI (athome_face)
+    switch (next_state) {
+      case RestaurantState::INIT:
+      case RestaurantState::COMPLETED:
+        publishExpression("IDLE");
+        break;
+      case RestaurantState::ANNOUNCE_SERVER:
+      case RestaurantState::DETECT_WAVE_HAND:
+        publishExpression("SEARCHING");
+        break;
+      case RestaurantState::NAV_TO_WAVING_CUSTOMER:
+        publishExpression("FOLLOWING");
+        break;
+      case RestaurantState::SAVE_CUSTOMER_POSE_ASK_NAME:
+      case RestaurantState::CAPTURE_CUSTOMER_FACE:
+      case RestaurantState::ASK_CUSTOMER_ORDER:
+      case RestaurantState::SPEAK_ORDER_CONFIRMATION:
+      case RestaurantState::ANNOUNCE_ORDER_TO_BARMAN:
+      case RestaurantState::GREET_DELIVERY_CUSTOMER:
+        publishExpression("GREETING");
+        break;
+      case RestaurantState::WAIT_CUSTOMER_NAME:
+      case RestaurantState::WAIT_CUSTOMER_ORDER:
+      case RestaurantState::WAIT_ORDER_CONFIRMATION:
+      case RestaurantState::WAIT_TRAY_CONFIRMATION:
+        publishExpression("LISTENING");
+        break;
+      case RestaurantState::NAV_TO_ORIGIN_BARMAN:
+        publishExpression("GREETING");
+        break;
+      case RestaurantState::DETECT_AND_NAV_TO_ORDER1:
+        publishExpression("SEARCHING");
+        break;
+      case RestaurantState::GRASP_ORDER1:
+        publishExpression("GRABBING");
+        break;
+      case RestaurantState::NAV_DELIVER_TO_CUSTOMER:
+        publishCustomerHmi(false);
+        publishExpression("HAPPY");
+        break;
+      case RestaurantState::WAIT_5S_CUSTOMER_TAKE_TRAY:
+        publishExpression("SUCCESS");
+        break;
+      case RestaurantState::NAV_RETURN_ORIGIN_AFTER_SERVE:
+        publishExpression("FOLLOWING");
+        break;
+      case RestaurantState::FINISH_TASK:
+        publishExpression("SUCCESS");
+        break;
+      default:
+        break;
+    }
   }
 
   // ============================================================================
@@ -725,7 +838,7 @@ private:
   // ============================================================================
   // HELPER TEXT-TO-SPEECH (TTS) & SPEECH-TO-TEXT (STT) PARSING
   // ============================================================================
-  static double estimateTtsTimeout(const std::string & text)
+  double estimateTtsTimeout(const std::string & text) const
   {
     size_t words = 0;
     bool in_word = false;
@@ -738,8 +851,8 @@ private:
       }
     }
     return std::max(
-      TTS_MIN_TIMEOUT_SEC,
-      static_cast<double>(words) * TTS_SEC_PER_WORD + TTS_TIMEOUT_MARGIN_SEC);
+      tts_min_timeout_sec_,
+      static_cast<double>(words) * tts_sec_per_word_ + tts_timeout_margin_sec_);
   }
 
   void speakAsync(const std::string & text, std::function<void()> on_done = nullptr)
@@ -1332,7 +1445,7 @@ private:
     const RestaurantState current_state = state_.load();
 
     // 1. Global timeout watchdog
-    if ((now() - task_start_time_).seconds() > GLOBAL_TIMEOUT_SEC &&
+    if ((now() - task_start_time_).seconds() > global_timeout_sec_ &&
         current_state != RestaurantState::COMPLETED &&
         current_state != RestaurantState::ABORTED)
     {
@@ -1501,7 +1614,7 @@ private:
               }
             },
             10.0);
-        } else if ((now() - last_wave_prompt_time_).seconds() >= WAVE_REPROMPT_SEC) {
+        } else if ((now() - last_wave_prompt_time_).seconds() >= wave_reprompt_sec_) {
           last_wave_prompt_time_ = now();
           speakAsync("if you would like to place an order, please wave your hand");
         }
@@ -1513,7 +1626,7 @@ private:
       // ========================================================================
       case RestaurantState::NAV_TO_WAVING_CUSTOMER:
         if (last_nav_fail_time_.nanoseconds() > 0 &&
-            (now() - last_nav_fail_time_).seconds() < NAV_RETRY_COOLDOWN_SEC)
+            (now() - last_nav_fail_time_).seconds() < nav_retry_cooldown_sec_)
         {
           return;
         }
@@ -1590,7 +1703,7 @@ private:
             state_enter_time_ = now();
             speakAsync("Hello, Welcome to the bar!! Can you please tell your name?");
           }
-        } else if ((now() - state_enter_time_).seconds() > DIALOG_REPROMPT_SEC) {
+        } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
           speakAsync("Hello, Welcome to the bar!! Can you please tell your name?");
         }
@@ -1684,7 +1797,7 @@ private:
             state_enter_time_ = now();
             speakAsync("May i take your order please?");
           }
-        } else if ((now() - state_enter_time_).seconds() > DIALOG_REPROMPT_SEC) {
+        } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
           speakAsync("May i take your order please?");
         }
@@ -1734,6 +1847,7 @@ private:
           }
           const int ans = parseYesNoIntent(raw);
           if (ans == 1) {
+            publishCustomerHmi(true);
             speakAsync(
               "alright thank you, i will come back to pick up the order you requested",
               [this]() {
@@ -1758,7 +1872,7 @@ private:
             state_enter_time_ = now();
             speakAsync("Please answer with yes if the order has correct and answer with no, if the order is incorrect");
           }
-        } else if ((now() - state_enter_time_).seconds() > DIALOG_REPROMPT_SEC) {
+        } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
           std::string o1, o2;
           {
@@ -1775,7 +1889,7 @@ private:
       // ========================================================================
       case RestaurantState::NAV_TO_ORIGIN_BARMAN:
         if (last_nav_fail_time_.nanoseconds() > 0 &&
-            (now() - last_nav_fail_time_).seconds() < NAV_RETRY_COOLDOWN_SEC)
+            (now() - last_nav_fail_time_).seconds() < nav_retry_cooldown_sec_)
         {
           return;
         }
@@ -1901,6 +2015,8 @@ private:
           }
           const int ans = parseYesNoIntent(raw);
           if (ans == 1) {
+            publishCustomerHmi(false);
+            publishExpression("HAPPY");
             transitionTo(
               RestaurantState::NAV_DELIVER_TO_CUSTOMER,
               "Tray order confirmed (yes robot), proceeding to point 9");
@@ -1912,7 +2028,7 @@ private:
             state_enter_time_ = now();
             speakAsync("is the order had take in the tray, please answer with yes robot or no robot");
           }
-        } else if ((now() - state_enter_time_).seconds() > DIALOG_REPROMPT_SEC) {
+        } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
           speakAsync("is the order had take in the tray, please answer with yes robot or no robot");
         }
@@ -1931,7 +2047,7 @@ private:
       // ========================================================================
       case RestaurantState::NAV_DELIVER_TO_CUSTOMER: {
         if (last_nav_fail_time_.nanoseconds() > 0 &&
-            (now() - last_nav_fail_time_).seconds() < NAV_RETRY_COOLDOWN_SEC)
+            (now() - last_nav_fail_time_).seconds() < nav_retry_cooldown_sec_)
         {
           return;
         }
@@ -2057,6 +2173,7 @@ private:
 
       case RestaurantState::WAIT_5S_CUSTOMER_TAKE_TRAY:
         if ((now() - state_enter_time_).seconds() >= 5.0) {
+          publishCustomerHmi(false);
           speakAsync("thank you for your order", [this]() {
             transitionTo(
               RestaurantState::NAV_RETURN_ORIGIN_AFTER_SERVE,
@@ -2070,7 +2187,7 @@ private:
       // ========================================================================
       case RestaurantState::NAV_RETURN_ORIGIN_AFTER_SERVE:
         if (last_nav_fail_time_.nanoseconds() > 0 &&
-            (now() - last_nav_fail_time_).seconds() < NAV_RETRY_COOLDOWN_SEC)
+            (now() - last_nav_fail_time_).seconds() < nav_retry_cooldown_sec_)
         {
           return;
         }
@@ -2103,6 +2220,7 @@ private:
         break;
 
       case RestaurantState::FINISH_TASK:
+        publishCustomerHmi(false);
         speakAsync("completed restaurant task", [this]() {
           publishStatus("completed restaurant task");
           transitionTo(RestaurantState::COMPLETED, "Restaurant task completed");

@@ -59,8 +59,11 @@ class RobotFaceNode(Node):
         self.create_subscription(
             String, "/hri/tts_say", self._on_tts_say_received, 10
         )
+        self.create_subscription(
+            String, "/hmi/customer_display", self._on_customer_display_received, 10
+        )
 
-        logger.info("RobotFaceNode ready. Listening on /robot/expression")
+        logger.info("RobotFaceNode ready. Listening on /robot/expression & /hmi/customer_display")
 
     def _find_web_dir(self) -> Path:
         current_file = Path(__file__).resolve()
@@ -154,6 +157,17 @@ class RobotFaceNode(Node):
         text = msg.data.strip()
         if text:
             self.broadcast({"type": "TTS_PLAY", "text": text})
+
+    def _on_customer_display_received(self, msg: String) -> None:
+        raw = msg.data.strip()
+        if not raw:
+            return
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = {"action": "show", "name": raw}
+        logger.info("[HMI] Broadcasting customer display: %s", payload.get("action"))
+        self.broadcast({"type": "CUSTOMER_DISPLAY", "payload": payload})
 
     def launch_kiosk_browser(self) -> None:
         if not self.launch_browser:

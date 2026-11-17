@@ -16,8 +16,19 @@ def generate_launch_description():
         description="Path to ROS 2 parameters YAML file for HRI nodes",
     )
 
+    task_params_file_arg = DeclareLaunchArgument(
+        "task_params_file",
+        default_value=PathJoinSubstitution([
+            FindPackageShare("help_me_carry"),
+            "config",
+            "params.yaml",
+        ]),
+        description="Path to Help Me Carry task parameters YAML file",
+    )
+
     return LaunchDescription([
         params_file_arg,
+        task_params_file_arg,
         Node(
             package="athome_hri",
             executable="stt_engine_node",
@@ -39,6 +50,7 @@ def generate_launch_description():
             executable="help_me_carry_manager",
             name="help_me_carry_manager",
             output="screen",
+            parameters=[LaunchConfiguration("task_params_file")],
         ),
     ])
 

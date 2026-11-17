@@ -32,4 +32,3 @@ arm_motion_server:
       servo_4: { center_tick: 185, cw_limit: 10, ccw_limit: 1010 }
       servo_5: { center_tick: 834, cw_limit: 10, ccw_limit: 1010 }
       servo_6: { center_tick: 348, cw_limit: 333, ccw_limit: 730 }
-

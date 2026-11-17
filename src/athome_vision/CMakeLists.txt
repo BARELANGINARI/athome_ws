@@ -71,26 +71,6 @@ set_target_properties(vision PROPERTIES
   INSTALL_RPATH "${ONNXRUNTIME_LIBDIR}"
   BUILD_WITH_INSTALL_RPATH TRUE)
 
-add_executable(zed src/main.cpp)
-target_include_directories(zed PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${CMAKE_CURRENT_SOURCE_DIR}
-  ${ZED_INCLUDE_DIRS}
-  ${CUDAToolkit_INCLUDE_DIRS}
-  ${OpenCV_INCLUDE_DIRS}
-  ${ONNXRUNTIME_INCLUDE}
-)
-ament_target_dependencies(zed
-  rclcpp std_msgs ament_index_cpp)
-target_link_libraries(zed
-  ${CUDA_cudart_LIBRARY}
-  ${OpenCV_LIBS}
-  ${ZED_LIBRARIES}
-  ${ONNXRUNTIME_LIB}
-)
-set_target_properties(zed PROPERTIES
-  INSTALL_RPATH "${ONNXRUNTIME_LIBDIR}"
-  BUILD_WITH_INSTALL_RPATH TRUE)
 add_executable(record src/record.cpp)
 target_include_directories(record PRIVATE
   ${ZED_INCLUDE_DIRS}
@@ -102,12 +82,13 @@ target_link_libraries(record
   ${ZED_LIBRARIES}
 )
 
-install(TARGETS vision zed record
+install(TARGETS vision record
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
+install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY models/ DESTINATION share/${PROJECT_NAME}/models)
 install(DIRECTORY scripts/ DESTINATION share/${PROJECT_NAME}/scripts)
 
