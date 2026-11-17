@@ -280,6 +280,7 @@ public:
     person_name_pub_ = create_publisher<std_msgs::msg::String>("/vision/set_person_name", 10);
     hmi_customer_pub_ = create_publisher<std_msgs::msg::String>("/hmi/customer_display", 10);
     face_expression_pub_ = create_publisher<std_msgs::msg::String>("/robot/expression", 10);
+    arm_target_pub_ = create_publisher<std_msgs::msg::String>("/arm/target_point", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -427,6 +428,10 @@ private:
   double last_nav_goal_y_{0.0};
   double last_nav_goal_yaw_{0.0};
   std::vector<DetectedItem> detected_items_;
+  bool has_last_order1_3d_{false};
+  double last_order1_x_{0.0};
+  double last_order1_y_{0.0};
+  double last_order1_z_{0.0};
 
   // Data STT / Transkripsi Suara
   std::mutex stt_mutex_;
@@ -466,6 +471,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr person_name_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr hmi_customer_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr face_expression_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr arm_target_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
@@ -559,6 +565,7 @@ private:
       wave_detected_ = false;
       has_waving_person_coords_ = false;
       detected_items_.clear();
+      has_last_order1_3d_ = false;
     }
     if (person_name_pub_) {
       std_msgs::msg::String msg;
@@ -1287,7 +1294,8 @@ private:
   }
 
   // Mencari posisi 3D dari {order_1} yang terdeteksi kamera
-  bool findOrder1Position(const std::string & target_order_name, double & out_x, double & out_y)
+  bool findOrder1Position(
+    const std::string & target_order_name, double & out_x, double & out_y, double & out_z)
   {
     std::lock_guard<std::mutex> lock(vision_mutex_);
     if (detected_items_.empty()) {
@@ -1305,6 +1313,7 @@ private:
       {
         out_x = item.x;
         out_y = item.y;
+        out_z = item.z;
         return true;
       }
     }
@@ -1314,10 +1323,17 @@ private:
       if (item.has_3d) {
         out_x = item.x;
         out_y = item.y;
+        out_z = item.z;
         return true;
       }
     }
     return false;
+  }
+
+  bool findOrder1Position(const std::string & target_order_name, double & out_x, double & out_y)
+  {
+    double unused_z = 0.0;
+    return findOrder1Position(target_order_name, out_x, out_y, unused_z);
   }
 
   // ============================================================================
@@ -1938,12 +1954,19 @@ private:
           o1 = current_customer_.order_1;
         }
 
-        double ox = 0.0, oy = 0.0;
-        if (findOrder1Position(o1, ox, oy)) {
+        double ox = 0.0, oy = 0.0, oz = 0.0;
+        if (findOrder1Position(o1, ox, oy, oz)) {
+          {
+            std::lock_guard<std::mutex> lock(vision_mutex_);
+            last_order1_x_ = ox;
+            last_order1_y_ = oy;
+            last_order1_z_ = oz;
+            has_last_order1_3d_ = true;
+          }
           RCLCPP_INFO(
             get_logger(),
-            "\033[1;32m[ORDER_1 DETECTED]\033[0m '%s' at (x=%.2f, y=%.2f). Navigating to position...",
-            o1.c_str(), ox, oy);
+            "\033[1;32m[ORDER_1 DETECTED]\033[0m '%s' at (x=%.2f, y=%.2f, z=%.2f). Navigating to position...",
+            o1.c_str(), ox, oy, oz);
           navigateToRelativeOrMapTargetAsync(
             ox, oy, object_standoff_dist_,
             [this](bool /*nav_ok*/) {
@@ -1963,7 +1986,35 @@ private:
         break;
       }
 
-      case RestaurantState::GRASP_ORDER1:
+      case RestaurantState::GRASP_ORDER1: {
+        std::string o1;
+        {
+          std::lock_guard<std::mutex> lock(customer_mutex_);
+          o1 = current_customer_.order_1;
+        }
+        double tx = 0.0, ty = 0.0, tz = 0.0;
+        bool has_target_3d = findOrder1Position(o1, tx, ty, tz);
+        if (!has_target_3d) {
+          std::lock_guard<std::mutex> lock(vision_mutex_);
+          if (has_last_order1_3d_) {
+            tx = last_order1_x_;
+            ty = last_order1_y_;
+            tz = last_order1_z_;
+            has_target_3d = true;
+          }
+        }
+        if (has_target_3d && arm_target_pub_) {
+          std_msgs::msg::String target_msg;
+          std::ostringstream tss;
+          tss << tx << "," << ty << "," << tz;
+          target_msg.data = tss.str();
+          arm_target_pub_->publish(target_msg);
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;36m[ARM TARGET]\033[0m Published /arm/target_point: (%s)",
+            target_msg.data.c_str());
+        }
+
         callTrigger(
           arm_grab_simple_client_, "/arm/ambil_tas_simple",
           [this](bool ok, const std::string & msg) {
@@ -1987,6 +2038,7 @@ private:
           },
           25.0);
         break;
+      }
 
       case RestaurantState::WAIT_TRAY_SILENT_5S:
         if ((now() - state_enter_time_).seconds() >= 5.0) {

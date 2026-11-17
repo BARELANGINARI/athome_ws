@@ -14,6 +14,7 @@
 #include <mutex>
 
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
@@ -113,11 +114,64 @@ public:
         baudrate_ = this->get_parameter("baudrate").as_int();
         motions_dir_ = this->get_parameter("motions_dir").as_string();
 
+        this->declare_parameter<bool>("ik.enabled", true);
+        this->declare_parameter<double>("ik.l1_m", 0.21);
+        this->declare_parameter<double>("ik.l2_m", 0.075);
+        this->declare_parameter<double>("ik.shoulder_x_m", 0.13);
+        this->declare_parameter<double>("ik.shoulder_z_m", 0.61);
+        this->declare_parameter<double>("ik.j1_zero_offset_deg", 90.0);
+        this->declare_parameter<double>("ik.j2_zero_offset_deg", 0.0);
+        this->declare_parameter<double>("ik.j1_sign", -1.0);
+        this->declare_parameter<double>("ik.j2_sign", 1.0);
+        this->declare_parameter<bool>("ik.elbow_up", true);
+        this->declare_parameter<bool>("ik.clamp_to_workspace", true);
+        this->declare_parameter<double>("ik.max_reach_margin_m", 0.08);
+        this->declare_parameter<double>("ik.pregrasp_dx_m", -0.04);
+        this->declare_parameter<double>("ik.pregrasp_dz_m", 0.02);
+        this->declare_parameter<double>("ik.carry_j1_deg", 0.0);
+        this->declare_parameter<double>("ik.carry_j2_deg", 0.0);
+        this->declare_parameter<double>("ik.target_timeout_sec", 5.0);
+        this->declare_parameter<std::string>("ik.fallback_motion", "ambil_tas_simple");
+
+        ik_enabled_            = this->get_parameter("ik.enabled").as_bool();
+        ik_l1_m_               = this->get_parameter("ik.l1_m").as_double();
+        ik_l2_m_               = this->get_parameter("ik.l2_m").as_double();
+        ik_shoulder_x_m_       = this->get_parameter("ik.shoulder_x_m").as_double();
+        ik_shoulder_z_m_       = this->get_parameter("ik.shoulder_z_m").as_double();
+        ik_j1_zero_offset_deg_ = this->get_parameter("ik.j1_zero_offset_deg").as_double();
+        ik_j2_zero_offset_deg_ = this->get_parameter("ik.j2_zero_offset_deg").as_double();
+        ik_j1_sign_            = this->get_parameter("ik.j1_sign").as_double();
+        ik_j2_sign_            = this->get_parameter("ik.j2_sign").as_double();
+        ik_elbow_up_           = this->get_parameter("ik.elbow_up").as_bool();
+        ik_clamp_workspace_    = this->get_parameter("ik.clamp_to_workspace").as_bool();
+        ik_max_reach_margin_m_ = this->get_parameter("ik.max_reach_margin_m").as_double();
+        ik_pregrasp_dx_m_      = this->get_parameter("ik.pregrasp_dx_m").as_double();
+        ik_pregrasp_dz_m_      = this->get_parameter("ik.pregrasp_dz_m").as_double();
+        ik_carry_j1_deg_       = this->get_parameter("ik.carry_j1_deg").as_double();
+        ik_carry_j2_deg_       = this->get_parameter("ik.carry_j2_deg").as_double();
+        ik_target_timeout_sec_ = this->get_parameter("ik.target_timeout_sec").as_double();
+        ik_fallback_motion_    = this->get_parameter("ik.fallback_motion").as_string();
+
+        target_point_sub_ = this->create_subscription<std_msgs::msg::String>(
+            "/arm/target_point", 10,
+            std::bind(&ArmMotionServer::onTargetPoint, this, std::placeholders::_1)
+        );
+
         // Menambahkan service untuk motion arm
 
         ambil_tas_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "/arm/motion_task_1",
             std::bind(&ArmMotionServer::handleAmbilTas, this, std::placeholders::_1, std::placeholders::_2)
+        );
+
+        ambil_tas_simple_srv_ = this->create_service<std_srvs::srv::Trigger>(
+            "/arm/ambil_tas_simple",
+            std::bind(&ArmMotionServer::handleAmbilTasSimple, this, std::placeholders::_1, std::placeholders::_2)
+        );
+
+        release_gripper_srv_ = this->create_service<std_srvs::srv::Trigger>(
+            "/arm/release_gripper",
+            std::bind(&ArmMotionServer::handleReleaseGripper, this, std::placeholders::_1, std::placeholders::_2)
         );
 
         letakkan_tas_srv_ = this->create_service<std_srvs::srv::Trigger>(
@@ -172,7 +226,9 @@ public:
 
         RCLCPP_INFO(this->get_logger(), "Arm Motion Server ready.");
         RCLCPP_INFO(this->get_logger(), "Port: %s, Baudrate: %d", port_name_.c_str(), baudrate_);
-        RCLCPP_INFO(this->get_logger(), "Services: /arm/motion_tas_1, /arm/letakkan_tas, /arm/play_motion, /arm/point_position, /arm/free, /arm/relax");
+        RCLCPP_INFO(this->get_logger(), "IK enabled=%s (L1=%.3f m, L2=%.3f m, shoulder=[%.3f, %.3f] m)",
+                    ik_enabled_ ? "true" : "false", ik_l1_m_, ik_l2_m_, ik_shoulder_x_m_, ik_shoulder_z_m_);
+        RCLCPP_INFO(this->get_logger(), "Services: /arm/motion_task_1, /arm/ambil_tas_simple, /arm/release_gripper, /arm/letakkan_tas, /arm/play_motion, /arm/point_position, /arm/free, /arm/relax");
 
         // Initialize hardware connection
         if (initHardware()) {
@@ -192,7 +248,37 @@ private:
     std::string motions_dir_;
     std::mutex hardware_mutex_;
 
+    bool   ik_enabled_            = true;
+    double ik_l1_m_               = 0.21;
+    double ik_l2_m_               = 0.075;
+    double ik_shoulder_x_m_       = 0.13;
+    double ik_shoulder_z_m_       = 0.61;
+    double ik_j1_zero_offset_deg_ = 90.0;
+    double ik_j2_zero_offset_deg_ = 0.0;
+    double ik_j1_sign_            = -1.0;
+    double ik_j2_sign_            = 1.0;
+    bool   ik_elbow_up_           = true;
+    bool   ik_clamp_workspace_    = true;
+    double ik_max_reach_margin_m_ = 0.08;
+    double ik_pregrasp_dx_m_      = -0.04;
+    double ik_pregrasp_dz_m_      = 0.02;
+    double ik_carry_j1_deg_       = 0.0;
+    double ik_carry_j2_deg_       = 0.0;
+    double ik_target_timeout_sec_ = 5.0;
+    std::string ik_fallback_motion_ = "ambil_tas_simple";
+
+    std::mutex target_mutex_;
+    double target_x_ = 0.0;
+    double target_y_ = 0.0;
+    double target_z_ = 0.0;
+    rclcpp::Time target_stamp_{0, 0, RCL_ROS_TIME};
+    bool has_target_ = false;
+
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr target_point_sub_;
+
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_tas_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_tas_simple_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr release_gripper_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr letakkan_tas_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr play_motion_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr point_pos_srv_;
@@ -754,6 +840,192 @@ private:
         } catch (const std::exception &e) {
             error_msg = std::string("Motion execution error: ") + e.what();
             return false;
+        }
+    }
+
+    void onTargetPoint(const std_msgs::msg::String::SharedPtr msg) {
+        if (!msg || msg->data.empty()) return;
+        std::string s = msg->data;
+        for (char &c : s) {
+            if (c == ',' || c == ';') c = ' ';
+        }
+        std::stringstream ss(s);
+        double x = 0.0, y = 0.0, z = 0.0;
+        if (ss >> x >> y >> z) {
+            if (std::isfinite(x) && std::isfinite(y) && std::isfinite(z)) {
+                std::lock_guard<std::mutex> lock(target_mutex_);
+                target_x_ = x;
+                target_y_ = y;
+                target_z_ = z;
+                target_stamp_ = this->now();
+                has_target_ = true;
+                RCLCPP_INFO(this->get_logger(), "[TargetPoint] Updated target: (x=%.3f, y=%.3f, z=%.3f)", x, y, z);
+            }
+        }
+    }
+
+    bool solvePlanarIK(double target_x, double target_z, double &out_j1_deg, double &out_j2_deg) {
+        const double dx = target_x - ik_shoulder_x_m_;
+        const double dz = target_z - ik_shoulder_z_m_;
+        double r = std::hypot(dx, dz);
+
+        const double max_reach = ik_l1_m_ + ik_l2_m_;
+        const double min_reach = std::fabs(ik_l1_m_ - ik_l2_m_);
+
+        if (r > max_reach) {
+            if (!ik_clamp_workspace_ || (r - max_reach) > ik_max_reach_margin_m_) {
+                RCLCPP_WARN(this->get_logger(),
+                    "[IK] Target (dx=%.3f, dz=%.3f, r=%.3f m) di luar jangkauan maks %.3f m!",
+                    dx, dz, r, max_reach);
+                return false;
+            }
+            r = max_reach - 1e-4;
+        } else if (r < min_reach) {
+            if (!ik_clamp_workspace_) {
+                RCLCPP_WARN(this->get_logger(),
+                    "[IK] Target (dx=%.3f, dz=%.3f, r=%.3f m) terlalu dekat (< %.3f m)!",
+                    dx, dz, r, min_reach);
+                return false;
+            }
+            r = min_reach + 1e-4;
+        }
+
+        const double cos_q2 = std::clamp(
+            (r * r - ik_l1_m_ * ik_l1_m_ - ik_l2_m_ * ik_l2_m_) / (2.0 * ik_l1_m_ * ik_l2_m_),
+            -1.0, 1.0);
+        const double sin_q2 = (ik_elbow_up_ ? -1.0 : 1.0) * std::sqrt(std::max(0.0, 1.0 - cos_q2 * cos_q2));
+        const double q2_rad = std::atan2(sin_q2, cos_q2);
+
+        const double phi = std::atan2(dz, dx);
+        const double k1  = ik_l1_m_ + ik_l2_m_ * cos_q2;
+        const double k2  = ik_l2_m_ * sin_q2;
+        const double q1_rad = phi - std::atan2(k2, k1);
+
+        const double q1_deg = q1_rad * 180.0 / M_PI;
+        const double q2_deg = q2_rad * 180.0 / M_PI;
+
+        out_j1_deg = (q1_deg - ik_j1_zero_offset_deg_) * ik_j1_sign_;
+        out_j2_deg = (q2_deg - ik_j2_zero_offset_deg_) * ik_j2_sign_;
+
+        if (std::fabs(out_j1_deg) > WORK_RANGE_DEG || std::fabs(out_j2_deg) > WORK_RANGE_DEG) {
+            RCLCPP_WARN(this->get_logger(), "[IK] Solusi melanggar batas kerja: J1=%.1f, J2=%.1f", out_j1_deg, out_j2_deg);
+            return false;
+        }
+        return true;
+    }
+
+    bool executeDynamicGrasp(double tx, double tz, std::string &error_msg) {
+        if (!initHardware()) {
+            error_msg = "Failed to connect to Dynamixel hardware on port " + port_name_;
+            return false;
+        }
+
+        double grasp_j1 = 0.0, grasp_j2 = 0.0;
+        if (!solvePlanarIK(tx, tz, grasp_j1, grasp_j2)) {
+            error_msg = "IK solution out of workspace";
+            return false;
+        }
+
+        double pre_j1 = grasp_j1, pre_j2 = grasp_j2;
+        if (!solvePlanarIK(tx + ik_pregrasp_dx_m_, tz + ik_pregrasp_dz_m_, pre_j1, pre_j2)) {
+            pre_j1 = grasp_j1;
+            pre_j2 = grasp_j2;
+        }
+
+        RCLCPP_INFO(this->get_logger(),
+            "[DynamicGrasp] Target (x=%.3f, z=%.3f) -> pre=(%.2f, %.2f) deg, grasp=(%.2f, %.2f) deg",
+            tx, tz, pre_j1, pre_j2, grasp_j1, grasp_j2);
+
+        try {
+            double cur[3] = {0.0, 0.0, 0.0};
+            readCurrentPose(cur);
+            dynamixel::GroupSyncWrite gsw(portHandler, packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
+            lockCurrentPose(gsw, cur);
+
+            releaseGripper(gsw, cur, DEFAULT_RELEASE_DEG);
+
+            double pre_target[3]   = { pre_j1,   pre_j2,   cur[2] };
+            double grasp_target[3] = { grasp_j1, grasp_j2, cur[2] };
+            moveSmooth(gsw, cur, pre_target, 1.2);
+            moveSmooth(gsw, cur, grasp_target, 0.8);
+
+            adaptiveGrasp(cur[2], DEFAULT_GRASP_LOAD);
+
+            double carry_target[3] = { ik_carry_j1_deg_, ik_carry_j2_deg_, cur[2] };
+            moveSmooth(gsw, cur, carry_target, 1.5);
+            return true;
+        } catch (const std::exception &e) {
+            error_msg = std::string("Dynamic grasp error: ") + e.what();
+            return false;
+        }
+    }
+
+    void handleAmbilTasSimple(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        std::lock_guard<std::mutex> lock(hardware_mutex_);
+
+        double tx = 0.0, tz = 0.0;
+        bool use_dynamic_ik = false;
+        if (ik_enabled_) {
+            std::lock_guard<std::mutex> tlock(target_mutex_);
+            if (has_target_ && (this->now() - target_stamp_).seconds() <= ik_target_timeout_sec_) {
+                tx = target_x_;
+                tz = target_z_;
+                use_dynamic_ik = true;
+            }
+        }
+
+        std::string err;
+        if (use_dynamic_ik) {
+            RCLCPP_INFO(this->get_logger(), "[Service Call] /arm/ambil_tas_simple executing dynamic IK grasp (x=%.3f, z=%.3f)...", tx, tz);
+            if (executeDynamicGrasp(tx, tz, err)) {
+                response->success = true;
+                response->message = "Dynamic IK grasp executed successfully.";
+                RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());
+                return;
+            }
+            RCLCPP_WARN(this->get_logger(), "[DynamicGrasp] Gagal (%s), fallback ke motion '%s'...", err.c_str(), ik_fallback_motion_.c_str());
+        } else {
+            RCLCPP_INFO(this->get_logger(), "[Service Call] /arm/ambil_tas_simple tanpa target segar, menjalankan motion '%s'...", ik_fallback_motion_.c_str());
+        }
+
+        if (runMotionByName(ik_fallback_motion_, err) || runMotionByName("motion_task_1", err)) {
+            response->success = true;
+            response->message = "Fallback motion executed successfully.";
+            RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());
+        } else {
+            response->success = false;
+            response->message = err;
+            RCLCPP_ERROR(this->get_logger(), "%s", err.c_str());
+        }
+    }
+
+    void handleReleaseGripper(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        std::lock_guard<std::mutex> lock(hardware_mutex_);
+        if (!initHardware()) {
+            response->success = false;
+            response->message = "Failed to connect to Dynamixel hardware on port " + port_name_;
+            RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
+            return;
+        }
+        try {
+            double cur[3] = {0.0, 0.0, 0.0};
+            readCurrentPose(cur);
+            dynamixel::GroupSyncWrite gsw(portHandler, packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
+            lockCurrentPose(gsw, cur);
+            releaseGripper(gsw, cur, DEFAULT_RELEASE_DEG);
+            response->success = true;
+            response->message = "Gripper released successfully.";
+            RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());
+        } catch (const std::exception &e) {
+            response->success = false;
+            response->message = std::string("Release gripper error: ") + e.what();
+            RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
         }
     }
 
