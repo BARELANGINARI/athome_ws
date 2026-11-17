@@ -232,7 +232,7 @@ public:
     max_range_ = declare_parameter<double>("max_follow_range", 3.0);
     max_lost_time_ = declare_parameter<double>("max_lost_time", 3.0);
     occlusion_timeout_ = declare_parameter<double>("occlusion_timeout", 1.5);
-    step_back_person_distance_ = declare_parameter<double>("step_back_person_distance", 1.2);
+    step_back_person_distance_ = declare_parameter<double>("step_back_person_distance", 1.4);
     step_back_speed_ = declare_parameter<double>("step_back_speed", 0.15);
     step_back_timeout_ = declare_parameter<double>("step_back_timeout", 15.0);
 
@@ -278,7 +278,7 @@ public:
     homing_queue_distance_ = declare_parameter<double>("homing_queue_distance", 1.00);
     homing_queue_resume_distance_ = declare_parameter<double>("homing_queue_resume_distance", 1.50);
     homing_queue_corridor_ = declare_parameter<double>("homing_queue_corridor", 1.00);
-    homing_queue_max_detect_dist_ = declare_parameter<double>("homing_queue_max_detect_dist", 2.20);
+    homing_queue_max_detect_dist_ = declare_parameter<double>("homing_queue_max_detect_dist", 3.20);
     homing_queue_min_persons_ = declare_parameter<int>("homing_queue_min_persons", 2);
     homing_queue_inter_dist_ = declare_parameter<double>("homing_queue_inter_dist", 1.80);
     homing_queue_crawl_speed_ = declare_parameter<double>("homing_queue_crawl_speed", 0.10);
@@ -3732,7 +3732,7 @@ private:
   std::vector<Person> latest_persons_;
   rclcpp::Time latest_person_time_{0, 0, RCL_ROS_TIME};
 
-  double step_back_person_distance_{1.2};
+  double step_back_person_distance_{1.4};
   double step_back_speed_{0.25};
   double step_back_timeout_{30.0};
 
@@ -3788,7 +3788,7 @@ private:
   double homing_queue_distance_{1.00};
   double homing_queue_resume_distance_{1.50};
   double homing_queue_corridor_{1.00};
-  double homing_queue_max_detect_dist_{2.20};
+  double homing_queue_max_detect_dist_{3.20};
   int homing_queue_min_persons_{2};
   double homing_queue_inter_dist_{1.80};
   double homing_queue_crawl_speed_{0.10};

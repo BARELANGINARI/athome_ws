@@ -854,43 +854,29 @@ private:
         break;
 
       // ------------------------------------------------------------------------
-      // State 5: ARRIVED - Cek operator & tas; panggil /task/step_back jika belum terdeteksi
+      // State 5: ARRIVED - Langsung panggil /task/step_back setelah tiba
       // ------------------------------------------------------------------------
       case TaskState::ARRIVED: {
-        const bool operator_detected = isOperatorInFront();
-        const bool bag_detected = isBagInFront();
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;33m[ARRIVED]\033[0m Tiba di tujuan. Memanggil service /task/step_back...");
 
-        if (operator_detected && bag_detected) {
-          RCLCPP_INFO(
-            get_logger(),
-            "\033[1;32m[ARRIVED]\033[0m Operator dan tas sudah terdeteksi di depan robot. Langsung menuju penunjukan tas.");
-          speakAsync("We have arrived. Please point to the bag you want me to carry.", [this]() {
-            transitionTo(TaskState::WAIT_BAG_POINTING, "Operator & bag visible");
-          });
-        } else {
-          RCLCPP_INFO(
-            get_logger(),
-            "\033[1;33m[ARRIVED]\033[0m Operator (%s) atau tas (%s) belum terdeteksi lengkap. Memanggil service /task/step_back...",
-            operator_detected ? "terdeteksi" : "tidak",
-            bag_detected ? "terdeteksi" : "tidak");
-
-          // Robot baru mundur setelah kalimat selesai diucapkan
-          speakAsync("We have arrived. Stepping back to find you and the bag.", [this]() {
-            busy_ = true;
-            callTrigger(
-              step_back_client_, "/task/step_back",
-              [this](bool success, const std::string & message) {
-                RCLCPP_INFO(
-                  get_logger(),
-                  "[ARRIVED] Selesai /task/step_back: %s (success=%s)",
-                  message.c_str(), success ? "true" : "false");
-                speakAsync("Please point to the bag you want me to carry.", [this]() {
-                  transitionTo(TaskState::WAIT_BAG_POINTING, "Step back finished");
-                });
-              },
-              20s);
-          });
-        }
+        // Robot baru mundur setelah kalimat selesai diucapkan
+        speakAsync("We have arrived. Stepping back to find you and the bag.", [this]() {
+          busy_ = true;
+          callTrigger(
+            step_back_client_, "/task/step_back",
+            [this](bool success, const std::string & message) {
+              RCLCPP_INFO(
+                get_logger(),
+                "[ARRIVED] Selesai /task/step_back: %s (success=%s)",
+                message.c_str(), success ? "true" : "false");
+              speakAsync("Please point to the bag you want me to carry.", [this]() {
+                transitionTo(TaskState::WAIT_BAG_POINTING, "Step back finished");
+              });
+            },
+            20s);
+        });
         break;
       }
 
