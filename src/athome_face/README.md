@@ -1,11 +1,11 @@
 # athome_face
 
-Package ekspresi wajah robot (Robot Face Interface) untuk Barelang Inari. Mengatur animasi mata dan ekspresi emosi robot pada layar LCD kepala robot menggunakan antarmuka Web GUI berbasis HTML5 Canvas dan WebSocket bridge.
+Package ekspresi wajah robot (Robot Face Interface) untuk **Barelang Inari** (RoboCup@Home). Mengatur animasi mata dan ekspresi emosi robot pada layar LCD kepala robot menggunakan antarmuka Web GUI berbasis HTML5 Canvas/SVG dan WebSocket bridge.
 
 ---
 
 ## 📋 Fitur Utama
-- **Web-based Facial Expression**: Tampilan ekspresi wajah animasi interaktif (senang, netral, berkedip, berbicara, bingung, dll.).
+- **Web-based Facial Expression**: Tampilan ekspresi wajah animasi interaktif (senang, netral, berkedip, berbicara, mendengarkan, bingung, dll.).
 - **HTTP & WebSocket Server**: Melayani web GUI lokal pada port HTTP 8080 dan streaming status ekspresi via WebSocket port 8766.
 - **Kiosk Mode Support**: Mendukung peluncuran otomatis Chromium/Firefox dalam mode layar penuh (borderless fullscreen kiosk mode) di monitor LCD robot.
 - **Sinkronisasi Otomatis**: Secara otomatis menggerakkan mulut/ekspresi ketika robot sedang berbicara via topik `/hri/tts_say` atau mendengarkan interaksi.
@@ -17,8 +17,7 @@ Package ekspresi wajah robot (Robot Face Interface) untuk Barelang Inari. Mengat
 
 ### 1. Build Package
 ```bash
-cd ~/Documents/athome_ws
-source /opt/ros/jazzy/setup.bash
+cd ~/Documents/athome-ws
 colcon build --packages-select athome_face --symlink-install
 source install/setup.bash
 ```
@@ -27,29 +26,75 @@ source install/setup.bash
 ```bash
 ros2 launch athome_face face.launch.py
 ```
+Akses manual melalui browser di: `http://localhost:8080`.
 
-### 3. Membuka Otomatis di Browser / Layar LCD Robot (Kiosk Mode)
+### 3. Membuka Otomatis di Layar LCD Robot (Kiosk Mode Fullscreen)
 ```bash
 ros2 launch athome_face face.launch.py browser:=true kiosk:=true
 ```
 
-Atau akses manual melalui browser di: `http://localhost:8080`.
+Argumen launch:
+- `http_port` (default: `8080`): Port HTTP untuk Web UI.
+- `ws_port` (default: `8766`): Port WebSocket bridge.
+- `browser` (default: `false`): Buka otomatis browser saat launch (`true`/`false`).
+- `kiosk` (default: `true`): Mode fullscreen borderless (`true`/`false`).
+- `browser_type` (default: `auto`): Pilihan browser (`auto`, `firefox`, `chromium`, `google-chrome`).
 
 ---
 
-## 🧪 Menguji Perubahan Ekspresi
-Kirim pesan string ke topik `/robot/expression`:
+## 🧪 Menguji Perubahan Ekspresi via CLI
+
+Format perintah dasar:
 ```bash
-# Ekspresi senang
-ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'happy'}"
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: '<EKSPRESI>'}"
+```
 
-# Ekspresi netral
-ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'neutral'}"
+### Contoh Perintah Cepat
+```bash
+# Senang / Menyapa (GREETING / HAPPY)
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'HAPPY'}"
 
-# Ekspresi terkejut / bingung
-ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'surprised'}"
+# Mendengarkan (LISTENING - Head Tilt, Listening Arcs, Audio Dots)
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'LISTENING'}"
 
-### Menguji Tampilan Kartu Pesanan Pelanggan (Kitchen HUD)
+# Berbicara (SPEAKING - Equalizer Wave Mouth)
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'SPEAKING'}"
+
+# Fokus Mengikuti Operator (FOLLOWING)
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'FOLLOWING'}"
+
+# Mencari / Scanning (SEARCHING)
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'SEARCHING'}"
+
+# Penasaran / Menunggu Isyarat (CURIOUS)
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'CURIOUS'}"
+
+# Mengambil Objek / Bekerja (WORKING / GRABBING)
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'WORKING'}"
+
+# Berhasil / Sukses (SUCCESS / WIN)
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'SUCCESS'}"
+
+# Peringatan / Kehilangan Operator (LOST / ALERT)
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'LOST'}"
+
+# Kembali ke Netral / Normal (IDLE)
+ros2 topic pub --once /robot/expression std_msgs/msg/String "{data: 'IDLE'}"
+```
+
+---
+
+## 💬 Menampilkan Balon Percakapan / Subtitle (`/hri/tts_say`)
+
+```bash
+# Gunakan petik tunggal di luar agar tanda seru (!) tidak memicu history error pada Bash:
+ros2 topic pub --once /hri/tts_say std_msgs/msg/String '{data: "Halo, saya Barelang Inari!"}'
+```
+
+---
+
+## 🍽️ Menguji Tampilan Kartu Pesanan Pelanggan (Kitchen HUD)
+
 ```bash
 # Tampilkan kartu pesanan pelanggan
 ros2 topic pub --once /hmi/customer_display std_msgs/msg/String \
@@ -57,5 +102,4 @@ ros2 topic pub --once /hmi/customer_display std_msgs/msg/String \
 
 # Sembunyikan kartu kembali ke animasi wajah
 ros2 topic pub --once /hmi/customer_display std_msgs/msg/String "{data: '{\"action\":\"hide\"}'}"
-```
 ```

@@ -11,10 +11,12 @@ vision:
     mirror: true
     yolo_model: "models/paper_bag.onnx"
     yolo_classes: "models/paper_bag_classes.txt"
-    yolo_conf: 0.60
+    yolo_conf: 0.35
+    bag_conf: 0.35
     yolo_nms: 0.45
     yolo_size: 640
-    yolo_min_area: 500.0
+    yolo_min_area: 250.0
+    bag_labels: ["bag", "paper_bag", "backpack", "handbag", "suitcase"]
     gender_model: "models/gender_model_weights.onnx"
     color_model: "models/color_model.onnx"
     color_labels: "models/color_names.txt"
