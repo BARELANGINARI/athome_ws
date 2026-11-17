@@ -215,6 +215,9 @@ public:
     declare_parameter("align_max_speed", 0.35);
     declare_parameter("camera_image_width", 672.0);
     declare_parameter("align_invert_direction", false);
+    declare_parameter("barman_max_distance", 1.5);
+    declare_parameter("barman_search_angular_speed", 0.25);
+    declare_parameter("barman_align_timeout_sec", 15.0);
 
     origin_x_ = get_parameter("origin_x").as_double();
     origin_y_ = get_parameter("origin_y").as_double();
@@ -241,6 +244,9 @@ public:
     align_max_speed_ = get_parameter("align_max_speed").as_double();
     camera_image_width_ = get_parameter("camera_image_width").as_double();
     align_invert_direction_ = get_parameter("align_invert_direction").as_bool();
+    barman_max_distance_ = get_parameter("barman_max_distance").as_double();
+    barman_search_angular_speed_ = get_parameter("barman_search_angular_speed").as_double();
+    barman_align_timeout_sec_ = get_parameter("barman_align_timeout_sec").as_double();
 
     // TF2 Buffer & Listener untuk konversi koordinat base_link -> map
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -300,6 +306,16 @@ public:
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
         handleHoming(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    // Service /find_barman untuk mencari dan meluruskan kamera ke barman (< 1.5 m)
+    srv_find_barman_ = create_service<std_srvs::srv::Trigger>(
+      "/find_barman",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleFindBarman(req, res);
       },
       rclcpp::ServicesQoS(),
       srv_cb_group_);
@@ -897,6 +913,122 @@ private:
                       : "Failed or timed out navigating to homing position.";
   }
 
+  void handleFindBarman(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_navigating_.load()) {
+      res->success = false;
+      res->message = "Cannot find barman: Robot is currently navigating.";
+      RCLCPP_WARN(get_logger(), "[FindBarman] %s", res->message.c_str());
+      return;
+    }
+
+    if (is_searching_.exchange(true)) {
+      res->success = false;
+      res->message = "Search/align rotation is already active.";
+      RCLCPP_WARN(get_logger(), "[FindBarman] %s", res->message.c_str());
+      return;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[FindBarman]\033[0m Searching for barman within < %.2f m and aligning to frame center...",
+      barman_max_distance_);
+
+    const auto start_time = now();
+    const double img_center_x = camera_image_width_ * 0.5;
+    const double tol_px = align_tolerance_px_;
+    int centered_count = 0;
+    bool aligned = false;
+    rclcpp::Rate rate(20.0);
+
+    while (rclcpp::ok()) {
+      if ((now() - start_time).seconds() > barman_align_timeout_sec_) {
+        RCLCPP_WARN(
+          get_logger(),
+          "[FindBarman] Timeout (%.1fs) waiting for barman within < %.2f m.",
+          barman_align_timeout_sec_, barman_max_distance_);
+        break;
+      }
+
+      std::vector<DetectedPerson> current_persons;
+      rclcpp::Time ptime;
+      {
+        std::lock_guard<std::mutex> lock(person_mutex_);
+        current_persons = latest_persons_;
+        ptime = latest_person_time_;
+      }
+
+      bool has_barman = false;
+      DetectedPerson target_person;
+      double min_dist = barman_max_distance_;
+
+      if (!current_persons.empty() && (now() - ptime).seconds() < 1.5) {
+        for (const auto & p : current_persons) {
+          if (p.bbox_w < 25 || p.bbox_h < 45) continue;
+          if (!p.has_3d || p.x <= 0.1) continue;
+          const double dist = std::hypot(p.x, p.y);
+          if (dist < min_dist) {
+            min_dist = dist;
+            target_person = p;
+            has_barman = true;
+          }
+        }
+      }
+
+      if (!has_barman) {
+        centered_count = 0;
+        geometry_msgs::msg::Twist search_cmd;
+        search_cmd.angular.z = barman_search_angular_speed_;
+        cmd_vel_pub_->publish(search_cmd);
+        rate.sleep();
+        continue;
+      }
+
+      double error_px = img_center_x - target_person.bbox_cx;
+      if (align_invert_direction_) {
+        error_px = -error_px;
+      }
+
+      if (std::abs(error_px) <= tol_px) {
+        centered_count++;
+        geometry_msgs::msg::Twist stop_cmd;
+        cmd_vel_pub_->publish(stop_cmd);
+        if (centered_count >= 3) {
+          aligned = true;
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[FindBarman SUCCESS]\033[0m Barman detected at dist=%.2f m, centered (cx=%.1f, err=%.1f px)!",
+            min_dist, target_person.bbox_cx, error_px);
+          break;
+        }
+      } else {
+        centered_count = 0;
+        const double norm_err = error_px / img_center_x;
+        double wz = align_p_gain_ * norm_err;
+        wz = std::clamp(wz, -align_max_speed_, align_max_speed_);
+        if (std::abs(wz) < align_min_speed_) {
+          wz = (error_px > 0.0) ? align_min_speed_ : -align_min_speed_;
+        }
+
+        geometry_msgs::msg::Twist cmd;
+        cmd.angular.z = wz;
+        cmd_vel_pub_->publish(cmd);
+      }
+
+      rate.sleep();
+    }
+
+    stopRobot();
+    is_searching_ = false;
+
+    res->success = aligned;
+    res->message = aligned
+      ? "Barman detected within < 1.5 m and aligned to frame center."
+      : "Barman search/alignment timed out.";
+  }
+
   bool navigateToOrigin()
   {
     return navigateToMapPose(origin_x_, origin_y_, origin_yaw_, "Homing");
@@ -1190,6 +1322,7 @@ private:
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_homing_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_homing_alias_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_find_barman_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order_alias_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_order1_compat_;
@@ -1217,6 +1350,9 @@ private:
   double align_max_speed_{0.35};
   double camera_image_width_{672.0};
   bool align_invert_direction_{false};
+  double barman_max_distance_{1.5};
+  double barman_search_angular_speed_{0.25};
+  double barman_align_timeout_sec_{15.0};
 
   std::mutex person_mutex_;
   std::vector<DetectedPerson> latest_persons_;

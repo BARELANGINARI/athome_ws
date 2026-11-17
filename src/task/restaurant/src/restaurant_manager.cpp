@@ -58,6 +58,7 @@ enum class RestaurantState {
   SPEAK_ORDER_CONFIRMATION,       // 6e. "your order is {order_1} and {order_2} is it correct?"
   WAIT_ORDER_CONFIRMATION,        // 6f. Menunggu jawaban yes / no dari pelanggan
   NAV_TO_ORIGIN_BARMAN,           // 7. Navigasi kembali ke origin (barman place)
+  FIND_AND_ALIGN_BARMAN,          // 7b. Cari & arahkan kamera ke barman (< 1.5 m, tengah frame)
   ANNOUNCE_ORDER_TO_BARMAN,       // 8a. "The first/second customer order..." -> "please place {order_1}..."
   DETECT_AND_NAV_TO_ORDER1,       // 8b. Deteksi posisi {order_1} & navigasi ke posisi tersebut
   GRASP_ORDER1,                   // 8c. Panggil srv /arm/ambil_tas_simple -> instruksi taruh {order_2} di tray
@@ -95,6 +96,7 @@ static std::string stateToString(RestaurantState state)
     case RestaurantState::SPEAK_ORDER_CONFIRMATION:       return "SPEAK_ORDER_CONFIRMATION";
     case RestaurantState::WAIT_ORDER_CONFIRMATION:        return "WAIT_ORDER_CONFIRMATION";
     case RestaurantState::NAV_TO_ORIGIN_BARMAN:           return "NAV_TO_ORIGIN_BARMAN";
+    case RestaurantState::FIND_AND_ALIGN_BARMAN:          return "FIND_AND_ALIGN_BARMAN";
     case RestaurantState::ANNOUNCE_ORDER_TO_BARMAN:       return "ANNOUNCE_ORDER_TO_BARMAN";
     case RestaurantState::DETECT_AND_NAV_TO_ORDER1:       return "DETECT_AND_NAV_TO_ORDER1";
     case RestaurantState::GRASP_ORDER1:                   return "GRASP_ORDER1";
@@ -346,6 +348,8 @@ public:
       "/deliver_order", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
       "/homing", rclcpp::ServicesQoS(), callback_group_);
+    find_barman_client_ = create_client<Trigger>(
+      "/find_barman", rclcpp::ServicesQoS(), callback_group_);
 
     // Arm Services
     arm_grab_simple_client_ = create_client<Trigger>(
@@ -489,6 +493,7 @@ private:
   TriggerClient::SharedPtr go_to_order1_client_;
   TriggerClient::SharedPtr deliver_order_client_;
   TriggerClient::SharedPtr homing_client_;
+  TriggerClient::SharedPtr find_barman_client_;
   TriggerClient::SharedPtr arm_grab_simple_client_;
   TriggerClient::SharedPtr arm_release_client_;
   TriggerClient::SharedPtr arm_letakkan_client_;
@@ -628,6 +633,7 @@ private:
       case RestaurantState::NAV_TO_ORIGIN_BARMAN:
         publishExpression("GREETING");
         break;
+      case RestaurantState::FIND_AND_ALIGN_BARMAN:
       case RestaurantState::DETECT_AND_NAV_TO_ORDER1:
         publishExpression("SEARCHING");
         break;
@@ -1915,9 +1921,33 @@ private:
             return;
           }
           transitionTo(
-            RestaurantState::ANNOUNCE_ORDER_TO_BARMAN,
-            "Arrived at origin (barman place)");
+            RestaurantState::FIND_AND_ALIGN_BARMAN,
+            "Arrived at origin (barman place), searching & aligning to barman");
         });
+        break;
+
+      case RestaurantState::FIND_AND_ALIGN_BARMAN:
+        if (find_barman_client_ && find_barman_client_->service_is_ready()) {
+          callTrigger(
+            find_barman_client_, "/find_barman",
+            [this](bool ok, const std::string & msg) {
+              RCLCPP_INFO(
+                get_logger(),
+                "[BARMAN] /find_barman finished (ok=%s, msg='%s')",
+                ok ? "true" : "false", msg.c_str());
+              transitionTo(
+                RestaurantState::ANNOUNCE_ORDER_TO_BARMAN,
+                ok ? "Barman aligned within < 1.5 m" : "Barman align fallback");
+            },
+            20.0);
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "[BARMAN] Service /find_barman belum tersedia, langsung menuju ANNOUNCE_ORDER_TO_BARMAN.");
+          transitionTo(
+            RestaurantState::ANNOUNCE_ORDER_TO_BARMAN,
+            "Proceeding without /find_barman service");
+        }
         break;
 
       // ========================================================================

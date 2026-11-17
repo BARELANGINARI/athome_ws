@@ -43,6 +43,9 @@ restaurant_node:
     align_max_speed: 0.35                # Kecepatan rotasi maksimum (rad/s)
     camera_image_width: 672.0            # Lebar resolusi kamera dalam piksel (ZED VGA: 672 px)
     align_invert_direction: false        # Inversi arah putar (true jika kamera terpasang terbalik)
+    barman_max_distance: 1.5             # Jarak maksimal deteksi barman (meter)
+    barman_search_angular_speed: 0.25    # Kecepatan putar saat mencari barman (rad/s)
+    barman_align_timeout_sec: 15.0       # Batas waktu mencari & meluruskan ke barman (detik)
 
 # =============================================================================
 # Restaurant Task Manager FSM Parameters
