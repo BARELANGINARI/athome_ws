@@ -94,3 +94,28 @@ help_me_carry_node:
     homing_queue_wait_duration: 60.0          # Durasi diam antri (detik) sebelum antrian selesai & Nav2 homing lanjut
     homing_queue_clear_hysteresis: 0.75       # Detik orang tidak terdeteksi sebelum resume Nav2 (buffer anti-flicker)
     homing_timeout: 300.0                     # Batas waktu maksimal eksekusi navigasi homing (detik)
+
+# =============================================================
+# 9. HELP ME CARRY MANAGER (TASK FSM ORCHESTRATOR)
+# =============================================================
+help_me_carry_manager:
+  ros__parameters:
+    global_timeout_sec: 600.0                 # Batas waktu total task Help Me Carry (detik)
+    operator_timeout_sec: 5.0                 # Waktu hilang operator sebelum masuk recovery (detik)
+    follow_grace_period_sec: 2.0              # Toleransi abaikan status LOST di awal follow (detik)
+    arrived_grace_period_sec: 5.0             # Jeda waktu abaikan perintah 'arrived' di awal follow (detik)
+    tts_min_timeout_sec: 4.0                  # Watchdog timeout minimal TTS (detik)
+    tts_sec_per_word: 0.5                     # Estimasi durasi ucapan per kata untuk TTS (detik/kata)
+    tts_timeout_margin_sec: 2.0               # Margin tambahan latensi sintesis & pemutaran suara (detik)
+    follow_prompt_interval_sec: 3.0           # Interval pengingat pada state follow (detik)
+
+help_me_carry_orchestrator:
+  ros__parameters:
+    global_timeout_sec: 600.0
+    operator_timeout_sec: 5.0
+    follow_grace_period_sec: 2.0
+    arrived_grace_period_sec: 5.0
+    tts_min_timeout_sec: 4.0
+    tts_sec_per_word: 0.5
+    tts_timeout_margin_sec: 2.0
+    follow_prompt_interval_sec: 3.0

@@ -380,12 +380,39 @@
           if (msg.tracking_status === "LOST") {
             setEmotion("LOST");
           }
+          if (msg.type === "CUSTOMER_DISPLAY") {
+            handleCustomerDisplay(msg.payload);
+          }
         } catch (err) {
           console.warn("[AthomeFace] Malformed message:", err);
         }
       };
     } catch (e) {
       console.log("[AthomeFace] Running in standalone preview mode.");
+    }
+  }
+
+  function handleCustomerDisplay(data) {
+    const card = document.getElementById("customer-card-overlay");
+    if (!card) return;
+    if (data && data.action === "show") {
+      const nameEl = document.getElementById("cust-name");
+      const numEl = document.getElementById("cust-num");
+      const o1El = document.getElementById("cust-order1");
+      const o2El = document.getElementById("cust-order2");
+      const photoEl = document.getElementById("cust-photo");
+
+      if (nameEl) nameEl.innerText = data.name || "Customer";
+      if (numEl) numEl.innerText = "Customer #" + (data.customer_idx || 1);
+      if (o1El) o1El.innerText = data.order1 || "-";
+      if (o2El) o2El.innerText = data.order2 || "-";
+      if (photoEl && data.image_url) {
+        photoEl.src = data.image_url + "?t=" + Date.now();
+      }
+      card.classList.add("visible");
+      setEmotion("GREETING");
+    } else {
+      card.classList.remove("visible");
     }
   }
 
@@ -471,6 +498,23 @@
     e.stopPropagation();
     triggerCuteWink();
   });
+
+  const btnCust = document.getElementById("btn-action-customer");
+  if (btnCust) {
+    let demoVisible = false;
+    btnCust.addEventListener("click", (e) => {
+      e.stopPropagation();
+      demoVisible = !demoVisible;
+      handleCustomerDisplay(demoVisible ? {
+        action: "show",
+        customer_idx: 1,
+        name: "Alex",
+        order1: "Coke",
+        order2: "Chips",
+        image_url: "captures/customer_latest.jpg"
+      } : { action: "hide" });
+    });
+  }
 
   window.addEventListener("keydown", (e) => {
     const key = e.key.toUpperCase();

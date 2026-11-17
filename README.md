@@ -8,14 +8,16 @@ ROS 2 workspace for the **Barelang Inari** service robot (RoboCup@Home).
 src/
 ├── athome_base/          # STM32 Nucleo 3-omni motor base controller (UDP)
 ├── athome_bringup/       # Sensors (RPLiDAR), static TF, and joystick launch
+├── athome_face/          # Animated robot facial expression & Web GUI kiosk
 ├── athome_mapping/       # 2D SLAM mapping (slam_toolbox)
 ├── athome_navigation/    # Nav2 navigation stack and saved maps
-├── athome_vision/        # ZED camera: body tracking, YOLO bag detection, gesture
+├── athome_vision/        # ZED camera: body tracking, YOLO bag detection, gesture, face
 ├── athome_arm/           # Dynamixel AX-18A robotic arm motion server & CLI tools
 ├── athome_hri/           # Speech interaction (Faster-Whisper, Piper TTS) & Web GUI
 └── task/
     ├── help_me_carry/    # Person following, bag alignment, and homing
-    └── receptionist/     # Waypoint navigation (door & living room)
+    ├── receptionist/     # Waypoint navigation, guest greeting, and chair finding
+    └── restaurant/       # Customer wave call, mapless navigation, and order taking
 ```
 
 ## Build
@@ -104,5 +106,18 @@ ros2 launch help_me_carry hri.launch.py
 
 ### 5. Receptionist Task
 ```bash
-ros2 launch receptionist receptionist.launch.py
+# Multi-pane grid (Terminator)
+./src/task/receptionist/launch/run.sh
+
+# All-in-One launch
+ros2 launch receptionist receptionist.launch.py hri:=true camera:=true
+```
+
+### 6. Restaurant Task
+```bash
+# Multi-pane grid (Terminator)
+./src/task/restaurant/launch/run.sh
+
+# All-in-One launch
+ros2 launch restaurant restaurant.launch.py hri:=true camera:=true
 ```

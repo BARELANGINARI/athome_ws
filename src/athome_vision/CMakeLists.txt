@@ -88,6 +88,7 @@ install(TARGETS vision record
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
+install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY models/ DESTINATION share/${PROJECT_NAME}/models)
 install(DIRECTORY scripts/ DESTINATION share/${PROJECT_NAME}/scripts)
 
