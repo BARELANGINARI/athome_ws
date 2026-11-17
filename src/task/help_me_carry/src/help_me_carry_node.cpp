@@ -232,9 +232,11 @@ public:
     max_range_ = declare_parameter<double>("max_follow_range", 3.0);
     max_lost_time_ = declare_parameter<double>("max_lost_time", 3.0);
     occlusion_timeout_ = declare_parameter<double>("occlusion_timeout", 1.5);
-    step_back_person_distance_ = declare_parameter<double>("step_back_person_distance", 2.5);
-    step_back_speed_ = declare_parameter<double>("step_back_speed", 0.15);
-    step_back_timeout_ = declare_parameter<double>("step_back_timeout", 15.0);
+    step_back_person_distance_ = declare_parameter<double>("step_back_person_distance", 1.8);
+    step_back_speed_ = declare_parameter<double>("step_back_speed", 0.25);
+    step_back_timeout_ = declare_parameter<double>("step_back_timeout", 30.0);
+    step_back_target_bags_ = declare_parameter<int>("step_back_target_bags", 2);
+    step_back_bag_keep_sec_ = declare_parameter<double>("step_back_bag_keep_sec", 1.0);
 
     // Speed Limits & PID Gains
     min_vx_ = declare_parameter<double>("min_vx", 0.08);
@@ -276,7 +278,7 @@ public:
     homing_queue_enabled_ = declare_parameter<bool>("homing_queue_enabled", true);
     homing_queue_search_enabled_ = declare_parameter<bool>("homing_queue_search_enabled", true);
     homing_queue_distance_ = declare_parameter<double>("homing_queue_distance", 1.00);
-    homing_queue_resume_distance_ = declare_parameter<double>("homing_queue_resume_distance", 1.80);
+    homing_queue_resume_distance_ = declare_parameter<double>("homing_queue_resume_distance", 2.00);
     homing_queue_corridor_ = declare_parameter<double>("homing_queue_corridor", 1.20);
     homing_queue_max_detect_dist_ = declare_parameter<double>("homing_queue_max_detect_dist", 2.50);
     homing_queue_min_persons_ = declare_parameter<int>("homing_queue_min_persons", 2);
@@ -284,7 +286,7 @@ public:
     homing_queue_crawl_speed_ = declare_parameter<double>("homing_queue_crawl_speed", 0.10);
     homing_queue_wait_duration_ = declare_parameter<double>("homing_queue_wait_duration", 60.0);
     homing_queue_clear_hysteresis_ = declare_parameter<double>("homing_queue_clear_hysteresis", 1.0);
-    homing_queue_start_delay_ = declare_parameter<double>("homing_queue_start_delay", 0.0);
+    homing_queue_start_delay_ = declare_parameter<double>("homing_queue_start_delay", 5.0);
     homing_timeout_ = declare_parameter<double>("homing_timeout", 300.0);
 
     // Dynamic Parameter Reconfiguration Callback
@@ -1600,16 +1602,19 @@ private:
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     const auto t_start = now();
-    bool bag_detected = false;
+    bool two_bags_detected = false;
+    rclcpp::Time two_bags_detected_time{0, 0, RCL_ROS_TIME};
+    bool two_bags_completed = false;
     bool person_dist_reached = false;
     bool obstacle_detected = false;
     double last_person_dist = 0.0;
     double last_bag_dist = 0.0;
+    int detected_bag_count = 0;
 
     RCLCPP_INFO(
       get_logger(),
-      "[Step Back] Robot mulai bergerak mundur (speed: -%.2f m/s, target operator dist: %.2f m, timeout: %.1f s)",
-      std::abs(step_back_speed_), step_back_person_distance_, step_back_timeout_);
+      "[Step Back] Robot mulai bergerak mundur (speed: -%.2f m/s, target operator dist: %.2f m, target bags: %d, keep: %.1fs, timeout: %.1f s)",
+      std::abs(step_back_speed_), step_back_person_distance_, step_back_target_bags_, step_back_bag_keep_sec_, step_back_timeout_);
 
     while (rclcpp::ok()) {
       const double elapsed = (now() - t_start).seconds();
@@ -1618,29 +1623,44 @@ private:
         break;
       }
 
-      // Check 1: Deteksi Tas dari Vision YOLO (/vision/bag_detections)
-      {
+      // Check 1: Deteksi 2 Tas dari Vision YOLO (/vision/bag_detections)
+      if (!two_bags_detected) {
         std::lock_guard<std::mutex> lock(bag_mutex_);
         if ((now() - latest_bag_time_).seconds() < 1.0) {
+          int count = 0;
+          double sum_dist = 0.0;
           for (const auto & b : latest_bags_) {
             if (b.x > 0.05) {
-              bag_detected = true;
-              last_bag_dist = std::hypot(b.x, b.y);
-              break;
+              count++;
+              sum_dist += std::hypot(b.x, b.y);
             }
+          }
+          if (count >= step_back_target_bags_) {
+            two_bags_detected = true;
+            two_bags_detected_time = now();
+            detected_bag_count = count;
+            last_bag_dist = sum_dist / count;
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;32m[Step Back]\033[0m %d tas terdeteksi (rata-rata jarak %.2f m)! Mempertahankan perintah mundur selama %.1f detik...",
+              count, last_bag_dist, step_back_bag_keep_sec_);
           }
         }
       }
-      if (bag_detected) {
-        RCLCPP_INFO(
-          get_logger(),
-          "\033[1;32m[Step Back]\033[0m Tas terdeteksi pada jarak %.2f m! Berhenti mundur.",
-          last_bag_dist);
-        break;
-      }
 
-      // Check 2: Jika tas tidak terlihat, mundur hingga operator terdekat berjarak >= step_back_person_distance_ (2.5 m)
-      {
+      // Jika 2 tas sudah terdeteksi, pertahankan mundur selama step_back_bag_keep_sec_ (1 detik)
+      if (two_bags_detected) {
+        const double keep_elapsed = (now() - two_bags_detected_time).seconds();
+        if (keep_elapsed >= step_back_bag_keep_sec_) {
+          two_bags_completed = true;
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[Step Back]\033[0m Selesai mempertahankan mundur %.1f detik setelah mendeteksi %d tas. Berhenti mundur.",
+            step_back_bag_keep_sec_, detected_bag_count);
+          break;
+        }
+      } else {
+        // Check 2: Jika 2 tas belum terdeteksi, mundur hingga operator/orang terdekat berjarak >= step_back_person_distance_ (1.8 m)
         std::lock_guard<std::mutex> lock(person_mutex_);
         if ((now() - latest_person_time_).seconds() < 1.0) {
           const Person * target_operator = nullptr;
@@ -1676,13 +1696,14 @@ private:
             }
           }
         }
-      }
-      if (person_dist_reached) {
-        RCLCPP_INFO(
-          get_logger(),
-          "\033[1;32m[Step Back]\033[0m Tas tidak terlihat, jarak operator terdekat mencapai %.2f m (>= %.2f m)! Berhenti mundur.",
-          last_person_dist, step_back_person_distance_);
-        break;
+
+        if (person_dist_reached) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[Step Back]\033[0m 2 tas belum terdeteksi, jarak operator/orang terdekat mencapai %.2f m (>= %.2f m)! Berhenti mundur.",
+            last_person_dist, step_back_person_distance_);
+          break;
+        }
       }
 
       // Check 3: Safety check obstacle di belakang robot via LiDAR (/scan)
@@ -1748,20 +1769,24 @@ private:
     cmd_vel_pub_->publish(stop_twist);
 
     char dist_buf[32];
-    if (bag_detected) {
+    if (obstacle_detected) {
+      resp->success = false;
+      resp->message = "Mundur dihentikan: terdeteksi rintangan di belakang robot.";
+    } else if (two_bags_completed || two_bags_detected) {
       std::snprintf(dist_buf, sizeof(dist_buf), "%.2f", last_bag_dist);
+      char keep_buf[32];
+      std::snprintf(keep_buf, sizeof(keep_buf), "%.1f", step_back_bag_keep_sec_);
       resp->success = true;
-      resp->message = std::string("Mundur selesai: tas terdeteksi pada jarak ") + dist_buf + " m.";
+      resp->message = std::string("Mundur selesai: ") + std::to_string(detected_bag_count) +
+                      " tas terdeteksi pada jarak rata-rata " + dist_buf +
+                      " m (mundur dipertahankan " + keep_buf + " s).";
     } else if (person_dist_reached) {
       std::snprintf(dist_buf, sizeof(dist_buf), "%.2f", last_person_dist);
       char target_buf[32];
       std::snprintf(target_buf, sizeof(target_buf), "%.2f", step_back_person_distance_);
       resp->success = true;
-      resp->message = std::string("Mundur selesai: tas tidak terlihat, jarak operator terdekat mencapai ") + dist_buf +
+      resp->message = std::string("Mundur selesai: 2 tas belum terdeteksi, jarak operator/orang terdekat mencapai ") + dist_buf +
                       " m (target: " + target_buf + " m).";
-    } else if (obstacle_detected) {
-      resp->success = false;
-      resp->message = "Mundur dihentikan: terdeteksi rintangan di belakang robot.";
     } else {
       char timeout_buf[32];
       std::snprintf(timeout_buf, sizeof(timeout_buf), "%.1f", step_back_timeout_);
@@ -1769,7 +1794,7 @@ private:
       std::snprintf(target_buf, sizeof(target_buf), "%.2f", step_back_person_distance_);
       resp->success = false;
       resp->message = std::string("Mundur timeout (") + timeout_buf +
-                      " s) sebelum mendeteksi tas atau jarak operator " + target_buf + " m.";
+                      " s) sebelum mendeteksi 2 tas atau jarak operator mencapai " + target_buf + " m.";
     }
 
     RCLCPP_INFO(get_logger(), "[Step Back] %s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
@@ -4014,9 +4039,11 @@ private:
   std::vector<Person> latest_persons_;
   rclcpp::Time latest_person_time_{0, 0, RCL_ROS_TIME};
 
-  double step_back_person_distance_{2.5};
+  double step_back_person_distance_{1.8};
   double step_back_speed_{0.25};
   double step_back_timeout_{30.0};
+  int step_back_target_bags_{2};
+  double step_back_bag_keep_sec_{1.0};
 
   rclcpp::Time last_filter_time_;
   bool has_last_filter_time_{false};
@@ -4076,7 +4103,7 @@ private:
   double homing_queue_crawl_speed_{0.10};
   double homing_queue_wait_duration_{60.0};
   double homing_queue_clear_hysteresis_{1.0};
-  double homing_queue_start_delay_{0.0};
+  double homing_queue_start_delay_{5.0};
   double homing_timeout_{300.0};
   std::string person_back_topic_{"/vision/person_back"};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_back_sub_;
