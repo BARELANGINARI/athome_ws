@@ -3006,10 +3006,6 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       const int cx = r.x + r.width / 2;
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 4, cv::Scalar(255, 255, 0), -1);
-      std::string text = d.label;
-      if (d.has_pos) text += cv::format(" (%.2fm, %.2fm)", d.x_m, d.y_m);
-      banner(text, r.x, r.y, cv::Scalar(255, 255, 0),
-        cv::Scalar(80, 80, 0), cv::Scalar(255, 255, 255), 0.52, 1);
     }
 
     for (size_t i = 0; i < std::min<size_t>(4, preview_chairs_.size()); ++i) {
@@ -3068,9 +3064,11 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         }
       }
     }
-    if (!preview_drinks_.empty() && preview_drinks_[0].has_pos) {
-      hud(preview_drinks_[0].label + " :", preview_drinks_[0].x_m,
-        preview_drinks_[0].y_m, preview_drinks_[0].range_m, cv::Scalar(255, 255, 0));
+    for (size_t i = 0; i < std::min<size_t>(3, preview_drinks_.size()); ++i) {
+      if (preview_drinks_[i].has_pos) {
+        hud(preview_drinks_[i].label + " :", preview_drinks_[i].x_m,
+          preview_drinks_[i].y_m, preview_drinks_[i].range_m, cv::Scalar(255, 255, 0));
+      }
     }
     for (const auto & c : preview_chairs_) {
       if (!c.has_pos) continue;
