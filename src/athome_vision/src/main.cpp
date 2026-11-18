@@ -1286,9 +1286,10 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr yaw_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr bag_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr drink_dets_publisher_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr object_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr persons_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr recognized_name_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_1_name_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_2_name_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr gesture_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr attributes_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr empty_seat_publisher_;
@@ -1307,7 +1308,11 @@ private:
   AttributeAnalyzer analyzer_;
   std::vector<RegisteredPerson> registered_persons_;
   std::string pending_register_name_;
+  std::string guest_1_name_;
+  std::string guest_2_name_;
   double face_threshold_{0.363};
+
+  void publishGuestNames();
 
   std::vector<PrevPerson> preview_persons_;
   std::vector<PrevBag> preview_bags_;
@@ -1428,10 +1433,13 @@ ZedNode::ZedNode()
   yaw_publisher_ = create_publisher<std_msgs::msg::Float64>("/vision/yaw_deg", 10);
   bag_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/bag_detections", 10);
   drink_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/drink_detections", 10);
-  object_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/object_detections", 10);
   persons_publisher_ = create_publisher<std_msgs::msg::String>("/vision/person_label", 10);
   recognized_name_publisher_ =
     create_publisher<std_msgs::msg::String>("/vision/recognized_name", 10);
+  guest_1_name_publisher_ =
+    create_publisher<std_msgs::msg::String>("/vision/guest_1_name", 10);
+  guest_2_name_publisher_ =
+    create_publisher<std_msgs::msg::String>("/vision/guest_2_name", 10);
   gesture_publisher_ = create_publisher<std_msgs::msg::String>("/vision/gesture", 10);
   attributes_publisher_ = create_publisher<std_msgs::msg::String>("/vision/person_attributes", 10);
   empty_seat_publisher_ = create_publisher<std_msgs::msg::String>("/vision/empty_seat", 10);
@@ -1455,9 +1463,20 @@ ZedNode::ZedNode()
       pending_register_name_ = name;
       if (!name.empty()) {
         RCLCPP_INFO(get_logger(), "Guest name set: \"%s\"", name.c_str());
+        if (guest_1_name_.empty()) {
+          guest_1_name_ = name;
+        } else if (guest_2_name_.empty() && name != guest_1_name_) {
+          guest_2_name_ = name;
+        }
       } else {
         RCLCPP_INFO(get_logger(), "Guest name reset");
+        if (!guest_2_name_.empty()) {
+          guest_2_name_.clear();
+        } else {
+          guest_1_name_.clear();
+        }
       }
+      publishGuestNames();
     });
 
   sl::InitParameters init;
@@ -1933,19 +1952,26 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
     if ((is_receptionist_ || is_restaurant_) && ok) {
       IC(det.label, x, y, dist);
     }
+  }
+
+  // Urutkan berdasarkan jarak terdekat (prioritaskan yang memiliki kedalaman valid)
+  std::sort(preview_drinks_.begin(), preview_drinks_.end(),
+    [](const PrevItem & a, const PrevItem & b) {
+      if (a.has_pos != b.has_pos) return a.has_pos > b.has_pos;
+      return a.range_m < b.range_m;
+    });
+
+  for (const auto & item : preview_drinks_) {
     if (!data.empty()) data += ";";
-    data += cv::format("%s:%d,%d,%d,%d|", det.label.c_str(),
-      det.rect.x, det.rect.y, det.rect.width, det.rect.height);
-    data += ok ? cv::format("%.2f,%.2f,%.2f|%.2f", x, y, z, det.score)
-               : cv::format("nan,nan,nan|%.2f", det.score);
+    data += cv::format("%s:%d,%d,%d,%d|", item.label.c_str(),
+      item.bbox.x, item.bbox.y, item.bbox.width, item.bbox.height);
+    data += item.has_pos ? cv::format("%.2f,%.2f,%.2f|1.00", item.x_m, item.y_m, item.range_m)
+                         : "nan,nan,nan|0.00";
   }
 
   std_msgs::msg::String msg;
   msg.data = data;
   drink_dets_publisher_->publish(msg);
-  if (object_dets_publisher_) {
-    object_dets_publisher_->publish(msg);
-  }
 }
 
 void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
@@ -2110,7 +2136,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         cv::Mat crop_img = bgr(crop_roi).clone();
         std::vector<std::string> save_dirs = {
           "src/athome_face/web/captures",
-          "/home/dell/Documents/athome_ws/src/athome_face/web/captures"
+          "/home/dell/Downloads/athome_ws/src/athome_face/web/captures"
         };
         try {
           const std::string share_path = ament_index_cpp::get_package_share_directory("athome_face");
@@ -2590,6 +2616,36 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   std_msgs::msg::String name_msg;
   name_msg.data = first_recognized_name;
   recognized_name_publisher_->publish(name_msg);
+
+  publishGuestNames();
+}
+
+void ZedNode::publishGuestNames()
+{
+  std::string host = get_parameter("host_name").as_string();
+  std::vector<std::string> reg_guests;
+  for (const auto & p : registered_persons_) {
+    if (p.name != host && !p.name.empty()) {
+      reg_guests.push_back(p.name);
+    }
+  }
+  if (reg_guests.size() >= 1 && guest_1_name_.empty()) {
+    guest_1_name_ = reg_guests[0];
+  }
+  if (reg_guests.size() >= 2 && guest_2_name_.empty()) {
+    guest_2_name_ = reg_guests[1];
+  }
+
+  if (guest_1_name_publisher_) {
+    std_msgs::msg::String m1;
+    m1.data = guest_1_name_;
+    guest_1_name_publisher_->publish(m1);
+  }
+  if (guest_2_name_publisher_) {
+    std_msgs::msg::String m2;
+    m2.data = guest_2_name_;
+    guest_2_name_publisher_->publish(m2);
+  }
 }
 
 void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
@@ -2903,6 +2959,10 @@ void ZedNode::showPreview(const cv::Mat & bgr)
 
       const cv::Scalar color = p.is_sitting ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0);
       cv::rectangle(canvas, r, color, 2);
+      const int cx = r.x + r.width / 2;
+      const int cy = r.y + r.height / 2;
+      cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(0, 255, 0), -1);
+      cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
       std::string label;
       if (is_receptionist_ && !is_help_me_carry_) {
         if (!p.name.empty()) {
@@ -2955,10 +3015,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       const int cx = r.x + r.width / 2;
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 4, cv::Scalar(255, 255, 0), -1);
-      std::string text = d.label;
-      if (d.has_pos) text += cv::format(" (%.2fm, %.2fm)", d.x_m, d.y_m);
-      banner(text, r.x, r.y, cv::Scalar(255, 255, 0),
-        cv::Scalar(80, 80, 0), cv::Scalar(255, 255, 255), 0.52, 1);
+      cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
     }
 
     for (size_t i = 0; i < std::min<size_t>(4, preview_chairs_.size()); ++i) {
@@ -3017,9 +3074,11 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         }
       }
     }
-    if (!preview_drinks_.empty() && preview_drinks_[0].has_pos) {
-      hud(preview_drinks_[0].label + " :", preview_drinks_[0].x_m,
-        preview_drinks_[0].y_m, preview_drinks_[0].range_m, cv::Scalar(255, 255, 0));
+    for (size_t i = 0; i < std::min<size_t>(3, preview_drinks_.size()); ++i) {
+      if (preview_drinks_[i].has_pos) {
+        hud(preview_drinks_[i].label + " :", preview_drinks_[i].x_m,
+          preview_drinks_[i].y_m, preview_drinks_[i].range_m, cv::Scalar(255, 255, 0));
+      }
     }
     for (const auto & c : preview_chairs_) {
       if (!c.has_pos) continue;
