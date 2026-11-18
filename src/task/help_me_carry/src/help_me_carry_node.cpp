@@ -213,7 +213,8 @@ public:
     person_back_topic_ = declare_parameter<std::string>("person_back_topic", "/vision/person_back");
     gesture_topic_ = declare_parameter<std::string>("gesture_topic", "/vision/gesture");
     bag_topic_ = declare_parameter<std::string>("bag_topic", "/vision/bag_detections");
-    yaw_topic_ = declare_parameter<std::string>("yaw_topic", "/vision/yaw_deg");
+    // yaw_topic_ = declare_parameter<std::string>("yaw_topic", "/vision/yaw_deg");
+    yaw_topic_ = declare_parameter<std::string>("yaw_topic", "/yaw");
     cmd_vel_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
     nav_cmd_vel_topic_ = declare_parameter<std::string>("nav_cmd_vel_topic", "/nav_cmd_vel");
     path_topic_ = declare_parameter<std::string>("path_topic", "/following_path");

@@ -44,6 +44,20 @@ def generate_launch_description():
             default_value='/yaw',
             description='Topic name for published IMU yaw'
         ),
+        # Menggunakan data yaw dari vision (sebelumnya):
+        # DeclareLaunchArgument('use_yaw_topic', default_value='true', description='Use external /vision/yaw_deg instead of STM32 yaw'),
+        # DeclareLaunchArgument('yaw_topic', default_value='/vision/yaw_deg', description='External yaw topic name'),
+        # Menggunakan data dari Razor IMU langsung (STM32) / topic /yaw:
+        DeclareLaunchArgument(
+            'use_yaw_topic',
+            default_value='false',
+            description='false = direct Razor IMU from STM32'
+        ),
+        DeclareLaunchArgument(
+            'yaw_topic',
+            default_value='/yaw',
+            description='Topic name for yaw (default: /yaw)'
+        ),
 
         # RPLiDAR Arguments
         DeclareLaunchArgument(
@@ -95,6 +109,8 @@ def generate_launch_description():
                 'test_topic': LaunchConfiguration('test_topic'),
                 'publish_imu_yaw': LaunchConfiguration('publish_imu_yaw'),
                 'pub_yaw_topic': LaunchConfiguration('pub_yaw_topic'),
+                'use_yaw_topic': LaunchConfiguration('use_yaw_topic'),
+                'yaw_topic': LaunchConfiguration('yaw_topic'),
             }.items(),
         ),
 

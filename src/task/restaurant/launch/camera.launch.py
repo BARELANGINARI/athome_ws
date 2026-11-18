@@ -14,7 +14,7 @@ def generate_launch_description():
         DeclareLaunchArgument('depth_minimum_distance', default_value='30.0', description='Minimum depth sensing distance (cm)'),
         DeclareLaunchArgument('debug_window', default_value='true', description='Show OpenCV preview visualization window'),
         DeclareLaunchArgument('mirror', default_value='false', description='Mirror display preview horizontally'),
-        DeclareLaunchArgument('publish_yaw', default_value='true', description='Publish IMU yaw topic'),
+        DeclareLaunchArgument('publish_yaw', default_value='true', description='Publish IMU yaw topic from vision (default: true)'),
         DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 deg range (default: true)'),
         DeclareLaunchArgument('enable_drinks', default_value='true', description='Enable drink & object detection (pringles, sugarbox, etc.)'),
 
