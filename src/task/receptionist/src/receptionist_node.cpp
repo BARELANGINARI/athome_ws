@@ -91,7 +91,8 @@ public:
     // Face person parameters
     declare_parameter<std::string>("host_name", "Alex");
     declare_parameter<std::string>("person_label_topic", "/vision/person_label");
-    declare_parameter<std::string>("guest_1_name_topic", "/receptionist/guest_1_name");
+    declare_parameter<std::string>("guest_1_name_topic", "/vision/guest_1_name");
+    declare_parameter<std::string>("guest_2_name_topic", "/vision/guest_2_name");
     declare_parameter<double>("face_person_angular_speed", 0.30);
     declare_parameter<double>("face_person_timeout_sec", 25.0);
     declare_parameter<double>("face_person_p_gain", 1.2);
@@ -119,6 +120,7 @@ public:
     host_name_ = get_parameter("host_name").as_string();
     person_label_topic_ = get_parameter("person_label_topic").as_string();
     guest_1_name_topic_ = get_parameter("guest_1_name_topic").as_string();
+    guest_2_name_topic_ = get_parameter("guest_2_name_topic").as_string();
     face_person_angular_speed_ = get_parameter("face_person_angular_speed").as_double();
     face_person_timeout_sec_ = get_parameter("face_person_timeout_sec").as_double();
     face_person_p_gain_ = get_parameter("face_person_p_gain").as_double();
@@ -164,7 +166,7 @@ public:
       },
       sub_opts);
 
-    // Subscriptions for person tracking (Host & Guest 1)
+    // Subscriptions for person tracking (Host, Guest 1 & Guest 2)
     person_sub_ = create_subscription<std_msgs::msg::String>(
       person_label_topic_, rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::String::SharedPtr msg) {
@@ -182,6 +184,15 @@ public:
         if (!msg || msg->data.empty()) return;
         std::lock_guard<std::mutex> lock(guest_mutex_);
         guest_1_name_ = msg->data;
+      },
+      sub_opts);
+
+    guest_2_name_sub_ = create_subscription<std_msgs::msg::String>(
+      guest_2_name_topic_, 10,
+      [this](const std_msgs::msg::String::SharedPtr msg) {
+        if (!msg || msg->data.empty()) return;
+        std::lock_guard<std::mutex> lock(guest_mutex_);
+        guest_2_name_ = msg->data;
       },
       sub_opts);
 
@@ -236,7 +247,7 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
-    // Services for facing persons: /receptionist/host & /receptionist/guest1
+    // Services for facing persons: /receptionist/host, /receptionist/guest1, /receptionist/guest2
     srv_face_host_ = create_service<std_srvs::srv::Trigger>(
       "/receptionist/host",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
@@ -264,6 +275,24 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
+    srv_face_guest_2_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/guest2",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleFacePerson("guest_2", req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_face_guest_2_alias_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/guest_2",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleFacePerson("guest_2", req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
     RCLCPP_INFO(get_logger(), "Receptionist Navigation Node ready. Services available:");
     RCLCPP_INFO(get_logger(), " - /receptionist/go_to_door");
     RCLCPP_INFO(get_logger(), " - /receptionist/go_to_beverage_area");
@@ -271,6 +300,7 @@ public:
     RCLCPP_INFO(get_logger(), " - /search_chair (alias: /receptionist/search_chair)");
     RCLCPP_INFO(get_logger(), " - /receptionist/host");
     RCLCPP_INFO(get_logger(), " - /receptionist/guest1 (alias: /receptionist/guest_1)");
+    RCLCPP_INFO(get_logger(), " - /receptionist/guest2 (alias: /receptionist/guest_2)");
     publishStatus("Receptionist navigation node ready");
   }
 
@@ -490,9 +520,11 @@ public:
 
     const std::string host_name_lower = toLower(host_name_);
     std::string guest_1_name_lower;
+    std::string guest_2_name_lower;
     {
       std::lock_guard<std::mutex> lk(guest_mutex_);
       guest_1_name_lower = toLower(guest_1_name_);
+      guest_2_name_lower = toLower(guest_2_name_);
     }
 
     std::stringstream ss(data);
@@ -553,8 +585,9 @@ public:
           is_match = true;
           priority = 80.0;
         } else if ((guest_1_name_lower.empty() || label_lower.find(guest_1_name_lower) == std::string::npos) &&
+                   (guest_2_name_lower.empty() || label_lower.find(guest_2_name_lower) == std::string::npos) &&
                    label_lower.find("guest") == std::string::npos) {
-          // Fallback kandidat: orang yang bukan berlabel guest
+          // Fallback kandidat: orang yang bukan berlabel guest atau guest 1/2
           is_match = true;
           priority = 20.0;
         }
@@ -562,11 +595,27 @@ public:
         if (!guest_1_name_lower.empty() && label_lower.find(guest_1_name_lower) != std::string::npos) {
           is_match = true;
           priority = 100.0;
-        } else if (label_lower.find("guest_1") != std::string::npos || label_lower.find("guest") != std::string::npos) {
+        } else if (label_lower.find("guest_1") != std::string::npos || label_lower.find("guest 1") != std::string::npos) {
           is_match = true;
           priority = 70.0;
-        } else if (!host_name_lower.empty() && label_lower.find(host_name_lower) == std::string::npos) {
-          // Fallback kandidat: orang yang bukan host
+        } else if ((guest_2_name_lower.empty() || label_lower.find(guest_2_name_lower) == std::string::npos) &&
+                   (host_name_lower.empty() || label_lower.find(host_name_lower) == std::string::npos) &&
+                   label_lower.find("host") == std::string::npos) {
+          // Fallback kandidat: orang yang bukan host dan bukan guest 2
+          is_match = true;
+          priority = 20.0;
+        }
+      } else if (target_role == "guest_2") {
+        if (!guest_2_name_lower.empty() && label_lower.find(guest_2_name_lower) != std::string::npos) {
+          is_match = true;
+          priority = 100.0;
+        } else if (label_lower.find("guest_2") != std::string::npos || label_lower.find("guest 2") != std::string::npos) {
+          is_match = true;
+          priority = 70.0;
+        } else if ((guest_1_name_lower.empty() || label_lower.find(guest_1_name_lower) == std::string::npos) &&
+                   (host_name_lower.empty() || label_lower.find(host_name_lower) == std::string::npos) &&
+                   label_lower.find("host") == std::string::npos) {
+          // Fallback kandidat: orang yang bukan host dan bukan guest 1
           is_match = true;
           priority = 20.0;
         }
@@ -773,8 +822,29 @@ public:
       return;
     }
 
-    const std::string display_name = (target_role == "host") ? ("Host (" + host_name_ + ")") : "Guest 1";
-    const std::string srv_name = (target_role == "host") ? "/receptionist/host" : "/receptionist/guest1";
+    std::string current_guest_1_name;
+    std::string current_guest_2_name;
+    {
+      std::lock_guard<std::mutex> lk(guest_mutex_);
+      current_guest_1_name = guest_1_name_;
+      current_guest_2_name = guest_2_name_;
+    }
+
+    std::string display_name;
+    std::string srv_name;
+    if (target_role == "host") {
+      display_name = "Host (" + host_name_ + ")";
+      srv_name = "/receptionist/host";
+    } else if (target_role == "guest_1") {
+      display_name = current_guest_1_name.empty() ? "Guest 1" : ("Guest 1 (" + current_guest_1_name + ")");
+      srv_name = "/receptionist/guest1";
+    } else if (target_role == "guest_2") {
+      display_name = current_guest_2_name.empty() ? "Guest 2" : ("Guest 2 (" + current_guest_2_name + ")");
+      srv_name = "/receptionist/guest2";
+    } else {
+      display_name = target_role;
+      srv_name = "/receptionist/" + target_role;
+    }
     publishStatus("Service " + srv_name + " called: Searching and aligning to " + display_name + "...");
 
     auto get_current_person_target = [this, &target_role]() -> PersonTarget {
@@ -1053,7 +1123,8 @@ private:
   std::atomic<bool> is_facing_person_{false};
   std::string host_name_{"Alex"};
   std::string person_label_topic_{"/vision/person_label"};
-  std::string guest_1_name_topic_{"/receptionist/guest_1_name"};
+  std::string guest_1_name_topic_{"/vision/guest_1_name"};
+  std::string guest_2_name_topic_{"/vision/guest_2_name"};
   double face_person_angular_speed_{0.30};
   double face_person_timeout_sec_{25.0};
   double face_person_p_gain_{1.2};
@@ -1068,13 +1139,17 @@ private:
 
   std::mutex guest_mutex_;
   std::string guest_1_name_;
+  std::string guest_2_name_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr guest_1_name_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr guest_2_name_sub_;
 
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_host_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_guest_1_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_guest_1_alias_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_guest_2_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_guest_2_alias_;
 };
 
 }  // namespace receptionist

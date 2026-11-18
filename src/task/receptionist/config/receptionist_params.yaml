@@ -34,7 +34,8 @@ receptionist_node:
     # Face person settings
     host_name: "Alex"
     person_label_topic: "/vision/person_label"
-    guest_1_name_topic: "/receptionist/guest_1_name"
+    guest_1_name_topic: "/vision/guest_1_name"
+    guest_2_name_topic: "/vision/guest_2_name"
     face_person_angular_speed: 0.30
     face_person_timeout_sec: 25.0
     face_person_p_gain: 1.2

@@ -27,6 +27,7 @@ ros2 service call /search_chair std_srvs/srv/Trigger {}
 # Service Menghadap Orang (Gaze / Face Person):
 ros2 service call /receptionist/host std_srvs/srv/Trigger {}
 ros2 service call /receptionist/guest1 std_srvs/srv/Trigger {}
+ros2 service call /receptionist/guest2 std_srvs/srv/Trigger {}
 
 ### buat inisialisasi pose yaw robot dimap pakai rad
 0∘ ≈ 0.0 rad 
