@@ -45,6 +45,7 @@ enum class ReceptionistState {
   WAIT_DRINK,
   CHECK_BEVERAGE,
   NAV_TO_LIVING_ROOM,
+  FACE_AND_INTRODUCE_HOST,
   INTRODUCE_G1_TO_G2,
   INTRODUCE_G2_TO_G1,
   EVALUATE_SIMILARITY,
@@ -73,6 +74,7 @@ static std::string stateToString(ReceptionistState state)
     case ReceptionistState::WAIT_DRINK:              return "WAIT_DRINK";
     case ReceptionistState::CHECK_BEVERAGE:          return "CHECK_BEVERAGE";
     case ReceptionistState::NAV_TO_LIVING_ROOM:      return "NAV_TO_LIVING_ROOM";
+    case ReceptionistState::FACE_AND_INTRODUCE_HOST: return "FACE_AND_INTRODUCE_HOST";
     case ReceptionistState::INTRODUCE_G1_TO_G2:      return "INTRODUCE_G1_TO_G2";
     case ReceptionistState::INTRODUCE_G2_TO_G1:      return "INTRODUCE_G2_TO_G1";
     case ReceptionistState::EVALUATE_SIMILARITY:     return "EVALUATE_SIMILARITY";
@@ -235,6 +237,10 @@ public:
 
     search_chair_client_ = create_client<Trigger>(
       "/search_chair", rclcpp::ServicesQoS(), callback_group_);
+    face_host_client_ = create_client<Trigger>(
+      "/receptionist/host", rclcpp::ServicesQoS(), callback_group_);
+    face_guest1_client_ = create_client<Trigger>(
+      "/receptionist/guest1", rclcpp::ServicesQoS(), callback_group_);
 
     arm_ambil_tas_client_ = create_client<Trigger>(
       "/arm/ambil_tas", rclcpp::ServicesQoS(), callback_group_);
@@ -361,6 +367,8 @@ private:
   TriggerClient::SharedPtr nav_beverage_client_;
   TriggerClient::SharedPtr nav_living_room_client_;
   TriggerClient::SharedPtr search_chair_client_;
+  TriggerClient::SharedPtr face_host_client_;
+  TriggerClient::SharedPtr face_guest1_client_;
 
   TriggerClient::SharedPtr arm_ambil_tas_client_;
   TriggerClient::SharedPtr arm_ambil_tas_simple_client_;
@@ -646,6 +654,70 @@ private:
         }
       },
       45.0);
+  }
+
+  // Mencari dan menyelaraskan arah hadap robot ke Host via /receptionist/host
+  void faceHost(std::function<void(bool, const std::string &)> on_finished)
+  {
+    TriggerClient::SharedPtr client = face_host_client_;
+    std::string srv_name = "/receptionist/host";
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[HOST]\033[0m Calling %s to search and align facing Host...",
+      srv_name.c_str());
+
+    callTrigger(
+      client, srv_name,
+      [this, srv_name, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[HOST]\033[0m Face Host (%s) succeeded: %s",
+            srv_name.c_str(), msg.c_str());
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[HOST]\033[0m Face Host (%s) finished with warning/failure: %s",
+            srv_name.c_str(), msg.c_str());
+        }
+        if (on_finished) {
+          on_finished(success, msg);
+        }
+      },
+      35.0);
+  }
+
+  // Mencari dan menyelaraskan arah hadap robot ke Guest 1 via /receptionist/guest1
+  void faceGuest1(std::function<void(bool, const std::string &)> on_finished)
+  {
+    TriggerClient::SharedPtr client = face_guest1_client_;
+    std::string srv_name = "/receptionist/guest1";
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[GUEST 1]\033[0m Calling %s to search and align facing Guest 1...",
+      srv_name.c_str());
+
+    callTrigger(
+      client, srv_name,
+      [this, srv_name, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[GUEST 1]\033[0m Face Guest 1 (%s) succeeded: %s",
+            srv_name.c_str(), msg.c_str());
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[GUEST 1]\033[0m Face Guest 1 (%s) finished with warning/failure: %s",
+            srv_name.c_str(), msg.c_str());
+        }
+        if (on_finished) {
+          on_finished(success, msg);
+        }
+      },
+      35.0);
   }
 
   // Menentukan posisi horizontal (left, center, right) pada frame kamera statis
@@ -1773,23 +1845,46 @@ private:
           if (!success) {
             return; //retry di tick berikutnya setelah TTS dan cooldown selesai
           }
-          if (guest_idx_ == 1) {
-            transitionTo(ReceptionistState::SEARCH_CHAIR, "Arrived at living_room with Guest 1; searching for empty chair");
-          } else {
-            transitionTo(
-              ReceptionistState::INTRODUCE_G1_TO_G2, "Arrived at living_room with Guest 2, starting introductions"
-            );
-          }
+          transitionTo(
+            ReceptionistState::FACE_AND_INTRODUCE_HOST,
+            "Arrived at living_room; facing Host to introduce guest");
         });
         break;
 
       }
 
+      case ReceptionistState::FACE_AND_INTRODUCE_HOST:
+        faceHost([this](bool /*success*/, const std::string & /*msg*/) {
+          PersonProfile cg;
+          int g_idx = 1;
+          {
+            std::lock_guard<std::mutex> lock(guest_mutex_);
+            cg = current_guest_;
+            g_idx = guest_idx_;
+          }
+          const std::string intro_msg =
+            host_.name + ", this is our guest, " + cg.name + ". " +
+            formatPersonDescription(cg) + ". Their favorite drink is " +
+            cg.drink + ", and their interest is " + cg.interest + ".";
+
+          speakAsync(intro_msg, [this, g_idx]() {
+            if (g_idx == 1) {
+              transitionTo(
+                ReceptionistState::SEARCH_CHAIR,
+                "Guest 1 introduced to Host; searching for empty chair");
+            } else {
+              transitionTo(
+                ReceptionistState::INTRODUCE_G1_TO_G2,
+                "Guest 2 introduced to Host; starting guest introductions");
+            }
+          });
+        });
+        break;
+
       // ------------------------------------------------------------------------
       // STATE 4: INTRODUCTIONS & SHARED INTERESTS (SAAT BERSAMA TAMU 2)
       // ------------------------------------------------------------------------
       case ReceptionistState::INTRODUCE_G1_TO_G2: {
-        PersonProfile guest1, guest2;
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
           if (guests_.size() < 2) {
@@ -1800,25 +1895,31 @@ private:
             transitionTo(ReceptionistState::SEARCH_CHAIR, "Skipped introductions due to missing guest data");
             break;
           }
-          guest1 = guests_[0];
-          guest2 = guests_[1];
         }
 
-        // Pastikan kamera sempat settle atau mendeteksi orang di ruang tamu
-        if (!isPersonInFront() && (now() - state_enter_time_).seconds() < 2.0) {
-          return;
-        }
+        faceGuest1([this](bool /*success*/, const std::string & /*msg*/) {
+          PersonProfile guest1, guest2;
+          {
+            std::lock_guard<std::mutex> lock(guest_mutex_);
+            if (guests_.size() < 2) {
+              transitionTo(ReceptionistState::SEARCH_CHAIR, "Skipped introductions due to missing guest data");
+              return;
+            }
+            guest1 = guests_[0];
+            guest2 = guests_[1];
+          }
 
-        const std::string text =
-          guest1.name + ", I would like to introduce " + guest2.name + ". " +
-          formatPersonDescription(guest2) + ". " +
-          "Their favorite drink is " + guest2.drink +
-          ", and their interest is " + guest2.interest + ".";
+          const std::string text =
+            guest1.name + ", I would like to introduce " + guest2.name + ". " +
+            formatPersonDescription(guest2) + ". " +
+            "Their favorite drink is " + guest2.drink +
+            ", and their interest is " + guest2.interest + ".";
 
-        speakAsync(text, [this]() {
-          transitionTo(
-            ReceptionistState::INTRODUCE_G2_TO_G1,
-            "Introduced Guest 2 to Guest 1");
+          speakAsync(text, [this]() {
+            transitionTo(
+              ReceptionistState::INTRODUCE_G2_TO_G1,
+              "Introduced Guest 2 to Guest 1");
+          });
         });
         break;
       }
@@ -1927,16 +2028,8 @@ private:
         }
 
         // menentukan bagian 1 kalimat (berhenti tepat pada kalimat 'on the ')
-        std::string part1_msg;
-        if (guest_idx_ == 1) {
-          part1_msg =
-            host_.name + ", this is our guest, " + cg.name + ". " +
-            formatPersonDescription(cg) + ". Their favorite drink is " +
-            cg.drink + ", and their interest is " + cg.interest + ". " +
-            cg.name + ", please take a seat in the empty chair on the ";
-        } else {
-          part1_msg = cg.name + ", please take a seat in the empty chair on the ";
-        }
+        std::string part1_msg =
+          cg.name + ", please take a seat in the empty chair on the ";
 
         speakAsync(part1_msg, [this, seat_pos]() {
           // tepat setelah kalimat diatas selesai, gerakkan lengan menunjuk
