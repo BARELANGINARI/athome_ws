@@ -622,56 +622,34 @@ private:
     if (!candidates.empty()) {
       auto target_it = candidates.end();
 
-      // 1. If KF is active and target ID is locked:
-      if (kf_.is_initialized() && locked_person_id_ >= 0) {
-        // Find candidate with matching ID
-        auto locked_it = std::find_if(candidates.begin(), candidates.end(), [this](const Candidate & c) {
-          return c.id == locked_person_id_;
-        });
-
-        if (locked_it != candidates.end()) {
-          // Validate spatial consistency via Kalman gate
-          const double dist_to_kf = kf_.distance_to(locked_it->rel_x, locked_it->rel_y);
-          const double gate_radius = kf_.get_gate_radius(1.2, 2.5);
-          if (dist_to_kf <= gate_radius) {
-            target_it = locked_it;
-          } else {
-            RCLCPP_WARN_THROTTLE(
-              get_logger(), *get_clock(), 1000,
-              "[FOLLOW] ID %d detected outside KF gate (dist=%.2f m > gate=%.2f m). Seeking re-lock...",
-              locked_person_id_, dist_to_kf, gate_radius);
+      // 1. If KF is active: Associate candidate nearest to Kalman Filter estimate (Spatial Association)
+      if (kf_.is_initialized()) {
+        double min_kf_dist = 999.0;
+        auto best_cand = candidates.end();
+        for (auto it = candidates.begin(); it != candidates.end(); ++it) {
+          const double d = kf_.distance_to(it->rel_x, it->rel_y);
+          if (d < min_kf_dist) {
+            min_kf_dist = d;
+            best_cand = it;
           }
         }
 
-        // 2. If locked ID not found (occluded or changed by ZED):
-        // Find candidate nearest to Kalman Filter estimate (Spatial Association)
-        if (target_it == candidates.end()) {
-          double min_kf_dist = 999.0;
-          auto best_cand = candidates.end();
-          for (auto it = candidates.begin(); it != candidates.end(); ++it) {
-            const double d = kf_.distance_to(it->rel_x, it->rel_y);
-            if (d < min_kf_dist) {
-              min_kf_dist = d;
-              best_cand = it;
-            }
-          }
-
-          // Check if nearest candidate is within Kalman gate radius
-          const double re_gate_radius = kf_.get_gate_radius(0.85, 2.0);
-          if (best_cand != candidates.end() && min_kf_dist <= re_gate_radius) {
-            RCLCPP_INFO(
-              get_logger(),
-              "\033[93m[FOLLOW] Re-lock target via Kalman Gate: old ID %d -> new ID %d (KF dist=%.2f m <= gate=%.2f m)\033[0m",
-              locked_person_id_, best_cand->id, min_kf_dist, re_gate_radius);
-            target_it = best_cand;
-            locked_person_id_ = target_it->id;
-          }
+        // Validate spatial consistency via Kalman gate
+        const double gate_radius = kf_.get_gate_radius(1.2, 2.5);
+        if (best_cand != candidates.end() && min_kf_dist <= gate_radius) {
+          target_it = best_cand;
+          locked_person_id_ = target_it->id;
+        } else {
+          RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 1000,
+            "[FOLLOW] Nearest candidate outside KF gate (dist=%.2f m > gate=%.2f m). Seeking target...",
+            min_kf_dist, gate_radius);
         }
       }
 
-      // 3. If no target locked or lost for too long (> max_lost_time_):
+      // 2. If no target locked or lost for too long (> max_lost_time_):
       const double time_since_seen = now().seconds() - last_seen_sec_;
-      if (target_it == candidates.end() && (!kf_.is_initialized() || locked_person_id_ < 0 || time_since_seen > max_lost_time_)) {
+      if (target_it == candidates.end() && (!kf_.is_initialized() || time_since_seen > max_lost_time_)) {
         target_it = std::find_if(candidates.begin(), candidates.end(), [](const Candidate & c) {
           return c.is_operator;
         });
@@ -687,8 +665,8 @@ private:
         if (target_it != candidates.end()) {
           RCLCPP_INFO(
             get_logger(),
-            "\033[92m[FOLLOW] Target lock initialized: [ID %d] dist=%.2f m | bearing=%+.1f deg\033[0m",
-            target_it->id, target_it->dist, target_it->bearing * 180.0 / M_PI);
+            "\033[92m[FOLLOW] Target lock initialized (Spatial): dist=%.2f m | bearing=%+.1f deg\033[0m",
+            target_it->dist, target_it->bearing * 180.0 / M_PI);
           locked_person_id_ = target_it->id;
           kf_.init(target_it->rel_x, target_it->rel_y);
         }
@@ -3041,7 +3019,6 @@ private:
     bool           queue_completed = false;
     bool           queue_engaged = false;
     bool           has_reached_queue_stop = false;
-    int            locked_queue_id = -1;
     bool           has_locked_world = false;
     double         locked_queue_wx = 0.0;
     double         locked_queue_wy = 0.0;
@@ -3133,7 +3110,6 @@ private:
         if (is_homing_queuing_ || queue_engaged) {
           is_homing_queuing_ = false;
           queue_engaged      = false;
-          locked_queue_id    = -1;
           has_locked_world   = false;
           queue_completed    = true;
           is_queue_search_active_ = false;
@@ -3251,36 +3227,26 @@ private:
         }
 
         size_t best_back_idx = cands.size();
-        // Prioritas 1: cocokkan ID yang sudah dikunci saat inisiasi
-        if (locked_queue_id != -1) {
-          for (size_t i = 0; i < cands.size(); ++i) {
-            if (cands[i].id == locked_queue_id &&
-                (cands[i].is_back || std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by) < 1.00))
-            {
-              best_back_idx = i;
-              break;
-            }
+        // Prioritas 1: kandidat is_back terdekat dengan posisi target terkunci sebelumnya (ref_bx, ref_by)
+        double best_ref_err = has_locked_world ? 1.00 : 999.0;
+        for (size_t i = 0; i < cands.size(); ++i) {
+          if (!cands[i].is_back) continue;
+          const double err = has_locked_world
+            ? std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by)
+            : cands[i].dist;
+          if (err < best_ref_err) {
+            best_ref_err = err;
+            best_back_idx = i;
           }
         }
 
-        // Prioritas 2: kandidat is_back terdekat dengan posisi target terkunci sebelumnya
+        // Prioritas 2: toleransi jika flag is_back drop sesaat pada jarak dekat
         if (best_back_idx == cands.size()) {
-          double best_ref_err = 0.90;
+          best_ref_err = has_locked_world ? 0.85 : 999.0;
           for (size_t i = 0; i < cands.size(); ++i) {
-            if (!cands[i].is_back) continue;
-            const double err = std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by);
-            if (err < best_ref_err) {
-              best_ref_err = err;
-              best_back_idx = i;
-            }
-          }
-        }
-
-        // Prioritas 3: toleransi jika flag is_back drop sesaat pada jarak dekat
-        if (best_back_idx == cands.size()) {
-          double best_ref_err = 0.85;
-          for (size_t i = 0; i < cands.size(); ++i) {
-            const double err = std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by);
+            const double err = has_locked_world
+              ? std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by)
+              : cands[i].dist;
             if (err < best_ref_err) {
               best_ref_err = err;
               best_back_idx = i;
@@ -3292,11 +3258,6 @@ private:
           closest_dist = cands[best_back_idx].dist;
           closest_x = cands[best_back_idx].px_b;
           closest_y = cands[best_back_idx].py_b;
-          if (cands[best_back_idx].id != -1 &&
-              (locked_queue_id == -1 || std::hypot(closest_x - ref_bx, closest_y - ref_by) < 0.45))
-          {
-            locked_queue_id = cands[best_back_idx].id;
-          }
           if (has_pose_w) {
             locked_queue_wx = rx_w + closest_x * std::cos(ryaw_w) - closest_y * std::sin(ryaw_w);
             locked_queue_wy = ry_w + closest_x * std::sin(ryaw_w) + closest_y * std::cos(ryaw_w);
@@ -3307,9 +3268,9 @@ private:
 
           RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 1000,
-            "\033[1;36m[Homing Queue]\033[0m Menyesuaikan posisi antrian (Single Lock ID=%d): "
+            "\033[1;36m[Homing Queue]\033[0m Menyesuaikan posisi antrian (Spatial Lock): "
             "Target orang antri di (%.2f, %.2f) jarak=%.2fm.",
-            locked_queue_id, closest_x, closest_y, closest_dist);
+            closest_x, closest_y, closest_dist);
         } else if (has_locked_world && has_pose_w && ref_bx > 0.15 && std::hypot(ref_bx, ref_by) < 3.0) {
           // KUNCI POSISI TERAKHIR TETAP DIGUNAKAN (fallback saat kamera drop / orang terlalu dekat)
           closest_x = ref_bx;
@@ -3414,8 +3375,7 @@ private:
           person_in_corridor = true;
           queue_has_back_facing = true;
           detected_queue_size = std::max(back_indices.size(), cands.size());
-          queue_engaged = true; // Kunci antrian! Beralih permanen ke mode penyesuaian posisi (Single Lock)
-          locked_queue_id = cands[best_cand_idx].id;
+          queue_engaged = true; // Kunci antrian! Beralih permanen ke mode penyesuaian posisi (Spatial Lock)
           has_locked_world = false;
 
           double rx_w = 0.0, ry_w = 0.0, ryaw_w = 0.0;
@@ -3905,7 +3865,6 @@ private:
         if (is_homing_queuing_ || queue_engaged) {
           is_homing_queuing_ = false;
           queue_engaged      = false;
-          locked_queue_id    = -1;
           has_locked_world   = false;
           queue_completed    = true;
           has_reached_queue_stop = false;
