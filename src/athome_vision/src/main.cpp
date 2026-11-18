@@ -2854,6 +2854,9 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
   std::string data;
   std::string best_empty_side = "none";
   double best_empty_dist = 1e9;
+  double best_empty_x = 0.0, best_empty_y = 0.0, best_empty_z = 0.0;
+  double best_empty_depth = 0.0;
+  bool best_has_pos = false;
   constexpr double memory_timeout = 10.0;
 
   for (size_t i = 0; i < chair_memory_.size(); ) {
@@ -2878,8 +2881,20 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       if (ok && dist > 0.1 && dist < best_empty_dist) {
         best_empty_dist = dist;
         best_empty_side = side;
+        best_empty_x = chair.x;
+        best_empty_y = chair.y;
+        best_empty_z = chair.z;
+        best_empty_depth = dist;
+        best_has_pos = true;
       } else if (best_empty_side == "none") {
         best_empty_side = side;
+        if (ok) {
+          best_empty_x = chair.x;
+          best_empty_y = chair.y;
+          best_empty_z = chair.z;
+          best_empty_depth = dist;
+          best_has_pos = true;
+        }
       }
     }
 
@@ -2911,7 +2926,17 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
   chair_dets_publisher_->publish(chair_msg);
 
   std_msgs::msg::String seat_msg;
-  seat_msg.data = best_empty_side;
+  if (best_empty_side != "none") {
+    if (best_has_pos) {
+      seat_msg.data = cv::format(
+        "%s|%.2f,%.2f,%.2f|%.2f",
+        best_empty_side.c_str(), best_empty_x, best_empty_y, best_empty_z, best_empty_depth);
+    } else {
+      seat_msg.data = cv::format("%s|nan,nan,nan|nan", best_empty_side.c_str());
+    }
+  } else {
+    seat_msg.data = "none";
+  }
   empty_seat_publisher_->publish(seat_msg);
 }
 

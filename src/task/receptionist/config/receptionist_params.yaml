@@ -22,20 +22,29 @@ receptionist_node:
     cmd_vel_topic: "cmd_vel"
     chair_topic: "/vision/chair_detections"
     empty_seat_topic: "/vision/empty_seat"
-    search_chair_angular_speed: 0.35
+    odom_topic: "/odom"
+    search_chair_ref_yaw: -1.57
+    search_chair_angular_speed: 0.30
     search_chair_timeout_sec: 40.0
     search_chair_confirm_frames: 2
+    search_chair_sweep_angle_deg: 30.0
+    chair_max_dist: 3.0
     align_chair_p_gain: 1.2
     align_chair_min_speed: 0.14
     align_chair_max_speed: 0.28
     align_chair_tolerance_rad: 0.07
     camera_width: 672
 
+    guest_door_distance: 1.0
+    guest_door_step_back_speed: 0.16
+    guest_door_timeout_sec: 15.0
+
     # Face person settings
     host_name: "Alex"
     person_label_topic: "/vision/person_label"
     guest_1_name_topic: "/vision/guest_1_name"
     guest_2_name_topic: "/vision/guest_2_name"
+    host_seated_max_dist: 3.0
     face_person_angular_speed: 0.30
     face_person_timeout_sec: 25.0
     face_person_p_gain: 1.2

@@ -34,6 +34,7 @@ enum class ReceptionistState {
   INIT,
   NAV_TO_DOOR,
   WAIT_GUEST,
+  ALIGN_GUEST,
   ASK_NAME,
   WAIT_NAME,
   ASK_INTEREST,
@@ -63,6 +64,7 @@ static std::string stateToString(ReceptionistState state)
     case ReceptionistState::INIT:                    return "INIT";
     case ReceptionistState::NAV_TO_DOOR:             return "NAV_TO_DOOR";
     case ReceptionistState::WAIT_GUEST:              return "WAIT_GUEST";
+    case ReceptionistState::ALIGN_GUEST:             return "ALIGN_GUEST";
     case ReceptionistState::ASK_NAME:                return "ASK_NAME";
     case ReceptionistState::WAIT_NAME:               return "WAIT_NAME";
     case ReceptionistState::ASK_INTEREST:            return "ASK_INTEREST";
@@ -241,6 +243,8 @@ public:
       "/receptionist/host", rclcpp::ServicesQoS(), callback_group_);
     face_guest1_client_ = create_client<Trigger>(
       "/receptionist/guest1", rclcpp::ServicesQoS(), callback_group_);
+    adjust_guest_client_ = create_client<Trigger>(
+      "/receptionist/adjust_guest", rclcpp::ServicesQoS(), callback_group_);
 
     arm_ambil_tas_client_ = create_client<Trigger>(
       "/arm/ambil_tas", rclcpp::ServicesQoS(), callback_group_);
@@ -369,6 +373,7 @@ private:
   TriggerClient::SharedPtr search_chair_client_;
   TriggerClient::SharedPtr face_host_client_;
   TriggerClient::SharedPtr face_guest1_client_;
+  TriggerClient::SharedPtr adjust_guest_client_;
 
   TriggerClient::SharedPtr arm_ambil_tas_client_;
   TriggerClient::SharedPtr arm_ambil_tas_simple_client_;
@@ -718,6 +723,38 @@ private:
         }
       },
       35.0);
+  }
+
+  // Menyelaraskan arah hadap robot ke tamu di pintu dan mundur hingga jarak 1.5m
+  void adjustGuestDistance(std::function<void(bool, const std::string &)> on_finished)
+  {
+    TriggerClient::SharedPtr client = adjust_guest_client_;
+    std::string srv_name = "/receptionist/adjust_guest";
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[GUEST]\033[0m Calling %s to align heading and adjust distance to guest...",
+      srv_name.c_str());
+
+    callTrigger(
+      client, srv_name,
+      [this, srv_name, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[GUEST]\033[0m Adjust guest distance succeeded: %s",
+            msg.c_str());
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[GUEST]\033[0m Adjust guest distance finished with warning/failure: %s",
+            msg.c_str());
+        }
+        if (on_finished) {
+          on_finished(success, msg);
+        }
+      },
+      25.0);
   }
 
   // Menentukan posisi horizontal (left, center, right) pada frame kamera statis
@@ -1318,7 +1355,7 @@ private:
     }
   }
 
-  // Callback deteksi kursi kosong (/zed/empty_seat: "left", "center", "right")
+  // Callback deteksi kursi kosong (/vision/empty_seat: "side|x,y,z|depth" atau "left", "center", "right")
   void onEmptySeat(const std_msgs::msg::String::SharedPtr message)
   {
     if (!isVisionActive() || !message || message->data.empty()) return;
@@ -1328,8 +1365,32 @@ private:
       has_explicit_empty_seat_ = false;
       return;
     }
-    const auto pipe = raw.find('|');
-    empty_seat_position_ = (pipe != std::string::npos) ? raw.substr(0, pipe) : raw;
+    const auto pipe1 = raw.find('|');
+    std::string side_str = (pipe1 != std::string::npos) ? raw.substr(0, pipe1) : raw;
+
+    // Jika pesan menyertakan koordinat 3D: side|x,y,z|depth
+    if (pipe1 != std::string::npos) {
+      const auto pipe2 = raw.find('|', pipe1 + 1);
+      std::string xyz_str = (pipe2 != std::string::npos)
+        ? raw.substr(pipe1 + 1, pipe2 - pipe1 - 1)
+        : raw.substr(pipe1 + 1);
+      double px = 0.0, py = 0.0, pz = 0.0;
+      if (xyz_str.find("nan") == std::string::npos &&
+          std::sscanf(xyz_str.c_str(), "%lf,%lf,%lf", &px, &py, &pz) == 3) {
+        // Koreksi mirror / inversi sumbu Y dari vision: negasikan kembali (-py)
+        // persis seperti di restaurant_node (p.y = -py) agar sesuai standar ROS (+Y Kiri, -Y Kanan)
+        const double corrected_y = -py;
+        side_str = (corrected_y >= 0.20) ? "left" : (corrected_y <= -0.20 ? "right" : "center");
+      } else {
+        if (side_str == "left") side_str = "right";
+        else if (side_str == "right") side_str = "left";
+      }
+    } else {
+      if (side_str == "left") side_str = "right";
+      else if (side_str == "right") side_str = "left";
+    }
+
+    empty_seat_position_ = side_str;
     has_explicit_empty_seat_ = true;
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 2000,
@@ -1521,17 +1582,25 @@ private:
           return;
         }
         if (isPersonInFront()) {
-          speakAsync(
-            "Hello! Welcome to the party. I am Barelang Inari from Batam State Polytechnic; I am your robot receptionist.",
-            [this]() {
-              transitionTo(ReceptionistState::ASK_NAME, "Guest detected and greeted at entrance");
-            });
+          transitionTo(
+            ReceptionistState::ALIGN_GUEST,
+            "Guest detected at entrance; aligning heading and adjusting distance to 1.5m");
         } else if (last_wait_prompt_time_.nanoseconds() == 0 ||
                    (now() - last_wait_prompt_time_).seconds() >= wait_guest_prompt_sec_)
         {
           last_wait_prompt_time_ = now();
           speakAsync("I am waiting for a guest; please stand in front of me.");
         }
+        break;
+
+      case ReceptionistState::ALIGN_GUEST:
+        adjustGuestDistance([this](bool /*success*/, const std::string & /*msg*/) {
+          speakAsync(
+            "Hello! Welcome to the party. I am Barelang Inari from Batam State Polytechnic; I am your robot receptionist.",
+            [this]() {
+              transitionTo(ReceptionistState::ASK_NAME, "Guest greeted at entrance after alignment & distance adjustment");
+            });
+        });
         break;
 
       case ReceptionistState::ASK_NAME:
@@ -1825,10 +1894,7 @@ private:
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
           if (guest_idx_ == 1) {
-            escort_msg +=
-              " The host, " + host_.name + ", is in the living room. " +
-              formatPersonDescription(host_) + ". Their favorite drink is " +
-              host_.drink + ", and their interest is " + host_.interest + ".";
+            escort_msg += " A guest is waiting in the living room.";
           } else if (guest_idx_ == 2 && !guests_.empty()) {
             escort_msg +=
               " The first guest, " + guests_[0].name +
@@ -1854,7 +1920,7 @@ private:
       }
 
       case ReceptionistState::FACE_AND_INTRODUCE_HOST:
-        faceHost([this](bool /*success*/, const std::string & /*msg*/) {
+        faceHost([this](bool success, const std::string & /*msg*/) {
           PersonProfile cg;
           int g_idx = 1;
           {
@@ -1862,8 +1928,19 @@ private:
             cg = current_guest_;
             g_idx = guest_idx_;
           }
+
+          if (!success) {
+            RCLCPP_WARN(
+              get_logger(),
+              "\033[1;33m[LIVING ROOM]\033[0m No seated guest detected. Proceeding directly to search chair.");
+            transitionTo(
+              ReceptionistState::SEARCH_CHAIR,
+              "No seated person detected; searching for empty chair");
+            return;
+          }
+
           const std::string intro_msg =
-            host_.name + ", this is our guest, " + cg.name + ". " +
+            "Hello, this is our guest, " + cg.name + ". " +
             formatPersonDescription(cg) + ". Their favorite drink is " +
             cg.drink + ", and their interest is " + cg.interest + ".";
 
@@ -1871,11 +1948,11 @@ private:
             if (g_idx == 1) {
               transitionTo(
                 ReceptionistState::SEARCH_CHAIR,
-                "Guest 1 introduced to Host; searching for empty chair");
+                "Guest introduced to seated person; searching for empty chair");
             } else {
               transitionTo(
                 ReceptionistState::INTRODUCE_G1_TO_G2,
-                "Guest 2 introduced to Host; starting guest introductions");
+                "Guest introduced to seated person; starting guest introductions");
             }
           });
         });
