@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <future>
@@ -35,6 +37,14 @@ struct EmptyChairTarget
   double dist{0.0};      // Meter
   std::string side;      // "left", "center", "right"
   std::string raw_info;
+};
+
+struct PersonTarget
+{
+  bool valid{false};
+  double angle_err{0.0}; // Radian: >0 to left, <0 to right
+  double dist{0.0};      // Meter
+  std::string label;
 };
 
 geometry_msgs::msg::Quaternion yawToQuaternion(double yaw_deg_or_rad)
@@ -78,6 +88,17 @@ public:
     declare_parameter<double>("living_room.y", 0.0);
     declare_parameter<double>("living_room.yaw", 270.0);
 
+    // Face person parameters
+    declare_parameter<std::string>("host_name", "Alex");
+    declare_parameter<std::string>("person_label_topic", "/vision/person_label");
+    declare_parameter<std::string>("guest_1_name_topic", "/receptionist/guest_1_name");
+    declare_parameter<double>("face_person_angular_speed", 0.30);
+    declare_parameter<double>("face_person_timeout_sec", 25.0);
+    declare_parameter<double>("face_person_p_gain", 1.2);
+    declare_parameter<double>("face_person_min_speed", 0.14);
+    declare_parameter<double>("face_person_max_speed", 0.30);
+    declare_parameter<double>("face_person_tolerance_rad", 0.07);
+
     // Chair search & motion parameters
     declare_parameter<std::string>("cmd_vel_topic", "cmd_vel");
     declare_parameter<std::string>("chair_topic", "/vision/chair_detections");
@@ -94,6 +115,16 @@ public:
     global_frame_ = get_parameter("global_frame").as_string();
     nav_timeout_sec_ = get_parameter("nav_timeout_sec").as_double();
     std::string announce_topic = get_parameter("announce_topic").as_string();
+
+    host_name_ = get_parameter("host_name").as_string();
+    person_label_topic_ = get_parameter("person_label_topic").as_string();
+    guest_1_name_topic_ = get_parameter("guest_1_name_topic").as_string();
+    face_person_angular_speed_ = get_parameter("face_person_angular_speed").as_double();
+    face_person_timeout_sec_ = get_parameter("face_person_timeout_sec").as_double();
+    face_person_p_gain_ = get_parameter("face_person_p_gain").as_double();
+    face_person_min_speed_ = get_parameter("face_person_min_speed").as_double();
+    face_person_max_speed_ = get_parameter("face_person_max_speed").as_double();
+    face_person_tolerance_rad_ = get_parameter("face_person_tolerance_rad").as_double();
 
     cmd_vel_topic_ = get_parameter("cmd_vel_topic").as_string();
     chair_topic_ = get_parameter("chair_topic").as_string();
@@ -130,6 +161,27 @@ public:
       empty_seat_topic_, 10,
       [this](const std_msgs::msg::String::SharedPtr msg) {
         onEmptySeat(msg);
+      },
+      sub_opts);
+
+    // Subscriptions for person tracking (Host & Guest 1)
+    person_sub_ = create_subscription<std_msgs::msg::String>(
+      person_label_topic_, rclcpp::SensorDataQoS(),
+      [this](const std_msgs::msg::String::SharedPtr msg) {
+        if (!msg) return;
+        std::lock_guard<std::mutex> lock(person_mutex_);
+        latest_persons_str_ = msg->data;
+        person_detected_ = !msg->data.empty() && (msg->data != "NO_PERSON");
+        last_person_time_ = now();
+      },
+      sub_opts);
+
+    guest_1_name_sub_ = create_subscription<std_msgs::msg::String>(
+      guest_1_name_topic_, 10,
+      [this](const std_msgs::msg::String::SharedPtr msg) {
+        if (!msg || msg->data.empty()) return;
+        std::lock_guard<std::mutex> lock(guest_mutex_);
+        guest_1_name_ = msg->data;
       },
       sub_opts);
 
@@ -184,11 +236,41 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
+    // Services for facing persons: /receptionist/host & /receptionist/guest1
+    srv_face_host_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/host",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleFacePerson("host", req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_face_guest_1_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/guest1",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleFacePerson("guest_1", req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_face_guest_1_alias_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/guest_1",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleFacePerson("guest_1", req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
     RCLCPP_INFO(get_logger(), "Receptionist Navigation Node ready. Services available:");
     RCLCPP_INFO(get_logger(), " - /receptionist/go_to_door");
     RCLCPP_INFO(get_logger(), " - /receptionist/go_to_beverage_area");
     RCLCPP_INFO(get_logger(), " - /receptionist/go_to_living_room");
     RCLCPP_INFO(get_logger(), " - /search_chair (alias: /receptionist/search_chair)");
+    RCLCPP_INFO(get_logger(), " - /receptionist/host");
+    RCLCPP_INFO(get_logger(), " - /receptionist/guest1 (alias: /receptionist/guest_1)");
     publishStatus("Receptionist navigation node ready");
   }
 
@@ -396,6 +478,112 @@ public:
     return target;
   }
 
+  PersonTarget parseTargetPerson(const std::string & data, const std::string & target_role)
+  {
+    PersonTarget target;
+    if (data.empty() || data == "NO_PERSON") return target;
+
+    auto toLower = [](std::string s) {
+      std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+      return s;
+    };
+
+    const std::string host_name_lower = toLower(host_name_);
+    std::string guest_1_name_lower;
+    {
+      std::lock_guard<std::mutex> lk(guest_mutex_);
+      guest_1_name_lower = toLower(guest_1_name_);
+    }
+
+    std::stringstream ss(data);
+    std::string item;
+    double best_priority = -1e9;
+
+    while (std::getline(ss, item, ';')) {
+      if (item.empty()) continue;
+
+      const auto colon = item.find(':');
+      const auto bar1 = item.find('|');
+      if (colon == std::string::npos || bar1 == std::string::npos || bar1 <= colon) continue;
+
+      std::string label = item.substr(0, colon);
+      std::string label_lower = toLower(label);
+
+      // Parse BBox
+      int rx = 0, ry = 0, rw = 0, rh = 0;
+      std::string bbox_str = item.substr(colon + 1, bar1 - colon - 1);
+      std::sscanf(bbox_str.c_str(), "%d,%d,%d,%d", &rx, &ry, &rw, &rh);
+
+      // Parse 3D coords
+      const auto bar2 = item.find('|', bar1 + 1);
+      std::string coord_str = (bar2 != std::string::npos)
+        ? item.substr(bar1 + 1, bar2 - bar1 - 1)
+        : item.substr(bar1 + 1);
+
+      double pos_x = 0.0, pos_y = 0.0, pos_z = 0.0;
+      bool has_3d = false;
+      if (coord_str.find("nan") == std::string::npos) {
+        if (std::sscanf(coord_str.c_str(), "%lf,%lf,%lf", &pos_x, &pos_y, &pos_z) == 3) {
+          if (pos_x > 0.05 || std::abs(pos_y) > 0.05) {
+            has_3d = true;
+          }
+        }
+      }
+
+      double angle = 0.0;
+      double dist = 1.5;
+      if (has_3d) {
+        dist = std::hypot(pos_x, pos_y);
+        angle = std::atan2(pos_y, pos_x);
+      } else {
+        int cx = rx + rw / 2;
+        double half_w = camera_width_ > 0 ? (camera_width_ / 2.0) : 336.0;
+        angle = -((cx - half_w) / half_w) * 0.75;
+      }
+
+      // Evaluasi apakah orang ini sesuai dengan target_role
+      bool is_match = false;
+      double priority = 0.0;
+
+      if (target_role == "host") {
+        if (!host_name_lower.empty() && label_lower.find(host_name_lower) != std::string::npos) {
+          is_match = true;
+          priority = 100.0;
+        } else if (label_lower.find("host") != std::string::npos) {
+          is_match = true;
+          priority = 80.0;
+        } else if ((guest_1_name_lower.empty() || label_lower.find(guest_1_name_lower) == std::string::npos) &&
+                   label_lower.find("guest") == std::string::npos) {
+          // Fallback kandidat: orang yang bukan berlabel guest
+          is_match = true;
+          priority = 20.0;
+        }
+      } else if (target_role == "guest_1") {
+        if (!guest_1_name_lower.empty() && label_lower.find(guest_1_name_lower) != std::string::npos) {
+          is_match = true;
+          priority = 100.0;
+        } else if (label_lower.find("guest_1") != std::string::npos || label_lower.find("guest") != std::string::npos) {
+          is_match = true;
+          priority = 70.0;
+        } else if (!host_name_lower.empty() && label_lower.find(host_name_lower) == std::string::npos) {
+          // Fallback kandidat: orang yang bukan host
+          is_match = true;
+          priority = 20.0;
+        }
+      }
+
+      if (is_match && priority > best_priority) {
+        best_priority = priority;
+        target.valid = true;
+        target.angle_err = angle;
+        target.dist = dist;
+        target.label = label;
+      }
+    }
+
+    return target;
+  }
+
   void handleSearchChair(
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
@@ -403,6 +591,13 @@ public:
     if (is_navigating_.load()) {
       res->success = false;
       res->message = "Robot is currently busy with another navigation task";
+      publishStatus(res->message);
+      return;
+    }
+
+    if (is_facing_person_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy facing person";
       publishStatus(res->message);
       return;
     }
@@ -554,6 +749,164 @@ public:
     }
   }
 
+  void handleFacePerson(
+    const std::string & target_role,
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_navigating_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy with navigation task";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_searching_chair_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy searching for a chair";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_facing_person_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is already busy facing person";
+      publishStatus(res->message);
+      return;
+    }
+
+    const std::string display_name = (target_role == "host") ? ("Host (" + host_name_ + ")") : "Guest 1";
+    const std::string srv_name = (target_role == "host") ? "/receptionist/host" : "/receptionist/guest1";
+    publishStatus("Service " + srv_name + " called: Searching and aligning to " + display_name + "...");
+
+    auto get_current_person_target = [this, &target_role]() -> PersonTarget {
+      std::lock_guard<std::mutex> lock(person_mutex_);
+      if (person_detected_ && (now() - last_person_time_).seconds() < 1.0) {
+        return parseTargetPerson(latest_persons_str_, target_role);
+      }
+      return PersonTarget();
+    };
+
+    auto start_time = now();
+    bool person_found = false;
+    bool aligned = false;
+    PersonTarget current_target;
+    rclcpp::Rate loop_rate(20.0); // 20 Hz kontrol loop
+
+    // Cek dulu apakah target sudah terlihat saat posisi robot masih diam
+    for (int i = 0; i < 6; ++i) {
+      PersonTarget t = get_current_person_target();
+      if (t.valid) {
+        person_found = true;
+        current_target = t;
+        break;
+      }
+      loop_rate.sleep();
+    }
+
+    // FASE 1: SEARCH - Jika belum terdeteksi di kamera, berputar untuk mencari
+    if (!person_found) {
+      publishStatus(display_name + " not in view. Rotating to search...");
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[1;33m[FACE PERSON]\033[0m Rotating to find %s (speed=%.2f rad/s, timeout=%.1fs)...",
+        display_name.c_str(), face_person_angular_speed_, face_person_timeout_sec_);
+
+      while (rclcpp::ok() && is_facing_person_.load()) {
+        const double elapsed = (now() - start_time).seconds();
+        if (elapsed > face_person_timeout_sec_) {
+          RCLCPP_WARN(get_logger(), "[FACE PERSON] Search timeout reached (%.1f s)", face_person_timeout_sec_);
+          break;
+        }
+
+        PersonTarget t = get_current_person_target();
+        if (t.valid) {
+          person_found = true;
+          current_target = t;
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[FACE PERSON]\033[0m %s detected! Angle offset=%.2f rad. Now aligning heading...",
+            display_name.c_str(), t.angle_err);
+          publishStatus(display_name + " detected! Aligning robot heading...");
+          break;
+        }
+
+        rotateRight(face_person_angular_speed_);
+        loop_rate.sleep();
+      }
+    }
+
+    // FASE 2: ALIGN - Menyelaraskan hadap robot tepat ke target
+    if (person_found) {
+      auto align_start_time = now();
+      const double align_timeout_sec = 8.0;
+      int centered_frames = 0;
+
+      while (rclcpp::ok() && is_facing_person_.load()) {
+        const double align_elapsed = (now() - align_start_time).seconds();
+        if (align_elapsed > align_timeout_sec) {
+          RCLCPP_WARN(get_logger(), "[FACE PERSON] Alignment timeout (%.1fs reached), stopping.", align_timeout_sec);
+          break;
+        }
+
+        PersonTarget t = get_current_person_target();
+        if (t.valid) {
+          current_target = t;
+        }
+
+        const double err = current_target.angle_err;
+
+        if (std::abs(err) <= face_person_tolerance_rad_) {
+          centered_frames++;
+          if (centered_frames >= 3) { // Terpusat stabil ~150 ms
+            aligned = true;
+            break;
+          }
+        } else {
+          centered_frames = 0;
+        }
+
+        double w = face_person_p_gain_ * err;
+        double spd = std::abs(w);
+        if (spd < face_person_min_speed_) {
+          spd = face_person_min_speed_;
+        } else if (spd > face_person_max_speed_) {
+          spd = face_person_max_speed_;
+        }
+
+        double angular_z = (err >= 0.0) ? spd : -spd;
+
+        geometry_msgs::msg::Twist twist;
+        twist.linear.x = 0.0;
+        twist.linear.y = 0.0;
+        twist.angular.z = angular_z;
+        cmd_vel_pub_->publish(twist);
+
+        loop_rate.sleep();
+      }
+    }
+
+    // Hentikan robot
+    stopRobot();
+    is_facing_person_ = false;
+
+    if (person_found && aligned) {
+      res->success = true;
+      res->message = "Robot aligned facing " + display_name + " (detected label: " + current_target.label + ")";
+      publishStatus(res->message);
+      RCLCPP_INFO(get_logger(), "\033[1;32m[FACE PERSON SUCCESS]\033[0m %s", res->message.c_str());
+    } else if (person_found && !aligned) {
+      res->success = true;
+      res->message = "Robot aligned approximately facing " + display_name + " (detected label: " + current_target.label + ")";
+      publishStatus(res->message);
+      RCLCPP_INFO(get_logger(), "\033[1;33m[FACE PERSON PARTIAL]\033[0m %s", res->message.c_str());
+    } else {
+      res->success = false;
+      res->message = "Failed to detect and face " + display_name + " within timeout (" +
+        std::to_string(static_cast<int>(face_person_timeout_sec_)) + "s)";
+      publishStatus(res->message);
+      RCLCPP_WARN(get_logger(), "\033[1;31m[FACE PERSON TIMEOUT]\033[0m %s", res->message.c_str());
+    }
+  }
+
   void handleGoTo(
     const std::string & target_name,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
@@ -561,6 +914,13 @@ public:
     if (is_searching_chair_.load()) {
       res->success = false;
       res->message = "Robot is currently busy searching for a chair";
+      publishStatus(res->message);
+      return;
+    }
+
+    if (is_facing_person_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy facing person";
       publishStatus(res->message);
       return;
     }
@@ -688,6 +1048,33 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_go_living_room_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_search_chair_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_search_chair_alias_;
+
+  // Face person tracking & services
+  std::atomic<bool> is_facing_person_{false};
+  std::string host_name_{"Alex"};
+  std::string person_label_topic_{"/vision/person_label"};
+  std::string guest_1_name_topic_{"/receptionist/guest_1_name"};
+  double face_person_angular_speed_{0.30};
+  double face_person_timeout_sec_{25.0};
+  double face_person_p_gain_{1.2};
+  double face_person_min_speed_{0.14};
+  double face_person_max_speed_{0.30};
+  double face_person_tolerance_rad_{0.07};
+
+  std::mutex person_mutex_;
+  bool person_detected_{false};
+  std::string latest_persons_str_;
+  rclcpp::Time last_person_time_{0, 0, RCL_ROS_TIME};
+
+  std::mutex guest_mutex_;
+  std::string guest_1_name_;
+
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr guest_1_name_sub_;
+
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_host_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_guest_1_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_guest_1_alias_;
 };
 
 }  // namespace receptionist
