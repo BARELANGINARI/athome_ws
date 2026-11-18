@@ -3157,6 +3157,7 @@ private:
       double closest_y    = 0.0;
       double closest_dist = 1e9;
       bool   person_in_corridor = false;
+      bool   queue_has_back_facing = false;
       size_t detected_queue_size = 0;
 
       struct QueueCand {
@@ -3309,14 +3310,27 @@ private:
             "\033[1;36m[Homing Queue]\033[0m Menyesuaikan posisi antrian (Single Lock ID=%d): "
             "Target orang antri di (%.2f, %.2f) jarak=%.2fm.",
             locked_queue_id, closest_x, closest_y, closest_dist);
+        } else if (has_locked_world && has_pose_w && ref_bx > 0.15 && std::hypot(ref_bx, ref_by) < 3.0) {
+          // KUNCI POSISI TERAKHIR TETAP DIGUNAKAN (fallback saat kamera drop / orang terlalu dekat)
+          closest_x = ref_bx;
+          closest_y = ref_by;
+          closest_dist = std::hypot(ref_bx, ref_by);
+          person_in_corridor = true;
+          queue_has_back_facing = true;
+          detected_queue_size = 1;
+
+          RCLCPP_INFO_THROTTLE(
+            get_logger(), *get_clock(), 1000,
+            "\033[1;33m[Homing Queue]\033[0m Menyesuaikan posisi ke KOORDINAT TERKUNCI (ZED drop sesaat): "
+            "Target terkunci di (%.2f, %.2f) jarak=%.2fm.",
+            closest_x, closest_y, closest_dist);
         } else {
           person_in_corridor = false;
         }
 
       } else {
-        // ── MODE INISIASI: DETEKSI >= 2 PERSON BACK DALAM JARAK <= 2.5M ───
-        // Walau orang antri tidak berada pada path homing, tetap masuk ke fungsi antri
-        // jika sudah melihat 2 back atau lebih dalam jarak <= 2.5 meter.
+        // ── MODE INISIASI: DETEKSI ANTRIAN & KUNCI POSISI EKOR ANTRIAN (BACK TERDEKAT) ───
+        // Mengunci posisi terakhir dari back yang paling belakang agar robot bergerak ke sana & menyesuaikan posisi.
         std::vector<size_t> raw_back_indices;
         for (size_t i = 0; i < cands.size(); ++i) {
           if (cands[i].is_back) {
@@ -3362,9 +3376,13 @@ private:
             raw_back_indices.size());
         }
 
-        if (back_indices.size() >= static_cast<size_t>(homing_queue_min_persons_)) {
-          // Terdeteksi >= 2 orang facing back unik!
-          // Langsung masuk ke fungsi antrian dan lock single person terdekat!
+        // Tambahan aman: jika terdeteksi minimal 2 orang di koridor antrian dan minimal 1 back terdeteksi
+        if (back_indices.empty() && cands.size() >= static_cast<size_t>(homing_queue_min_persons_) && !raw_back_indices.empty()) {
+          back_indices = raw_back_indices;
+        }
+
+        if (!back_indices.empty() && (back_indices.size() >= static_cast<size_t>(homing_queue_min_persons_) || cands.size() >= static_cast<size_t>(homing_queue_min_persons_))) {
+          // 1. Ambil orang 'back' yang memiliki nilai dist paling dekat ke robot
           size_t best_cand_idx = back_indices[0];
           double best_back_dist = cands[best_cand_idx].dist;
 
@@ -3375,11 +3393,27 @@ private:
             }
           }
 
+          // 2. Cek apakah ada orang lain di cands yang berada lebih dekat di depan robot
+          // (Ekor antrian yang sebenarnya jika orang paling belakang sempat drop status back-nya)
+          for (size_t i = 0; i < cands.size(); ++i) {
+            if (cands[i].dist < best_back_dist && cands[i].px_b > 0.20) {
+              const double d_to_back = std::hypot(
+                cands[i].px_b - cands[best_cand_idx].px_b,
+                cands[i].py_b - cands[best_cand_idx].py_b);
+              if (d_to_back <= homing_queue_inter_dist_) {
+                best_back_dist = cands[i].dist;
+                best_cand_idx = i;
+              }
+            }
+          }
+
+          // 3. KUNCI POSISI TARGET EKOR ANTRIAN
           closest_dist = cands[best_cand_idx].dist;
           closest_x = cands[best_cand_idx].px_b;
           closest_y = cands[best_cand_idx].py_b;
           person_in_corridor = true;
-          detected_queue_size = back_indices.size();
+          queue_has_back_facing = true;
+          detected_queue_size = std::max(back_indices.size(), cands.size());
           queue_engaged = true; // Kunci antrian! Beralih permanen ke mode penyesuaian posisi (Single Lock)
           locked_queue_id = cands[best_cand_idx].id;
           has_locked_world = false;

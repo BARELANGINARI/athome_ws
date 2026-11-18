@@ -16,6 +16,7 @@
 #include <cmath>
 #include <functional>
 #include <future>
+#include <iomanip>
 #include <memory>
 #include <mutex>
 #include <regex>
@@ -283,6 +284,7 @@ public:
     hmi_customer_pub_ = create_publisher<std_msgs::msg::String>("/hmi/customer_display", 10);
     face_expression_pub_ = create_publisher<std_msgs::msg::String>("/robot/expression", 10);
     arm_target_pub_ = create_publisher<std_msgs::msg::String>("/arm/target_point", 10);
+    object_pose_pub_ = create_publisher<std_msgs::msg::String>("/restaurant/detected_object_pose", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -476,6 +478,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr hmi_customer_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr face_expression_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr arm_target_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr object_pose_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
@@ -1034,7 +1037,8 @@ private:
     static const std::vector<std::string> kKnownMenuItems = {
       "orange juice", "apple juice", "iced tea", "green tea", "mineral water",
       "cracker box", "potato chips", "coca cola",
-      "pringles", "cheezit", "cracker", "chips", "snack",
+      "pringles", "sugar box", "sugarbox", "sugar",
+      "cheezit", "cracker", "chips", "snack",
       "coke", "cola", "pepsi", "sprite", "fanta",
       "water", "milk", "coffee", "tea", "juice", "soda", "bottle", "botol",
       "burger", "sandwich", "pizza", "cake", "donut", "apple", "banana", "orange"
@@ -1284,6 +1288,22 @@ private:
     if (!parsed.empty()) {
       std::lock_guard<std::mutex> lock(vision_mutex_);
       detected_items_ = std::move(parsed);
+      if (object_pose_pub_) {
+        std::ostringstream ss;
+        bool first = true;
+        for (const auto & it : detected_items_) {
+          if (!it.has_3d) continue;
+          if (!first) ss << "; ";
+          first = false;
+          ss << it.name << ": x=" << std::fixed << std::setprecision(2) << it.x
+             << ", y=" << it.y << ", depth=" << it.z;
+        }
+        if (!ss.str().empty()) {
+          std_msgs::msg::String pmsg;
+          pmsg.data = ss.str();
+          object_pose_pub_->publish(pmsg);
+        }
+      }
     }
   }
 
@@ -1308,14 +1328,26 @@ private:
       return false;
     }
 
+    auto stripSpaces = [](std::string s) {
+      s.erase(std::remove_if(s.begin(), s.end(), [](unsigned char c) { return std::isspace(c); }), s.end());
+      return s;
+    };
+
     const std::string target_norm = normalize(target_order_name);
+    const std::string target_stripped = stripSpaces(target_norm);
+
     for (const auto & item : detected_items_) {
       if (!item.has_3d) continue;
       const std::string item_norm = normalize(item.name);
+      const std::string item_stripped = stripSpaces(item_norm);
+
       if (!item_norm.empty() &&
           (item_norm == target_norm ||
            item_norm.find(target_norm) != std::string::npos ||
-           target_norm.find(item_norm) != std::string::npos))
+           target_norm.find(item_norm) != std::string::npos ||
+           (!target_stripped.empty() && (item_stripped == target_stripped ||
+            item_stripped.find(target_stripped) != std::string::npos ||
+            target_stripped.find(item_stripped) != std::string::npos))))
       {
         out_x = item.x;
         out_y = item.y;

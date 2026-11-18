@@ -1286,6 +1286,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr yaw_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr bag_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr drink_dets_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr object_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr persons_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr recognized_name_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr gesture_publisher_;
@@ -1318,6 +1319,7 @@ private:
   YoloDetector botol_yolo_;
   YoloDetector cracker_yolo_;
   YoloDetector pringles_yolo_;
+  YoloDetector sugarbox_yolo_;
   YoloDetector chair_yolo_;
 
   bool enable_yolo_{true};
@@ -1379,7 +1381,8 @@ ZedNode::ZedNode()
   declare_parameter("drink_conf", 0.20);
   declare_parameter("botol_model", std::string("models/water.onnx"));
   declare_parameter("cracker_model", std::string("models/cheezit.onnx"));
-  declare_parameter("pringles_model", std::string("models/pringles_ chips _can.onnx"));
+  declare_parameter("pringles_model", std::string("models/pringles.onnx"));
+  declare_parameter("sugarbox_model", std::string("models/sugarbox.onnx"));
   declare_parameter("enable_drinks", true);
   declare_parameter("chair_model", std::string(""));
   declare_parameter("enable_chair", true);
@@ -1425,6 +1428,7 @@ ZedNode::ZedNode()
   yaw_publisher_ = create_publisher<std_msgs::msg::Float64>("/vision/yaw_deg", 10);
   bag_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/bag_detections", 10);
   drink_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/drink_detections", 10);
+  object_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/object_detections", 10);
   persons_publisher_ = create_publisher<std_msgs::msg::String>("/vision/person_label", 10);
   recognized_name_publisher_ =
     create_publisher<std_msgs::msg::String>("/vision/recognized_name", 10);
@@ -1534,6 +1538,8 @@ std::string ZedNode::resolvePath(const std::string & path) const
   if (std::filesystem::exists("src/athome_vision/" + path)) return "src/athome_vision/" + path;
   const std::string ws = "/home/dell/Desktop/athome_ws/src/athome_vision/" + path;
   if (std::filesystem::exists(ws)) return ws;
+  const std::string ws2 = "/home/dell/Downloads/athome_ws/src/athome_vision/" + path;
+  if (std::filesystem::exists(ws2)) return ws2;
   return "share/athome_vision/" + path;
 }
 
@@ -1624,7 +1630,10 @@ void ZedNode::loadModels()
     loadYolo(cracker_yolo_, get_parameter("cracker_model").as_string(),
       {"models/cheezit.onnx", "models/best_cracker.onnx"}, "Cheez-It", drink_conf, nms, size);
     loadYolo(pringles_yolo_, get_parameter("pringles_model").as_string(),
-      {"models/pringles_ chips _can.onnx", "models/pringles.onnx"}, "Pringles",
+      {"models/pringles.onnx", "models/pringles_ chips _can.onnx"}, "Pringles",
+      drink_conf, nms, size);
+    loadYolo(sugarbox_yolo_, get_parameter("sugarbox_model").as_string(),
+      {"models/sugarbox.onnx", "models/sugar_box.onnx", "models/sugar.onnx"}, "Sugarbox",
       drink_conf, nms, size);
   }
 
@@ -1896,7 +1905,7 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
   std::vector<YoloDetection> dets = last_drink_dets_;
   if (enable_drinks_ && drink_frame_++ % yolo_stride_ == 0) {
     dets.clear();
-    for (YoloDetector * detector : {&botol_yolo_, &cracker_yolo_, &pringles_yolo_}) {
+    for (YoloDetector * detector : {&botol_yolo_, &cracker_yolo_, &pringles_yolo_, &sugarbox_yolo_}) {
       if (!detector->ready()) continue;
       std::vector<YoloDetection> found;
       detector->detect(bgr, {}, found);
@@ -1913,7 +1922,7 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
     const bool ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
     const double dist = ok ? std::hypot(x, y) : 0.0;
     preview_drinks_.push_back({det.label, det.rect, ok, x, y, dist});
-    if (is_receptionist_ && ok) {
+    if ((is_receptionist_ || is_restaurant_) && ok) {
       IC(det.label, x, y, dist);
     }
     if (!data.empty()) data += ";";
@@ -1926,6 +1935,9 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
   std_msgs::msg::String msg;
   msg.data = data;
   drink_dets_publisher_->publish(msg);
+  if (object_dets_publisher_) {
+    object_dets_publisher_->publish(msg);
+  }
 }
 
 void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
