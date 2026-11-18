@@ -1286,7 +1286,6 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr yaw_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr bag_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr drink_dets_publisher_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr object_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr persons_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr recognized_name_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_1_name_publisher_;
@@ -1434,7 +1433,6 @@ ZedNode::ZedNode()
   yaw_publisher_ = create_publisher<std_msgs::msg::Float64>("/vision/yaw_deg", 10);
   bag_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/bag_detections", 10);
   drink_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/drink_detections", 10);
-  object_dets_publisher_ = create_publisher<std_msgs::msg::String>("/vision/object_detections", 10);
   persons_publisher_ = create_publisher<std_msgs::msg::String>("/vision/person_label", 10);
   recognized_name_publisher_ =
     create_publisher<std_msgs::msg::String>("/vision/recognized_name", 10);
@@ -1974,9 +1972,6 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
   std_msgs::msg::String msg;
   msg.data = data;
   drink_dets_publisher_->publish(msg);
-  if (object_dets_publisher_) {
-    object_dets_publisher_->publish(msg);
-  }
 }
 
 void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
@@ -2141,7 +2136,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         cv::Mat crop_img = bgr(crop_roi).clone();
         std::vector<std::string> save_dirs = {
           "src/athome_face/web/captures",
-          "/home/dell/Documents/athome_ws/src/athome_face/web/captures"
+          "/home/dell/Downloads/athome_ws/src/athome_face/web/captures"
         };
         try {
           const std::string share_path = ament_index_cpp::get_package_share_directory("athome_face");

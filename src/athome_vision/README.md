@@ -24,19 +24,13 @@ Package Computer Vision utama untuk robot Barelang Inari berbasis **Stereolabs Z
 ### 1. Build Package
 > *Catatan: Package ini membutuhkan ZED SDK dan CUDA Toolkit yang terinstal pada PC robot.*
 ```bash
-cd ~/Documents/athome_ws
+cd ~/Downloads/athome_ws
 source /opt/ros/jazzy/setup.bash
 colcon build --packages-select athome_vision --symlink-install
 source install/setup.bash
 ```
 
-### 2. Download Model Tambahan (Jika Diperlukan)
-```bash
-bash src/athome_vision/scripts/download_deepface_gender.sh
-bash src/athome_vision/scripts/download_sface.sh
-```
-
-### 3. Menjalankan Node Vision Berdasarkan Task
+### 2. Menjalankan Node Vision Berdasarkan Task
 
 ```bash
 # Mode umum (semua task aktif):
