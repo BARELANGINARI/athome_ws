@@ -1954,11 +1954,21 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
     if ((is_receptionist_ || is_restaurant_) && ok) {
       IC(det.label, x, y, dist);
     }
+  }
+
+  // Urutkan berdasarkan jarak terdekat (prioritaskan yang memiliki kedalaman valid)
+  std::sort(preview_drinks_.begin(), preview_drinks_.end(),
+    [](const PrevItem & a, const PrevItem & b) {
+      if (a.has_pos != b.has_pos) return a.has_pos > b.has_pos;
+      return a.range_m < b.range_m;
+    });
+
+  for (const auto & item : preview_drinks_) {
     if (!data.empty()) data += ";";
-    data += cv::format("%s:%d,%d,%d,%d|", det.label.c_str(),
-      det.rect.x, det.rect.y, det.rect.width, det.rect.height);
-    data += ok ? cv::format("%.2f,%.2f,%.2f|%.2f", x, y, z, det.score)
-               : cv::format("nan,nan,nan|%.2f", det.score);
+    data += cv::format("%s:%d,%d,%d,%d|", item.label.c_str(),
+      item.bbox.x, item.bbox.y, item.bbox.width, item.bbox.height);
+    data += item.has_pos ? cv::format("%.2f,%.2f,%.2f|1.00", item.x_m, item.y_m, item.range_m)
+                         : "nan,nan,nan|0.00";
   }
 
   std_msgs::msg::String msg;
@@ -2945,6 +2955,20 @@ void ZedNode::showPreview(const cv::Mat & bgr)
           cv::FONT_HERSHEY_SIMPLEX, scale, fg, thickness, cv::LINE_AA);
       };
 
+    int closest_person_idx = -1;
+    double min_person_dist = 1e9;
+    for (size_t i = 0; i < std::min<size_t>(2, preview_persons_.size()); ++i) {
+      const auto & p = preview_persons_[i];
+      const double p_dist = p.has_pos ? p.range_m : 1e8;
+      if (p_dist < min_person_dist) {
+        min_person_dist = p_dist;
+        closest_person_idx = static_cast<int>(i);
+      }
+    }
+    if (closest_person_idx == -1 && !preview_persons_.empty()) {
+      closest_person_idx = 0;
+    }
+
     for (size_t i = 0; i < std::min<size_t>(2, preview_persons_.size()); ++i) {
       const auto & p = preview_persons_[i];
       if (p.has_pos && p.range_m > person_max_dist_) continue;
@@ -2957,7 +2981,9 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       const int cx = r.x + r.width / 2;
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(0, 255, 0), -1);
-      cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
+      if (static_cast<int>(i) == closest_person_idx) {
+        cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
+      }
       std::string label;
       if (is_receptionist_ && !is_help_me_carry_) {
         if (!p.name.empty()) {
@@ -2984,6 +3010,20 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     }
 
     if (enable_bag_) {
+      int closest_bag_idx = -1;
+      double min_bag_dist = 1e9;
+      for (size_t i = 0; i < std::min<size_t>(2, preview_bags_.size()); ++i) {
+        const auto & b = preview_bags_[i];
+        const double b_dist = b.has_pos ? b.range_m : 1e8;
+        if (b_dist < min_bag_dist) {
+          min_bag_dist = b_dist;
+          closest_bag_idx = static_cast<int>(i);
+        }
+      }
+      if (closest_bag_idx == -1 && !preview_bags_.empty()) {
+        closest_bag_idx = 0;
+      }
+
       for (size_t i = 0; i < std::min<size_t>(2, preview_bags_.size()); ++i) {
         const auto & b = preview_bags_[i];
         cv::Rect r = flipRect(b.bbox);
@@ -2993,12 +3033,28 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         const int cx = r.x + r.width / 2;
         const int cy = r.y + r.height / 2;
         cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(155, 0, 0), -1);
-        cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
+        if (static_cast<int>(i) == closest_bag_idx) {
+          cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
+        }
         std::string text = (preview_bags_.size() > 1) ? cv::format("Bag %zu", i + 1) : "Bag";
         if (b.has_pos) text += cv::format(" (%.2fm, %.2fm)", b.x_m, b.y_m);
         banner(text, r.x, r.y, cv::Scalar(0, 69, 255),
           cv::Scalar(0, 40, 150), cv::Scalar(255, 255, 255), 0.52, 1);
       }
+    }
+
+    int closest_drink_idx = -1;
+    double min_drink_dist = 1e9;
+    for (size_t i = 0; i < std::min<size_t>(4, preview_drinks_.size()); ++i) {
+      const auto & d = preview_drinks_[i];
+      const double d_dist = d.has_pos ? d.range_m : 1e8;
+      if (d_dist < min_drink_dist) {
+        min_drink_dist = d_dist;
+        closest_drink_idx = static_cast<int>(i);
+      }
+    }
+    if (closest_drink_idx == -1 && !preview_drinks_.empty()) {
+      closest_drink_idx = 0;
     }
 
     for (size_t i = 0; i < std::min<size_t>(4, preview_drinks_.size()); ++i) {
@@ -3010,6 +3066,9 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       const int cx = r.x + r.width / 2;
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 4, cv::Scalar(255, 255, 0), -1);
+      if (static_cast<int>(i) == closest_drink_idx) {
+        cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
+      }
     }
 
     for (size_t i = 0; i < std::min<size_t>(4, preview_chairs_.size()); ++i) {
