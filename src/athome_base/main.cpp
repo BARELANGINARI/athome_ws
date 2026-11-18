@@ -67,9 +67,13 @@ void nucleo::loadParam()
   declare_parameter("pulses_per_rev", 7500.0);
   declare_parameter("wheel_radius_cm", 5.0);
   declare_parameter("base_length_cm", 20.8);
+  declare_parameter("publish_imu_yaw", true);
+  declare_parameter("pub_yaw_topic", "/yaw");
   declare_parameter("wheel_yaw_deg", 0.0);
   declare_parameter("odom_yaw_source", "stm32");
 
+  publish_imu_yaw_ = get_parameter("publish_imu_yaw").as_bool();
+  pub_yaw_topic_ = get_parameter("pub_yaw_topic").as_string();
   stm_ip = get_parameter("stm_ip").as_string();
   stm_port = get_parameter("stm_port").as_int();
   local_port = get_parameter("local_port").as_int();
@@ -135,6 +139,10 @@ void nucleo::setupRos()
 
   odom_pub = create_publisher<nav_msgs::msg::Odometry>("odom", 10);
   tfBroadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(this);
+  if (publish_imu_yaw_) {
+    imu_yaw_pub_ = create_publisher<std_msgs::msg::Float64>(pub_yaw_topic_, 10);
+    RCLCPP_INFO(get_logger(), "Publishing Razor IMU yaw to topic: '%s'", pub_yaw_topic_.c_str());
+  }
   if (use_yaw_topic) {
     yaw_sub = create_subscription<std_msgs::msg::Float64>(
       yaw_topic, 10, std::bind(&nucleo::onYawTopic, this, _1));
@@ -235,6 +243,12 @@ void nucleo::controlLoop()
   struct PCtoSTM32 pc2stm = sendMotor(shaped);
 
   publishOdom(t_now);
+
+  if (publish_imu_yaw_ && imu_yaw_pub_) {
+    std_msgs::msg::Float64 yaw_msg;
+    yaw_msg.data = normalizeDeg(static_cast<double>(snap.Yaw) + yaw_offset_deg);
+    imu_yaw_pub_->publish(yaw_msg);
+  }
 
   std_msgs::msg::UInt8 l_state;
   l_state.data = snap.lifterState;

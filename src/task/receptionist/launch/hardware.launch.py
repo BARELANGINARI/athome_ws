@@ -35,6 +35,26 @@ def generate_launch_description():
             description='Manual test velocity topic.',
         ),
         DeclareLaunchArgument(
+            'publish_imu_yaw',
+            default_value='true',
+            description='Publish Razor IMU yaw to ROS topic.',
+        ),
+        DeclareLaunchArgument(
+            'pub_yaw_topic',
+            default_value='/yaw',
+            description='Topic name for published IMU yaw.',
+        ),
+        DeclareLaunchArgument(
+            'use_yaw_topic',
+            default_value='false',
+            description='Use external yaw topic instead of direct STM32/Razor IMU (false = use direct Razor IMU).',
+        ),
+        DeclareLaunchArgument(
+            'yaw_topic',
+            default_value='/yaw',
+            description='Topic name to subscribe if external yaw is enabled (use /yaw instead of /vision/yaw_deg).',
+        ),
+        DeclareLaunchArgument(
             'lidar',
             default_value='true',
             description='Launch RPLiDAR node.',
@@ -75,6 +95,10 @@ def generate_launch_description():
                 'stm_ip': LaunchConfiguration('stm_ip'),
                 'joy_topic': LaunchConfiguration('joy_topic'),
                 'test_topic': LaunchConfiguration('test_topic'),
+                'publish_imu_yaw': LaunchConfiguration('publish_imu_yaw'),
+                'pub_yaw_topic': LaunchConfiguration('pub_yaw_topic'),
+                'use_yaw_topic': LaunchConfiguration('use_yaw_topic'),
+                'yaw_topic': LaunchConfiguration('yaw_topic'),
             }.items(),
         ),
         # RPLiDAR node

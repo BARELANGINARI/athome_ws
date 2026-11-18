@@ -29,6 +29,7 @@ def generate_launch_description():
         DeclareLaunchArgument('yolo_model', default_value='models/yolov8n_sim.onnx', description='Path to general YOLO ONNX model'),
         DeclareLaunchArgument('debug_window', default_value='true', description='Show OpenCV preview visualization window'),
         DeclareLaunchArgument('mirror', default_value='false', description='Mirror display preview horizontally'),
+        DeclareLaunchArgument('publish_yaw', default_value='false', description='Publish IMU yaw from ZED vision (default: false, receptionist uses /yaw from Razor IMU)'),
         DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 deg range (default: true)'),
         DeclareLaunchArgument('host_name', default_value='Alex', description='Default host name for pre-registration'),
         DeclareLaunchArgument('host_photo', default_value='models/host.jpg', description='Optional photo of the host to pre-register face'),
@@ -44,7 +45,7 @@ def generate_launch_description():
             launch_arguments={
                 'task': 'receptionist',
                 'camera_fps': LaunchConfiguration('camera_fps'),
-                'publish_yaw': 'true',
+                'publish_yaw': LaunchConfiguration('publish_yaw'),
                 'yaw_360': LaunchConfiguration('yaw_360'),
                 'enable_body_tracking': LaunchConfiguration('enable_body_tracking'),
                 'enable_yolo': LaunchConfiguration('enable_yolo'),

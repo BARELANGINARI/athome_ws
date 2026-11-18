@@ -34,6 +34,16 @@ def generate_launch_description():
             default_value='test_vel',
             description='Manual test velocity topic'
         ),
+        DeclareLaunchArgument(
+            'publish_imu_yaw',
+            default_value='true',
+            description='Publish Razor IMU yaw to ROS topic'
+        ),
+        DeclareLaunchArgument(
+            'pub_yaw_topic',
+            default_value='/yaw',
+            description='Topic name for published IMU yaw'
+        ),
 
         # RPLiDAR Arguments
         DeclareLaunchArgument(
@@ -83,6 +93,8 @@ def generate_launch_description():
                 'stm_ip': LaunchConfiguration('stm_ip'),
                 'joy_topic': LaunchConfiguration('joy_topic'),
                 'test_topic': LaunchConfiguration('test_topic'),
+                'publish_imu_yaw': LaunchConfiguration('publish_imu_yaw'),
+                'pub_yaw_topic': LaunchConfiguration('pub_yaw_topic'),
             }.items(),
         ),
 

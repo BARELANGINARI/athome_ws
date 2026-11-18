@@ -97,6 +97,15 @@ help_me_carry_node:
     homing_queue_clear_hysteresis: 1.0        # Detik orang tidak terdeteksi sebelum resume Nav2 (buffer anti-flicker)
     homing_timeout: 300.0                     # Batas waktu maksimal eksekusi navigasi homing (detik)
 
+    # -------------------------------------------------------------
+    # 9. LIDAR SPECKLE / OUTLIER FILTER
+    # -------------------------------------------------------------
+    filtered_scan_topic: "/scan_filtered"     # Output topic LaserScan yang sudah dibersihkan dari speckle
+    speckle_filter_enabled: true              # Aktifkan penyaringan speckle/outlier titik kecil (kaki/noise)
+    speckle_min_points: 3                     # Titik terisolasi < 3 (hanya 1-4 titik) dianggap speckle/noise & diabaikan
+    speckle_neighbor_dist: 0.15               # Jarak Euclidean maksimal antar titik bertetangga (meter) dalam satu kluster
+    speckle_max_range: 12.0                   # Jarak maksimal pemindaian yang difilter (meter)
+
 # =============================================================
 # 9. HELP ME CARRY MANAGER (TASK FSM ORCHESTRATOR)
 # =============================================================
