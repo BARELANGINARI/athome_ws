@@ -2993,7 +2993,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         if (!p.name.empty()) {
           label = p.name;
         } else {
-          label = (i == 0 ? "Guest" : "Person");
+          label = "Person";
         }
       } else {
         label = "ID: " + std::to_string(p.id);
@@ -3081,7 +3081,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       if (!p0.name.empty()) {
         person_title = p0.name + (p0.is_facing_back ? " [Back] :" : " :");
       } else {
-        person_title = std::string("Guest") + (p0.is_facing_back ? " [Back] :" : " :");
+        person_title = std::string("Person") + (p0.is_facing_back ? " [Back] :" : " :");
       }
     } else {
       person_title = "Operator [ID " + std::to_string(p0.id) + "]" + (p0.is_facing_back ? " [Back] :" : " :");
