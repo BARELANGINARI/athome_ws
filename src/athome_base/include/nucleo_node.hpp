@@ -63,6 +63,7 @@ private:
   // STM_TO_TEST ala NucleoServer: override uji manual bila fresh.
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr test_sub;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr yaw_sub;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr imu_yaw_pub_;
   rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr lifter_sub;
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr lifter_state_pub;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_lifter_up_;
@@ -111,6 +112,8 @@ private:
   double yaw_offset_deg{0.0};
   double yaw_topic_timeout{0.5};
   bool use_yaw_topic{false};
+  bool publish_imu_yaw_{true};
+  std::string pub_yaw_topic_{"/yaw"};
 
   rclcpp::Time last_time;
   rclcpp::Time last_cmd_time;

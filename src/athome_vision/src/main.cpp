@@ -1513,6 +1513,14 @@ ZedNode::ZedNode()
   person_max_dist_ = get_parameter("person_max_dist").as_double();
   bag_max_dist_ = get_parameter("bag_max_dist").as_double();
 
+  if (is_restaurant_) {
+    enable_back_detection_ = false;
+    enable_drinks_ = true;
+    enable_chair_ = false;
+    enable_bag_ = false;
+    RCLCPP_INFO(get_logger(), "\033[1;32m[Restaurant Vision]\033[0m Mode Restaurant aktif: Deteksi person, gesture wave, serta Pringles & Sugarbox aktif (deteksi back & bag dimatikan).");
+  }
+
   loadModels();
 
   timer_ = create_wall_timer(
@@ -2471,18 +2479,18 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         : "";
       attributes_publisher_->publish(attr_msg);
 
-      if (is_receptionist_) {
+      if (is_receptionist_ || is_restaurant_) {
         std::string display;
-        if (is_help_me_carry_) {
-          display = "ID " + std::to_string(entry.id);
-        } else if (!recognized_name.empty()) {
+        if (!recognized_name.empty()) {
           display = recognized_name;
+        } else if (is_restaurant_) {
+          display = "customer";
         } else {
-          display = "Guest";
+          display = "guest";
         }
-        IC(display, entry.x, entry.y, entry.range_m);
+        IC(entry.id, display, entry.x, entry.y, entry.range_m);
         if (classify) {
-          IC(display, person.gender, person.clothing, person.hair);
+          IC(entry.id, display, person.gender, person.clothing, person.hair);
         }
       }
     }
@@ -2537,6 +2545,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       std_msgs::msg::String order_msg;
       order_msg.data = order_ss.str();
       order_publisher_->publish(order_msg);
+      if (wave_result != "NONE") {
+        IC(customer.id, wave_result);
+      }
       RCLCPP_INFO_THROTTLE(
         get_logger(), *get_clock(), 1000,
         "Waving customer detected (%s) at %s", wave_result.c_str(), order_msg.data.c_str());

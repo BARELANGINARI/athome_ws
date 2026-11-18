@@ -50,6 +50,7 @@ Makefile
 # ==========================================
 *.gguf
 *.onnx
+!src/athome_vision/models/*.onnx
 *.pth
 *.pt
 *.safetensors

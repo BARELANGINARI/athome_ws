@@ -181,6 +181,8 @@ public:
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
     status_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/status", 10);
     person_name_pub_ = create_publisher<std_msgs::msg::String>("/vision/set_person_name", 10);
+    guest_1_name_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/guest_1_name", 10);
+    guest_2_name_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/guest_2_name", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -344,6 +346,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tts_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr person_name_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_1_name_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_2_name_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
@@ -392,6 +396,37 @@ private:
       status_pub_->publish(msg);
     }
     RCLCPP_INFO(get_logger(), "\033[1;32m[TASK STATUS]\033[0m %s", status_text.c_str());
+  }
+
+  void publishGuestNames()
+  {
+    std::string g1;
+    std::string g2;
+    {
+      std::lock_guard<std::mutex> lock(guest_mutex_);
+      if (guests_.size() >= 1 && !guests_[0].name.empty()) {
+        g1 = guests_[0].name;
+      } else if (guest_idx_ == 1 && !current_guest_.name.empty()) {
+        g1 = current_guest_.name;
+      }
+
+      if (guests_.size() >= 2 && !guests_[1].name.empty()) {
+        g2 = guests_[1].name;
+      } else if (guest_idx_ == 2 && !current_guest_.name.empty()) {
+        g2 = current_guest_.name;
+      }
+    }
+
+    if (guest_1_name_pub_) {
+      std_msgs::msg::String msg;
+      msg.data = g1;
+      guest_1_name_pub_->publish(msg);
+    }
+    if (guest_2_name_pub_) {
+      std_msgs::msg::String msg;
+      msg.data = g2;
+      guest_2_name_pub_->publish(msg);
+    }
   }
 
   void resetGuestProfileFields(PersonProfile & profile, int idx)
@@ -1304,6 +1339,13 @@ private:
   {
     const ReceptionistState current_state = state_.load();
 
+    // Periodically publish registered guest names (2 Hz / every 500 ms)
+    static int guest_pub_counter = 0;
+    if (++guest_pub_counter >= 5) {
+      guest_pub_counter = 0;
+      publishGuestNames();
+    }
+
     // 1. Global timeout watchdog
     if ((now() - task_start_time_).seconds() > global_timeout_sec_ &&
         current_state != ReceptionistState::COMPLETED &&
@@ -1378,6 +1420,7 @@ private:
         RCLCPP_INFO(get_logger(), "=== STARTING RECEPTIONIST TASK ===");
         guests_.clear();
         initCurrentGuest(1);
+        publishGuestNames();
         transitionTo(ReceptionistState::NAV_TO_DOOR, "Start cycle for Guest 1: navigating to door");
         break;
 
@@ -1437,12 +1480,18 @@ private:
             {
               std::lock_guard<std::mutex> lock(guest_mutex_);
               current_guest_.name = parsed_name;
+              if (guests_.size() < static_cast<size_t>(guest_idx_)) {
+                guests_.push_back(current_guest_);
+              } else if (guest_idx_ >= 1) {
+                guests_[static_cast<size_t>(guest_idx_ - 1)].name = parsed_name;
+              }
             }
             if (person_name_pub_) {
               std_msgs::msg::String m;
               m.data = parsed_name;
               person_name_pub_->publish(m);
             }
+            publishGuestNames();
             RCLCPP_INFO(
               get_logger(),
               "\033[1;32m[DIALOG NAME]\033[0m Guest %d Name -> \033[1;32m\"%s\"\033[0m (from \"%s\")",
@@ -1550,12 +1599,16 @@ private:
             {
               std::lock_guard<std::mutex> lock(guest_mutex_);
               resetGuestProfileFields(current_guest_, guest_idx_);
+              if (guests_.size() >= static_cast<size_t>(guest_idx_)) {
+                guests_[static_cast<size_t>(guest_idx_ - 1)].name = "";
+              }
             }
             if (person_name_pub_) {
               std_msgs::msg::String m;
               m.data = "";
               person_name_pub_->publish(m);
             }
+            publishGuestNames();
             speakAsync("I am sorry. Let us start over. May I please have your name?", [this]() {
               transitionTo(ReceptionistState::WAIT_NAME, "Restarted name and interest capture");
             });

@@ -32,6 +32,8 @@ def generate_launch_description():
         DeclareLaunchArgument('pulses_per_rev', default_value='7500.0', description='Encoder pulses per wheel revolution'),
         DeclareLaunchArgument('wheel_radius_cm', default_value='5.0', description='Wheel radius (cm)'),
         DeclareLaunchArgument('base_length_cm', default_value='20.8', description='Base distance between wheels (cm)'),
+        DeclareLaunchArgument('publish_imu_yaw', default_value='true', description='Publish Razor IMU yaw to ROS topic'),
+        DeclareLaunchArgument('pub_yaw_topic', default_value='/yaw', description='Topic name for published IMU yaw'),
 
         Node(
             package='athome_base',
@@ -64,6 +66,8 @@ def generate_launch_description():
                 'pulses_per_rev': LaunchConfiguration('pulses_per_rev'),
                 'wheel_radius_cm': LaunchConfiguration('wheel_radius_cm'),
                 'base_length_cm': LaunchConfiguration('base_length_cm'),
+                'publish_imu_yaw': LaunchConfiguration('publish_imu_yaw'),
+                'pub_yaw_topic': LaunchConfiguration('pub_yaw_topic'),
             }],
         ),
     ])

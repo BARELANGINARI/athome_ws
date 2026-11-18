@@ -17,6 +17,8 @@ def generate_launch_description():
         DeclareLaunchArgument('stm_ip', default_value='192.168.0.4', description='STM32 IP address'),
         DeclareLaunchArgument('joy_topic', default_value='joy_vel', description='Joystick override velocity topic'),
         DeclareLaunchArgument('test_topic', default_value='test_vel', description='Manual test velocity topic'),
+        DeclareLaunchArgument('publish_imu_yaw', default_value='true', description='Publish Razor IMU yaw to ROS topic'),
+        DeclareLaunchArgument('pub_yaw_topic', default_value='/yaw', description='Topic name for published IMU yaw'),
         DeclareLaunchArgument('lidar', default_value='true', description='Launch RPLiDAR sensor node'),
         DeclareLaunchArgument('lidar_port', default_value='/dev/ttyUSB1', description='RPLiDAR serial port device'),
         DeclareLaunchArgument('lidar_x', default_value='0.0', description='LiDAR X offset from base_link (m)'),
@@ -38,6 +40,8 @@ def generate_launch_description():
                 'stm_ip': LaunchConfiguration('stm_ip'),
                 'joy_topic': LaunchConfiguration('joy_topic'),
                 'test_topic': LaunchConfiguration('test_topic'),
+                'publish_imu_yaw': LaunchConfiguration('publish_imu_yaw'),
+                'pub_yaw_topic': LaunchConfiguration('pub_yaw_topic'),
             }.items(),
         ),
         Node(
