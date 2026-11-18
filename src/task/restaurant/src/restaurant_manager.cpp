@@ -16,6 +16,7 @@
 #include <cmath>
 #include <functional>
 #include <future>
+#include <iomanip>
 #include <memory>
 #include <mutex>
 #include <regex>
@@ -58,6 +59,7 @@ enum class RestaurantState {
   SPEAK_ORDER_CONFIRMATION,       // 6e. "your order is {order_1} and {order_2} is it correct?"
   WAIT_ORDER_CONFIRMATION,        // 6f. Menunggu jawaban yes / no dari pelanggan
   NAV_TO_ORIGIN_BARMAN,           // 7. Navigasi kembali ke origin (barman place)
+  FIND_AND_ALIGN_BARMAN,          // 7b. Cari & arahkan kamera ke barman (< 1.5 m, tengah frame)
   ANNOUNCE_ORDER_TO_BARMAN,       // 8a. "The first/second customer order..." -> "please place {order_1}..."
   DETECT_AND_NAV_TO_ORDER1,       // 8b. Deteksi posisi {order_1} & navigasi ke posisi tersebut
   GRASP_ORDER1,                   // 8c. Panggil srv /arm/ambil_tas_simple -> instruksi taruh {order_2} di tray
@@ -95,6 +97,7 @@ static std::string stateToString(RestaurantState state)
     case RestaurantState::SPEAK_ORDER_CONFIRMATION:       return "SPEAK_ORDER_CONFIRMATION";
     case RestaurantState::WAIT_ORDER_CONFIRMATION:        return "WAIT_ORDER_CONFIRMATION";
     case RestaurantState::NAV_TO_ORIGIN_BARMAN:           return "NAV_TO_ORIGIN_BARMAN";
+    case RestaurantState::FIND_AND_ALIGN_BARMAN:          return "FIND_AND_ALIGN_BARMAN";
     case RestaurantState::ANNOUNCE_ORDER_TO_BARMAN:       return "ANNOUNCE_ORDER_TO_BARMAN";
     case RestaurantState::DETECT_AND_NAV_TO_ORDER1:       return "DETECT_AND_NAV_TO_ORDER1";
     case RestaurantState::GRASP_ORDER1:                   return "GRASP_ORDER1";
@@ -281,6 +284,7 @@ public:
     hmi_customer_pub_ = create_publisher<std_msgs::msg::String>("/hmi/customer_display", 10);
     face_expression_pub_ = create_publisher<std_msgs::msg::String>("/robot/expression", 10);
     arm_target_pub_ = create_publisher<std_msgs::msg::String>("/arm/target_point", 10);
+    object_pose_pub_ = create_publisher<std_msgs::msg::String>("/restaurant/detected_object_pose", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -346,6 +350,8 @@ public:
       "/deliver_order", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
       "/homing", rclcpp::ServicesQoS(), callback_group_);
+    find_barman_client_ = create_client<Trigger>(
+      "/find_barman", rclcpp::ServicesQoS(), callback_group_);
 
     // Arm Services
     arm_grab_simple_client_ = create_client<Trigger>(
@@ -472,6 +478,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr hmi_customer_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr face_expression_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr arm_target_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr object_pose_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
@@ -489,6 +496,7 @@ private:
   TriggerClient::SharedPtr go_to_order1_client_;
   TriggerClient::SharedPtr deliver_order_client_;
   TriggerClient::SharedPtr homing_client_;
+  TriggerClient::SharedPtr find_barman_client_;
   TriggerClient::SharedPtr arm_grab_simple_client_;
   TriggerClient::SharedPtr arm_release_client_;
   TriggerClient::SharedPtr arm_letakkan_client_;
@@ -628,6 +636,7 @@ private:
       case RestaurantState::NAV_TO_ORIGIN_BARMAN:
         publishExpression("GREETING");
         break;
+      case RestaurantState::FIND_AND_ALIGN_BARMAN:
       case RestaurantState::DETECT_AND_NAV_TO_ORDER1:
         publishExpression("SEARCHING");
         break;
@@ -1028,7 +1037,8 @@ private:
     static const std::vector<std::string> kKnownMenuItems = {
       "orange juice", "apple juice", "iced tea", "green tea", "mineral water",
       "cracker box", "potato chips", "coca cola",
-      "pringles", "cheezit", "cracker", "chips", "snack",
+      "pringles", "sugar box", "sugarbox", "sugar",
+      "cheezit", "cracker", "chips", "snack",
       "coke", "cola", "pepsi", "sprite", "fanta",
       "water", "milk", "coffee", "tea", "juice", "soda", "bottle", "botol",
       "burger", "sandwich", "pizza", "cake", "donut", "apple", "banana", "orange"
@@ -1278,6 +1288,22 @@ private:
     if (!parsed.empty()) {
       std::lock_guard<std::mutex> lock(vision_mutex_);
       detected_items_ = std::move(parsed);
+      if (object_pose_pub_) {
+        std::ostringstream ss;
+        bool first = true;
+        for (const auto & it : detected_items_) {
+          if (!it.has_3d) continue;
+          if (!first) ss << "; ";
+          first = false;
+          ss << it.name << ": x=" << std::fixed << std::setprecision(2) << it.x
+             << ", y=" << it.y << ", depth=" << it.z;
+        }
+        if (!ss.str().empty()) {
+          std_msgs::msg::String pmsg;
+          pmsg.data = ss.str();
+          object_pose_pub_->publish(pmsg);
+        }
+      }
     }
   }
 
@@ -1302,14 +1328,26 @@ private:
       return false;
     }
 
+    auto stripSpaces = [](std::string s) {
+      s.erase(std::remove_if(s.begin(), s.end(), [](unsigned char c) { return std::isspace(c); }), s.end());
+      return s;
+    };
+
     const std::string target_norm = normalize(target_order_name);
+    const std::string target_stripped = stripSpaces(target_norm);
+
     for (const auto & item : detected_items_) {
       if (!item.has_3d) continue;
       const std::string item_norm = normalize(item.name);
+      const std::string item_stripped = stripSpaces(item_norm);
+
       if (!item_norm.empty() &&
           (item_norm == target_norm ||
            item_norm.find(target_norm) != std::string::npos ||
-           target_norm.find(item_norm) != std::string::npos))
+           target_norm.find(item_norm) != std::string::npos ||
+           (!target_stripped.empty() && (item_stripped == target_stripped ||
+            item_stripped.find(target_stripped) != std::string::npos ||
+            target_stripped.find(item_stripped) != std::string::npos))))
       {
         out_x = item.x;
         out_y = item.y;
@@ -1915,9 +1953,33 @@ private:
             return;
           }
           transitionTo(
-            RestaurantState::ANNOUNCE_ORDER_TO_BARMAN,
-            "Arrived at origin (barman place)");
+            RestaurantState::FIND_AND_ALIGN_BARMAN,
+            "Arrived at origin (barman place), searching & aligning to barman");
         });
+        break;
+
+      case RestaurantState::FIND_AND_ALIGN_BARMAN:
+        if (find_barman_client_ && find_barman_client_->service_is_ready()) {
+          callTrigger(
+            find_barman_client_, "/find_barman",
+            [this](bool ok, const std::string & msg) {
+              RCLCPP_INFO(
+                get_logger(),
+                "[BARMAN] /find_barman finished (ok=%s, msg='%s')",
+                ok ? "true" : "false", msg.c_str());
+              transitionTo(
+                RestaurantState::ANNOUNCE_ORDER_TO_BARMAN,
+                ok ? "Barman aligned within < 1.5 m" : "Barman align fallback");
+            },
+            20.0);
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "[BARMAN] Service /find_barman belum tersedia, langsung menuju ANNOUNCE_ORDER_TO_BARMAN.");
+          transitionTo(
+            RestaurantState::ANNOUNCE_ORDER_TO_BARMAN,
+            "Proceeding without /find_barman service");
+        }
         break;
 
       // ========================================================================
@@ -2069,9 +2131,13 @@ private:
           if (ans == 1) {
             publishCustomerHmi(false);
             publishExpression("HAPPY");
-            transitionTo(
-              RestaurantState::NAV_DELIVER_TO_CUSTOMER,
-              "Tray order confirmed (yes robot), proceeding to point 9");
+            speakAsync(
+              "Alright, thank you, I will deliver this order to the customer.",
+              [this]() {
+                transitionTo(
+                  RestaurantState::NAV_DELIVER_TO_CUSTOMER,
+                  "Tray order confirmed (yes robot), proceeding to point 9");
+              });
           } else if (ans == -1) {
             transitionTo(
               RestaurantState::WAIT_TRAY_RETRY_3S,

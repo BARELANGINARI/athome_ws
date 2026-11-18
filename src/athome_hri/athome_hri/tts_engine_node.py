@@ -16,7 +16,12 @@ from athome_hri.tts_engine import TextToSpeech
 class TtsEngineNode(Node):
     """Synthesize and play text received on /hri/tts_say."""
 
-    _PARAM_NAMES = ("tts_model", "enable_local_speaker", "speaker_device_index")
+    _PARAM_NAMES = (
+        "tts_model",
+        "tts_use_cuda",
+        "enable_local_speaker",
+        "speaker_device_index",
+    )
     _LEGACY_ALIASES = {"model": "tts_model"}
 
     def __init__(self) -> None:
@@ -27,7 +32,9 @@ class TtsEngineNode(Node):
             legacy_aliases=self._LEGACY_ALIASES,
         )
 
-        self._tts = TextToSpeech(str(params["tts_model"]))
+        self._tts_model = str(params["tts_model"])
+        self._tts_use_cuda = bool(params["tts_use_cuda"])
+        self._tts = TextToSpeech(self._tts_model, use_cuda=self._tts_use_cuda)
         self._play_locally = bool(params["enable_local_speaker"])
         self._speaker_device_index = resolve_speaker_device_index(
             params["speaker_device_index"]
@@ -40,7 +47,18 @@ class TtsEngineNode(Node):
         self.add_on_set_parameters_callback(self._on_params_changed)
         self.get_logger().info("Standalone TTS engine ready.")
 
+    def _reload_tts(self) -> None:
+        self._tts = TextToSpeech(self._tts_model, use_cuda=self._tts_use_cuda)
+
     def _on_params_changed(self, params):
+        def _update_model(v):
+            self._tts_model = str(v)
+            self._reload_tts()
+
+        def _update_cuda(v):
+            self._tts_use_cuda = bool(v)
+            self._reload_tts()
+
         updaters = {
             "enable_local_speaker": lambda v: setattr(
                 self, "_play_locally", bool(v)
@@ -48,7 +66,8 @@ class TtsEngineNode(Node):
             "speaker_device_index": lambda v: setattr(
                 self, "_speaker_device_index", resolve_speaker_device_index(int(v))
             ),
-            "tts_model": lambda v: setattr(self, "_tts", TextToSpeech(str(v))),
+            "tts_model": _update_model,
+            "tts_use_cuda": _update_cuda,
         }
         return apply_param_updates(params, updaters, node_logger=self.get_logger())
 

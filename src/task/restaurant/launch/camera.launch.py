@@ -16,6 +16,7 @@ def generate_launch_description():
         DeclareLaunchArgument('mirror', default_value='false', description='Mirror display preview horizontally'),
         DeclareLaunchArgument('publish_yaw', default_value='true', description='Publish IMU yaw topic'),
         DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 deg range (default: true)'),
+        DeclareLaunchArgument('enable_drinks', default_value='true', description='Enable drink & object detection (pringles, sugarbox, etc.)'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -36,7 +37,7 @@ def generate_launch_description():
                 'enable_body_tracking': 'true',
                 'enable_yolo': 'false',
                 'enable_bag': 'false',
-                'enable_drinks': 'false',
+                'enable_drinks': LaunchConfiguration('enable_drinks'),
                 'enable_chair': 'false',
             }.items(),
         ),

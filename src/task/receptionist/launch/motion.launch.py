@@ -54,17 +54,17 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'initial_x',
-            default_value='0.0',
+            default_value='5.8',
             description='Initial robot X pose on map.',
         ),
         DeclareLaunchArgument(
             'initial_y',
-            default_value='0.0',
+            default_value='-0.9',
             description='Initial robot Y pose on map.',
         ),
         DeclareLaunchArgument(
             'initial_yaw',
-            default_value='0.0',
+            default_value='3.14159',
             description='Initial robot yaw on map (rad).',
         ),
         DeclareLaunchArgument(

@@ -26,7 +26,8 @@ vision:
     face_threshold: 0.363
     botol_model: "models/water.onnx"
     cracker_model: "models/cheezit.onnx"
-    pringles_model: "models/pringles_ chips _can.onnx"
+    pringles_model: "models/pringles.onnx"
+    sugarbox_model: "models/sugarbox.onnx"
     drink_min_area: 100.0
     drink_conf: 0.20
     enable_drinks: true
