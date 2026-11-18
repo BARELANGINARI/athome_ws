@@ -39,6 +39,9 @@ def generate_launch_description():
                 'enable_bag': 'false',
                 'enable_drinks': LaunchConfiguration('enable_drinks'),
                 'enable_chair': 'false',
+                'enable_back_detection': 'false',
+                'pringles_model': 'models/pringles.onnx',
+                'sugarbox_model': 'models/sugarbox.onnx',
             }.items(),
         ),
     ])
