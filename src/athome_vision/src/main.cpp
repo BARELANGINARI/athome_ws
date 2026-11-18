@@ -2954,6 +2954,10 @@ void ZedNode::showPreview(const cv::Mat & bgr)
 
       const cv::Scalar color = p.is_sitting ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0);
       cv::rectangle(canvas, r, color, 2);
+      const int cx = r.x + r.width / 2;
+      const int cy = r.y + r.height / 2;
+      cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(0, 255, 0), -1);
+      cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
       std::string label;
       if (is_receptionist_ && !is_help_me_carry_) {
         if (!p.name.empty()) {
