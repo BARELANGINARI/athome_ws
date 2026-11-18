@@ -10,7 +10,7 @@
     speaker_device_index: -1
     enable_local_mic: true
     enable_ws_audio: true
-    enable_visualizer: true
+    enable_visualizer: true #false untuk mematikan visualisasi VAD
     enable_live_meter: true
     enable_local_speaker: true
 

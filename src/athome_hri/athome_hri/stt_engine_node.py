@@ -11,6 +11,7 @@ from std_msgs.msg import String
 from athome_hri.audio_io import (
     LocalMicListener,
     VadFrameMetrics,
+    VadVisualizer,
     format_vad_meter,
     resolve_mic_device_index,
 )
@@ -29,6 +30,7 @@ class SttEngineNode(Node):
     _PARAM_NAMES = (
         "mic_device_index",
         "enable_local_mic",
+        "enable_visualizer",
         "enable_live_meter",
         "threshold_dbfs",
         "threshold_flatness",
@@ -53,6 +55,7 @@ class SttEngineNode(Node):
         )
 
         self._enable_local_mic: bool = bool(params["enable_local_mic"])
+        self._enable_visualizer: bool = bool(params["enable_visualizer"])
         self._enable_live_meter: bool = bool(params["enable_live_meter"])
 
         self.transcript_pub = self.create_publisher(
@@ -107,13 +110,34 @@ class SttEngineNode(Node):
             hangover_frames=int(params["hangover_frames"]),
             min_speech_frames=int(params["min_speech_frames"]),
         )
+        self._visualizer = VadVisualizer(self._listener)
+        self._stt.on_asr_result = self._visualizer.update_asr_status
+        self._vis_timer = self.create_timer(
+            VadVisualizer.RENDER_INTERVAL_SEC,
+            self._on_visualizer_tick,
+        )
+
         self.add_on_set_parameters_callback(self._on_params_changed)
+        if self._enable_local_mic and self._enable_visualizer:
+            self._visualizer.start()
         self._listener.start()
         self.get_logger().info("Standalone STT engine ready.")
+
+    def _set_visualizer_enabled(self, enabled: bool) -> None:
+        self._enable_visualizer = bool(enabled)
+        if self._enable_visualizer and self._enable_local_mic:
+            self._visualizer.start()
+        else:
+            self._visualizer.stop()
+
+    def _on_visualizer_tick(self) -> None:
+        if self._enable_visualizer:
+            self._visualizer.render_once()
 
     def _on_params_changed(self, params):
         updaters = {
             "enable_local_mic": lambda v: setattr(self, "_enable_local_mic", bool(v)),
+            "enable_visualizer": self._set_visualizer_enabled,
             "enable_live_meter": lambda v: setattr(self, "_enable_live_meter", bool(v)),
             "threshold_dbfs": lambda v: self._listener.update_vad_params(
                 threshold_dbfs=float(v)
@@ -154,6 +178,8 @@ class SttEngineNode(Node):
         self._tts_speaking_until = 0.0
 
     def _on_metrics(self, m: VadFrameMetrics) -> None:
+        if self._enable_visualizer:
+            self._visualizer.push_frame(m)
         if not self._enable_live_meter:
             return
 
@@ -179,6 +205,7 @@ class SttEngineNode(Node):
         await self._transcribe(audio_input)
 
     def destroy_node(self):
+        self._visualizer.stop()
         self._listener.stop()
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._loop_thread.join(timeout=2.0)
