@@ -1289,6 +1289,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr object_dets_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr persons_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr recognized_name_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_1_name_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_2_name_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr gesture_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr attributes_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr empty_seat_publisher_;
@@ -1307,7 +1309,11 @@ private:
   AttributeAnalyzer analyzer_;
   std::vector<RegisteredPerson> registered_persons_;
   std::string pending_register_name_;
+  std::string guest_1_name_;
+  std::string guest_2_name_;
   double face_threshold_{0.363};
+
+  void publishGuestNames();
 
   std::vector<PrevPerson> preview_persons_;
   std::vector<PrevBag> preview_bags_;
@@ -1432,6 +1438,10 @@ ZedNode::ZedNode()
   persons_publisher_ = create_publisher<std_msgs::msg::String>("/vision/person_label", 10);
   recognized_name_publisher_ =
     create_publisher<std_msgs::msg::String>("/vision/recognized_name", 10);
+  guest_1_name_publisher_ =
+    create_publisher<std_msgs::msg::String>("/vision/guest_1_name", 10);
+  guest_2_name_publisher_ =
+    create_publisher<std_msgs::msg::String>("/vision/guest_2_name", 10);
   gesture_publisher_ = create_publisher<std_msgs::msg::String>("/vision/gesture", 10);
   attributes_publisher_ = create_publisher<std_msgs::msg::String>("/vision/person_attributes", 10);
   empty_seat_publisher_ = create_publisher<std_msgs::msg::String>("/vision/empty_seat", 10);
@@ -1455,9 +1465,20 @@ ZedNode::ZedNode()
       pending_register_name_ = name;
       if (!name.empty()) {
         RCLCPP_INFO(get_logger(), "Guest name set: \"%s\"", name.c_str());
+        if (guest_1_name_.empty()) {
+          guest_1_name_ = name;
+        } else if (guest_2_name_.empty() && name != guest_1_name_) {
+          guest_2_name_ = name;
+        }
       } else {
         RCLCPP_INFO(get_logger(), "Guest name reset");
+        if (!guest_2_name_.empty()) {
+          guest_2_name_.clear();
+        } else {
+          guest_1_name_.clear();
+        }
       }
+      publishGuestNames();
     });
 
   sl::InitParameters init;
@@ -2590,6 +2611,36 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   std_msgs::msg::String name_msg;
   name_msg.data = first_recognized_name;
   recognized_name_publisher_->publish(name_msg);
+
+  publishGuestNames();
+}
+
+void ZedNode::publishGuestNames()
+{
+  std::string host = get_parameter("host_name").as_string();
+  std::vector<std::string> reg_guests;
+  for (const auto & p : registered_persons_) {
+    if (p.name != host && !p.name.empty()) {
+      reg_guests.push_back(p.name);
+    }
+  }
+  if (reg_guests.size() >= 1 && guest_1_name_.empty()) {
+    guest_1_name_ = reg_guests[0];
+  }
+  if (reg_guests.size() >= 2 && guest_2_name_.empty()) {
+    guest_2_name_ = reg_guests[1];
+  }
+
+  if (guest_1_name_publisher_) {
+    std_msgs::msg::String m1;
+    m1.data = guest_1_name_;
+    guest_1_name_publisher_->publish(m1);
+  }
+  if (guest_2_name_publisher_) {
+    std_msgs::msg::String m2;
+    m2.data = guest_2_name_;
+    guest_2_name_publisher_->publish(m2);
+  }
 }
 
 void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
