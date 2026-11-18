@@ -1513,6 +1513,14 @@ ZedNode::ZedNode()
   person_max_dist_ = get_parameter("person_max_dist").as_double();
   bag_max_dist_ = get_parameter("bag_max_dist").as_double();
 
+  if (is_restaurant_) {
+    enable_back_detection_ = false;
+    enable_drinks_ = true;
+    enable_chair_ = false;
+    enable_bag_ = false;
+    RCLCPP_INFO(get_logger(), "\033[1;32m[Restaurant Vision]\033[0m Mode Restaurant aktif: Deteksi person, gesture wave, serta Pringles & Sugarbox aktif (deteksi back & bag dimatikan).");
+  }
+
   loadModels();
 
   timer_ = create_wall_timer(
