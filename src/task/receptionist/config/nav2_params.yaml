@@ -77,14 +77,14 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker" # Stuck detection plugin
-      required_movement_radius: 0.15     # Required movement radius (m)
-      movement_time_allowance: 20.0      # Movement time allowance (s, diberi waktu cukup untuk in-place align)
+      required_movement_radius: 0.10     # Required movement radius (m)
+      movement_time_allowance: 60.0      # Movement time allowance (s, diberi waktu leluasa untuk manuver dan antri)
 
     general_goal_checker:
       stateful: True                     # Stateful goal checking
       plugin: "nav2_controller::SimpleGoalChecker" # Goal checker plugin
-      xy_goal_tolerance: 0.15            # Goal XY position tolerance (m)
-      yaw_goal_tolerance: 0.15           # Goal yaw orientation tolerance (rad, 0.38 rad ≈ 21.8 derajat)
+      xy_goal_tolerance: 0.20            # Goal XY position tolerance (m)
+      yaw_goal_tolerance: 0.20           # Goal yaw orientation tolerance (rad, 0.38 rad ≈ 21.8 derajat)
 
     FollowPath:
       plugin: "nav2_rotation_shim_controller::RotationShimController" # Rotation Shim Controller (putar haluan menghadap path terlebih dahulu)
@@ -92,7 +92,7 @@ controller_server:
 
       # Rotation Shim Parameters (KUNCI: Memutar robot in-place cepat & responsif menyesuaikan arah path di awal)
       angular_dist_threshold: 0.78           # Ambang picu rotasi in-place (~45 derajat): jika hadap melenceng > 45 derajat, robot langsung memutar gesit di tempat
-      angular_disengage_threshold: 0.35      # Hand-off ke DWB saat sudut sudah sejajar (~20 derajat) agar robot langsung mengalir melaju maju
+      angular_disengage_threshold: 0.15      # Hand-off ke DWB saat sudut sudah sangat lurus (~8.5 derajat) agar robot mulai melaju dengan arah hadap presisi ke path
       forward_sampling_distance: 0.5         # Jarak sampel ke depan pada path (m) untuk mendeteksi arah haluan path
       rotate_to_heading_angular_vel: 2.2     # Kecepatan rotasi in-place dinaikkan ke 2.2 rad/s (~126 deg/s, daya PWM ~43) agar gesit dan cepat
       max_angular_accel: 4.5                 # Akselerasi rotasi in-place dinaikkan ke 4.5 rad/s^2 agar ramp-up instan dan tidak prematur mengerem
@@ -103,8 +103,8 @@ controller_server:
       debug_trajectory_details: False    # Disable heavy debug logging to prevent loop rate dropping from 20Hz to 3Hz
       min_vel_x: 0.0                     # KUNCI MUTLAK: 0.0 m/s (DILARANG MUNDUR! Robot hanya boleh maju ke depan menghadap path)
       max_vel_x: 0.30                    # Max forward velocity (m/s)
-      min_vel_y: -0.20                   # Min lateral strafe velocity (m/s, diperluas agar bisa strafe menjauhi dinding)
-      max_vel_y: 0.20                    # Max lateral strafe velocity (m/s)
+      min_vel_y: -0.12                   # Min lateral strafe velocity (-0.12 m/s) cukup lincah untuk sidestep rintangan tanpa membuat robot jalan kepiting
+      max_vel_y: 0.12                    # Max lateral strafe velocity (+0.12 m/s)
       min_speed_xy: 0.05                 # Min translational speed (m/s, mencegah micro-speed di bawah deadband motor)
       max_speed_xy: 0.30                 # Max translational speed (m/s)
       max_vel_theta: 1.8                 # Max angular velocity dinaikkan ke 1.8 rad/s agar manuver hadap saat melaju juga gesit
@@ -118,11 +118,11 @@ controller_server:
       vx_samples: 20                     # VX velocity samples
       vy_samples: 15                     # VY velocity samples (dinaikkan ke 15 agar sampling translasi lateral omni halus)
       vtheta_samples: 31                 # Vtheta velocity samples (angka ganjil 31 agar ada sampel resolusi nol dan rotasi halus)
-      sim_time: 1.2                      # Trajectory simulation time (s)
+      sim_time: 1.4                      # Trajectory simulation time (s) dinaikkan agar deteksi rintangan lebih awal
       linear_granularity: 0.05           # Linear simulation step (m)
       angular_granularity: 0.025         # Angular simulation step (rad)
       transform_tolerance: 0.25          # TF transform tolerance (s)
-      xy_goal_tolerance: 0.15            # Goal XY tolerance (m)
+      xy_goal_tolerance: 0.20            # Goal XY tolerance (m)
       trans_stopped_velocity: 0.08       # Stopped translational velocity threshold (m/s, memungkinkan rotasi goal segera aktif saat robot melambat)
       short_circuit_trajectory_evaluation: False # Allow exploring alternative trajectories when rotating near obstacles
       stateful: True                     # Maintain state between iterations
@@ -131,11 +131,11 @@ controller_server:
       forward_prune_distance: 0.8        # KUNCI: Batasi path di depan robot max 0.8m agar target GoalDist tidak tembus dinding ke ruang sebelah
       shorten_transformed_plan: True     # Potong plan sesuai batas local costmap
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"] # GoalAlign dihapus; GoalDist diberi bobot kecil agar robot maju menyusuri path tanpa memotong dinding
-      BaseObstacle.scale: 0.02           # Obstacle proximity penalty weight (standar Nav2 0.02; nilai 0.25 menyebabkan robot freeze)
-      PathDist.scale: 35.0               # Bobot ketat mengikuti garis jalur path (mencegah jalan memotong dinding)
+      BaseObstacle.scale: 0.12           # Obstacle proximity penalty dinaikkan tegas dari 0.02 ke 0.12 agar robot aktif menjauhi rintangan/orang di depan
+      PathDist.scale: 24.0               # Bobot path dist diturunkan dari 35.0 ke 24.0 agar robot fleksibel menyimpang dari garis path untuk mengambil ruang aman
       GoalDist.scale: 6.0                # Bobot dorong maju kontinu agar robot melaju maju menyusuri path sambil berbelok
-      PathAlign.scale: 24.0              # KUNCI: Bobot penjajaran hadap ditingkatkan agar robot memutar haluan ke arah path SAMBIL melaju maju (v_x > 0)
-      PathAlign.forward_point_distance: 0.10 # KUNCI: Dikecilkan ke 0.10m agar radius ayunan hidung kecil di goal sehingga TIDAK melawan RotateToGoal
+      PathAlign.scale: 36.0              # KUNCI: Bobot penjajaran hadap dijaga tinggi (36.0) agar moncong robot SELALU tegas menghadap lurus ke depan path
+      PathAlign.forward_point_distance: 0.30 # KUNCI: Dinaikkan ke 0.30m agar leverage torsi pelurusan haluan kuat saat menyusuri path
       RotateToGoal.scale: 36.0           # Bobot rotasi yaw tujuan akhir (dinaikkan dominan ke 36.0 agar robot tegas mengunci yaw target)
       RotateToGoal.slowing_factor: 5.0
       RotateToGoal.lookahead_time: -1.0  # -1.0 = KUNCI: nonaktifkan orientasi tujuan selama di perjalanan, hanya aktif saat tiba di titik X,Y final
@@ -146,8 +146,8 @@ controller_server:
 local_costmap:
   local_costmap:
     ros__parameters:
-      update_frequency: 5.0              # Update frequency (Hz)
-      publish_frequency: 2.0             # Publish frequency (Hz)
+      update_frequency: 8.0              # Update frequency dinaikkan ke 8.0 Hz agar rintangan dinamis (orang mendadak) terdeteksi seketika
+      publish_frequency: 3.0             # Publish frequency (Hz)
       global_frame: odom                 # Local costmap reference frame
       robot_base_frame: base_link        # Robot base frame
       use_sim_time: False                # Real clock
@@ -174,8 +174,8 @@ local_costmap:
           obstacle_min_range: 0.22       # Min obstacle marking range (m, diselaraskan dengan bodi 0.22m agar rintangan dekat tidak terhapus)
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Safety buffer layer around obstacles
-        cost_scaling_factor: 25.0        # Exponential cost decay factor (ditingkatkan dari 10.0 agar objek kecil seperti kaki tidak menggelembung tebal)
-        inflation_radius: 0.35           # Inflation radius (m)
+        cost_scaling_factor: 10.0        # Diturunkan dari 25.0 ke 10.0 agar medan tolak rintangan menyebar lebih luas dan landai
+        inflation_radius: 0.32           # Dinaikkan dari 0.35m ke 0.48m agar jarak aman avoidance bertambah (+24cm di luar bodi robot)
       always_send_full_costmap: True     # Send full costmap on publish
 
 # ---------------------------------------------------------------------
@@ -184,7 +184,7 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      update_frequency: 1.0              # Update frequency (Hz)
+      update_frequency: 2.0              # Update frequency dinaikkan ke 2.0 Hz agar rintangan dinamis di global costmap cepat ter-update
       publish_frequency: 1.0             # Publish frequency (Hz)
       global_frame: map                  # Global map frame
       robot_base_frame: base_link        # Robot base frame
@@ -215,8 +215,8 @@ global_costmap:
           obstacle_min_range: 0.22
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
-        cost_scaling_factor: 25.0        # Exponential cost decay factor
-        inflation_radius: 0.35           # Inflation radius (m)
+        cost_scaling_factor: 12.0        # Diturunkan dari 25.0 ke 12.0 agar rute global berjarak dari dinding
+        inflation_radius: 0.32           # Dinaikkan dari 0.35m ke 0.45m (+21cm dari bodi fisik)
       always_send_full_costmap: True     # Send full costmap on publish
 
 # ---------------------------------------------------------------------
