@@ -253,6 +253,8 @@ public:
 
     arm_point_position_client_ = create_client<Trigger>(
       "/arm/point_position", rclcpp::ServicesQoS(), callback_group_);
+    arm_point_to_chair_client_ = create_client<Trigger>(
+      "/arm/point_to_chair", rclcpp::ServicesQoS(), callback_group_);
     arm_free_client_ = create_client<Trigger>(
       "/arm/free", rclcpp::ServicesQoS(), callback_group_);
 
@@ -378,6 +380,7 @@ private:
   TriggerClient::SharedPtr arm_ambil_tas_client_;
   TriggerClient::SharedPtr arm_ambil_tas_simple_client_;
   TriggerClient::SharedPtr arm_point_position_client_;
+  TriggerClient::SharedPtr arm_point_to_chair_client_;
   TriggerClient::SharedPtr arm_free_client_;
 
   // ============================================================================
@@ -562,20 +565,25 @@ private:
       120.0);
   }
 
-  // Menunjuk kursi kosong menggunakan service /arm/ambil_tas (fallback ke /arm/ambil_tas_simple)
+  // Menunjuk kursi kosong menggunakan service /arm/point_to_chair (fallback ke /arm/point_position)
   void pointToSeatWithArm(std::function<void(bool)> on_finished)
   {
-    TriggerClient::SharedPtr client = arm_point_position_client_;
-    std::string srv_name = "/arm/point_position";
-
-    RCLCPP_INFO(get_logger(), "\033[1;35m[ARM]\033[0m Point seat (%s)...", srv_name.c_str());
+    TriggerClient::SharedPtr client = arm_point_to_chair_client_;
+    std::string srv_name = "/arm/point_to_chair";
 
     if ((!client || !client->service_is_ready()) &&
+        arm_point_position_client_ && arm_point_position_client_->service_is_ready())
+    {
+      client = arm_point_position_client_;
+      srv_name = "/arm/point_position";
+    } else if ((!client || !client->service_is_ready()) &&
         arm_ambil_tas_simple_client_ && arm_ambil_tas_simple_client_->service_is_ready())
     {
       client = arm_ambil_tas_simple_client_;
       srv_name = "/arm/ambil_tas_simple";
     }
+
+    RCLCPP_INFO(get_logger(), "\033[1;35m[ARM]\033[0m Point seat (%s)...", srv_name.c_str());
 
     callTrigger(
       client, srv_name,

@@ -200,6 +200,22 @@ public:
             }
         );
 
+        point_to_chair_srv_ = this->create_service<std_srvs::srv::Trigger>(
+            "/arm/point_to_chair",
+            [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+                   std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+                std::lock_guard<std::mutex> lock(hardware_mutex_);
+                std::string err;
+                if (runMotionByName("point_to_chair", err)) {
+                    res->success = true;
+                    res->message = "Motion point_to_chair executed successfully";
+                } else {
+                    res->success = false;
+                    res->message = err;
+                }
+            }
+        );
+
         free_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "/arm/free",
             [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
@@ -278,6 +294,7 @@ private:
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr letakkan_tas_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr play_motion_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr point_pos_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr point_to_chair_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr free_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr relax_srv_;
 
