@@ -2103,24 +2103,17 @@ private:
           return;
         }
 
-        PersonProfile cg;
-        {
-          std::lock_guard<std::mutex> lock(guest_mutex_);
-          cg = current_guest_;
-        }
-
-        const std::string offer_msg =
-          cg.name + ", please take a seat in the empty chair on the side that I am indicating.";
-
-        pointToSeatWithArm([this, offer_msg](bool /*success*/) {
-          speakAsync(offer_msg, [this]() {
-            // Setelah selesai menunjuk dan menawarkan kursi, matikan daya lengan (mode free)
-            freeArm([this](bool /*ok*/) {
-              transitionTo(
-                ReceptionistState::WAIT_GUEST_SIT,
-                "Waiting for guest to occupy the indicated chair");
+        pointToSeatWithArm([this](bool /*success*/) {
+          speakAsync(
+            "please take a seat in the empty chair on the side that I am indicating.",
+            [this]() {
+              // Setelah selesai menunjuk dan menawarkan kursi, matikan daya lengan (mode free)
+              freeArm([this](bool /*ok*/) {
+                transitionTo(
+                  ReceptionistState::WAIT_GUEST_SIT,
+                  "Waiting for guest to occupy the indicated chair");
+              });
             });
-          });
         });
         break;
       }
