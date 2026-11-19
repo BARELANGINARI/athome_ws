@@ -1938,11 +1938,7 @@ private:
           if (!success) {
             RCLCPP_WARN(
               get_logger(),
-              "\033[1;33m[LIVING ROOM]\033[0m No seated guest detected. Proceeding directly to search chair.");
-            transitionTo(
-              ReceptionistState::SEARCH_CHAIR,
-              "No seated person detected; searching for empty chair");
-            return;
+              "\033[1;33m[LIVING ROOM]\033[0m Face Host gagal/timeout, tetap melanjutkan perkenalan.");
           }
 
           const std::string intro_msg =
