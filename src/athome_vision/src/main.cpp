@@ -226,6 +226,51 @@ struct PrevPerson
   std::string clothing, hair, gender, name;
 };
 
+struct PersonPos
+{
+  double x{0.0};
+  double y{0.0};
+  double depth{0.0};
+};
+
+struct BagPos
+{
+  double x{0.0};
+  double y{0.0};
+};
+
+struct GuestPos
+{
+  double x{0.0};
+  double y{0.0};
+  double depth{0.0};
+};
+
+struct RegisteredPersonPos
+{
+  std::string name;
+  double x{0.0};
+  double y{0.0};
+  double depth{0.0};
+};
+
+struct ChairPos
+{
+  std::string label{"none"};
+  std::string status{"none"};
+  double x{0.0};
+  double y{0.0};
+  double depth{0.0};
+};
+
+struct WavePos
+{
+  std::string side{"none"};
+  double x{0.0};
+  double y{0.0};
+  double depth{0.0};
+};
+
 struct PrevBag
 {
   cv::Rect bbox;
@@ -1336,6 +1381,7 @@ private:
   std::vector<PrevBag> preview_bags_;
   std::vector<PrevItem> preview_drinks_;
   std::vector<PrevChair> preview_chairs_;
+  WavePos latest_wave_{};
 
   YoloDetector yolo_;
   YoloDetector coco_bag_yolo_;
@@ -1480,14 +1526,12 @@ ZedNode::ZedNode()
       while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) name.erase(name.begin());
       pending_register_name_ = name;
       if (!name.empty()) {
-        RCLCPP_INFO(get_logger(), "Guest name set: \"%s\"", name.c_str());
         if (guest_1_name_.empty()) {
           guest_1_name_ = name;
         } else if (guest_2_name_.empty() && name != guest_1_name_) {
           guest_2_name_ = name;
         }
       } else {
-        RCLCPP_INFO(get_logger(), "Guest name reset");
         if (!guest_2_name_.empty()) {
           guest_2_name_.clear();
         } else {
@@ -1935,9 +1979,6 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
     const auto & b = candidates[i];
     const double valid_dist = (b.dist < 1e8) ? b.dist : 0.0;
     preview_bags_.push_back({b.det.rect, b.ok, b.x, b.y, valid_dist});
-    if (is_help_me_carry_ && b.ok) {
-      IC(b.det.label, b.x, b.y, valid_dist);
-    }
     if (!data.empty()) data += ";";
     data += cv::format("bag:%d,%d,%d,%d|",
       b.det.rect.x, b.det.rect.y, b.det.rect.width, b.det.rect.height);
@@ -1972,9 +2013,6 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
     const bool ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
     const double dist = ok ? std::hypot(x, y) : 0.0;
     preview_drinks_.push_back({det.label, det.rect, ok, x, y, dist});
-    if ((is_receptionist_ || is_restaurant_) && ok) {
-      IC(det.label, x, y, dist);
-    }
   }
 
   // Urutkan berdasarkan jarak terdekat (prioritaskan yang memiliki kedalaman valid)
@@ -2097,9 +2135,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     op_mem_.torso_hsv = zed_vision::extractTorsoColor(bgr, entries[0].bbox);
     op_mem_.has_color = true;
     op_mem_.last_seen = current_time;
-    if (is_help_me_carry_) {
-      IC(op_mem_.stable_id, op_mem_.x, op_mem_.y);
-    }
   }
 
   if (op_match_idx >= 0 && op_match_idx < static_cast<int>(entries.size())) {
@@ -2120,10 +2155,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     const cv::Scalar hsv = zed_vision::extractTorsoColor(bgr, op.bbox);
     op_mem_.torso_hsv = 0.85 * op_mem_.torso_hsv + 0.15 * hsv;
     op_mem_.has_color = true;
-
-    if (is_help_me_carry_ && op.has_depth) {
-      IC(op.id, op.label, op.x, op.y, op.dist);
-    }
   }
 
   if (!pending_register_name_.empty() && !entries.empty() && (is_receptionist_ || is_restaurant_)) {
@@ -2210,9 +2241,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         updated = true;
         if (person.feature_samples >= 5) {
           person.feature_samples = 30; // Kunci template registrasi agar kebal drift / kontaminasi
-          RCLCPP_INFO(get_logger(),
-            "Locked face & clothing for \"%s\" (body id %d, template locked)",
-            pending_register_name_.c_str(), target->id);
           pending_register_name_.clear();
         }
         break;
@@ -2517,9 +2545,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     if (first_person) {
       if (!is_restaurant_) {
         gesture_result = AttributeAnalyzer::detectGesture(points);
-        if (is_help_me_carry_ && gesture_result != "NONE") {
-          IC(entry.id, gesture_result);
-        }
       }
 
       std_msgs::msg::String attr_msg;
@@ -2527,21 +2552,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         ? person.gender + ", " + person.clothing + ", " + person.hair
         : "";
       attributes_publisher_->publish(attr_msg);
-
-      if (is_receptionist_ || is_restaurant_) {
-        std::string display;
-        if (!recognized_name.empty()) {
-          display = recognized_name;
-        } else if (is_restaurant_) {
-          display = "customer";
-        } else {
-          display = "guest";
-        }
-        IC(entry.id, display, entry.x, entry.y, entry.range_m);
-        if (classify) {
-          IC(entry.id, display, person.gender, person.clothing, person.hair);
-        }
-      }
     }
 
     preview_persons_.push_back(person);
@@ -2594,12 +2604,12 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       std_msgs::msg::String order_msg;
       order_msg.data = order_ss.str();
       order_publisher_->publish(order_msg);
-      if (wave_result != "NONE") {
-        IC(customer.id, wave_result);
-      }
-      RCLCPP_INFO_THROTTLE(
-        get_logger(), *get_clock(), 1000,
-        "Waving customer detected (%s) at %s", wave_result.c_str(), order_msg.data.c_str());
+      latest_wave_.side = wave_result;
+      latest_wave_.x = customer.x;
+      latest_wave_.y = customer.y;
+      latest_wave_.depth = customer.range_m;
+    } else {
+      latest_wave_ = WavePos{};
     }
   }
 
@@ -2620,11 +2630,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       std_msgs::msg::String back_msg;
       back_msg.data = back_ss.str();
       person_back_publisher_->publish(back_msg);
-      IC(back_person.id, "BACK", back_person.x, back_person.y, back_person.range_m);
-      RCLCPP_INFO_THROTTLE(
-        get_logger(), *get_clock(), 1000,
-        "Person facing back detected [ID %d] at (%s) range: %.2fm",
-        back_person.id, back_msg.data.c_str(), back_person.range_m);
     }
   }
 
@@ -2924,17 +2929,6 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       }
     }
 
-    if (is_receptionist_) {
-      static auto last_chair_log = std::chrono::steady_clock::now();
-      const auto chair_now = std::chrono::steady_clock::now();
-      if (std::chrono::duration_cast<std::chrono::milliseconds>(
-          chair_now - last_chair_log).count() > 2000)
-      {
-        last_chair_log = chair_now;
-        IC(chair.label, occupied ? "OCCUPIED" : "EMPTY", side, chair.x, chair.y, dist);
-      }
-    }
-
     if (!data.empty()) data += ";";
     data += cv::format(
       "%s:%d,%d,%d,%d|", chair.label.c_str(), chair.bbox.x, chair.bbox.y,
@@ -3176,6 +3170,69 @@ void ZedNode::loop()
       processPersons(bgr, zed_point_cloud_);
     processChairs(bgr, zed_point_cloud_);
     showPreview(bgr);
+
+    PersonPos person{};
+    if (!preview_persons_.empty() && preview_persons_[0].has_pos) {
+      person.x = preview_persons_[0].x_m;
+      person.y = preview_persons_[0].y_m;
+      person.depth = preview_persons_[0].range_m;
+    }
+
+    BagPos bag{};
+    if (!preview_bags_.empty() && preview_bags_[0].has_pos) {
+      bag.x = preview_bags_[0].x_m;
+      bag.y = preview_bags_[0].y_m;
+    }
+
+    if (is_help_me_carry_) {
+      IC(person.x, person.y, person.depth);
+      IC(bag.x, bag.y);
+    } else if (is_receptionist_) {
+      GuestPos guest{};
+      RegisteredPersonPos registered{};
+      for (const auto & p : preview_persons_) {
+        if (!p.has_pos) continue;
+        if (!p.name.empty() && registered.name.empty()) {
+          registered.name = p.name;
+          registered.x = p.x_m;
+          registered.y = p.y_m;
+          registered.depth = p.range_m;
+        } else if (p.name.empty() && guest.depth == 0.0) {
+          guest.x = p.x_m;
+          guest.y = p.y_m;
+          guest.depth = p.range_m;
+        }
+      }
+
+      ChairPos chair{};
+      if (!preview_chairs_.empty() && preview_chairs_[0].has_pos) {
+        chair.label = preview_chairs_[0].label;
+        chair.status = preview_chairs_[0].occupied ? "occupied" : "empty";
+        chair.x = preview_chairs_[0].x_m;
+        chair.y = preview_chairs_[0].y_m;
+        chair.depth = preview_chairs_[0].range_m;
+      }
+
+      IC(guest.x, guest.y, guest.depth);
+      if (!registered.name.empty()) {
+        IC(registered.name, registered.x, registered.y, registered.depth);
+      }
+      if (chair.label != "none") {
+        IC(chair.label, chair.status, chair.x, chair.y, chair.depth);
+      }
+    } else if (is_restaurant_) {
+      PersonPos customer{};
+      if (!preview_persons_.empty() && preview_persons_[0].has_pos) {
+        customer.x = preview_persons_[0].x_m;
+        customer.y = preview_persons_[0].y_m;
+        customer.depth = preview_persons_[0].range_m;
+      }
+
+      IC(customer.x, customer.y, customer.depth);
+      if (latest_wave_.side != "none") {
+        IC(latest_wave_.side, latest_wave_.x, latest_wave_.y, latest_wave_.depth);
+      }
+    }
   } catch (const std::exception & e) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
       "Vision loop exception: %s", e.what());
