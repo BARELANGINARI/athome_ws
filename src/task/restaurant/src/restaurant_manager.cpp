@@ -2392,7 +2392,7 @@ private:
           o1 = current_customer_.order_1;
         }
         speakAsync(
-          "for " + o1 + ", please hold out your hand beneath this order, i'm going to let go on one .. two .. three",
+          "for " + o1 + ", please hold out your hand beneath this order, i'm going to let go on one two and three",
           [this]() {
             transitionTo(
               RestaurantState::RELEASE_GRIPPER_AND_TORQUE_OFF,
