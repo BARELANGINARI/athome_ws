@@ -10,24 +10,28 @@ if [ "$1" == "stop" ]; then
 fi
 
 export DISPLAY="${DISPLAY:-:0}"
+export WS_DIR="${WS_DIR}"
 CONFIG_FILE="${SCRIPT_DIR}/../config/terminator.config"
+
+cd "${WS_DIR}"
 
 if command -v terminator >/dev/null 2>&1; then
     echo "=========================================================="
-    echo " Meluncurkan Receptionist dalam Layout 2x2 (Terminator)..."
-    echo " [Kiri Atas ] Hardware   (STM32 & RPLiDAR)"
-    echo " [Kanan Atas] Navigation (Nav2 & RViz)"
-    echo " [Kiri Bawah] Camera     (ZED Vision & IMU)"
-    echo " [Kanan Bwh ] HRI        (Whisper & Piper)"
+    echo " Meluncurkan Receptionist dalam Layout Grid (Terminator)..."
+    echo " [Kiri Atas   ] Hardware   (STM32 & RPLiDAR)"
+    echo " [Kanan Atas  ] Navigation (Nav2 & RViz)"
+    echo " [Kiri Bawah  ] Camera     (Vision & IMU)"
+    echo " [Tengah Bawah] HRI        (Whisper & Piper)"
+    echo " [Kanan Bawah ] Arm        (Dynamixel Arm Motion Server)"
     echo "=========================================================="
 
     if [ -f "$CONFIG_FILE" ]; then
-        terminator -u -g "$CONFIG_FILE" -l receptionist &
+        terminator --working-directory="${WS_DIR}" -u -g "$CONFIG_FILE" -l receptionist &
     else
-        terminator -u -l receptionist &
+        terminator --working-directory="${WS_DIR}" -u -l receptionist &
     fi
 
-    echo "Terminator layout 2x2 berhasil diluncurkan!"
+    echo "Terminator layout Receptionist berhasil diluncurkan!"
 else
     echo "[WARN] Terminator tidak ditemukan, menggunakan GNOME Terminal..."
     SETUP="cd \"${WS_DIR}\" && source /opt/ros/jazzy/setup.bash && source install/setup.bash"
@@ -38,4 +42,6 @@ else
     gnome-terminal --tab --working-directory="${WS_DIR}" --title="Camera" -- bash -c "${SETUP} && sleep 3 && ros2 launch receptionist camera.launch.py; exec bash"
     sleep 1
     gnome-terminal --tab --working-directory="${WS_DIR}" --title="HRI" -- bash -c "${SETUP} && sleep 4 && ros2 launch receptionist hri.launch.py; exec bash"
+    sleep 1
+    gnome-terminal --tab --working-directory="${WS_DIR}" --title="Arm" -- bash -c "${SETUP} && sleep 5 && ros2 launch athome_arm arm.launch.py; exec bash"
 fi
