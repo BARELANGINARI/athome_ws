@@ -2095,29 +2095,22 @@ private:
           return;
         }
 
-        const std::string seat_pos = detectEmptyChairSide();
         PersonProfile cg;
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
           cg = current_guest_;
         }
 
-        // menentukan bagian 1 kalimat (berhenti tepat pada kalimat 'on the ')
-        std::string part1_msg =
-          cg.name + ", please take a seat in the empty chair on the ";
+        const std::string offer_msg =
+          cg.name + ", please take a seat in the empty chair on the side that I am indicating.";
 
-        speakAsync(part1_msg, [this, seat_pos]() {
-          // tepat setelah kalimat diatas selesai, gerakkan lengan menunjuk
-          pointToSeatWithArm([this, seat_pos](bool /*success*/) {
-            // setelah lengan menunjuk, lanjutkan menyebutkan sisi kursi
-            std::string part2_msg = seat_pos + " side that I am indicating.";
-            speakAsync(part2_msg, [this]() {
-              // Setelah selesai menyebutkan dan menunjuk kursi, matikan daya lengan (mode free)
-              freeArm([this](bool /*ok*/) {
-                transitionTo(
-                  ReceptionistState::WAIT_GUEST_SIT,
-                  "Waiting for guest to occupy the indicated chair");
-              });
+        pointToSeatWithArm([this, offer_msg](bool /*success*/) {
+          speakAsync(offer_msg, [this]() {
+            // Setelah selesai menunjuk dan menawarkan kursi, matikan daya lengan (mode free)
+            freeArm([this](bool /*ok*/) {
+              transitionTo(
+                ReceptionistState::WAIT_GUEST_SIT,
+                "Waiting for guest to occupy the indicated chair");
             });
           });
         });
