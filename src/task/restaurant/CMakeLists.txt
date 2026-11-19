@@ -18,6 +18,8 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(Threads REQUIRED)
 
+include_directories(include)
+
 add_executable(restaurant_node src/restaurant_node.cpp)
 ament_target_dependencies(restaurant_node
   rclcpp

@@ -1191,12 +1191,15 @@ private:
     // Kirim langsung ke base driver (/cmd_vel)
     cmd_vel_pub_->publish(twist);
 
-    // Print status debug teratur di terminal (2 Hz)
-    RCLCPP_INFO_THROTTLE(
-      get_logger(), *get_clock(), 500,
-      "\033[94m[DEBUG] Operator [ID %d]: dist=%.2f m | bearing=%+.1f deg | Status: %s | vx=%.2f | vy=%.2f | wz=%.2f\033[0m",
-      locked_person_id_, direct_dist, direct_bearing * 180.0 / M_PI,
-      status_str.c_str(), twist.linear.x, twist.linear.y, twist.angular.z);
+    static int follow_ic_ctr = 0;
+    if (follow_ic_ctr++ % 10 == 0) {
+      const double follow_dist = direct_dist;
+      const double follow_bearing = direct_bearing * 180.0 / M_PI;
+      const double follow_vx = twist.linear.x;
+      const double follow_vy = twist.linear.y;
+      const double follow_wz = twist.angular.z;
+      IC(follow_dist, follow_bearing, follow_vx, follow_vy, follow_wz);
+    }
   }
 
   void send_nav2_goal(const geometry_msgs::msg::PoseStamped & target_pose)
@@ -1541,6 +1544,14 @@ private:
         twist.linear.y = 0.0;
         twist.angular.z = wz;
         cmd_vel_pub_->publish(twist);
+
+        static int align_ic_ctr = 0;
+        if (align_ic_ctr++ % 4 == 0) {
+          const double approach_dist = min_d;
+          const double approach_vx = twist.linear.x;
+          const double approach_wz = twist.angular.z;
+          IC(approach_dist, approach_vx, approach_wz);
+        }
       } else {
         if (last_known_dist <= bag_stop_distance_ + 0.15) {
           RCLCPP_INFO(get_logger(), "[Align Bag] Bag close (%.2f m) near ZED FOV limit. Finished approach.", last_known_dist);
@@ -1753,6 +1764,13 @@ private:
       twist.linear.y = 0.0;
       twist.angular.z = 0.0;
       cmd_vel_pub_->publish(twist);
+
+      static int stepback_ic_ctr = 0;
+      if (stepback_ic_ctr++ % 4 == 0) {
+        const double stepback_vx = twist.linear.x;
+        const double operator_dist = last_person_dist;
+        IC(stepback_vx, operator_dist);
+      }
 
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -2511,12 +2529,11 @@ private:
       cmd_vel_pub_->publish(twist);
 
       loop_count++;
-      if (loop_count % 5 == 0) { // Print setiap ~250 ms
-        RCLCPP_INFO(
-          get_logger(),
-          "[HOMING 180 ROTATE RUNNING] t=%.1fs | Terputar: %.1f° / 180.0° | Yaw: %.1f° -> Target: %.1f° | Sisa: %.1f° | Wz: %.2f rad/s",
-          elapsed, rotated_abs * 180.0 / M_PI, cur_yaw * 180.0 / M_PI, target_yaw * 180.0 / M_PI,
-          remaining * 180.0 / M_PI, wz);
+      if (loop_count % 5 == 0) { // ~250 ms
+        const double rotated_deg = rotated_abs * 180.0 / M_PI;
+        const double target_deg = target_yaw * 180.0 / M_PI;
+        const double remaining_deg = remaining * 180.0 / M_PI;
+        IC(rotated_deg, target_deg, remaining_deg, wz);
       }
 
       rate.sleep();
@@ -2553,11 +2570,10 @@ private:
 
     ClearanceSummary clear = get_clearance_summary();
 
-    RCLCPP_INFO(
-      get_logger(),
-      "\033[1;36m[HOMING DIAGNOSTIC]\033[0m Posisi: (x=%.2f, y=%.2f, yaw=%.1f°) | Selisih Sudut ke Origin: %.1f° | Jarak Sensor: Depan=%.2fm, Belakang=%.2fm, Kiri=%.2fm, Kanan=%.2fm",
-      cur_x, cur_y, cur_yaw * 180.0 / M_PI, rel_angle_origin * 180.0 / M_PI,
-      clear.front, clear.back, clear.left, clear.right);
+    const double yaw_deg = cur_yaw * 180.0 / M_PI;
+    const double origin_err_deg = rel_angle_origin * 180.0 / M_PI;
+    IC(cur_x, cur_y, yaw_deg, origin_err_deg);
+    IC(clear.front, clear.back, clear.left, clear.right);
 
     // Kriteria membelakangi atau terhalang:
     // 1. Selisih sudut ke origin > 45 derajat (robot membelakangi jalur pulang)
