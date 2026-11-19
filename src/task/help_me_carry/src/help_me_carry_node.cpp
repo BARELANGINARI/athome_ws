@@ -3245,9 +3245,13 @@ private:
 
         size_t best_back_idx = cands.size();
         // Prioritas 1: kandidat is_back terdekat dengan posisi target terkunci sebelumnya (ref_bx, ref_by)
-        double best_ref_err = has_locked_world ? 1.00 : 999.0;
+        // ANTI-TARGET JUMP: Tolak kandidat yang posisinya melompat > 35cm lebih maju dari ekor terkunci (Person 2 / 3)!
+        double best_ref_err = has_locked_world ? 0.60 : 1.20;
         for (size_t i = 0; i < cands.size(); ++i) {
           if (!cands[i].is_back) continue;
+          if (has_locked_world && cands[i].px_b > ref_bx + 0.35) {
+            continue; // Tolak orang yang lebih maju di antrian
+          }
           const double err = has_locked_world
             ? std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by)
             : cands[i].dist;
@@ -3259,8 +3263,11 @@ private:
 
         // Prioritas 2: toleransi jika flag is_back drop sesaat pada jarak dekat
         if (best_back_idx == cands.size()) {
-          best_ref_err = has_locked_world ? 0.85 : 999.0;
+          best_ref_err = has_locked_world ? 0.50 : 1.00;
           for (size_t i = 0; i < cands.size(); ++i) {
+            if (has_locked_world && cands[i].px_b > ref_bx + 0.35) {
+              continue; // Tolak orang yang lebih maju
+            }
             const double err = has_locked_world
               ? std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by)
               : cands[i].dist;
@@ -3734,6 +3741,8 @@ private:
             int right_count = 0;
             double min_flank_left = 999.0;
             double min_flank_right = 999.0;
+            bool narrow_center_obstacle = false;
+            double min_narrow_center_x = 999.0;
 
             const int num_readings = static_cast<int>(scan->ranges.size());
             for (int i = 0; i < num_readings; ++i) {
@@ -3794,6 +3803,16 @@ private:
                 }
               }
 
+              // 6. NARROW CENTER CORRIDOR (|obs_y| <= 0.22m):
+              // Hanya memeriksa jalur tengah badan orang di antrian,
+              // sepenuhnya kebal terhadap tiang/pagar antrian di sisi kiri/kanan (|obs_y| >= 0.35m)
+              if (obs_x > footprint_radius_ && obs_x <= (homing_queue_distance_ + 0.10) && std::abs(obs_y) <= 0.22) {
+                narrow_center_obstacle = true;
+                if (obs_x < min_narrow_center_x) {
+                  min_narrow_center_x = obs_x;
+                }
+              }
+
               // Gaya tolak lateral repulsive (Y)
               if (obs_x > footprint_radius_ * 0.8 && r < obstacle_distance_) {
                 const double weight = (1.0 / std::max(0.20f, r)) - (1.0 / obstacle_distance_);
@@ -3808,6 +3827,18 @@ private:
               target_vx = 0.0;
               if (min_front_x < (footprint_radius_ + 0.12) || target_dist < (footprint_radius_ + 0.15)) {
                 target_vx = -0.06; // Terlalu mepet: mundur perlahan demi keselamatan
+              }
+            }
+
+            // --- PROTEKSI NARROW CENTER CORRIDOR DALAM ANTRIAN ---
+            // Jika ada objek/kaki orang di koridor tengah dalam jarak antri:
+            // DILARANG keras maju (tahan/rem), kebal blindspot kamera dan kebal pagar samping!
+            if (narrow_center_obstacle && (is_homing_queuing_ || queue_engaged)) {
+              if (target_vx > 0.0) {
+                target_vx = 0.0;
+              }
+              if (min_narrow_center_x < 0.65) {
+                target_vx = -0.06;
               }
             }
 
@@ -3829,22 +3860,28 @@ private:
                 target_vx *= std::clamp(brake_ratio, 0.0, 1.0);
               }
 
-              // 2. TANGENTIAL STRAFE VIA OMNI (Avoidance ke arah ruang terbuka):
-              // Sesuai instruksi: AVOIDANCE SELALU DIDAHULUKAN
-              if (std::abs(rep_y) < 0.4) {
-                double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
-                double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
-                rep_y = (avg_left >= avg_right) ? 1.5 : -1.5;
-              }
+              // 2. Dalam antrian (lorong/pagar pembatas):
+              // DILARANG keras strafe menyamping (avoid_vy)! Mencegah menabrak pagar antrian atau menyerobot antrian.
+              // Respon di lorong antrian adalah STOP / REM MAJU, tetap di jalur tengah antrian.
+              if (is_homing_queuing_ || queue_engaged) {
+                target_vx = 0.0;
+              } else {
+                // TANGENTIAL STRAFE VIA OMNI (Avoidance ke arah ruang terbuka di luar antrian):
+                if (std::abs(rep_y) < 0.4) {
+                  double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
+                  double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
+                  rep_y = (avg_left >= avg_right) ? 1.5 : -1.5;
+                }
 
-              double avoid_vy = std::clamp(0.22 * rep_y, -max_vy_, max_vy_);
-              if (avoid_vy > 0.0 && min_flank_left < (corridor_width_ + 0.05)) {
-                avoid_vy = 0.0;
-              } else if (avoid_vy < 0.0 && min_flank_right < (corridor_width_ + 0.05)) {
-                avoid_vy = 0.0;
-              }
+                double avoid_vy = std::clamp(0.22 * rep_y, -max_vy_, max_vy_);
+                if (avoid_vy > 0.0 && min_flank_left < (corridor_width_ + 0.05)) {
+                  avoid_vy = 0.0;
+                } else if (avoid_vy < 0.0 && min_flank_right < (corridor_width_ + 0.05)) {
+                  avoid_vy = 0.0;
+                }
 
-              target_vy = avoid_vy; // Prioritas mutlak avoidance di atas penyesuaian antrian
+                target_vy = avoid_vy; // Prioritas mutlak avoidance di atas penyesuaian antrian
+              }
 
               RCLCPP_WARN_THROTTLE(
                 get_logger(), *get_clock(), 500,
