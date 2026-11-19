@@ -927,8 +927,10 @@ class VadVisualizer:
         self._latest_asr_metrics = metrics
         self._asr_dirty = True
 
-    def start(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Menginisialisasi jendela grafik Matplotlib dan memulai task perenderan asinkron."""
+    def start(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
+        """Menginisialisasi jendela grafik Matplotlib dan (opsional) memulai task perenderan asinkron."""
+        if self._active and self.fig is not None:
+            return
         if not HAS_MATPLOTLIB:
             logger.warning(
                 "matplotlib tidak terinstal. Visualisasi grafik VAD dinonaktifkan."
@@ -943,7 +945,8 @@ class VadVisualizer:
         try:
             self._setup_figure()
             self._active = True
-            self._render_task = loop.create_task(self._render_loop())
+            if loop is not None:
+                self._render_task = loop.create_task(self._render_loop())
             logger.info(
                 "Visualisasi grafik VAD aktif (Gunakan panah UP/DOWN untuk dBFS, LEFT/RIGHT untuk Flatness)."
             )
@@ -1077,62 +1080,73 @@ class VadVisualizer:
         )
         self.ax_dbfs.legend(loc="upper left")
 
+    def render_once(self) -> None:
+        """Merender satu siklus pembaruan grafik Matplotlib (aman dipanggil dari main thread timer)."""
+        if not self._active or self.fig is None:
+            return
+        try:
+            if not plt.fignum_exists(self.fig.number):
+                logger.info("Jendela visualisasi VAD ditutup oleh pengguna.")
+                self._active = False
+                self.fig = None
+                return
+
+            updated = False
+            last_metrics: Optional[VadFrameMetrics] = None
+
+            while not self._frame_queue.empty():
+                metrics = self._frame_queue.get_nowait()
+                last_metrics = metrics
+                self._dbfs_hist = np.roll(self._dbfs_hist, -1)
+                self._dbfs_hist[-1] = metrics.dbfs
+                self._speech_dbfs_hist = np.roll(self._speech_dbfs_hist, -1)
+                self._speech_dbfs_hist[-1] = metrics.dbfs_speech
+                updated = True
+
+            if last_metrics is not None:
+                self.line_wave.set_ydata(last_metrics.signal)
+                self.line_spec.set_ydata(20.0 * np.log10(last_metrics.fft_mag))
+                self.line_dbfs.set_ydata(self._dbfs_hist)
+                self.line_speech_dbfs.set_ydata(self._speech_dbfs_hist)
+
+                if last_metrics.is_paused:
+                    self.title_wave.set_text(
+                        "VAD Status: [PAUSED - ROBOT SPEAKING / BUSY]"
+                    )
+                    self.title_wave.set_color("#d9534f")
+                    self.line_wave.set_color("#999999")
+                elif last_metrics.is_speaking:
+                    self.title_wave.set_text(
+                        f"VAD Status: [SPEECH DETECTED - RECORDING] (Flatness: {last_metrics.flatness:.2f})"
+                    )
+                    self.title_wave.set_color("green")
+                    self.line_wave.set_color("#2ca02c")
+                else:
+                    self.title_wave.set_text(
+                        f"VAD Status: SILENCE (Flatness: {last_metrics.flatness:.2f})"
+                    )
+                    self.title_wave.set_color("gray")
+                    self.line_wave.set_color("#007acc")
+
+            if self._asr_dirty:
+                self.asr_text_box.set_text(
+                    f"ASR: {self._latest_transcript}\n{self._latest_asr_metrics}"
+                )
+                self._asr_dirty = False
+                updated = True
+
+            if updated:
+                self.fig.canvas.draw_idle()
+            self.fig.canvas.flush_events()
+        except Exception as exc:
+            logger.debug("Kesalahan render visualisasi VAD: %s", exc)
+
     async def _render_loop(self) -> None:
         while self._active and self.fig is not None:
             try:
-                if not plt.fignum_exists(self.fig.number):
-                    logger.info("Jendela visualisasi VAD ditutup oleh pengguna.")
-                    self._active = False
+                self.render_once()
+                if not self._active:
                     break
-
-                updated = False
-                last_metrics: Optional[VadFrameMetrics] = None
-
-                while not self._frame_queue.empty():
-                    metrics = self._frame_queue.get_nowait()
-                    last_metrics = metrics
-                    self._dbfs_hist = np.roll(self._dbfs_hist, -1)
-                    self._dbfs_hist[-1] = metrics.dbfs
-                    self._speech_dbfs_hist = np.roll(self._speech_dbfs_hist, -1)
-                    self._speech_dbfs_hist[-1] = metrics.dbfs_speech
-                    updated = True
-
-                if last_metrics is not None:
-                    self.line_wave.set_ydata(last_metrics.signal)
-                    self.line_spec.set_ydata(20.0 * np.log10(last_metrics.fft_mag))
-                    self.line_dbfs.set_ydata(self._dbfs_hist)
-                    self.line_speech_dbfs.set_ydata(self._speech_dbfs_hist)
-
-                    if last_metrics.is_paused:
-                        self.title_wave.set_text(
-                            "VAD Status: [PAUSED - ROBOT SPEAKING / BUSY]"
-                        )
-                        self.title_wave.set_color("#d9534f")
-                        self.line_wave.set_color("#999999")
-                    elif last_metrics.is_speaking:
-                        self.title_wave.set_text(
-                            f"VAD Status: [SPEECH DETECTED - RECORDING] (Flatness: {last_metrics.flatness:.2f})"
-                        )
-                        self.title_wave.set_color("green")
-                        self.line_wave.set_color("#2ca02c")
-                    else:
-                        self.title_wave.set_text(
-                            f"VAD Status: SILENCE (Flatness: {last_metrics.flatness:.2f})"
-                        )
-                        self.title_wave.set_color("gray")
-                        self.line_wave.set_color("#007acc")
-
-                if self._asr_dirty:
-                    self.asr_text_box.set_text(
-                        f"ASR: {self._latest_transcript}\n{self._latest_asr_metrics}"
-                    )
-                    self._asr_dirty = False
-                    updated = True
-
-                if updated:
-                    self.fig.canvas.draw_idle()
-                self.fig.canvas.flush_events()
-
                 await asyncio.sleep(self.RENDER_INTERVAL_SEC)
             except asyncio.CancelledError:
                 break

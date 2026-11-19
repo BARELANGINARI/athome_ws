@@ -243,6 +243,7 @@ struct PrevItem
 
 struct PrevChair
 {
+  std::string label{"chair"};
   cv::Rect bbox;
   bool has_pos{false};
   double x_m{0.0}, y_m{0.0}, range_m{0.0};
@@ -252,6 +253,7 @@ struct PrevChair
 
 struct ChairMemory
 {
+  std::string label{"chair"};
   cv::Rect bbox;
   bool has_pos{false};
   double x{0.0}, y{0.0}, z{0.0};
@@ -432,7 +434,8 @@ public:
         if (!name.empty() && wanted.count(name) > 0) return true;
         if (classes == 80) {
           if (wanted.count("bag") > 0 && (id == 24 || id == 26 || id == 28)) return true;
-          if (wanted.count("chair") > 0 && (id == 56 || id == 57)) return true;
+          if ((wanted.count("chair") > 0 || wanted.count("sofa") > 0 || wanted.count("couch") > 0) &&
+              (id == 56 || id == 57)) return true;
         }
         return false;
       };
@@ -542,22 +545,28 @@ public:
 
   bool faceReady() const {return face_.ready();}
 
+  static bool validKeypoint(const sl::float2 & point)
+  {
+    return std::isfinite(point.x) && std::isfinite(point.y) &&
+           point.x >= 0.0f && point.y >= 0.0f;
+  }
+
   std::string clothingColor(
     const cv::Mat & bgr, const cv::Rect & bbox, const std::vector<sl::float2> & kpt)
   {
     if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return "casual attire";
 
     float waist_y = -1.0f;
-    if (kpt.size() > 22 && std::isfinite(kpt[18].y) && std::isfinite(kpt[22].y)) {
+    if (kpt.size() > 22 && validKeypoint(kpt[18]) && validKeypoint(kpt[22])) {
       waist_y = (kpt[18].y + kpt[22].y) * 0.5f;
-    } else if (!kpt.empty() && std::isfinite(kpt[0].y)) {
+    } else if (!kpt.empty() && validKeypoint(kpt[0])) {
       waist_y = kpt[0].y;
     }
 
     float shoulder_y = -1.0f;
-    if (kpt.size() > 12 && std::isfinite(kpt[5].y) && std::isfinite(kpt[12].y)) {
+    if (kpt.size() > 12 && validKeypoint(kpt[5]) && validKeypoint(kpt[12])) {
       shoulder_y = (kpt[5].y + kpt[12].y) * 0.5f;
-    } else if (kpt.size() > 3 && std::isfinite(kpt[3].y)) {
+    } else if (kpt.size() > 3 && validKeypoint(kpt[3])) {
       shoulder_y = kpt[3].y;
     }
 
@@ -566,12 +575,17 @@ public:
       const float span = waist_y - shoulder_y;
       y1 = static_cast<int>(shoulder_y + span * 0.15f);
       y2 = static_cast<int>(shoulder_y + span * 0.85f);
+    } else if (shoulder_y > 0.0f) {
+      // Bahu valid tapi pinggang terpotong di frame kamera bawah
+      y1 = static_cast<int>(shoulder_y + 10.0f);
+      y2 = static_cast<int>(std::min(static_cast<float>(bgr.rows), shoulder_y + bbox.width * 0.9f));
     } else {
-      y1 = bbox.y + static_cast<int>(bbox.height * 0.22f);
-      y2 = bbox.y + static_cast<int>(bbox.height * 0.48f);
+      // Fallback proporsi torso dada (menghindari leher/dagu dan celana)
+      y1 = bbox.y + static_cast<int>(bbox.height * 0.28f);
+      y2 = bbox.y + static_cast<int>(bbox.height * 0.65f);
     }
-    const int x1 = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.25f), 0, bgr.cols);
-    const int x2 = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.75f), 0, bgr.cols);
+    const int x1 = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.20f), 0, bgr.cols);
+    const int x2 = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.80f), 0, bgr.cols);
     y1 = std::clamp(y1, 0, bgr.rows);
     y2 = std::clamp(y2, 0, bgr.rows);
     if (y2 <= y1 || x2 <= x1) return "casual attire";
@@ -580,6 +594,7 @@ public:
     roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
     if (roi.area() <= 0) return "casual attire";
 
+    // 1. INFERENSI DENGAN DEEP LEARNING MODEL (color_model.onnx)
     if (color_.ready() && !color_labels_.empty()) {
       cv::Mat resized;
       cv::resize(bgr(roi), resized, cv::Size(224, 224));
@@ -598,7 +613,7 @@ public:
         for (int i = 1; i < classes; ++i) {
           if (probs[static_cast<size_t>(i)] > probs[static_cast<size_t>(best)]) best = i;
         }
-        if (probs[static_cast<size_t>(best)] > 0.45f && best < static_cast<int>(color_labels_.size())) {
+        if (probs[static_cast<size_t>(best)] > 0.30f && best < static_cast<int>(color_labels_.size())) {
           std::string result = color_labels_[static_cast<size_t>(best)];
           std::transform(result.begin(), result.end(), result.begin(), ::tolower);
           if (result.find("shirt") == std::string::npos &&
@@ -611,6 +626,7 @@ public:
       }
     }
 
+    // 2. FALLBACK HSV (Jika model ONNX belum tersedia)
     cv::Mat hsv;
     cv::cvtColor(bgr(roi), hsv, cv::COLOR_BGR2HSV);
     std::vector<cv::Vec3b> valid_pixels;
@@ -619,8 +635,10 @@ public:
       const cv::Vec3b * row = hsv.ptr<cv::Vec3b>(r);
       for (int c = 0; c < hsv.cols; ++c) {
         const cv::Vec3b & p = row[c];
-        // Skin tone filter (skip neck/chest skin)
+        // Skin tone filter (skip leher/dada atas)
         if (p[0] >= 5 && p[0] <= 25 && p[1] >= 40 && p[1] <= 160 && p[2] >= 70) continue;
+        // Filter bayangan gelap ekstrem pada lipatan kain
+        if (p[2] < 25) continue;
         valid_pixels.push_back(p);
       }
     }
@@ -642,12 +660,12 @@ public:
     }
 
     std::string color = "dark";
-    if (v < 50.0) color = "black";
-    else if (s < 35.0 && v > 180.0) color = "white";
-    else if (s < 45.0) color = "gray";
+    if (v < 30.0 || (v < 45.0 && s < 40.0)) color = "black";
+    else if (s < 30.0 && v > 170.0) color = "white";
+    else if (s < 35.0) color = "gray";
     else if (h <= 10.0 || h >= 170.0) color = "red";
     else if (h <= 25.0) color = "orange";
-    else if (h <= 35.0) color = "yellow";
+    else if (h <= 38.0) color = "yellow";
     else if (h <= 85.0) color = "green";
     else if (h <= 130.0) color = "blue";
     else if (h <= 155.0) color = "purple";
@@ -1391,7 +1409,7 @@ ZedNode::ZedNode()
   declare_parameter("enable_drinks", true);
   declare_parameter("chair_model", std::string(""));
   declare_parameter("enable_chair", true);
-  declare_parameter("chair_labels", std::vector<std::string>{"chair", "couch", "bench"});
+  declare_parameter("chair_labels", std::vector<std::string>{"chair", "couch", "sofa", "bench"});
   declare_parameter("enable_bag", true);
   declare_parameter("gender_model", std::string("models/gender_model_weights.onnx"));
   declare_parameter("color_model", std::string("models/color_model.onnx"));
@@ -1563,6 +1581,8 @@ std::string ZedNode::resolvePath(const std::string & path) const
   }
   if (std::filesystem::exists(path)) return path;
   if (std::filesystem::exists("src/athome_vision/" + path)) return "src/athome_vision/" + path;
+  const std::string ws0 = "/home/dell/Documents/athome_ws/src/athome_vision/" + path;
+  if (std::filesystem::exists(ws0)) return ws0;
   const std::string ws = "/home/dell/Desktop/athome_ws/src/athome_vision/" + path;
   if (std::filesystem::exists(ws)) return ws;
   const std::string ws2 = "/home/dell/Downloads/athome_ws/src/athome_vision/" + path;
@@ -1705,6 +1725,9 @@ void ZedNode::loadModels()
     std::string err;
     if (!analyzer_.loadColor(color_path, color_labels, &err)) {
       RCLCPP_WARN(get_logger(), "Color model unavailable, using HSV: %s", err.c_str());
+    } else {
+      RCLCPP_INFO(get_logger(), "Clothing Color ResNet model loaded: %s (labels: %s)",
+        color_path.c_str(), color_labels.c_str());
     }
   }
   if (!hair_path.empty()) {
@@ -2484,7 +2507,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         std::isfinite(point.y) ? point.y : NAN);
     }
 
-    const bool classify = is_receptionist_ && (!pending_register_name_.empty() || !recognized_name.empty());
+    const bool classify = is_receptionist_ && (first_person || !pending_register_name_.empty() || !recognized_name.empty());
     if (classify) {
       person.clothing = analyzer_.clothingColor(bgr, entry.bbox, points);
       person.hair = analyzer_.hairColor(bgr, entry.bbox, points);
@@ -2692,6 +2715,7 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       if (static_cast<double>(det.rect.area()) < yolo_min_area_) continue;
       double x = 0.0, y = 0.0, z = 0.0;
       const bool ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
+      const std::string det_label = (det.label == "couch" || det.label == "sofa") ? "sofa" : det.label;
 
       int match = -1;
       double best_dist = 1e9;
@@ -2711,6 +2735,7 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
 
       if (match >= 0) {
         auto & memory = chair_memory_[static_cast<size_t>(match)];
+        memory.label = det_label.empty() ? "chair" : det_label;
         memory.bbox = det.rect;
         memory.last_seen = current_time;
         if (ok) {
@@ -2722,6 +2747,7 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       } else {
         ChairMemory memory;
+        memory.label = det_label.empty() ? "chair" : det_label;
         memory.bbox = det.rect;
         memory.last_seen = current_time;
         if (ok) {
@@ -2854,6 +2880,9 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
   std::string data;
   std::string best_empty_side = "none";
   double best_empty_dist = 1e9;
+  double best_empty_x = 0.0, best_empty_y = 0.0, best_empty_z = 0.0;
+  double best_empty_depth = 0.0;
+  bool best_has_pos = false;
   constexpr double memory_timeout = 10.0;
 
   for (size_t i = 0; i < chair_memory_.size(); ) {
@@ -2872,14 +2901,26 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
     const std::string side = side_of(chair.bbox, ok, chair.y);
 
     preview_chairs_.push_back(
-      {chair.bbox, ok, chair.x, chair.y, dist, occupied, side});
+      {chair.label, chair.bbox, ok, chair.x, chair.y, dist, occupied, side});
 
     if (!occupied) {
       if (ok && dist > 0.1 && dist < best_empty_dist) {
         best_empty_dist = dist;
         best_empty_side = side;
+        best_empty_x = chair.x;
+        best_empty_y = chair.y;
+        best_empty_z = chair.z;
+        best_empty_depth = dist;
+        best_has_pos = true;
       } else if (best_empty_side == "none") {
         best_empty_side = side;
+        if (ok) {
+          best_empty_x = chair.x;
+          best_empty_y = chair.y;
+          best_empty_z = chair.z;
+          best_empty_depth = dist;
+          best_has_pos = true;
+        }
       }
     }
 
@@ -2890,13 +2931,13 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
           chair_now - last_chair_log).count() > 2000)
       {
         last_chair_log = chair_now;
-        IC(occupied ? "OCCUPIED" : "EMPTY", side, chair.x, chair.y, dist);
+        IC(chair.label, occupied ? "OCCUPIED" : "EMPTY", side, chair.x, chair.y, dist);
       }
     }
 
     if (!data.empty()) data += ";";
     data += cv::format(
-      "chair:%d,%d,%d,%d|", chair.bbox.x, chair.bbox.y,
+      "%s:%d,%d,%d,%d|", chair.label.c_str(), chair.bbox.x, chair.bbox.y,
       chair.bbox.width, chair.bbox.height);
     data += ok
       ? cv::format("%.2f,%.2f,%.2f|", chair.x, chair.y, chair.z)
@@ -2911,7 +2952,17 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
   chair_dets_publisher_->publish(chair_msg);
 
   std_msgs::msg::String seat_msg;
-  seat_msg.data = best_empty_side;
+  if (best_empty_side != "none") {
+    if (best_has_pos) {
+      seat_msg.data = cv::format(
+        "%s|%.2f,%.2f,%.2f|%.2f",
+        best_empty_side.c_str(), best_empty_x, best_empty_y, best_empty_z, best_empty_depth);
+    } else {
+      seat_msg.data = cv::format("%s|nan,nan,nan|nan", best_empty_side.c_str());
+    }
+  } else {
+    seat_msg.data = "none";
+  }
   empty_seat_publisher_->publish(seat_msg);
 }
 
@@ -2963,28 +3014,23 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(0, 255, 0), -1);
       cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
-      std::string label;
+      // Hanya tampilkan banner jika ada nama tamu / registered name (Alex / Guest Name)
       if (is_receptionist_ && !is_help_me_carry_) {
         if (!p.name.empty()) {
-          label = p.name;
-        } else {
-          label = (i == 0 ? "Guest" : "Person");
+          std::string label = p.name;
+          if (p.is_sitting) label += " [Seated]";
+          if (p.is_facing_back) label += " [Back]";
+          banner(label, r.x, r.y, color,
+            p.is_sitting ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0),
+            cv::Scalar(255, 255, 255), 0.58, 2);
         }
       } else {
-        label = "ID: " + std::to_string(p.id);
-      }
-      if (p.is_sitting) label += " [Seated]";
-      if (p.is_facing_back) label += " [Back]";
-      banner(label, r.x, r.y, color,
-        p.is_sitting ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0),
-        cv::Scalar(255, 255, 255), 0.58, 2);
-
-      if (!p.gender.empty() || !p.clothing.empty() || !p.hair.empty()) {
-        std::string attrs = p.gender;
-        if (!p.clothing.empty()) attrs += (attrs.empty() ? "" : " | ") + p.clothing;
-        if (!p.hair.empty()) attrs += (attrs.empty() ? "" : " | ") + p.hair;
-        banner(attrs, r.x, r.y + r.height + 22,
-          cv::Scalar(0, 180, 180), cv::Scalar(20, 30, 30), cv::Scalar(0, 255, 255), 0.48, 1);
+        std::string label = "ID: " + std::to_string(p.id);
+        if (p.is_sitting) label += " [Seated]";
+        if (p.is_facing_back) label += " [Back]";
+        banner(label, r.x, r.y, color,
+          p.is_sitting ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0),
+          cv::Scalar(255, 255, 255), 0.58, 2);
       }
     }
 
@@ -2999,10 +3045,6 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         const int cy = r.y + r.height / 2;
         cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(155, 0, 0), -1);
         cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
-        std::string text = (preview_bags_.size() > 1) ? cv::format("Bag %zu", i + 1) : "Bag";
-        if (b.has_pos) text += cv::format(" (%.2fm, %.2fm)", b.x_m, b.y_m);
-        banner(text, r.x, r.y, cv::Scalar(0, 69, 255),
-          cv::Scalar(0, 40, 150), cv::Scalar(255, 255, 255), 0.52, 1);
       }
     }
 
@@ -3028,11 +3070,6 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       const int cx = r.x + r.width / 2;
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 4, color, -1);
-      std::string text = (c.occupied ? "Chair (Occupied): " : "Chair (Empty): ") + c.side;
-      if (c.has_pos) text += cv::format(" (%.2fm, %.2fm)", c.x_m, c.y_m);
-      banner(text, r.x, r.y, color,
-        c.occupied ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0),
-        cv::Scalar(255, 255, 255), 0.52, 2);
     }
 
     int hud_y = 52;
@@ -3056,7 +3093,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       if (!p0.name.empty()) {
         person_title = p0.name + (p0.is_facing_back ? " [Back] :" : " :");
       } else {
-        person_title = std::string("Guest") + (p0.is_facing_back ? " [Back] :" : " :");
+        person_title = std::string("Person") + (p0.is_facing_back ? " [Back] :" : " :");
       }
     } else {
       person_title = "Operator [ID " + std::to_string(p0.id) + "]" + (p0.is_facing_back ? " [Back] :" : " :");
@@ -3082,7 +3119,9 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     }
     for (const auto & c : preview_chairs_) {
       if (!c.has_pos) continue;
-      hud((c.occupied ? "Occupied Chair [" : "Empty Chair [") + c.side + "] :",
+      std::string disp_name = c.label;
+      if (!disp_name.empty()) disp_name[0] = static_cast<char>(std::toupper(disp_name[0]));
+      hud((c.occupied ? "Occupied " : "Empty ") + disp_name + " [" + c.side + "] :",
         c.x_m, c.y_m, c.range_m,
         c.occupied ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0));
     }

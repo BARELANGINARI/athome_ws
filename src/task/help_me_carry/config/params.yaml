@@ -7,7 +7,8 @@ help_me_carry_node:
     person_back_topic: "/vision/person_back"     # Topic for back-facing person detections
     gesture_topic: "/vision/gesture"             # Topic for pointing gesture detections
     bag_topic: "/vision/bag_detections"          # Topic for YOLO paper bag detections
-    yaw_topic: "/vision/yaw_deg"                 # Topic for IMU yaw data
+    # yaw_topic: "/vision/yaw_deg"                 # Topic for IMU yaw data (sebelumnya vision)
+    yaw_topic: "/yaw"                            # Topic for IMU yaw data (Razor IMU via nucleo /yaw)
     cmd_vel_topic: "/cmd_vel"                 # Topic for base velocity commands
     nav_cmd_vel_topic: "/nav_cmd_vel"         # Topic input kecepatan navigasi Nav2
     path_topic: "/following_path"             # Topic for RViz following trajectory

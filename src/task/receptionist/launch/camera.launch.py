@@ -34,6 +34,8 @@ def generate_launch_description():
         DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 deg range (default: true)'),
         DeclareLaunchArgument('host_name', default_value='Alex', description='Default host name for pre-registration'),
         DeclareLaunchArgument('host_photo', default_value='models/host.jpg', description='Optional photo of the host to pre-register face'),
+        DeclareLaunchArgument('color_model', default_value='models/color_model.onnx', description='Path to clothing color ONNX model'),
+        DeclareLaunchArgument('color_labels', default_value='models/color_names.txt', description='Path to clothing color labels file'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -69,6 +71,8 @@ def generate_launch_description():
                 'depth_minimum_distance': LaunchConfiguration('depth_minimum_distance'),
                 'host_name': LaunchConfiguration('host_name'),
                 'host_photo': LaunchConfiguration('host_photo'),
+                'color_model': LaunchConfiguration('color_model'),
+                'color_labels': LaunchConfiguration('color_labels'),
             }.items(),
         ),
     ])

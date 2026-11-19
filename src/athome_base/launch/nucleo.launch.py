@@ -17,8 +17,13 @@ def generate_launch_description():
         DeclareLaunchArgument('odom_frame', default_value='odom', description='Odometry frame ID'),
         DeclareLaunchArgument('base_frame', default_value='base_footprint', description='Robot base frame ID'),
         DeclareLaunchArgument('yaw_offset_deg', default_value='0.0', description='IMU yaw offset in degrees'),
-        DeclareLaunchArgument('use_yaw_topic', default_value='true', description='Use external /vision/yaw_deg instead of STM32 yaw'),
-        DeclareLaunchArgument('yaw_topic', default_value='/vision/yaw_deg', description='External yaw topic name'),
+
+        # Untuk ngatur pakai imu vision atau razor
+        # DeclareLaunchArgument('use_yaw_topic', default_value='true', description='Use external /vision/yaw_deg instead of STM32 yaw'),
+        # DeclareLaunchArgument('yaw_topic', default_value='/vision/yaw_deg', description='External yaw topic name'),
+        DeclareLaunchArgument('use_yaw_topic', default_value='false', description='Use external yaw topic instead of direct STM32/Razor IMU (false = use direct Razor IMU)'),
+        DeclareLaunchArgument('yaw_topic', default_value='/yaw', description='External yaw topic name (use /yaw instead of /vision/yaw_deg)'),
+
         DeclareLaunchArgument('yaw_topic_timeout', default_value='0.5', description='External yaw timeout (seconds)'),
         DeclareLaunchArgument('cmd_vel_timeout', default_value='0.5', description='Command velocity timeout (seconds)'),
         DeclareLaunchArgument('joy_topic', default_value='joy_vel', description='Joystick override velocity topic'),
