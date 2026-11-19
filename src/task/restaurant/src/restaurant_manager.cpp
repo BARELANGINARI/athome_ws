@@ -518,7 +518,7 @@ private:
       msg.data = text;
       status_pub_->publish(msg);
     }
-    RCLCPP_INFO(get_logger(), "\033[1;32m[RESTAURANT STATUS]\033[0m %s", text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;34m[STATUS]\033[0m %s", text.c_str());
   }
 
   void publishCustomerHmi(bool show)
@@ -547,7 +547,7 @@ private:
       msg.data = "{\"action\":\"hide\"}";
     }
     hmi_customer_pub_->publish(msg);
-    RCLCPP_INFO(get_logger(), "\033[1;36m[HMI DISPLAY]\033[0m Customer Order Card -> %s", show ? "SHOW" : "HIDE");
+    RCLCPP_INFO(get_logger(), "\033[1;36m[HMI]\033[0m Order Card -> %s", show ? "SHOW" : "HIDE");
   }
 
   void publishExpression(const std::string & expr)
@@ -556,7 +556,7 @@ private:
       std_msgs::msg::String msg;
       msg.data = expr;
       face_expression_pub_->publish(msg);
-      RCLCPP_INFO(get_logger(), "\033[1;35m[FACE EXPR]\033[0m Robot Eye Expression -> %s", expr.c_str());
+      RCLCPP_INFO(get_logger(), "\033[1;35m[FACE]\033[0m Expression -> %s", expr.c_str());
     }
   }
 
@@ -586,7 +586,7 @@ private:
   {
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;36m[FSM STATE]\033[0m %s \033[1;33m->\033[0m \033[1;32m%s\033[0m (Customer %d) | %s",
+      "\033[1;34m[STATE]\033[0m %s -> %s (C%d: %s)",
       stateToString(state_.load()).c_str(),
       stateToString(next_state).c_str(),
       customer_idx_,
@@ -715,20 +715,20 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;34m[NAV2]\033[0m Sending Goal Pose: (x=%.2f, y=%.2f, yaw=%.1f deg)",
+      "\033[1;36m[NAV]\033[0m Goal: (x=%.2f, y=%.2f, yaw=%.1f°)",
       goal_x, goal_y, goal_yaw * 180.0 / M_PI);
 
     auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     send_opts.goal_response_callback =
       [this, on_finished](const GoalHandleNav::SharedPtr & handle) {
         if (!handle) {
-          RCLCPP_WARN(get_logger(), "[Nav2] Goal ditolak oleh server Nav2!");
+          RCLCPP_WARN(get_logger(), "\033[1;31m[NAV]\033[0m Goal rejected by Nav2");
           nav_busy_ = false;
           last_nav_fail_time_ = now();
           if (on_finished) on_finished(false);
         } else {
           current_goal_handle_ = handle;
-          RCLCPP_INFO(get_logger(), "[Nav2] Goal diterima! Robot sedang bergerak...");
+          RCLCPP_INFO(get_logger(), "\033[1;32m[NAV]\033[0m Goal accepted, navigating...");
         }
       };
 
@@ -738,10 +738,10 @@ private:
         nav_busy_ = false;
         const bool ok = (result.code == rclcpp_action::ResultCode::SUCCEEDED);
         if (ok) {
-          RCLCPP_INFO(get_logger(), "\033[1;32m[NAV2]\033[0m Robot tiba di tujuan!");
+          RCLCPP_INFO(get_logger(), "\033[1;32m[NAV]\033[0m Arrived safely at destination");
         } else {
           RCLCPP_WARN(
-            get_logger(), "[Nav2] Navigasi gagal/dibatalkan (code=%d).",
+            get_logger(), "\033[1;33m[NAV]\033[0m Navigation failed/aborted (code %d)",
             static_cast<int>(result.code));
           last_nav_fail_time_ = now();
         }
@@ -885,10 +885,7 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
-    RCLCPP_INFO(
-      get_logger(),
-      "\033[1;35m[TTS SAY]\033[0m \"%s\" | Mic: \033[1;31m[MUTED]\033[0m",
-      text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;32m[TTS]\033[0m \"%s\"", text.c_str());
   }
 
   void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
@@ -906,9 +903,9 @@ private:
       pending_tts_done_ = nullptr;
     }
 
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       get_logger(),
-      "\033[1;32m[TTS FINISHED]\033[0m Playback complete | Mic: \033[1;32m[LISTENING]\033[0m | State: \033[1;36m%s\033[0m",
+      "[TTS] Done | State: %s",
       stateToString(state_.load()).c_str());
 
     if (callback) {
@@ -1186,9 +1183,8 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;33m[STT HEARD]\033[0m \"%s\" | State: \033[1;36m%s\033[0m",
-      message->data.c_str(),
-      stateToString(state_.load()).c_str());
+      "\033[1;33m[STT]\033[0m \"%s\"",
+      message->data.c_str());
   }
 
   // Callback deteksi lambaian tangan / gesture dari Vision (/vision/gesture)
@@ -1462,7 +1458,7 @@ private:
     callTrigger(
       release_client, release_srv_name,
       [this, on_done](bool /*rel_ok*/, const std::string & rel_msg) {
-        RCLCPP_INFO(get_logger(), "[ARM] Release gripper result: %s", rel_msg.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;35m[ARM]\033[0m Release gripper: %s", rel_msg.c_str());
 
         TriggerClient::SharedPtr free_client = arm_free_client_;
         std::string free_srv_name = "/arm/free";
@@ -1473,15 +1469,10 @@ private:
           free_srv_name = "/arm/relax";
         }
 
-        RCLCPP_INFO(
-          get_logger(),
-          "\033[1;36m[ARM]\033[0m Turning off arm torque via %s...",
-          free_srv_name.c_str());
-
         callTrigger(
           free_client, free_srv_name,
           [this, on_done](bool /*free_ok*/, const std::string & free_msg) {
-            RCLCPP_INFO(get_logger(), "[ARM] Torque off result: %s", free_msg.c_str());
+            RCLCPP_INFO(get_logger(), "\033[1;35m[ARM]\033[0m Torque off: %s", free_msg.c_str());
             if (on_done) {
               on_done();
             }

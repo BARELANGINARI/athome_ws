@@ -31,7 +31,6 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
-#include "icecream.hpp"
 #include "person_kalman_filter.hpp"
 
 namespace
@@ -1191,15 +1190,12 @@ private:
     // Kirim langsung ke base driver (/cmd_vel)
     cmd_vel_pub_->publish(twist);
 
-    static int follow_ic_ctr = 0;
-    if (follow_ic_ctr++ % 10 == 0) {
-      const double follow_dist = direct_dist;
-      const double follow_bearing = direct_bearing * 180.0 / M_PI;
-      const double follow_vx = twist.linear.x;
-      const double follow_vy = twist.linear.y;
-      const double follow_wz = twist.angular.z;
-      IC(follow_dist, follow_bearing, follow_vx, follow_vy, follow_wz);
-    }
+    RCLCPP_INFO_THROTTLE(
+      get_logger(),
+      *get_clock(),
+      500,
+      "\033[1;36m[FOLLOW]\033[0m d=%.2fm, b=%+.1f° | vx=%.2f, wz=%.2f",
+      direct_dist, direct_bearing * 180.0 / M_PI, twist.linear.x, twist.angular.z);
   }
 
   void send_nav2_goal(const geometry_msgs::msg::PoseStamped & target_pose)
@@ -1215,7 +1211,7 @@ private:
     if (!action_client_->wait_for_action_server(std::chrono::milliseconds(500))) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "\033[91m[FOLLOW] Action server Nav2 ('%s') belum siap!\033[0m", action_name_.c_str());
+        "\033[1;33m[FOLLOW]\033[0m Nav2 action server '%s' not ready", action_name_.c_str());
       return;
     }
 
@@ -1226,13 +1222,13 @@ private:
     auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     send_opts.goal_response_callback = [this](const GoalHandle::SharedPtr & handle) {
       if (!handle) {
-        RCLCPP_WARN(get_logger(), "\033[91m[FOLLOW] Goal following ditolak oleh Nav2!\033[0m");
+        RCLCPP_WARN(get_logger(), "\033[1;31m[FOLLOW]\033[0m Nav2 goal rejected");
         is_nav_active_ = false;
         last_nav_fail_time_ = now();
       } else {
         goal_handle_ = handle;
         is_nav_active_ = true;
-        RCLCPP_INFO(get_logger(), "\033[92m[FOLLOW] Goal following diterima Nav2 (Avoidance Costmap aktif).\033[0m");
+        RCLCPP_INFO(get_logger(), "\033[1;32m[FOLLOW]\033[0m Nav2 goal accepted");
       }
     };
     send_opts.result_callback = [this](const GoalHandle::WrappedResult & res) {
@@ -1241,14 +1237,14 @@ private:
       if (res.code == rclcpp_action::ResultCode::SUCCEEDED) {
         RCLCPP_INFO_THROTTLE(
           get_logger(), *get_clock(), 1500,
-          "\033[92m[FOLLOW] Arrived near operator. Waiting for operator to move...\033[0m");
+          "\033[1;32m[FOLLOW]\033[0m Near operator");
       } else if (res.code == rclcpp_action::ResultCode::CANCELED) {
-        RCLCPP_INFO(get_logger(), "\033[93m[FOLLOW] Nav2 following goal canceled.\033[0m");
+        RCLCPP_INFO(get_logger(), "\033[1;33m[FOLLOW]\033[0m Nav2 goal canceled");
       } else if (res.code == rclcpp_action::ResultCode::ABORTED) {
         last_nav_fail_time_ = now();
         RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 2000,
-          "\033[91m[FOLLOW] Nav2 aborted (obstacle/unreachable). Retrying shortly...\033[0m");
+          "\033[1;31m[FOLLOW]\033[0m Nav2 aborted");
       }
     };
 
@@ -1303,7 +1299,6 @@ private:
     resp->success = true;
     resp->message = "Person following active (Start distance: >0.7m, Stop distance: <0.5m).";
     RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
-    IC(resp->success, resp->message);
   }
 
   void handle_stop_follow(std::shared_ptr<Trigger::Response> resp)
@@ -1344,7 +1339,6 @@ private:
     resp->success = true;
     resp->message = "Person following stopped.";
     RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
-    IC(resp->success, resp->message);
   }
 
   void check_safety_watchdog()
@@ -1400,7 +1394,7 @@ private:
     }
 
     // 2. Wait until operator gives valid gesture (RIGHT or LEFT)
-    RCLCPP_INFO(get_logger(), "[Align Bag] Waiting for operator pointing gesture (LEFT / RIGHT)...");
+    RCLCPP_INFO(get_logger(), "\033[1;36m[ALIGN BAG]\033[0m Waiting gesture...");
     const auto wait_start = now();
     const double gesture_timeout = 20.0;
     std::string gest = "NONE";
@@ -1417,7 +1411,7 @@ private:
       is_left  = (gest.find("LEFT") != std::string::npos || gest.find("KIRI") != std::string::npos);
 
       if (is_right || is_left) {
-        RCLCPP_INFO(get_logger(), "[Align Bag] Gesture detected: %s", gest.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;36m[ALIGN BAG]\033[0m Gesture: %s", gest.c_str());
         break;
       }
       loop_rate.sleep();
@@ -1426,7 +1420,7 @@ private:
     if (!is_right && !is_left) {
       resp->success = false;
       resp->message = "Timeout waiting for operator gesture (latest: " + gest + ")";
-      RCLCPP_WARN(get_logger(), "[Align Bag] %s", resp->message.c_str());
+      RCLCPP_WARN(get_logger(), "\033[1;33m[ALIGN BAG]\033[0m Timeout waiting gesture (%s)", gest.c_str());
       return;
     }
 
@@ -1500,7 +1494,7 @@ private:
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     // 6. Approach bag
-    RCLCPP_INFO(get_logger(), "[Align Bag] Aligned with bag. Approaching to distance %.2f m...", bag_stop_distance_);
+    RCLCPP_INFO(get_logger(), "\033[1;36m[ALIGN BAG]\033[0m Approaching to %.2fm...", bag_stop_distance_);
     const auto t_approach = now();
     const double max_approach_sec = 10.0;
     double last_known_dist = target_bag.x;
@@ -1531,7 +1525,7 @@ private:
       if (found_front_bag) {
         last_known_dist = min_d;
         if (chosen_bag.x <= bag_stop_distance_ || min_d <= bag_stop_distance_) {
-          RCLCPP_INFO(get_logger(), "[Align Bag] In front of bag! Distance: %.2f m (target: %.2f m).", min_d, bag_stop_distance_);
+          RCLCPP_INFO(get_logger(), "\033[1;32m[ALIGN BAG]\033[0m Bag reached: %.2fm", min_d);
           break;
         }
 
@@ -1545,16 +1539,15 @@ private:
         twist.angular.z = wz;
         cmd_vel_pub_->publish(twist);
 
-        static int align_ic_ctr = 0;
-        if (align_ic_ctr++ % 4 == 0) {
-          const double approach_dist = min_d;
-          const double approach_vx = twist.linear.x;
-          const double approach_wz = twist.angular.z;
-          IC(approach_dist, approach_vx, approach_wz);
-        }
+        RCLCPP_INFO_THROTTLE(
+          get_logger(),
+          *get_clock(),
+          500,
+          "\033[1;36m[ALIGN BAG]\033[0m d=%.2fm | v=%.2f, w=%.2f",
+          min_d, twist.linear.x, twist.angular.z);
       } else {
         if (last_known_dist <= bag_stop_distance_ + 0.15) {
-          RCLCPP_INFO(get_logger(), "[Align Bag] Bag close (%.2f m) near ZED FOV limit. Finished approach.", last_known_dist);
+          RCLCPP_INFO(get_logger(), "\033[1;32m[ALIGN BAG]\033[0m Bag close (%.2fm), done approach", last_known_dist);
           break;
         }
         twist.linear.x = 0.05;
@@ -1575,7 +1568,6 @@ private:
     resp->message = std::string("Robot aligned and approached ") +
                     (is_right ? "right" : "left") + " bag, then stopped.";
     RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
-    IC(resp->success, resp->message);
   }
 
   void handle_step_back(
@@ -1615,15 +1607,12 @@ private:
     double last_bag_dist = 0.0;
     int detected_bag_count = 0;
 
-    RCLCPP_INFO(
-      get_logger(),
-      "[Step Back] Robot mulai bergerak mundur (speed: -%.2f m/s, target operator dist: %.2f m, target bags: %d, keep: %.1fs, timeout: %.1f s)",
-      std::abs(step_back_speed_), step_back_person_distance_, step_back_target_bags_, step_back_bag_keep_sec_, step_back_timeout_);
+    RCLCPP_INFO(get_logger(), "\033[1;36m[STEPBACK]\033[0m Moving back (target: %.2fm, timeout: %.1fs)", step_back_person_distance_, step_back_timeout_);
 
     while (rclcpp::ok()) {
       const double elapsed = (now() - t_start).seconds();
       if (elapsed > step_back_timeout_) {
-        RCLCPP_WARN(get_logger(), "[Step Back] Timeout (%.1f s) tercapai.", step_back_timeout_);
+        RCLCPP_WARN(get_logger(), "\033[1;33m[STEPBACK]\033[0m Timeout (%.1fs)", step_back_timeout_);
         break;
       }
 
@@ -1646,8 +1635,8 @@ private:
             last_bag_dist = sum_dist / count;
             RCLCPP_INFO(
               get_logger(),
-              "\033[1;32m[Step Back]\033[0m %d tas terdeteksi (rata-rata jarak %.2f m)! Mempertahankan perintah mundur selama %.1f detik...",
-              count, last_bag_dist, step_back_bag_keep_sec_);
+              "\033[1;32m[STEPBACK]\033[0m %d bags found (%.2fm)",
+              count, last_bag_dist);
           }
         }
       }
@@ -1659,8 +1648,8 @@ private:
           two_bags_completed = true;
           RCLCPP_INFO(
             get_logger(),
-            "\033[1;32m[Step Back]\033[0m Selesai mempertahankan mundur %.1f detik setelah mendeteksi %d tas. Berhenti mundur.",
-            step_back_bag_keep_sec_, detected_bag_count);
+            "\033[1;32m[STEPBACK]\033[0m Complete (found %d bags)",
+            detected_bag_count);
           break;
         }
       } else {
@@ -1704,8 +1693,8 @@ private:
         if (person_dist_reached) {
           RCLCPP_INFO(
             get_logger(),
-            "\033[1;32m[Step Back]\033[0m 2 tas belum terdeteksi, jarak operator/orang terdekat mencapai %.2f m (>= %.2f m)! Berhenti mundur.",
-            last_person_dist, step_back_person_distance_);
+            "\033[1;32m[STEPBACK]\033[0m Target dist reached: %.2fm",
+            last_person_dist);
           break;
         }
       }
@@ -1765,12 +1754,10 @@ private:
       twist.angular.z = 0.0;
       cmd_vel_pub_->publish(twist);
 
-      static int stepback_ic_ctr = 0;
-      if (stepback_ic_ctr++ % 4 == 0) {
-        const double stepback_vx = twist.linear.x;
-        const double operator_dist = last_person_dist;
-        IC(stepback_vx, operator_dist);
-      }
+      RCLCPP_INFO(
+        get_logger(),
+        "[STEPBACK] vx=%.2f | operator_dist=%.2f m",
+        twist.linear.x, last_person_dist);
 
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -1809,7 +1796,6 @@ private:
     }
 
     RCLCPP_INFO(get_logger(), "[Step Back] %s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
-    IC(resp->success, resp->message);
   }
 
   double get_robot_heading()
@@ -2530,10 +2516,10 @@ private:
 
       loop_count++;
       if (loop_count % 5 == 0) { // ~250 ms
-        const double rotated_deg = rotated_abs * 180.0 / M_PI;
-        const double target_deg = target_yaw * 180.0 / M_PI;
-        const double remaining_deg = remaining * 180.0 / M_PI;
-        IC(rotated_deg, target_deg, remaining_deg, wz);
+        RCLCPP_INFO(
+          get_logger(),
+          "[HOMING 180 ROTATE] Terputar: %.1f deg / 180.0 deg | Target: %.1f deg | Sisa: %.1f deg | Wz: %.2f",
+          rotated_abs * 180.0 / M_PI, target_yaw * 180.0 / M_PI, remaining * 180.0 / M_PI, wz);
       }
 
       rate.sleep();
@@ -2570,10 +2556,11 @@ private:
 
     ClearanceSummary clear = get_clearance_summary();
 
-    const double yaw_deg = cur_yaw * 180.0 / M_PI;
-    const double origin_err_deg = rel_angle_origin * 180.0 / M_PI;
-    IC(cur_x, cur_y, yaw_deg, origin_err_deg);
-    IC(clear.front, clear.back, clear.left, clear.right);
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[HOMING DIAGNOSTIC]\033[0m Posisi: (x=%.2f, y=%.2f, yaw=%.1f deg) | Origin err: %.1f deg | Sensor: F=%.2fm, B=%.2fm, L=%.2fm, R=%.2fm",
+      cur_x, cur_y, cur_yaw * 180.0 / M_PI, rel_angle_origin * 180.0 / M_PI,
+      clear.front, clear.back, clear.left, clear.right);
 
     // Kriteria membelakangi atau terhalang:
     // 1. Selisih sudut ke origin > 45 derajat (robot membelakangi jalur pulang)
@@ -2617,7 +2604,6 @@ private:
     resp->success = ok;
     resp->message = buf;
     RCLCPP_INFO(get_logger(), "[Rotate Safe] %s", resp->message.c_str());
-    IC(resp->success, resp->message);
   }
 
   // ===========================================================================
@@ -2654,10 +2640,10 @@ private:
     send_opts.goal_response_callback =
       [this, desc](const GoalHandle::SharedPtr & handle) {
         if (!handle) {
-          RCLCPP_WARN(get_logger(), "[Homing] Nav2 menolak goal %s.", desc.c_str());
+          RCLCPP_WARN(get_logger(), "\033[1;31m[HOMING]\033[0m Nav2 goal %s rejected", desc.c_str());
         } else {
           homing_goal_handle_ = handle;
-          RCLCPP_INFO(get_logger(), "[Homing] Nav2 menerima goal %s -> navigasi aktif...", desc.c_str());
+          RCLCPP_INFO(get_logger(), "\033[1;32m[HOMING]\033[0m Nav2 goal %s accepted", desc.c_str());
         }
       };
     send_opts.result_callback =
@@ -2976,7 +2962,7 @@ private:
     const std::shared_ptr<Trigger::Request> /*req*/,
     std::shared_ptr<Trigger::Response> resp)
   {
-    RCLCPP_INFO(get_logger(), "[Homing] Service /homing dipanggil. Memulai navigasi pulang...");
+    RCLCPP_INFO(get_logger(), "\033[1;36m[HOMING]\033[0m Starting homing navigation...");
 
     // 1. Hentikan person following jika sedang aktif
     if (is_following_) {
@@ -2988,12 +2974,12 @@ private:
     if (!action_client_->wait_for_action_server(std::chrono::seconds(3))) {
       resp->success = false;
       resp->message = "Nav2 'navigate_to_pose' action server not available.";
-      RCLCPP_ERROR(get_logger(), "%s", resp->message.c_str());
+      RCLCPP_ERROR(get_logger(), "\033[1;31m[HOMING]\033[0m Nav2 action server unavailable");
       return;
     }
 
     // 2b. Rotasi 180 derajat ke daerah yang lebih kosong dibanding satu sisinya sebelum memulai alur navigasi pulang
-    RCLCPP_INFO(get_logger(), "\033[1;36m[Homing]\033[0m Memulai inisialisasi: rotasi 180° ke daerah yang lebih kosong...");
+    RCLCPP_INFO(get_logger(), "\033[1;36m[HOMING]\033[0m 180° rotation start");
     rotate_180_towards_open_space(12.0);
 
     is_homing_active_  = true;
@@ -4028,7 +4014,6 @@ private:
       resp->message = "Navigasi homing timeout.";
       cancel_homing_nav2_goal();
     }
-    IC(resp->success, resp->message);
   }
 
     std::string person_topic_;

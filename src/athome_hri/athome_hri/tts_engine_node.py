@@ -45,7 +45,7 @@ class TtsEngineNode(Node):
             String, "/hri/tts_say", self._on_text, 10
         )
         self.add_on_set_parameters_callback(self._on_params_changed)
-        self.get_logger().info("Standalone TTS engine ready.")
+        self.get_logger().info("\033[1;32m[TTS]\033[0m Ready")
 
     def _reload_tts(self) -> None:
         self._tts = TextToSpeech(self._tts_model, use_cuda=self._tts_use_cuda)
@@ -86,7 +86,7 @@ class TtsEngineNode(Node):
         done = String()
         done.data = text
         self.tts_done_pub.publish(done)
-        self.get_logger().info("[TTS] %s", text)
+        self.get_logger().info("\033[1;32m[TTS]\033[0m \"%s\"", text)
 
     def destroy_node(self):
         self._executor.shutdown(wait=True)

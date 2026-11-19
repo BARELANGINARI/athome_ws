@@ -16,15 +16,7 @@ find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(tf2_ros REQUIRED)
 
-if(NOT DEFINED ICECREAM_INCLUDE_DIR AND DEFINED ENV{HOME})
-  set(ICECREAM_INCLUDE_DIR "$ENV{HOME}/Documents/icecream-cpp")
-endif()
-find_path(ICECREAM_HPP_DIR NAMES icecream.hpp HINTS ${ICECREAM_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/include NO_DEFAULT_PATH)
-if(NOT ICECREAM_HPP_DIR)
-  message(FATAL_ERROR "icecream.hpp not found")
-endif()
-
-include_directories(include ${ICECREAM_HPP_DIR})
+include_directories(include)
 
 add_library(kinematic src/Kinematic.cpp)
 target_include_directories(kinematic PUBLIC include)

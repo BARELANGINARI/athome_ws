@@ -208,7 +208,7 @@ public:
                 setTorqueAll(false);
                 res->success = true;
                 res->message = "Arm torque disabled (free mode).";
-                RCLCPP_INFO(this->get_logger(), "[Service Call] Arm torque disabled (free mode).");
+                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Free mode (torque off)");
             }
         );
 
@@ -220,21 +220,17 @@ public:
                 setTorqueAll(false);
                 res->success = true;
                 res->message = "Arm torque disabled (free mode).";
-                RCLCPP_INFO(this->get_logger(), "[Service Call] Arm torque disabled (free mode).");
+                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Relax (torque off)");
             }
         );
 
-        RCLCPP_INFO(this->get_logger(), "Arm Motion Server ready.");
-        RCLCPP_INFO(this->get_logger(), "Port: %s, Baudrate: %d", port_name_.c_str(), baudrate_);
-        RCLCPP_INFO(this->get_logger(), "IK enabled=%s (L1=%.3f m, L2=%.3f m, shoulder=[%.3f, %.3f] m)",
-                    ik_enabled_ ? "true" : "false", ik_l1_m_, ik_l2_m_, ik_shoulder_x_m_, ik_shoulder_z_m_);
-        RCLCPP_INFO(this->get_logger(), "Services: /arm/motion_task_1, /arm/ambil_tas_simple, /arm/release_gripper, /arm/letakkan_tas, /arm/play_motion, /arm/point_position, /arm/free, /arm/relax");
+        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Ready (port: %s, baud: %d)", port_name_.c_str(), baudrate_);
 
         // Initialize hardware connection
         if (initHardware()) {
-            RCLCPP_INFO(this->get_logger(), "[Arm Motion Server] Dynamixel hardware connected.");
+            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Dynamixel connected");
         } else {
-            RCLCPP_WARN(this->get_logger(), "[Arm Motion Server] Failed opening port %s. Will retry on service call.", port_name_.c_str());
+            RCLCPP_WARN(this->get_logger(), "\033[1;31m[ARM]\033[0m Failed opening port %s", port_name_.c_str());
         }
     }
 
@@ -561,7 +557,7 @@ private:
 
                 cur_grip_deg = rawToRelAngle(GRIPPER_ID, static_cast<uint16_t>(hold_tick), false);
                 g_last_valid_raw[GRIPPER_ID] = static_cast<uint16_t>(hold_tick);
-                RCLCPP_INFO(this->get_logger(), "[AdaptiveGrasp] Object grasped! Position: %.1f deg, Load: %d", cur_grip_deg, load_mag);
+                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Grasped: %.1f deg (load: %d)", cur_grip_deg, load_mag);
                 return true;
             }
         }
@@ -569,7 +565,7 @@ private:
         packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_LED, 0, &err);
         cur_grip_deg = 0.0;
         g_last_valid_raw[GRIPPER_ID] = static_cast<uint16_t>(closed_tick);
-        RCLCPP_INFO(this->get_logger(), "[AdaptiveGrasp] Gripper fully closed without load detection.");
+        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Gripper closed (no load)");
         return false;
     }
 
@@ -585,7 +581,7 @@ private:
             packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_LIMIT, DEFAULT_TORQUE_LIM, &err);
         }
         double target[3] = { cur[0], cur[1], open_deg };
-        RCLCPP_INFO(this->get_logger(), "[ReleaseGripper] Opening gripper to +%.1f deg...", open_deg);
+        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Open gripper: +%.1f deg", open_deg);
         moveSmooth(gsw, cur, target, 0.5);
     }
 
@@ -622,11 +618,9 @@ private:
                 // STREAM Mode
                 const auto &first = motion.frames.front();
                 double start_target[3] = { first.j1, first.j2, first.grip };
-                RCLCPP_INFO(this->get_logger(), "[ExecuteMotion] Moving to recorded start pose...");
                 moveSmooth(gsw, cur, start_target, 0.0);
 
-                RCLCPP_INFO(this->get_logger(), "[ExecuteMotion] Replaying stream (%zu samples @ %d Hz)...",
-                            motion.frames.size(), UPDATE_RATE_HZ);
+                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Replaying stream (%zu samples)", motion.frames.size());
                 auto next = std::chrono::steady_clock::now();
                 const auto period = std::chrono::microseconds(1000000 / UPDATE_RATE_HZ);
 
@@ -656,7 +650,7 @@ private:
                 resetDeadzoneFilter();
             }
         }
-        RCLCPP_INFO(this->get_logger(), "[ExecuteMotion] Motion execution completed.");
+        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Motion completed");
     }
 
     std::string resolveMotionPath(const std::string &name) {
@@ -859,7 +853,7 @@ private:
                 target_z_ = z;
                 target_stamp_ = this->now();
                 has_target_ = true;
-                RCLCPP_INFO(this->get_logger(), "[TargetPoint] Updated target: (x=%.3f, y=%.3f, z=%.3f)", x, y, z);
+                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Target: %.2f, %.2f, %.2f", x, y, z);
             }
         }
     }
@@ -979,26 +973,26 @@ private:
 
         std::string err;
         if (use_dynamic_ik) {
-            RCLCPP_INFO(this->get_logger(), "[Service Call] /arm/ambil_tas_simple executing dynamic IK grasp (x=%.3f, z=%.3f)...", tx, tz);
+            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Dynamic IK grasp (x=%.2f, z=%.2f)...", tx, tz);
             if (executeDynamicGrasp(tx, tz, err)) {
                 response->success = true;
                 response->message = "Dynamic IK grasp executed successfully.";
-                RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());
+                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Dynamic IK grasp done");
                 return;
             }
-            RCLCPP_WARN(this->get_logger(), "[DynamicGrasp] Gagal (%s), fallback ke motion '%s'...", err.c_str(), ik_fallback_motion_.c_str());
+            RCLCPP_WARN(this->get_logger(), "\033[1;33m[ARM]\033[0m IK failed (%s), fallback to '%s'", err.c_str(), ik_fallback_motion_.c_str());
         } else {
-            RCLCPP_INFO(this->get_logger(), "[Service Call] /arm/ambil_tas_simple tanpa target segar, menjalankan motion '%s'...", ik_fallback_motion_.c_str());
+            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Fallback motion '%s'...", ik_fallback_motion_.c_str());
         }
 
         if (runMotionByName(ik_fallback_motion_, err) || runMotionByName("motion_task_1", err)) {
             response->success = true;
             response->message = "Fallback motion executed successfully.";
-            RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());
+            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Motion done");
         } else {
             response->success = false;
             response->message = err;
-            RCLCPP_ERROR(this->get_logger(), "%s", err.c_str());
+            RCLCPP_ERROR(this->get_logger(), "\033[1;31m[ARM]\033[0m %s", err.c_str());
         }
     }
 
@@ -1010,7 +1004,7 @@ private:
         if (!initHardware()) {
             response->success = false;
             response->message = "Failed to connect to Dynamixel hardware on port " + port_name_;
-            RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
+            RCLCPP_ERROR(this->get_logger(), "\033[1;31m[ARM]\033[0m %s", response->message.c_str());
             return;
         }
         try {
@@ -1021,11 +1015,11 @@ private:
             releaseGripper(gsw, cur, DEFAULT_RELEASE_DEG);
             response->success = true;
             response->message = "Gripper released successfully.";
-            RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());
+            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Gripper released");
         } catch (const std::exception &e) {
             response->success = false;
             response->message = std::string("Release gripper error: ") + e.what();
-            RCLCPP_ERROR(this->get_logger(), "%s", response->message.c_str());
+            RCLCPP_ERROR(this->get_logger(), "\033[1;31m[ARM]\033[0m %s", response->message.c_str());
         }
     }
 
@@ -1035,16 +1029,16 @@ private:
     {
         std::lock_guard<std::mutex> lock(hardware_mutex_);
 
-        RCLCPP_INFO(this->get_logger(), "[Service Call] Received trigger to execute motion 'ambil_tas'...");
+        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Ambil tas start...");
         std::string err;
         if (runMotionByName("motion_task_1", err)) {
             response->success = true;
             response->message = "Motion ambil_tas executed successfully.";
-            RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());
+            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Ambil tas done");
         } else {
             response->success = false;
             response->message = err;
-            RCLCPP_ERROR(this->get_logger(), "%s", err.c_str());
+            RCLCPP_ERROR(this->get_logger(), "\033[1;31m[ARM]\033[0m %s", err.c_str());
         }
     }
 
@@ -1054,16 +1048,16 @@ private:
     {
         std::lock_guard<std::mutex> lock(hardware_mutex_);
 
-        RCLCPP_INFO(this->get_logger(), "[Service Call] Received trigger to execute motion 'letakkan_tas'...");
+        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Letakkan tas start...");
         std::string err;
         if (runMotionByName("letakkan_tas", err)) {
             response->success = true;
             response->message = "Motion letakkan_tas executed successfully.";
-            RCLCPP_INFO(this->get_logger(), "[Service Call] %s", response->message.c_str());
+            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Letakkan tas done");
         } else {
             response->success = false;
             response->message = err;
-            RCLCPP_ERROR(this->get_logger(), "%s", err.c_str());
+            RCLCPP_ERROR(this->get_logger(), "\033[1;31m[ARM]\033[0m %s", err.c_str());
         }
     }
 };

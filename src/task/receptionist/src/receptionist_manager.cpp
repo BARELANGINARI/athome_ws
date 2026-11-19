@@ -408,7 +408,7 @@ private:
       msg.data = status_text;
       status_pub_->publish(msg);
     }
-    RCLCPP_INFO(get_logger(), "\033[1;32m[TASK STATUS]\033[0m %s", status_text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;34m[STATUS]\033[0m %s", status_text.c_str());
   }
 
   void publishGuestNames()
@@ -480,7 +480,7 @@ private:
   {
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;36m[FSM STATE]\033[0m %s \033[1;33m->\033[0m \033[1;32m%s\033[0m (Guest %d) | %s",
+      "\033[1;34m[STATE]\033[0m %s -> %s (G%d: %s)",
       stateToString(state_.load()).c_str(),
       stateToString(next_state).c_str(),
       guest_idx_,
@@ -528,7 +528,7 @@ private:
       srv_name = "/receptionist/go_to_living_room";
     }
 
-    RCLCPP_INFO(get_logger(), "\033[1;34m[NAV2]\033[0m Navigating to '%s' via %s...",
+    RCLCPP_INFO(get_logger(), "\033[1;36m[NAV]\033[0m Navigating to '%s' (%s)...",
       waypoint_name.c_str(), srv_name.c_str());
 
     const rclcpp::Time nav_start = now();
@@ -540,21 +540,20 @@ private:
         if (!success) {
           RCLCPP_ERROR(
             get_logger(),
-            "\033[1;31m[NAV2]\033[0m Navigation to '%s' FAILED (%s). Will retry after cooldown.",
+            "\033[1;31m[NAV]\033[0m Navigation to '%s' FAILED (%s)",
             waypoint_name.c_str(), msg.c_str());
           last_nav_fail_time_ = now();
         } else {
           if (elapsed < 0.5) {
             RCLCPP_WARN(
               get_logger(),
-              "\033[1;33m[NAV2 WARNING]\033[0m Service %s returned TRUE in %.2fs (< 0.5s)! "
-              "Pastikan receptionist_node menunggu NavigateToPose selesai sebelum me-return response.",
+              "\033[1;33m[NAV]\033[0m Service %s returned TRUE in %.2fs (< 0.5s)",
               srv_name.c_str(), elapsed);
           }
           RCLCPP_INFO(
             get_logger(),
-            "\033[1;34m[NAV2]\033[0m Reached '%s' in %.1fs: %s",
-            waypoint_name.c_str(), elapsed, msg.c_str());
+            "\033[1;32m[NAV]\033[0m Reached '%s' in %.1fs",
+            waypoint_name.c_str(), elapsed);
         }
         if (on_finished) {
           on_finished(success);
@@ -569,7 +568,7 @@ private:
     TriggerClient::SharedPtr client = arm_point_position_client_;
     std::string srv_name = "/arm/point_position";
 
-    RCLCPP_INFO(get_logger(), "\033[1;36m[ARM]\033[0m Actuating arm to point to chair via %s...", srv_name.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;35m[ARM]\033[0m Point seat (%s)...", srv_name.c_str());
 
     if ((!client || !client->service_is_ready()) &&
         arm_ambil_tas_simple_client_ && arm_ambil_tas_simple_client_->service_is_ready())
@@ -584,13 +583,12 @@ private:
         if (success) {
           RCLCPP_INFO(
             get_logger(),
-            "\033[1;36m[ARM]\033[0m Servo actuation (%s) succeeded: %s",
-            srv_name.c_str(), msg.c_str());
+            "\033[1;35m[ARM]\033[0m Point seat done");
         } else {
           RCLCPP_WARN(
             get_logger(),
-            "\033[1;33m[ARM]\033[0m Servo actuation (%s) finished with warning: %s",
-            srv_name.c_str(), msg.c_str());
+            "\033[1;33m[ARM]\033[0m Point seat warning: %s",
+            msg.c_str());
         }
         if (on_finished) {
           on_finished(success);
@@ -962,10 +960,7 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
-    RCLCPP_INFO(
-      get_logger(),
-      "\033[1;35m[TTS SAY]\033[0m \"%s\" | Mic: \033[1;31m[MUTED]\033[0m",
-      text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;32m[TTS]\033[0m \"%s\"", text.c_str());
   }
 
   void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
@@ -983,9 +978,9 @@ private:
       pending_tts_done_ = nullptr;
     }
 
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       get_logger(),
-      "\033[1;32m[TTS FINISHED]\033[0m Playback complete | Mic: \033[1;32m[LISTENING]\033[0m | State: \033[1;36m%s\033[0m",
+      "[TTS] Done | State: %s",
       stateToString(state_.load()).c_str());
 
     if (callback) {
@@ -1204,9 +1199,8 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;33m[STT HEARD]\033[0m \"%s\" | State: \033[1;36m%s\033[0m",
-      message->data.c_str(),
-      stateToString(state_.load()).c_str());
+      "\033[1;33m[STT]\033[0m \"%s\"",
+      message->data.c_str());
   }
 
   // Callback deteksi orang dari ZED (/zed/person_label)
