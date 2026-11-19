@@ -883,6 +883,10 @@ private:
       attrs.push_back("casual attire");
     }
     current_guest_.attributes = attrs;
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;32m[VISION]\033[0m Guest %d Visual Profile: Gender='%s', Shirt='%s', Hair='%s'",
+      guest_idx_, current_guest_.gender.c_str(), current_guest_.shirt_color.c_str(), current_guest_.hair_color.c_str());
   }
 
   static std::string formatPersonDescription(const PersonProfile & person)

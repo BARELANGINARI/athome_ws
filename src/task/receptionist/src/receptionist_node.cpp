@@ -478,8 +478,11 @@ public:
       std::stringstream ss(msg->data);
       std::string item;
       while (std::getline(ss, item, ';')) {
-        // Cek kursi kosong (empty) dengan filter jarak < chair_max_dist_ (3.0 meter)
-        if (item.find("chair") != std::string::npos &&
+        const bool is_seating = (item.find("chair") != std::string::npos ||
+                                 item.find("sofa") != std::string::npos ||
+                                 item.find("couch") != std::string::npos);
+        // Cek kursi/sofa kosong (empty) dengan filter jarak < chair_max_dist_ (3.0 meter)
+        if (is_seating &&
             item.find("empty") != std::string::npos &&
             item.find("occupied") == std::string::npos) {
           
@@ -510,8 +513,8 @@ public:
             empty_chairs_info += item;
           }
         }
-        // Cek orang yang sedang duduk di kursi (occupied)
-        if (item.find("chair") != std::string::npos &&
+        // Cek orang yang sedang duduk di kursi/sofa (occupied)
+        if (is_seating &&
             item.find("occupied") != std::string::npos) {
           has_occupied_chair = true;
           if (!occupied_chairs_info.empty()) {
@@ -578,7 +581,10 @@ public:
     bool target_has_3d = false;
 
     while (std::getline(ss, item, ';')) {
-      if (item.find("chair") == std::string::npos ||
+      const bool is_seating = (item.find("chair") != std::string::npos ||
+                               item.find("sofa") != std::string::npos ||
+                               item.find("couch") != std::string::npos);
+      if (!is_seating ||
           item.find("empty") == std::string::npos ||
           item.find("occupied") != std::string::npos) {
         continue;
@@ -603,7 +609,9 @@ public:
       }
 
       int rx = 0, ry = 0, rw = 0, rh = 0;
-      if (std::sscanf(parts[0].c_str(), "chair:%d,%d,%d,%d", &rx, &ry, &rw, &rh) != 4) {
+      const auto colon_pos = parts[0].find(':');
+      if (colon_pos == std::string::npos ||
+          std::sscanf(parts[0].c_str() + colon_pos + 1, "%d,%d,%d,%d", &rx, &ry, &rw, &rh) != 4) {
         continue;
       }
 
@@ -742,7 +750,10 @@ public:
     double best_dist = 999.0;
 
     while (std::getline(ss, item, ';')) {
-      if (item.find("chair") == std::string::npos ||
+      const bool is_seating = (item.find("chair") != std::string::npos ||
+                               item.find("sofa") != std::string::npos ||
+                               item.find("couch") != std::string::npos);
+      if (!is_seating ||
           item.find("occupied") == std::string::npos) {
         continue;
       }
@@ -766,7 +777,9 @@ public:
       }
 
       int rx = 0, ry = 0, rw = 0, rh = 0;
-      if (std::sscanf(parts[0].c_str(), "chair:%d,%d,%d,%d", &rx, &ry, &rw, &rh) != 4) {
+      const auto colon_pos = parts[0].find(':');
+      if (colon_pos == std::string::npos ||
+          std::sscanf(parts[0].c_str() + colon_pos + 1, "%d,%d,%d,%d", &rx, &ry, &rw, &rh) != 4) {
         continue;
       }
 
