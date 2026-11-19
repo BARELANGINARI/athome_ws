@@ -91,11 +91,11 @@ help_me_carry_node:
     homing_queue_resume_distance: 2.00        # Jarak batas antri CRAWL — jika > ini setelah antri, langsung resume Nav2 (meter)
     homing_queue_corridor: 1.20               # Lebar toleransi koridor path homing (meter) — orang dianggap menghalangi jika jarak ke path <= ini
     homing_queue_max_detect_dist: 2.50        # Jarak maksimal deteksi orang (< 2.5 meter dari robot)
-    homing_queue_min_persons: 2               # Jumlah minimal orang berdekatan untuk dianggap antrian (opsi 4)
+    homing_queue_min_persons: 2               # Jumlah minimal orang berdekatan untuk dianggap antrian (butuh minimal 2 orang back)
     homing_queue_inter_dist: 2.00             # Jarak maksimal x, y antar orang agar dianggap antrian (meter)
     homing_queue_crawl_speed: 0.10            # Kecepatan crawl mengikuti antrian (m/s) — lebih pelan = lebih sopan
     homing_queue_wait_duration: 60.0          # Durasi diam antri (detik) sebelum antrian selesai & Nav2 homing lanjut
-    homing_queue_clear_hysteresis: 1.0        # Detik orang tidak terdeteksi sebelum resume Nav2 (buffer anti-flicker)
+    homing_queue_clear_hysteresis: 3.0        # Detik orang tidak terdeteksi sebelum resume Nav2 (buffer anti-flicker)
     homing_timeout: 300.0                     # Batas waktu maksimal eksekusi navigasi homing (detik)
 
     # -------------------------------------------------------------
