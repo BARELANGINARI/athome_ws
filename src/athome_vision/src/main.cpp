@@ -3535,9 +3535,11 @@ void ZedNode::printSummaryLog()
       lines.push_back("  Back: 0.00, 0.00 (0.00m)");
     }
 
-    // 4. Gesture (jika terdeteksi)
+    // 4. Gesture (selalu tampil)
     if (!latest_gesture_.empty() && latest_gesture_ != "NONE") {
       lines.push_back(cv::format("  Gesture: %s", latest_gesture_.c_str()));
+    } else {
+      lines.push_back("  Gesture: NONE");
     }
 
     std::string out = "\033[1;32m[HELP_ME_CARRY]\033[0m";
@@ -3626,10 +3628,12 @@ void ZedNode::printSummaryLog()
       lines.push_back("  cracker: 0.00, 0.00 (0.00m)");
     }
 
-    // 6. Wave (jika terdeteksi)
+    // 6. Wave (selalu tampil)
     if (latest_wave_found_) {
       lines.push_back(cv::format("  Wave: %.2f, %.2f",
         latest_wave_x_, latest_wave_y_));
+    } else {
+      lines.push_back("  Wave: 0.00, 0.00");
     }
 
     std::string out = "\033[1;34m[RESTAURANT]\033[0m";
