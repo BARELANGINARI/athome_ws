@@ -3192,13 +3192,22 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       const int cx = r.x + r.width / 2;
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 4, cv::Scalar(255, 255, 0), -1);
-      cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
-      std::string drink_label = d.label;
-      if (d.has_pos) {
-        drink_label += cv::format(" (%.2fm)", d.range_m);
+      cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 2);
+
+      // Banner label teks singkat di atas bounding box khusus untuk 4 model target:
+      // pringles, cracker, soda, sugar
+      std::string norm_label = d.label;
+      if (norm_label == "cracker_box" || norm_label == "crackerbox") norm_label = "cracker";
+      if (norm_label == "sugar_box" || norm_label == "sugarbox") norm_label = "sugar";
+
+      if (norm_label == "soda" || norm_label == "pringles" || norm_label == "cracker" || norm_label == "sugar") {
+        std::string banner_text = norm_label;
+        if (d.has_pos) {
+          banner_text += cv::format(" (%.2fm)", d.range_m);
+        }
+        banner(banner_text, r.x, r.y, cv::Scalar(255, 255, 0),
+          cv::Scalar(180, 180, 0), cv::Scalar(0, 0, 0), 0.45, 1);
       }
-      banner(drink_label, r.x, r.y, cv::Scalar(255, 255, 0),
-        cv::Scalar(180, 180, 0), cv::Scalar(0, 0, 0), 0.48, 1);
     }
 
     for (size_t i = 0; i < std::min<size_t>(4, preview_chairs_.size()); ++i) {
@@ -3213,18 +3222,23 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       cv::circle(canvas, cv::Point(cx, cy), 4, color, -1);
     }
 
-    int hud_y = 52;
-    auto hud = [&](const std::string & title, double x, double y, double dist,
+    int hud_y = 36;
+    auto hud_item = [&](const std::string & title, double x, double y, double dist, bool valid,
         const cv::Scalar & color) {
-        cv::putText(canvas, title, cv::Point(10, hud_y),
-          cv::FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv::LINE_AA);
-        cv::putText(canvas, "x : " + cv::format("%.2f m", x), cv::Point(10, hud_y + 20),
-          cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv::LINE_AA);
-        cv::putText(canvas, "y : " + cv::format("%.2f m", y), cv::Point(10, hud_y + 40),
-          cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv::LINE_AA);
-        cv::putText(canvas, "distance : " + cv::format("%.2f m", dist),
-          cv::Point(10, hud_y + 60), cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv::LINE_AA);
-        hud_y += 86;
+        std::string header = title;
+        if (valid && dist > 0.0) {
+          header += cv::format(" (%.2fm)", dist);
+        } else {
+          header += " : -";
+        }
+        cv::putText(canvas, header, cv::Point(10, hud_y),
+          cv::FONT_HERSHEY_SIMPLEX, 0.52, color, 2, cv::LINE_AA);
+
+        if (valid) {
+          cv::putText(canvas, cv::format("x: %.2fm | y: %.2fm", x, y), cv::Point(10, hud_y + 18),
+            cv::FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv::LINE_AA);
+        }
+        hud_y += valid ? 40 : 25;
       };
 
     const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos)
@@ -3232,38 +3246,36 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     std::string person_title;
     if (is_receptionist_ && !is_help_me_carry_) {
       if (!p0.name.empty()) {
-        person_title = p0.name + (p0.is_facing_back ? " [Back] :" : " :");
+        person_title = p0.name + (p0.is_facing_back ? " [Back]" : "");
       } else {
-        person_title = std::string("Person") + (p0.is_facing_back ? " [Back] :" : " :");
+        person_title = std::string("Person") + (p0.is_facing_back ? " [Back]" : "");
       }
     } else {
-      person_title = std::string("Operator") + (p0.is_facing_back ? " [Back] :" : " :");
+      person_title = std::string("Operator") + (p0.is_facing_back ? " [Back]" : "");
     }
-    hud(person_title, p0.x_m, p0.y_m, p0.range_m, cv::Scalar(0, 255, 0));
+    hud_item(person_title, p0.x_m, p0.y_m, p0.range_m, p0.has_pos, cv::Scalar(0, 255, 0));
 
     if (enable_bag_) {
-      if (preview_bags_.empty()) {
-        hud("Bag :", 0.0, 0.0, 0.0, cv::Scalar(0, 69, 255));
-      } else {
-        for (size_t i = 0; i < std::min<size_t>(2, preview_bags_.size()); ++i) {
-          const auto & b = preview_bags_[i];
-          const std::string title = (preview_bags_.size() > 1) ? cv::format("Bag %zu :", i + 1) : "Bag :";
-          hud(title, b.x_m, b.y_m, b.range_m, cv::Scalar(0, 69, 255));
-        }
-      }
+      // Selalu tampilkan status Bag 1 dan Bag 2 (kedeteksi maupun belum)
+      const bool b1_ok = (preview_bags_.size() >= 1 && preview_bags_[0].has_pos);
+      const double b1_x = b1_ok ? preview_bags_[0].x_m : 0.0;
+      const double b1_y = b1_ok ? preview_bags_[0].y_m : 0.0;
+      const double b1_d = b1_ok ? preview_bags_[0].range_m : 0.0;
+      hud_item("Bag 1", b1_x, b1_y, b1_d, b1_ok, cv::Scalar(0, 69, 255));
+
+      const bool b2_ok = (preview_bags_.size() >= 2 && preview_bags_[1].has_pos);
+      const double b2_x = b2_ok ? preview_bags_[1].x_m : 0.0;
+      const double b2_y = b2_ok ? preview_bags_[1].y_m : 0.0;
+      const double b2_d = b2_ok ? preview_bags_[1].range_m : 0.0;
+      hud_item("Bag 2", b2_x, b2_y, b2_d, b2_ok, cv::Scalar(0, 69, 255));
     }
-    for (size_t i = 0; i < std::min<size_t>(3, preview_drinks_.size()); ++i) {
-      if (preview_drinks_[i].has_pos) {
-        hud(preview_drinks_[i].label + " :", preview_drinks_[i].x_m,
-          preview_drinks_[i].y_m, preview_drinks_[i].range_m, cv::Scalar(255, 255, 0));
-      }
-    }
+
     for (const auto & c : preview_chairs_) {
       if (!c.has_pos) continue;
       std::string disp_name = c.label;
       if (!disp_name.empty()) disp_name[0] = static_cast<char>(std::toupper(disp_name[0]));
-      hud((c.occupied ? "Occupied " : "Empty ") + disp_name + " [" + c.side + "] :",
-        c.x_m, c.y_m, c.range_m,
+      hud_item((c.occupied ? "Occ " : "Empty ") + disp_name + " [" + c.side + "]",
+        c.x_m, c.y_m, c.range_m, true,
         c.occupied ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0));
     }
 
