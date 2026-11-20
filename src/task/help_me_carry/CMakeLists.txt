@@ -40,23 +40,6 @@ ament_target_dependencies(help_me_carry_node
 target_link_libraries(help_me_carry_node Threads::Threads)
 install(TARGETS help_me_carry_node DESTINATION lib/${PROJECT_NAME})
 
-add_executable(tracking_controller src/help_me_carry_node.cpp)
-ament_target_dependencies(tracking_controller
-  rclcpp
-  rclcpp_action
-  ament_index_cpp
-  nav2_msgs
-  geometry_msgs
-  nav_msgs
-  sensor_msgs
-  std_msgs
-  std_srvs
-  tf2
-  tf2_ros
-)
-target_link_libraries(tracking_controller Threads::Threads)
-install(TARGETS tracking_controller DESTINATION lib/${PROJECT_NAME})
-
 add_executable(return_to_origin src/return_to_origin.cpp)
 add_executable(help_me_carry_manager src/help_me_carry_manager.cpp)
 ament_target_dependencies(return_to_origin
