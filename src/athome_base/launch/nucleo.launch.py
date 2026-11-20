@@ -8,6 +8,7 @@ def generate_launch_description():
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
         SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
+        DeclareLaunchArgument('task', default_value='all', description='Task name (help_me_carry, receptionist, restaurant)'),
         DeclareLaunchArgument('stm_ip', default_value='192.168.0.4', description='STM32 Nucleo IP address'),
         DeclareLaunchArgument('stm_port', default_value='2002', description='STM32 UDP port'),
         DeclareLaunchArgument('local_port', default_value='2023', description='Local UDP bind port'),
@@ -47,6 +48,7 @@ def generate_launch_description():
             executable='nucleo',
             output='screen',
             parameters=[{
+                'task': LaunchConfiguration('task'),
                 'stm_ip': LaunchConfiguration('stm_ip'),
                 'stm_port': LaunchConfiguration('stm_port'),
                 'local_port': LaunchConfiguration('local_port'),

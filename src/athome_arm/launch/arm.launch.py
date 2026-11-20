@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -15,6 +15,13 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
+        SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
+        DeclareLaunchArgument(
+            'task',
+            default_value='all',
+            description='Task name (help_me_carry, receptionist, restaurant)',
+        ),
         DeclareLaunchArgument(
             'config',
             default_value=default_config,
@@ -43,6 +50,7 @@ def generate_launch_description():
             parameters=[
                 LaunchConfiguration('config'),
                 {
+                    'task': LaunchConfiguration('task'),
                     'port': LaunchConfiguration('port'),
                     'baudrate': LaunchConfiguration('baudrate'),
                     'motions_dir': LaunchConfiguration('motions_dir'),

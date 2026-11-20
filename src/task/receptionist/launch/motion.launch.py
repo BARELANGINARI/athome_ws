@@ -21,6 +21,7 @@ def generate_launch_description():
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
         SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
+        SetEnvironmentVariable('ATHOME_TASK', 'receptionist'),
         DeclareLaunchArgument(
             'map',
             default_value=PathJoinSubstitution([

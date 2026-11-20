@@ -6,18 +6,15 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    return LaunchDescription([
-        SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
-        SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
-        DeclareLaunchArgument(
-            "params_file",
-            default_value=PathJoinSubstitution([
-                FindPackageShare("athome_hri"),
-                "config",
-                "params.yaml",
-            ]),
-            description="Path to ROS 2 parameters YAML file for HRI nodes",
-        ),
+    params_file_arg = DeclareLaunchArgument(
+        "params_file",
+        default_value=PathJoinSubstitution([
+            FindPackageShare("athome_hri"),
+            "config",
+            "params.yaml",
+        ]),
+        description="Path to ROS 2 parameters YAML file for HRI nodes",
+    )
 
     task_params_file_arg = DeclareLaunchArgument(
         "task_params_file",
@@ -30,6 +27,9 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
+        SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
+        SetEnvironmentVariable('ATHOME_TASK', 'help_me_carry'),
         params_file_arg,
         task_params_file_arg,
         Node(

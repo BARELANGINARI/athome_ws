@@ -41,5 +41,5 @@ else
     sleep 1
     gnome-terminal --tab --working-directory="${WS_DIR}" --title="HRI" -- bash -c "${SETUP} && sleep 4 && ros2 launch help_me_carry hri.launch.py; exec bash"
     sleep 1
-    gnome-terminal --tab --working-directory="${WS_DIR}" --title="Arm" -- bash -c "${SETUP} && sleep 5 && ros2 launch athome_arm arm.launch.py; exec bash"
+    gnome-terminal --tab --working-directory="${WS_DIR}" --title="Arm" -- bash -c "${SETUP} && sleep 5 && ros2 launch athome_arm arm.launch.py task:=help_me_carry; exec bash"
 fi

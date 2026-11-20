@@ -15,6 +15,7 @@ def generate_launch_description():
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
         SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
+        SetEnvironmentVariable('ATHOME_TASK', 'help_me_carry'),
         DeclareLaunchArgument('nucleo', default_value='true', description='Launch STM32 Nucleo base motor driver'),
         DeclareLaunchArgument('stm_ip', default_value='192.168.0.4', description='STM32 IP address'),
         DeclareLaunchArgument('joy_topic', default_value='joy_vel', description='Joystick override velocity topic'),
@@ -45,6 +46,7 @@ def generate_launch_description():
                 PythonExpression(["'", LaunchConfiguration('nucleo'), "' == 'true'"])
             ),
             launch_arguments={
+                'task': 'help_me_carry',
                 'stm_ip': LaunchConfiguration('stm_ip'),
                 'joy_topic': LaunchConfiguration('joy_topic'),
                 'test_topic': LaunchConfiguration('test_topic'),

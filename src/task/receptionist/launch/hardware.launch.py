@@ -16,6 +16,7 @@ def generate_launch_description():
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
         SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
+        SetEnvironmentVariable('ATHOME_TASK', 'receptionist'),
         DeclareLaunchArgument(
             'nucleo',
             default_value='true',
@@ -94,6 +95,7 @@ def generate_launch_description():
                 PythonExpression(["'", LaunchConfiguration('nucleo'), "' == 'true'"])
             ),
             launch_arguments={
+                'task': 'receptionist',
                 'stm_ip': LaunchConfiguration('stm_ip'),
                 'joy_topic': LaunchConfiguration('joy_topic'),
                 'test_topic': LaunchConfiguration('test_topic'),

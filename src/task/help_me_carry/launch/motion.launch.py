@@ -17,6 +17,7 @@ def generate_launch_description():
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
         SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
+        SetEnvironmentVariable('ATHOME_TASK', 'help_me_carry'),
         DeclareLaunchArgument('slam', default_value='true', description='Enable real-time SLAM (slam_toolbox) in Nav2'),
         DeclareLaunchArgument(
             'nav2_params_file',

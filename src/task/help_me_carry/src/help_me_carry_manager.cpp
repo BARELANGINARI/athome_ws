@@ -344,7 +344,7 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
-    RCLCPP_INFO(get_logger(), "\033[1;32m[TTS]\033[0m \"%s\"", text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m [TTS] \"%s\"", text.c_str());
   }
 
   // Menangani konfirmasi selesai bicara dari /hri/tts_done (atau watchdog timeout),
@@ -813,7 +813,7 @@ private:
       // ------------------------------------------------------------------------
       case TaskState::CHECK_OPERATOR_PRESENCE:
         if (isOperatorInFront()) {
-          RCLCPP_INFO(get_logger(), "\033[1;32m[OPERATOR]\033[0m In front");
+          RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m [OPERATOR] In front");
           speakAsync(
             "If you are ready? please guide me to the place, and say follow me!",
             [this]() {

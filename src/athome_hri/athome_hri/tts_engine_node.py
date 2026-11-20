@@ -26,6 +26,8 @@ class TtsEngineNode(Node):
 
     def __init__(self) -> None:
         super().__init__("tts_engine")
+        self.declare_parameter("task", os.environ.get("ATHOME_TASK", "all"))
+        self._task_mode = str(self.get_parameter("task").value).lower()
         params = declare_hri_parameters(
             self,
             self._PARAM_NAMES,
@@ -45,7 +47,17 @@ class TtsEngineNode(Node):
             String, "/hri/tts_say", self._on_text, 10
         )
         self.add_on_set_parameters_callback(self._on_params_changed)
-        self.get_logger().info("\033[1;32m[TTS]\033[0m Ready")
+        self.get_logger().info(f"{self.task_tag}\033[1;32m[TTS]\033[0m Ready")
+
+    @property
+    def task_tag(self) -> str:
+        if self._task_mode in ("receptionist", "rec"):
+            return "\033[1;36m[RECEPTIONIST]\033[0m "
+        elif self._task_mode in ("help_me_carry", "hmc"):
+            return "\033[1;32m[HELP_ME_CARRY]\033[0m "
+        elif self._task_mode in ("restaurant", "resto", "waiter"):
+            return "\033[1;34m[RESTAURANT]\033[0m "
+        return ""
 
     def _reload_tts(self) -> None:
         self._tts = TextToSpeech(self._tts_model, use_cuda=self._tts_use_cuda)
@@ -86,7 +98,7 @@ class TtsEngineNode(Node):
         done = String()
         done.data = text
         self.tts_done_pub.publish(done)
-        self.get_logger().info("\033[1;32m[TTS]\033[0m \"%s\"", text)
+        self.get_logger().info(f"{self.task_tag}\033[1;32m[TTS]\033[0m \"{text}\"")
 
     def destroy_node(self):
         self._executor.shutdown(wait=True)

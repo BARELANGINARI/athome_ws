@@ -29,6 +29,9 @@ nucleo::nucleo()
   setupHardware();
   setupRos();
 
+  RCLCPP_INFO(get_logger(), "%s\033[1;34m[HW]\033[0m Nucleo driver ready (STM32: %s:%d)",
+    getTaskTag().c_str(), stm_ip.c_str(), stm_port);
+
   last_time = now();
   last_cmd_time = last_time;
   timer = create_wall_timer(
@@ -36,8 +39,21 @@ nucleo::nucleo()
         std::bind(&nucleo::controlLoop, this));
 }
 
+std::string nucleo::getTaskTag() const
+{
+  if (task_mode_ == "receptionist" || task_mode_ == "rec") {
+    return "\033[1;36m[RECEPTIONIST]\033[0m ";
+  } else if (task_mode_ == "help_me_carry" || task_mode_ == "hmc") {
+    return "\033[1;32m[HELP_ME_CARRY]\033[0m ";
+  } else if (task_mode_ == "restaurant" || task_mode_ == "resto" || task_mode_ == "waiter") {
+    return "\033[1;34m[RESTAURANT]\033[0m ";
+  }
+  return "";
+}
+
 void nucleo::loadParam()
 {
+  declare_parameter("task", "all");
   declare_parameter("stm_ip", STM32_IP_DEFAULT);
   declare_parameter("stm_port", STM32_PORT_DEFAULT);
   declare_parameter("local_port", LOCAL_PORT_DEFAULT);
@@ -74,6 +90,12 @@ void nucleo::loadParam()
 
   publish_imu_yaw_ = get_parameter("publish_imu_yaw").as_bool();
   pub_yaw_topic_ = get_parameter("pub_yaw_topic").as_string();
+  task_mode_ = get_parameter("task").as_string();
+  if (task_mode_ == "all") {
+    const char * env_task = std::getenv("ATHOME_TASK");
+    if (env_task) task_mode_ = env_task;
+  }
+  std::transform(task_mode_.begin(), task_mode_.end(), task_mode_.begin(), ::tolower);
   stm_ip = get_parameter("stm_ip").as_string();
   stm_port = get_parameter("stm_port").as_int();
   local_port = get_parameter("local_port").as_int();
@@ -141,7 +163,7 @@ void nucleo::setupRos()
   tfBroadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(this);
   if (publish_imu_yaw_) {
     imu_yaw_pub_ = create_publisher<std_msgs::msg::Float64>(pub_yaw_topic_, 10);
-    RCLCPP_INFO(get_logger(), "\033[1;34m[HW]\033[0m IMU yaw: %s", pub_yaw_topic_.c_str());
+    RCLCPP_INFO(get_logger(), "%s\033[1;34m[HW]\033[0m IMU yaw: %s", getTaskTag().c_str(), pub_yaw_topic_.c_str());
   }
   if (use_yaw_topic) {
     yaw_sub = create_subscription<std_msgs::msg::Float64>(
@@ -189,7 +211,7 @@ void nucleo::onYawTopic(const std_msgs::msg::Float64::SharedPtr msg)
 void nucleo::onLifterCmd(const std_msgs::msg::UInt8::SharedPtr msg)
 {
   lifter_target_.store(msg->data);
-  RCLCPP_INFO(get_logger(), "\033[1;34m[HW]\033[0m Lifter target: %u", static_cast<unsigned int>(lifter_target_.load()));
+  RCLCPP_INFO(get_logger(), "%s\033[1;34m[HW]\033[0m Lifter target: %u", getTaskTag().c_str(), static_cast<unsigned int>(lifter_target_.load()));
 }
 
 void nucleo::handleLifterUp(
@@ -200,7 +222,7 @@ void nucleo::handleLifterUp(
   lifter_target_.store(1);
   res->success = true;
   res->message = "Lifter target UP (1) sent";
-  RCLCPP_INFO(get_logger(), "\033[1;34m[HW]\033[0m Lifter UP");
+  RCLCPP_INFO(get_logger(), "%s\033[1;34m[HW]\033[0m Lifter UP", getTaskTag().c_str());
 }
 
 void nucleo::handleLifterDown(
@@ -211,7 +233,7 @@ void nucleo::handleLifterDown(
   lifter_target_.store(0);
   res->success = true;
   res->message = "Lifter target DOWN (0) sent";
-  RCLCPP_INFO(get_logger(), "\033[1;34m[HW]\033[0m Lifter DOWN");
+  RCLCPP_INFO(get_logger(), "%s\033[1;34m[HW]\033[0m Lifter DOWN", getTaskTag().c_str());
 }
 
 double nucleo::normalizeDeg(double deg)
