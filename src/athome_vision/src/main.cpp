@@ -3424,14 +3424,6 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       const int cx = r.x + r.width / 2;
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 4, color, -1);
-
-      std::string chair_text = c.occupied ? "Chair [Occupied]" : "Chair [Empty]";
-      if (c.has_pos) {
-        chair_text += cv::format(" (%.2fm)", c.range_m);
-      }
-      banner(chair_text, r.x, r.y, color,
-        c.occupied ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0),
-        cv::Scalar(255, 255, 255), 0.48, 1);
     }
 
     int hud_y = 36;
@@ -3484,14 +3476,6 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       hud_item("Bag 2", b2_x, b2_y, b2_d, b2_ok, cv::Scalar(0, 69, 255));
     }
 
-    for (const auto & c : preview_chairs_) {
-      if (!c.has_pos) continue;
-      std::string disp_name = c.label;
-      if (!disp_name.empty()) disp_name[0] = static_cast<char>(std::toupper(disp_name[0]));
-      hud_item((c.occupied ? "Occ " : "Empty ") + disp_name + " [" + c.side + "]",
-        c.x_m, c.y_m, c.range_m, true,
-        c.occupied ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0));
-    }
 
     static bool window_ready = false;
     if (!window_ready) {
