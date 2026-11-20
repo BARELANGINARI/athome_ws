@@ -1207,7 +1207,7 @@ private:
       "pringles", "sugar box", "sugarbox", "sugar",
       "cheezit", "cracker", "chips", "snack",
       "coke", "cola", "pepsi", "sprite", "fanta",
-      "water", "milk", "coffee", "tea", "juice", "soda", "bottle", "botol",
+      "water", "milk", "coffee", "tea", "juice", "soda",
       "burger", "sandwich", "pizza", "cake", "donut", "apple", "banana", "orange"
     };
 
@@ -1939,12 +1939,14 @@ private:
               RestaurantState::CAPTURE_CUSTOMER_FACE,
               "Customer name captured");
           } else {
-            state_enter_time_ = now();
-            speakAsync("Hello, Welcome to the bar!! Can you please tell your name?");
+            speakAsync(
+              "Hello, Welcome to the bar!! Can you please tell your name?",
+              [this]() { state_enter_time_ = now(); });
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
-          state_enter_time_ = now();
-          speakAsync("Hello, Welcome to the bar!! Can you please tell your name?");
+          speakAsync(
+            "Hello, Welcome to the bar!! Can you please tell your name?",
+            [this]() { state_enter_time_ = now(); });
         }
         break;
 
@@ -2030,15 +2032,18 @@ private:
               std::lock_guard<std::mutex> lock(customer_mutex_);
               current_customer_.order_1 = o1;
             }
-            state_enter_time_ = now();
-            speakAsync("What is your second order please?");
+            speakAsync(
+              "What is your second order please?",
+              [this]() { state_enter_time_ = now(); });
           } else {
-            state_enter_time_ = now();
-            speakAsync("May i take your order please?");
+            speakAsync(
+              "May i take your order please?",
+              [this]() { state_enter_time_ = now(); });
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
-          state_enter_time_ = now();
-          speakAsync("May i take your order please?");
+          speakAsync(
+            "May i take your order please?",
+            [this]() { state_enter_time_ = now(); });
         }
         break;
 
@@ -2108,18 +2113,20 @@ private:
                   "Order rejected (NO), returning to point 6");
               });
           } else {
-            state_enter_time_ = now();
-            speakAsync("Please answer with yes if the order has correct and answer with no, if the order is incorrect");
+            speakAsync(
+              "Please answer with yes if the order has correct and answer with no, if the order is incorrect",
+              [this]() { state_enter_time_ = now(); });
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
-          state_enter_time_ = now();
           std::string o1, o2;
           {
             std::lock_guard<std::mutex> lock(customer_mutex_);
             o1 = current_customer_.order_1;
             o2 = current_customer_.order_2;
           }
-          speakAsync("your order is " + o1 + " and " + o2 + " is it correct?");
+          speakAsync(
+            "your order is " + o1 + " and " + o2 + " is it correct?",
+            [this]() { state_enter_time_ = now(); });
         }
         break;
 
@@ -2328,12 +2335,14 @@ private:
               RestaurantState::WAIT_TRAY_RETRY_3S,
               "Tray order not ready (no robot), waiting 3 seconds before repeating callback");
           } else {
-            state_enter_time_ = now();
-            speakAsync("is the order had take in the tray, please answer with yes robot or no robot");
+            speakAsync(
+              "is the order had take in the tray, please answer with yes robot or no robot",
+              [this]() { state_enter_time_ = now(); });
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
-          state_enter_time_ = now();
-          speakAsync("is the order had take in the tray, please answer with yes robot or no robot");
+          speakAsync(
+            "is the order had take in the tray, please answer with yes robot or no robot",
+            [this]() { state_enter_time_ = now(); });
         }
         break;
 
