@@ -38,7 +38,7 @@
     stt_vad_silence_ms: 400              # Silero VAD internal Whisper: jeda hening (ms) untuk memotong segmen di dalam rekaman
     stt_vad_speech_pad_ms: 200           # Silero VAD internal Whisper: bantalan waktu (ms) di awal & akhir ucapan agar tidak terpotong
     # Kalimat petunjuk konteks agar Whisper lebih mudah mengenali gaya bahasa & istilah perintah robot
-    stt_initial_prompt: "Hello robot, halo robot, follow me, please follow me, stop, we have arrived at the location, this is the location."
+    stt_initial_prompt: "Hello robot, halo robot, follow me, please follow me, stop, we have arrived at the location, this is the location, my name is, i like, i am, my favorite drink is, my interesting is."
     # Daftar kata prioritas (dipisah spasi) yang bobot pengenalannya diperkuat oleh Whisper
     stt_hotwords: "hello robot halo robot follow me arrived we are here stop berhenti"
     # Daftar teks halusinasi yang otomatis dibuang jika Whisper mendeteksinya saat hening/noise
