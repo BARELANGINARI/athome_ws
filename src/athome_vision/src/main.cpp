@@ -1611,7 +1611,7 @@ ZedNode::ZedNode()
     enable_bag_ = false;
     enable_back_detection_ = false;
     enable_chair_ = false;
-    RCLCPP_INFO(get_logger(), "\033[1;32m[RECEPTIONIST]\033[0m Active: Person, Soda, Pringles");
+    RCLCPP_INFO(get_logger(), "\033[1;32m[RECEPTIONIST]\033[0m Active: Person, Soda, Pringles, Attributes (Color, Gender, Name)");
   } else if (is_restaurant_ && !is_help_me_carry_ && !is_receptionist_) {
     enable_body_tracking_ = true;
     enable_drinks_ = true;
@@ -1759,61 +1759,64 @@ void ZedNode::loadModels()
       {}, "chair", conf, nms, size);
   }
 
-  const std::string color_labels =
-    resolvePath(get_parameter("color_labels").as_string());
-  const std::string hair_labels =
-    resolvePath(get_parameter("hair_labels").as_string());
-  const std::string color_path = resolvePath(get_parameter("color_model").as_string());
-  const std::string hair_path = resolvePath(get_parameter("hair_model").as_string());
-  const std::string face_path = resolvePath(get_parameter("face_model").as_string());
+  // Atribut tamu (warna pakaian, gender, face/nama) hanya untuk task receptionist
+  if (is_receptionist_) {
+    const std::string color_labels =
+      resolvePath(get_parameter("color_labels").as_string());
+    const std::string hair_labels =
+      resolvePath(get_parameter("hair_labels").as_string());
+    const std::string color_path = resolvePath(get_parameter("color_model").as_string());
+    const std::string hair_path = resolvePath(get_parameter("hair_model").as_string());
+    const std::string face_path = resolvePath(get_parameter("face_model").as_string());
 
-  std::vector<std::string> gender_candidates;
-  auto addGenderCandidate = [&](const std::string & path) {
-      if (path.empty()) return;
-      if (std::find(gender_candidates.begin(), gender_candidates.end(), path) !=
-          gender_candidates.end()) return;
-      gender_candidates.push_back(path);
-    };
-  addGenderCandidate(resolvePath(get_parameter("gender_model").as_string()));
-  addGenderCandidate(resolvePath("models/gender_model_weights.onnx"));
+    std::vector<std::string> gender_candidates;
+    auto addGenderCandidate = [&](const std::string & path) {
+        if (path.empty()) return;
+        if (std::find(gender_candidates.begin(), gender_candidates.end(), path) !=
+            gender_candidates.end()) return;
+        gender_candidates.push_back(path);
+      };
+    addGenderCandidate(resolvePath(get_parameter("gender_model").as_string()));
+    addGenderCandidate(resolvePath("models/gender_model_weights.onnx"));
 
-  bool gender_loaded = false;
-  std::string gender_err;
-  for (const auto & path : gender_candidates) {
-    if (!std::filesystem::exists(path)) continue;
-    if (analyzer_.loadGender(path, &gender_err)) {
-      RCLCPP_INFO(get_logger(), "Gender model loaded: %s", path.c_str());
-      gender_loaded = true;
-      break;
+    bool gender_loaded = false;
+    std::string gender_err;
+    for (const auto & path : gender_candidates) {
+      if (!std::filesystem::exists(path)) continue;
+      if (analyzer_.loadGender(path, &gender_err)) {
+        RCLCPP_INFO(get_logger(), "Gender model loaded: %s", path.c_str());
+        gender_loaded = true;
+        break;
+      }
     }
-  }
-  if (!gender_loaded) {
-    RCLCPP_WARN(get_logger(), "Gender model unavailable, gender will be unknown: %s",
-      gender_err.c_str());
-  }
-  if (!color_path.empty()) {
-    std::string err;
-    if (!analyzer_.loadColor(color_path, color_labels, &err)) {
-      RCLCPP_WARN(get_logger(), "Color model unavailable, using HSV: %s", err.c_str());
-    } else {
-      RCLCPP_INFO(get_logger(), "Clothing Color ResNet model loaded: %s (labels: %s)",
-        color_path.c_str(), color_labels.c_str());
+    if (!gender_loaded) {
+      RCLCPP_WARN(get_logger(), "Gender model unavailable, gender will be unknown: %s",
+        gender_err.c_str());
     }
-  }
-  if (!hair_path.empty()) {
-    std::string err;
-    if (!analyzer_.loadHair(hair_path, hair_labels, &err)) {
-      RCLCPP_WARN(get_logger(), "Hair model unavailable, using HSV: %s", err.c_str());
+    if (!color_path.empty()) {
+      std::string err;
+      if (!analyzer_.loadColor(color_path, color_labels, &err)) {
+        RCLCPP_WARN(get_logger(), "Color model unavailable, using HSV: %s", err.c_str());
+      } else {
+        RCLCPP_INFO(get_logger(), "Clothing Color ResNet model loaded: %s (labels: %s)",
+          color_path.c_str(), color_labels.c_str());
+      }
     }
-  }
-  if (!face_path.empty()) {
-    std::string err;
-    if (analyzer_.loadFace(face_path, &err)) {
-      RCLCPP_INFO(get_logger(), "Face SFace loaded: %s (threshold %.3f)",
-        face_path.c_str(), face_threshold_);
-      loadPreRegisteredHost();
-    } else {
-      RCLCPP_WARN(get_logger(), "Face model unavailable: %s", err.c_str());
+    if (!hair_path.empty()) {
+      std::string err;
+      if (!analyzer_.loadHair(hair_path, hair_labels, &err)) {
+        RCLCPP_WARN(get_logger(), "Hair model unavailable, using HSV: %s", err.c_str());
+      }
+    }
+    if (!face_path.empty()) {
+      std::string err;
+      if (analyzer_.loadFace(face_path, &err)) {
+        RCLCPP_INFO(get_logger(), "Face SFace loaded: %s (threshold %.3f)",
+          face_path.c_str(), face_threshold_);
+        loadPreRegisteredHost();
+      } else {
+        RCLCPP_WARN(get_logger(), "Face model unavailable: %s", err.c_str());
+      }
     }
   }
 }
@@ -2293,7 +2296,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     }
   }
 
-  if (!pending_register_name_.empty() && !entries.empty() && (is_receptionist_ || is_restaurant_)) {
+  if (!pending_register_name_.empty() && !entries.empty() && is_receptionist_) {
     const PersonEntry * target = &entries.front();
     std::vector<float> feature;
     for (const auto & candidate : entries) {
@@ -2433,14 +2436,16 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
       registered_persons_.push_back(new_person);
     }
-  } else if (!pending_register_name_.empty() && (is_receptionist_ || is_restaurant_) && entries.empty()) {
+  } else if (!pending_register_name_.empty() && is_receptionist_ && entries.empty()) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 3000,
       "Guest \"%s\" pending registration: no person detected",
       pending_register_name_.c_str());
   }
 
-  // Ekstraksi fitur visual untuk semua orang yang terdeteksi
-  struct EntryFeature {
+  std::vector<std::string> recognized_names(entries.size(), "");
+  if (is_receptionist_ && !registered_persons_.empty()) {
+    // Ekstraksi fitur visual untuk semua orang yang terdeteksi (Hanya Receptionist)
+    struct EntryFeature {
     std::vector<float> face_feat;
     cv::Scalar torso_hsv{0, 0, 0};
     bool has_torso{false};
@@ -2636,7 +2641,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   }
 
   // TAHAP 4: Temporal Name Smoothing & Anti-Flicker Filter per Body ID
-  std::vector<std::string> recognized_names(entries.size(), "");
   for (size_t i = 0; i < entries.size(); ++i) {
     const int body_id = entries[i].id;
     auto & mem = name_memory_[body_id];
@@ -2685,6 +2689,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     } else {
       ++it;
     }
+  }
   }
 
   std::ostringstream ss;
@@ -2764,16 +2769,18 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         std::isfinite(point.y) ? point.y : NAN);
     }
 
-    if (person.shirt_bbox.width > 5 && person.shirt_bbox.height > 5) {
-      person.clothing = analyzer_.clothingColor(bgr, person.shirt_bbox);
-    }
-    const bool classify = (first_person || !pending_register_name_.empty() || !recognized_name.empty());
-    if (classify) {
-      if (person.clothing.empty()) {
+    if (is_receptionist_) {
+      if (person.shirt_bbox.width > 5 && person.shirt_bbox.height > 5) {
         person.clothing = analyzer_.clothingColor(bgr, person.shirt_bbox);
       }
-      person.hair = analyzer_.hairColor(bgr, entry.bbox, points);
-      person.gender = analyzer_.gender(points, bgr, entry.bbox);
+      const bool classify = (first_person || !pending_register_name_.empty() || !recognized_name.empty());
+      if (classify) {
+        if (person.clothing.empty()) {
+          person.clothing = analyzer_.clothingColor(bgr, person.shirt_bbox);
+        }
+        person.hair = analyzer_.hairColor(bgr, entry.bbox, points);
+        person.gender = analyzer_.gender(points, bgr, entry.bbox);
+      }
     }
 
     if (first_person) {
@@ -2785,12 +2792,14 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       }
 
-      std_msgs::msg::String attr_msg;
-      std::string pub_gender = !person.gender.empty() ? person.gender : "person";
-      std::string pub_cloth = !person.clothing.empty() ? person.clothing : "casual attire";
-      std::string pub_hair = !person.hair.empty() ? person.hair : "dark hair";
-      attr_msg.data = pub_gender + ", " + pub_cloth + ", " + pub_hair;
-      attributes_publisher_->publish(attr_msg);
+      if (is_receptionist_) {
+        std_msgs::msg::String attr_msg;
+        std::string pub_gender = !person.gender.empty() ? person.gender : "person";
+        std::string pub_cloth = !person.clothing.empty() ? person.clothing : "casual attire";
+        std::string pub_hair = !person.hair.empty() ? person.hair : "dark hair";
+        attr_msg.data = pub_gender + ", " + pub_cloth + ", " + pub_hair;
+        attributes_publisher_->publish(attr_msg);
+      }
 
       if (is_receptionist_ && entry.has_depth) {
         std::string tag = !recognized_name.empty() ? recognized_name : "Guest";
@@ -2907,10 +2916,12 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   persons_publisher_->publish(person_msg);
 
   std_msgs::msg::String name_msg;
-  name_msg.data = first_recognized_name;
+  name_msg.data = is_receptionist_ ? first_recognized_name : "";
   recognized_name_publisher_->publish(name_msg);
 
-  publishGuestNames();
+  if (is_receptionist_) {
+    publishGuestNames();
+  }
 }
 
 void ZedNode::publishGuestNames()
@@ -3280,8 +3291,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(0, 255, 0), -1);
       cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
 
-      // Bbox warna biru (BGR: 255, 0, 0) langsung di area baju untuk deteksi warna pakaian
-      if (p.shirt_bbox.width > 0 && p.shirt_bbox.height > 0) {
+      // Bbox warna biru langsung di area baju untuk deteksi warna pakaian (Hanya di Receptionist)
+      if (is_receptionist_ && p.shirt_bbox.width > 0 && p.shirt_bbox.height > 0) {
         cv::Rect shirt_r = flipRect(p.shirt_bbox);
         shirt_r &= cv::Rect(0, 0, W, H);
         if (shirt_r.width > 0 && shirt_r.height > 0) {
@@ -3293,8 +3304,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         }
       }
 
-      // Hanya tampilkan banner jika ada nama tamu / registered name (Alex / Guest Name)
-      if (!p.name.empty()) {
+      // Hanya tampilkan banner jika ada nama tamu / registered name di Receptionist
+      if (is_receptionist_ && !p.name.empty()) {
         std::string label = p.name;
         if (p.is_sitting) label += " [Seated]";
         if (p.is_facing_back) label += " [Back]";
