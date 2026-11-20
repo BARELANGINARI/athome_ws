@@ -1725,30 +1725,39 @@ void ZedNode::loadModels()
       enable_yolo_ = false;
     } else {
       std::string err;
-      const std::string classes = resolvePath(get_parameter("yolo_classes").as_string());
-      if (!yolo_.load(model_path, classes, bag_conf, nms, size, "bag", &err)) {
+      std::string classes = resolvePath(get_parameter("yolo_classes").as_string());
+      if (is_receptionist_ || model_path.find("yolov8n") != std::string::npos) {
+        if (classes.find("paper_bag") != std::string::npos || !std::filesystem::exists(classes)) {
+          classes = resolvePath("models/coco_names.txt");
+        }
+      }
+      const float active_yolo_conf = is_receptionist_ ? conf : bag_conf;
+      const std::string active_yolo_label = is_receptionist_ ? "chair" : "bag";
+      if (!yolo_.load(model_path, classes, active_yolo_conf, nms, size, active_yolo_label, &err)) {
         RCLCPP_ERROR(get_logger(), "YOLO load error: %s", err.c_str());
         enable_yolo_ = false;
       } else {
-        RCLCPP_INFO(get_logger(), "Primary Bag YOLO loaded: %s", model_path.c_str());
+        RCLCPP_INFO(get_logger(), "Primary %s YOLO loaded: %s", active_yolo_label.c_str(), model_path.c_str());
       }
     }
 
-    // Muat model pelengkap ansambel: paper_bag.onnx + yolov8n_sim.onnx (COCO backpack/handbag/suitcase)
-    std::string secondary_model;
-    std::string secondary_classes;
-    if (model_path.find("paper_bag") != std::string::npos) {
-      secondary_model = resolvePath("models/yolov8n_sim.onnx");
-      secondary_classes = resolvePath("models/coco_names.txt");
-    } else {
-      secondary_model = resolvePath("models/paper_bag.onnx");
-      secondary_classes = resolvePath("models/paper_bag_classes.txt");
-    }
+    // Muat model pelengkap ansambel tas hanya jika deteksi tas diaktifkan (misal Help Me Carry)
+    if (enable_bag_) {
+      std::string secondary_model;
+      std::string secondary_classes;
+      if (model_path.find("paper_bag") != std::string::npos) {
+        secondary_model = resolvePath("models/yolov8n_sim.onnx");
+        secondary_classes = resolvePath("models/coco_names.txt");
+      } else {
+        secondary_model = resolvePath("models/paper_bag.onnx");
+        secondary_classes = resolvePath("models/paper_bag_classes.txt");
+      }
 
-    if (!secondary_model.empty() && std::filesystem::exists(secondary_model)) {
-      std::string err;
-      if (coco_bag_yolo_.load(secondary_model, secondary_classes, bag_conf, nms, size, "bag", &err)) {
-        RCLCPP_INFO(get_logger(), "Ensemble Complementary Bag YOLO loaded: %s", secondary_model.c_str());
+      if (!secondary_model.empty() && std::filesystem::exists(secondary_model)) {
+        std::string err;
+        if (coco_bag_yolo_.load(secondary_model, secondary_classes, bag_conf, nms, size, "bag", &err)) {
+          RCLCPP_INFO(get_logger(), "Ensemble Complementary Bag YOLO loaded: %s", secondary_model.c_str());
+        }
       }
     }
   }
@@ -3581,6 +3590,25 @@ void ZedNode::printSummaryLog()
         milk->x_m, milk->y_m, milk->range_m));
     } else {
       lines.push_back("  milk: 0.00, 0.00 (0.00m)");
+    }
+
+    // 4. Chair
+    const PrevChair * best_chair = nullptr;
+    for (const auto & c : preview_chairs_) {
+      if (!c.occupied && c.has_pos) {
+        best_chair = &c;
+        break;
+      }
+    }
+    if (!best_chair && !preview_chairs_.empty() && preview_chairs_[0].has_pos) {
+      best_chair = &preview_chairs_[0];
+    }
+
+    if (best_chair && best_chair->has_pos) {
+      lines.push_back(cv::format("  Chair: %.2f, %.2f (%.2fm)",
+        best_chair->x_m, best_chair->y_m, best_chair->range_m));
+    } else {
+      lines.push_back("  Chair: 0.00, 0.00 (0.00m)");
     }
 
     std::string out = "\033[1;36m[RECEPTIONIST]\033[0m";
