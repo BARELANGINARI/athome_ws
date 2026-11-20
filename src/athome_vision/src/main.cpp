@@ -2796,16 +2796,20 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
 
       if (is_receptionist_ && entry.has_depth) {
-        latest_guest_found_ = true;
-        latest_guest_tag_ = (!recognized_name.empty() ? recognized_name : "Guest");
-        latest_guest_x_ = entry.x;
-        latest_guest_y_ = entry.y;
-        latest_guest_dist_ = entry.range_m;
+        if (!latest_guest_found_ || (!recognized_name.empty() && latest_guest_tag_ == "Guest")) {
+          latest_guest_found_ = true;
+          latest_guest_tag_ = (!recognized_name.empty() ? recognized_name : "Guest");
+          latest_guest_x_ = entry.x;
+          latest_guest_y_ = entry.y;
+          latest_guest_dist_ = entry.range_m;
+        }
       } else if (is_restaurant_ && entry.has_depth) {
-        latest_customer_found_ = true;
-        latest_cust_x_ = entry.x;
-        latest_cust_y_ = entry.y;
-        latest_cust_dist_ = entry.range_m;
+        if (!latest_customer_found_) {
+          latest_customer_found_ = true;
+          latest_cust_x_ = entry.x;
+          latest_cust_y_ = entry.y;
+          latest_cust_dist_ = entry.range_m;
+        }
       }
     }
 
@@ -3488,96 +3492,171 @@ void ZedNode::printSummaryLog()
     return;
   }
 
+  auto find_drink = [&](const std::string & l1, const std::string & l2 = "", const std::string & l3 = "") -> const PrevItem* {
+    for (const auto & d : preview_drinks_) {
+      if (d.has_pos && (d.label == l1 || (!l2.empty() && d.label == l2) || (!l3.empty() && d.label == l3))) {
+        return &d;
+      }
+    }
+    return nullptr;
+  };
+
   std::vector<std::string> lines;
 
-  if (is_help_me_carry_) {
+  if (is_help_me_carry_ && !is_receptionist_ && !is_restaurant_) {
     // 1. Operator
     if (latest_operator_found_) {
       lines.push_back(cv::format("  Operator: %.2f, %.2f (%.2fm)",
         latest_op_x_, latest_op_y_, latest_op_dist_));
+    } else {
+      lines.push_back("  Operator: 0.00, 0.00 (0.00m)");
     }
+
     // 2. Bag
-    for (size_t i = 0; i < preview_bags_.size(); ++i) {
-      const auto & b = preview_bags_[i];
+    const PrevBag* found_bag = nullptr;
+    for (const auto & b : preview_bags_) {
       if (b.has_pos) {
-        if (preview_bags_.size() > 1) {
-          lines.push_back(cv::format("  Bag %zu: %.2f, %.2f (%.2fm)",
-            i + 1, b.x_m, b.y_m, b.range_m));
-        } else {
-          lines.push_back(cv::format("  Bag: %.2f, %.2f (%.2fm)",
-            b.x_m, b.y_m, b.range_m));
-        }
+        found_bag = &b;
+        break;
       }
     }
+    if (found_bag) {
+      lines.push_back(cv::format("  Bag: %.2f, %.2f (%.2fm)",
+        found_bag->x_m, found_bag->y_m, found_bag->range_m));
+    } else {
+      lines.push_back("  Bag: 0.00, 0.00 (0.00m)");
+    }
+
     // 3. Back
     if (latest_back_found_) {
       lines.push_back(cv::format("  Back: %.2f, %.2f (%.2fm)",
         latest_back_x_, latest_back_y_, latest_back_dist_));
+    } else {
+      lines.push_back("  Back: 0.00, 0.00 (0.00m)");
     }
+
     // 4. Gesture (jika terdeteksi)
     if (!latest_gesture_.empty() && latest_gesture_ != "NONE") {
       lines.push_back(cv::format("  Gesture: %s", latest_gesture_.c_str()));
     }
 
-    if (!lines.empty()) {
-      std::string out = "\033[1;32m[HELP_ME_CARRY]\033[0m";
-      for (const auto & l : lines) {
-        out += "\n" + l;
-      }
-      RCLCPP_INFO(get_logger(), "%s", out.c_str());
-      last_summary_log_time_ = now_time;
+    std::string out = "\033[1;32m[HELP_ME_CARRY]\033[0m";
+    for (const auto & l : lines) {
+      out += "\n" + l;
     }
-  } else if (is_receptionist_) {
+    RCLCPP_INFO(get_logger(), "%s", out.c_str());
+    last_summary_log_time_ = now_time;
+
+  } else if (is_receptionist_ && !is_help_me_carry_ && !is_restaurant_) {
     // 1. Guest / Person
     if (latest_guest_found_) {
       lines.push_back(cv::format("  %s: %.2f, %.2f (%.2fm)",
         latest_guest_tag_.c_str(), latest_guest_x_, latest_guest_y_, latest_guest_dist_));
-    }
-    // 2. Drinks (soda & pringles)
-    for (const auto & d : preview_drinks_) {
-      if (d.has_pos && (d.label == "soda" || d.label == "pringles")) {
-        lines.push_back(cv::format("  %s: %.2f, %.2f (%.2fm)",
-          d.label.c_str(), d.x_m, d.y_m, d.range_m));
-      }
-    }
-    // 3. Chair
-    for (const auto & c : preview_chairs_) {
-      if (c.has_pos) {
-        lines.push_back(cv::format("  Chair: %s [%s] %.2f, %.2f (%.2fm)",
-          c.occupied ? "OCCUPIED" : "EMPTY", c.side.c_str(), c.x_m, c.y_m, c.range_m));
-      }
+    } else {
+      lines.push_back("  Guest: 0.00, 0.00 (0.00m)");
     }
 
-    if (!lines.empty()) {
-      std::string out = "\033[1;36m[RECEPTIONIST]\033[0m";
-      for (const auto & l : lines) {
-        out += "\n" + l;
-      }
-      RCLCPP_INFO(get_logger(), "%s", out.c_str());
-      last_summary_log_time_ = now_time;
+    // 2. soda
+    const auto * soda = find_drink("soda");
+    if (soda) {
+      lines.push_back(cv::format("  soda: %.2f, %.2f (%.2fm)",
+        soda->x_m, soda->y_m, soda->range_m));
+    } else {
+      lines.push_back("  soda: 0.00, 0.00 (0.00m)");
     }
-  } else if (is_restaurant_) {
+
+    // 3. pringles
+    const auto * pringles = find_drink("pringles");
+    if (pringles) {
+      lines.push_back(cv::format("  pringles: %.2f, %.2f (%.2fm)",
+        pringles->x_m, pringles->y_m, pringles->range_m));
+    } else {
+      lines.push_back("  pringles: 0.00, 0.00 (0.00m)");
+    }
+
+    std::string out = "\033[1;36m[RECEPTIONIST]\033[0m";
+    for (const auto & l : lines) {
+      out += "\n" + l;
+    }
+    RCLCPP_INFO(get_logger(), "%s", out.c_str());
+    last_summary_log_time_ = now_time;
+
+  } else if (is_restaurant_ && !is_help_me_carry_ && !is_receptionist_) {
     // 1. Customer
     if (latest_customer_found_) {
       lines.push_back(cv::format("  Customer: %.2f, %.2f (%.2fm)",
         latest_cust_x_, latest_cust_y_, latest_cust_dist_));
+    } else {
+      lines.push_back("  Customer: 0.00, 0.00 (0.00m)");
     }
-    // 2. Wave
+
+    // 2. soda
+    const auto * soda = find_drink("soda");
+    if (soda) {
+      lines.push_back(cv::format("  soda: %.2f, %.2f (%.2fm)",
+        soda->x_m, soda->y_m, soda->range_m));
+    } else {
+      lines.push_back("  soda: 0.00, 0.00 (0.00m)");
+    }
+
+    // 3. pringles
+    const auto * pringles = find_drink("pringles");
+    if (pringles) {
+      lines.push_back(cv::format("  pringles: %.2f, %.2f (%.2fm)",
+        pringles->x_m, pringles->y_m, pringles->range_m));
+    } else {
+      lines.push_back("  pringles: 0.00, 0.00 (0.00m)");
+    }
+
+    // 4. sugar
+    const auto * sugar = find_drink("sugar", "sugarbox", "sugar_box");
+    if (sugar) {
+      lines.push_back(cv::format("  sugar: %.2f, %.2f (%.2fm)",
+        sugar->x_m, sugar->y_m, sugar->range_m));
+    } else {
+      lines.push_back("  sugar: 0.00, 0.00 (0.00m)");
+    }
+
+    // 5. cracker
+    const auto * cracker = find_drink("cracker");
+    if (cracker) {
+      lines.push_back(cv::format("  cracker: %.2f, %.2f (%.2fm)",
+        cracker->x_m, cracker->y_m, cracker->range_m));
+    } else {
+      lines.push_back("  cracker: 0.00, 0.00 (0.00m)");
+    }
+
+    // 6. Wave (jika terdeteksi)
     if (latest_wave_found_) {
       lines.push_back(cv::format("  Wave: %.2f, %.2f",
         latest_wave_x_, latest_wave_y_));
     }
-    // 3. Items (soda, pringles, sugarbox, cracker)
-    for (const auto & d : preview_drinks_) {
-      if (d.has_pos && (d.label == "soda" || d.label == "pringles" ||
-                        d.label == "sugarbox" || d.label == "cracker")) {
-        lines.push_back(cv::format("  %s: %.2f, %.2f (%.2fm)",
-          d.label.c_str(), d.x_m, d.y_m, d.range_m));
+
+    std::string out = "\033[1;34m[RESTAURANT]\033[0m";
+    for (const auto & l : lines) {
+      out += "\n" + l;
+    }
+    RCLCPP_INFO(get_logger(), "%s", out.c_str());
+    last_summary_log_time_ = now_time;
+
+  } else {
+    // Mode "all" / general preview: cetak apa pun yang terdeteksi
+    if (latest_operator_found_) {
+      lines.push_back(cv::format("  Operator: %.2f, %.2f (%.2fm)",
+        latest_op_x_, latest_op_y_, latest_op_dist_));
+    }
+    for (const auto & b : preview_bags_) {
+      if (b.has_pos) {
+        lines.push_back(cv::format("  Bag: %.2f, %.2f (%.2fm)", b.x_m, b.y_m, b.range_m));
       }
     }
-
+    for (const auto & d : preview_drinks_) {
+      if (d.has_pos) {
+        lines.push_back(cv::format("  %s: %.2f, %.2f (%.2fm)", d.label.c_str(), d.x_m, d.y_m, d.range_m));
+      }
+    }
     if (!lines.empty()) {
-      std::string out = "\033[1;34m[RESTAURANT]\033[0m";
+      std::string out = "\033[1;35m[VISION]\033[0m";
       for (const auto & l : lines) {
         out += "\n" + l;
       }
