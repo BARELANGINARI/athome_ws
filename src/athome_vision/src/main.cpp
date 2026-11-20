@@ -500,6 +500,8 @@ public:
       det_result.class_id = class_ids[static_cast<size_t>(idx)];
       det_result.label = (classes == 1) ? default_label_ : labelOf(det_result.class_id);
       if (det_result.label.empty()) det_result.label = default_label_;
+      if (det_result.label == "cracker_box" || det_result.label == "crackerbox") det_result.label = "cracker";
+      if (det_result.label == "sugar_box" || det_result.label == "sugarbox") det_result.label = "sugar";
       out.push_back(det_result);
     }
   }
@@ -1716,9 +1718,9 @@ void ZedNode::loadModels()
       {"models/pringles.onnx", "models/pringles_ chips _can.onnx"}, "pringles",
       drink_conf, nms, size);
     loadYolo(cracker_yolo_, get_parameter("cracker_model").as_string(),
-      {"models/crackerbox.onnx", "models/cheezit.onnx", "models/best_cracker.onnx"}, "cracker_box", drink_conf, nms, size);
+      {"models/crackerbox.onnx", "models/cheezit.onnx", "models/best_cracker.onnx"}, "cracker", drink_conf, nms, size);
     loadYolo(sugarbox_yolo_, get_parameter("sugarbox_model").as_string(),
-      {"models/sugarbox.onnx", "models/sugar_box.onnx", "models/sugar.onnx"}, "sugar_box",
+      {"models/sugarbox.onnx", "models/sugar_box.onnx", "models/sugar.onnx"}, "sugar",
       drink_conf, nms, size);
     loadYolo(botol_yolo_, get_parameter("botol_model").as_string(),
       {"models/water.onnx", "models/botol.onnx"}, "bottle", drink_conf, nms, size);

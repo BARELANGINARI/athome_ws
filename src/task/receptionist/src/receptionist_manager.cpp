@@ -1114,7 +1114,7 @@ private:
         "coke", "cola", "pepsi", "sprite", "fanta",
         "milk", "water", "coffee", "tea", "juice", "soda",
         "botol", "bottle", "cracker", "cracker box", "snack",
-        "pringles", "cheezit", "cheez-it", "chips"
+        "pringles", "sugar", "sugar box", "cheezit", "cheez-it", "chips"
       };
       for (const auto & drink : kKnownDrinks) {
         if (containsWholePhrase(norm, drink) &&
