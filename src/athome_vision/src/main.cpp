@@ -1383,6 +1383,7 @@ private:
   YoloDetector pringles_yolo_;
   YoloDetector sugarbox_yolo_;
   YoloDetector soda_yolo_;
+  YoloDetector milk_yolo_;
   YoloDetector chair_yolo_;
 
   bool enable_yolo_{true};
@@ -1466,6 +1467,7 @@ ZedNode::ZedNode()
   declare_parameter("cracker_model", std::string("models/crackerbox.onnx"));
   declare_parameter("pringles_model", std::string("models/pringles.onnx"));
   declare_parameter("sugarbox_model", std::string("models/sugarbox.onnx"));
+  declare_parameter("milk_model", std::string("models/milk.onnx"));
   declare_parameter("enable_drinks", true);
   declare_parameter("chair_model", std::string(""));
   declare_parameter("enable_chair", true);
@@ -1752,15 +1754,19 @@ void ZedNode::loadModels()
   }
 
   if (enable_drinks_) {
-    // Soda & Pringles dimuat untuk Receptionist, Restaurant, maupun All
+    // Soda dimuat untuk Receptionist, Restaurant, maupun All
     loadYolo(soda_yolo_, get_parameter("soda_model").as_string(),
       {"models/soda.onnx"}, "soda", drink_conf, nms, size);
-    loadYolo(pringles_yolo_, get_parameter("pringles_model").as_string(),
-      {"models/pringles.onnx", "models/pringles_ chips _can.onnx"}, "pringles",
-      drink_conf, nms, size);
 
-    // Cracker & Sugar hanya dimuat jika mode Restaurant atau All (Receptionist HANYA soda & pringles)
+    // Milk dimuat untuk Receptionist, Restaurant, maupun All
+    loadYolo(milk_yolo_, get_parameter("milk_model").as_string(),
+      {"models/milk.onnx"}, "milk", drink_conf, nms, size);
+
+    // Pringles, Cracker & Sugar hanya dimuat jika mode Restaurant atau All (Receptionist HANYA soda & milk)
     if (is_restaurant_ || (!is_help_me_carry_ && !is_receptionist_)) {
+      loadYolo(pringles_yolo_, get_parameter("pringles_model").as_string(),
+        {"models/pringles.onnx", "models/pringles_ chips _can.onnx"}, "pringles",
+        drink_conf, nms, size);
       loadYolo(cracker_yolo_, get_parameter("cracker_model").as_string(),
         {"models/crackerbox.onnx", "models/cheezit.onnx", "models/best_cracker.onnx"}, "cracker", drink_conf, nms, size);
       loadYolo(sugarbox_yolo_, get_parameter("sugarbox_model").as_string(),
@@ -2049,13 +2055,13 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
     dets.clear();
     std::vector<YoloDetector *> active_detectors;
     if (is_receptionist_) {
-      // Receptionist: HANYA deteksi soda dan pringles
-      active_detectors = {&soda_yolo_, &pringles_yolo_};
+      // Receptionist: HANYA deteksi soda dan milk
+      active_detectors = {&soda_yolo_, &milk_yolo_};
     } else if (is_restaurant_) {
-      // Restaurant: HANYA deteksi soda, pringles, sugar, dan cracker
-      active_detectors = {&soda_yolo_, &pringles_yolo_, &sugarbox_yolo_, &cracker_yolo_};
+      // Restaurant: HANYA deteksi soda, pringles, sugar, cracker, dan milk
+      active_detectors = {&soda_yolo_, &pringles_yolo_, &sugarbox_yolo_, &cracker_yolo_, &milk_yolo_};
     } else {
-      active_detectors = {&soda_yolo_, &pringles_yolo_, &sugarbox_yolo_, &cracker_yolo_, &botol_yolo_};
+      active_detectors = {&soda_yolo_, &pringles_yolo_, &sugarbox_yolo_, &cracker_yolo_, &milk_yolo_, &botol_yolo_};
     }
 
     std::vector<YoloDetection> raw_dets;
@@ -2079,6 +2085,7 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
         if ((item.label == "soda" || item.label == "bottle") && (ar < 0.9f || ar > 3.2f)) continue;
         if (item.label == "pringles" && (ar < 1.1f || ar > 3.8f)) continue;
         if ((item.label == "cracker" || item.label == "sugar") && (ar < 0.5f || ar > 2.6f)) continue;
+        if (item.label == "milk" && (ar < 0.8f || ar > 3.5f)) continue;
 
         raw_dets.push_back(item);
       }
@@ -3334,13 +3341,13 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       cv::circle(canvas, cv::Point(cx, cy), 4, cv::Scalar(255, 255, 0), -1);
       cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 2);
 
-      // Banner label teks singkat di atas bounding box khusus untuk 4 model target:
-      // pringles, cracker, soda, sugar
+      // Banner label teks singkat di atas bounding box khusus untuk model target:
+      // pringles, cracker, soda, sugar, milk
       std::string norm_label = d.label;
       if (norm_label == "cracker_box" || norm_label == "crackerbox") norm_label = "cracker";
       if (norm_label == "sugar_box" || norm_label == "sugarbox") norm_label = "sugar";
 
-      if (norm_label == "soda" || norm_label == "pringles" || norm_label == "cracker" || norm_label == "sugar") {
+      if (norm_label == "soda" || norm_label == "pringles" || norm_label == "cracker" || norm_label == "sugar" || norm_label == "milk") {
         std::string banner_text = norm_label;
         if (d.has_pos) {
           banner_text += cv::format(" (%.2fm)", d.range_m);
@@ -3567,13 +3574,13 @@ void ZedNode::printSummaryLog()
       lines.push_back("  soda: 0.00, 0.00 (0.00m)");
     }
 
-    // 3. pringles
-    const auto * pringles = find_drink("pringles");
-    if (pringles) {
-      lines.push_back(cv::format("  pringles: %.2f, %.2f (%.2fm)",
-        pringles->x_m, pringles->y_m, pringles->range_m));
+    // 3. milk
+    const auto * milk = find_drink("milk");
+    if (milk) {
+      lines.push_back(cv::format("  milk: %.2f, %.2f (%.2fm)",
+        milk->x_m, milk->y_m, milk->range_m));
     } else {
-      lines.push_back("  pringles: 0.00, 0.00 (0.00m)");
+      lines.push_back("  milk: 0.00, 0.00 (0.00m)");
     }
 
     std::string out = "\033[1;36m[RECEPTIONIST]\033[0m";
@@ -3628,7 +3635,16 @@ void ZedNode::printSummaryLog()
       lines.push_back("  cracker: 0.00, 0.00 (0.00m)");
     }
 
-    // 6. Wave (selalu tampil)
+    // 6. milk
+    const auto * milk = find_drink("milk");
+    if (milk) {
+      lines.push_back(cv::format("  milk: %.2f, %.2f (%.2fm)",
+        milk->x_m, milk->y_m, milk->range_m));
+    } else {
+      lines.push_back("  milk: 0.00, 0.00 (0.00m)");
+    }
+
+    // 7. Wave (selalu tampil)
     if (latest_wave_found_) {
       lines.push_back(cv::format("  Wave: %.2f, %.2f",
         latest_wave_x_, latest_wave_y_));
