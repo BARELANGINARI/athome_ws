@@ -17,7 +17,13 @@ restaurant_node:
     # -------------------------------------------------------------------------
     order_topic: "/vision/order"           # Topik input posisi orang / pelanggan dari kamera
     order_frame: "base_link"             # Frame acuan koordinat: "base_link" (relatif kamera) atau "map" (global)
-    standoff_distance: 0.85              # Jarak henti aman di depan pelanggan (meter)
+    standoff_distance: 0.85              # Jarak henti ideal di depan pelanggan (meter)
+    adaptive_standoff_enabled: true      # Aktifkan penyesuaian jarak henti adaptif jika titik goal mepet dinding/rintangan
+    adaptive_standoff_min: 0.85          # Jarak henti minimal (meter) - saat area terbuka
+    adaptive_standoff_max: 1.40          # Jarak henti maksimal (meter) - saat orang mepet dinding
+    adaptive_standoff_step: 0.05         # Resolusi langkah mundur saat mencari ruang bebas (meter)
+    costmap_obstacle_threshold: 60       # Nilai batas cost costmap (0-100) aman dari dinding/rintangan
+    costmap_topic: "/global_costmap/costmap" # Topik global costmap Nav2
     auto_navigate: false                 # false: tunggu service /go_to_order, true: langsung jalan saat topik publish
     nav_timeout_sec: 120.0               # Batas waktu navigasi Nav2 sebelum timeout (detik)
 
@@ -61,6 +67,12 @@ restaurant_manager:
     order_frame: "base_link"             # Frame acuan koordinat pesanan pelanggan
     customer_standoff_distance: 0.85     # Jarak henti aman di depan pelanggan (meter)
     object_standoff_distance: 0.45       # Jarak henti di depan meja objek (meter)
+    adaptive_standoff_enabled: true      # Aktifkan penyesuaian jarak henti adaptif jika titik goal mepet dinding/rintangan
+    adaptive_standoff_min: 0.85          # Jarak henti minimal (meter) - saat area terbuka
+    adaptive_standoff_max: 1.40          # Jarak henti maksimal (meter) - saat orang mepet dinding
+    adaptive_standoff_step: 0.05         # Resolusi langkah mundur saat mencari ruang bebas (meter)
+    costmap_obstacle_threshold: 60       # Nilai batas cost costmap (0-100) aman dari dinding/rintangan
+    costmap_topic: "/global_costmap/costmap" # Topik global costmap Nav2
     nav_timeout_sec: 120.0               # Batas waktu navigasi Nav2 sebelum timeout (detik)
     order1_detect_timeout_sec: 8.0       # Timeout deteksi visual order 1 di meja (detik)
     max_customers: 2                     # Jumlah maksimal pelanggan yang dilayani dalam 1 sesi

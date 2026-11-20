@@ -281,7 +281,7 @@ private:
   {
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;36m[FSM STATE]\033[0m %s \033[1;33m->\033[0m \033[1;32m%s\033[0m | Reason: %s",
+      "\033[1;34m[STATE]\033[0m %s -> %s (%s)",
       stateToString(state_.load()).c_str(),
       stateToString(next_state).c_str(),
       reason.c_str());
@@ -348,7 +348,7 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
-    RCLCPP_INFO(get_logger(), "\033[1;35m[TTS SAY]\033[0m \"%s\" | Mic: \033[1;31m[MUTED]\033[0m", text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;32m[TTS]\033[0m \"%s\"", text.c_str());
   }
 
   // Menangani konfirmasi selesai bicara dari /hri/tts_done (atau watchdog timeout),
@@ -368,9 +368,9 @@ private:
       pending_tts_done_ = nullptr;
     }
 
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       get_logger(),
-      "\033[1;32m[TTS FINISHED]\033[0m Playback complete | Mic: \033[1;32m[LISTENING]\033[0m | State: \033[1;36m%s\033[0m",
+      "[TTS] Done | State: %s",
       stateToString(state_.load()).c_str());
 
     if (callback) {
@@ -497,13 +497,13 @@ private:
     if (score >= threshold) {
       RCLCPP_INFO(
         get_logger(),
-        "  \033[1;32m[NLU MATCH]\033[0m Intent: \033[1m%s\033[0m | Score: \033[1;32m%.2f\033[0m (thresh: %.2f)",
-        target_intent.c_str(), score, threshold);
+        "\033[1;36m[INTENT]\033[0m %s (%.2f)",
+        target_intent.c_str(), score);
       return true;
     } else {
-      RCLCPP_INFO(
+      RCLCPP_DEBUG(
         get_logger(),
-        "  \033[2m[NLU CHECK]\033[0m Target: %s | Score: %.2f (< %.2f)",
+        "[INTENT CHECK] %s (%.2f < %.2f)",
         target_intent.c_str(), score, threshold);
       return false;
     }
@@ -578,9 +578,8 @@ private:
     const TaskState current_state = state_.load();
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;33m[STT HEARD]\033[0m \"%s\" | Mic: \033[1;32m[LISTENING]\033[0m | State: \033[1;36m%s\033[0m",
-      message->data.c_str(),
-      stateToString(current_state).c_str());
+      "\033[1;33m[STT]\033[0m \"%s\"",
+      message->data.c_str());
 
     // 1. Sapaan di state WAIT_WAKEWORD
     if (current_state == TaskState::WAIT_WAKEWORD &&
@@ -818,7 +817,7 @@ private:
       // ------------------------------------------------------------------------
       case TaskState::CHECK_OPERATOR_PRESENCE:
         if (isOperatorInFront()) {
-          RCLCPP_INFO(get_logger(), "\033[1;32m[ZED VISION]\033[0m Operator terdeteksi di depan.");
+          RCLCPP_INFO(get_logger(), "\033[1;32m[OPERATOR]\033[0m In front");
           speakAsync(
             "If you are ready? please guide me to the place, and say follow me!",
             [this]() {
@@ -827,7 +826,7 @@ private:
         } else {
           if ((now() - last_operator_warn_time_).seconds() > 4.0) {
             last_operator_warn_time_ = now();
-            RCLCPP_WARN(get_logger(), "\033[1;33m[ZED VISION]\033[0m Operator belum terlihat di depan.");
+            RCLCPP_WARN(get_logger(), "\033[1;33m[OPERATOR]\033[0m Not seen in front");
             speakAsync("i cant see you! please stand in front of me!");
           }
         }
@@ -902,7 +901,7 @@ private:
       case TaskState::ARRIVED: {
         RCLCPP_INFO(
           get_logger(),
-          "\033[1;33m[ARRIVED]\033[0m Tiba di tujuan. Memanggil service /task/step_back...");
+          "\033[1;33m[ARRIVED]\033[0m Reached destination, step back...");
 
         // Robot baru mundur setelah kalimat selesai diucapkan
         speakAsync("We have arrived. Stepping back to find you and the bag.", [this]() {
@@ -912,7 +911,7 @@ private:
             [this](bool success, const std::string & message) {
               RCLCPP_INFO(
                 get_logger(),
-                "[ARRIVED] Selesai /task/step_back: %s (success=%s)",
+                "\033[1;36m[STEPBACK]\033[0m Done: %s (success=%s)",
                 message.c_str(), success ? "true" : "false");
               speakAsync("Please point to the bag you want me to carry.", [this]() {
                 transitionTo(TaskState::WAIT_BAG_POINTING, "Step back finished");
@@ -975,7 +974,7 @@ private:
             const std::string side = (detected_gesture_ == "LEFT") ? "right" : "left";
             RCLCPP_INFO(
               get_logger(),
-              "\033[1;32m[GESTURE]\033[0m Terdeteksi %s -> Menunjuk tas di sisi %s operator",
+              "\033[1;32m[GESTURE]\033[0m %s -> bag on %s",
               detected_gesture_.c_str(), side.c_str());
 
             speakAsync(

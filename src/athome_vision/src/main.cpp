@@ -8,8 +8,6 @@
 #include <std_msgs/msg/string.hpp>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 
-#include "icecream.hpp"
-
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -218,57 +216,13 @@ struct PrevPerson
 {
   int id{-1};
   cv::Rect bbox;
+  cv::Rect shirt_bbox;
   bool has_pos{false};
   double x_m{0.0}, y_m{0.0}, range_m{0.0};
   bool is_sitting{false};
   bool is_facing_back{false};
   std::vector<cv::Point2f> kpt;
   std::string clothing, hair, gender, name;
-};
-
-struct PersonPos
-{
-  double x{0.0};
-  double y{0.0};
-  double depth{0.0};
-};
-
-struct BagPos
-{
-  double x{0.0};
-  double y{0.0};
-};
-
-struct GuestPos
-{
-  double x{0.0};
-  double y{0.0};
-  double depth{0.0};
-};
-
-struct RegisteredPersonPos
-{
-  std::string name;
-  double x{0.0};
-  double y{0.0};
-  double depth{0.0};
-};
-
-struct ChairPos
-{
-  std::string label{"none"};
-  std::string status{"none"};
-  double x{0.0};
-  double y{0.0};
-  double depth{0.0};
-};
-
-struct WavePos
-{
-  std::string side{"none"};
-  double x{0.0};
-  double y{0.0};
-  double depth{0.0};
 };
 
 struct PrevBag
@@ -546,6 +500,8 @@ public:
       det_result.class_id = class_ids[static_cast<size_t>(idx)];
       det_result.label = (classes == 1) ? default_label_ : labelOf(det_result.class_id);
       if (det_result.label.empty()) det_result.label = default_label_;
+      if (det_result.label == "cracker_box" || det_result.label == "crackerbox") det_result.label = "cracker";
+      if (det_result.label == "sugar_box" || det_result.label == "sugarbox") det_result.label = "sugar";
       out.push_back(det_result);
     }
   }
@@ -596,53 +552,72 @@ public:
            point.x >= 0.0f && point.y >= 0.0f;
   }
 
-  std::string clothingColor(
+  static cv::Rect computeShirtRoi(
     const cv::Mat & bgr, const cv::Rect & bbox, const std::vector<sl::float2> & kpt)
   {
-    if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return "casual attire";
+    if (bgr.empty()) return cv::Rect();
 
-    float waist_y = -1.0f;
-    if (kpt.size() > 22 && validKeypoint(kpt[18]) && validKeypoint(kpt[22])) {
-      waist_y = (kpt[18].y + kpt[22].y) * 0.5f;
-    } else if (!kpt.empty() && validKeypoint(kpt[0])) {
-      waist_y = kpt[0].y;
-    }
-
-    float shoulder_y = -1.0f;
+    // 1. Jika keypoint bahu tersedia (kpt[5] = LEFT_SHOULDER, kpt[12] = RIGHT_SHOULDER)
     if (kpt.size() > 12 && validKeypoint(kpt[5]) && validKeypoint(kpt[12])) {
-      shoulder_y = (kpt[5].y + kpt[12].y) * 0.5f;
-    } else if (kpt.size() > 3 && validKeypoint(kpt[3])) {
-      shoulder_y = kpt[3].y;
+      const float sx = (kpt[5].x + kpt[12].x) * 0.5f;
+      const float sy = (kpt[5].y + kpt[12].y) * 0.5f;
+      const float shoulder_w = std::abs(kpt[12].x - kpt[5].x);
+
+      if (shoulder_w > 15.0f) {
+        int tw = static_cast<int>(shoulder_w * 0.55f);
+        int th = static_cast<int>(shoulder_w * 0.65f);
+        int tx = static_cast<int>(sx - tw * 0.5f);
+        int ty = static_cast<int>(sy + shoulder_w * 0.15f); // Posisi dada tepat di bawah leher
+
+        cv::Rect roi(tx, ty, tw, th);
+        roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+        if (roi.width >= 10 && roi.height >= 10) return roi;
+      }
     }
 
-    int y1, y2;
-    if (waist_y > 0.0f && shoulder_y > 0.0f && waist_y > shoulder_y + 10.0f) {
-      const float span = waist_y - shoulder_y;
-      y1 = static_cast<int>(shoulder_y + span * 0.15f);
-      y2 = static_cast<int>(shoulder_y + span * 0.85f);
-    } else if (shoulder_y > 0.0f) {
-      // Bahu valid tapi pinggang terpotong di frame kamera bawah
-      y1 = static_cast<int>(shoulder_y + 10.0f);
-      y2 = static_cast<int>(std::min(static_cast<float>(bgr.rows), shoulder_y + bbox.width * 0.9f));
-    } else {
-      // Fallback proporsi torso dada (menghindari leher/dagu dan celana)
-      y1 = bbox.y + static_cast<int>(bbox.height * 0.28f);
-      y2 = bbox.y + static_cast<int>(bbox.height * 0.65f);
-    }
-    const int x1 = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.20f), 0, bgr.cols);
-    const int x2 = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.80f), 0, bgr.cols);
-    y1 = std::clamp(y1, 0, bgr.rows);
-    y2 = std::clamp(y2, 0, bgr.rows);
-    if (y2 <= y1 || x2 <= x1) return "casual attire";
+    // 2. Fallback jika keypoint bahu tidak terdeteksi, gunakan proporsi dada dari bbox
+    if (bbox.width > 10 && bbox.height > 10) {
+      const int tw = std::max(10, static_cast<int>(bbox.width * 0.45f));
+      const int th = std::max(10, static_cast<int>(bbox.height * 0.28f));
+      const int tx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.275f), 0, bgr.cols - tw);
+      const int ty = std::clamp(bbox.y + static_cast<int>(bbox.height * 0.22f), 0, bgr.rows - th);
 
-    cv::Rect roi(x1, y1, x2 - x1, y2 - y1);
-    roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
-    if (roi.area() <= 0) return "casual attire";
+      cv::Rect roi(tx, ty, tw, th);
+      roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+      return roi;
+    }
+
+    return cv::Rect();
+  }
+
+  std::string clothingColor(const cv::Mat & bgr, const cv::Rect & roi)
+  {
+    if (bgr.empty() || roi.width <= 5 || roi.height <= 5) return "casual attire";
+
+    cv::Rect safe_roi = roi & cv::Rect(0, 0, bgr.cols, bgr.rows);
+    if (safe_roi.area() <= 0) return "casual attire";
+
+    cv::Mat cropped = bgr(safe_roi);
 
     // 1. INFERENSI DENGAN DEEP LEARNING MODEL (color_model.onnx)
     if (color_.ready() && !color_labels_.empty()) {
+      cv::Mat hsv_roi;
+      cv::cvtColor(cropped, hsv_roi, cv::COLOR_BGR2HSV);
+      const cv::Scalar mean_hsv = cv::mean(hsv_roi);
+      const double avg_s = mean_hsv[1];
+      const double avg_v = mean_hsv[2];
+
+      cv::Mat ready_img;
+      // Normalisasi kecerahan jika kondisi indoor redup tapi kain memiliki saturasi warna
+      if (avg_s > 35.0 && avg_v > 20.0 && avg_v < 140.0) {
+        const double scale = std::min(2.5, 160.0 / std::max(1.0, avg_v));
+        cv::convertScaleAbs(cropped, ready_img, scale, 0);
+      } else {
+        ready_img = cropped;
+      }
+
       cv::Mat resized;
-      cv::resize(bgr(roi), resized, cv::Size(224, 224));
+      cv::resize(ready_img, resized, cv::Size(224, 224));
       cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
       cv::Mat blob = cv::dnn::blobFromImage(
         resized, 1.0 / 255.0, cv::Size(224, 224), cv::Scalar(0, 0, 0), false, false);
@@ -658,7 +633,21 @@ public:
         for (int i = 1; i < classes; ++i) {
           if (probs[static_cast<size_t>(i)] > probs[static_cast<size_t>(best)]) best = i;
         }
-        if (probs[static_cast<size_t>(best)] > 0.30f && best < static_cast<int>(color_labels_.size())) {
+
+        bool accept_model = false;
+        if (best < static_cast<int>(color_labels_.size())) {
+          std::string cand = color_labels_[static_cast<size_t>(best)];
+          if (cand == "black") {
+            // Hanya terima "black" jika kain memang fisik gelap & saturasi rendah
+            if (avg_v < 38.0 || (avg_v < 55.0 && avg_s < 35.0)) {
+              accept_model = (probs[static_cast<size_t>(best)] > 0.40f);
+            }
+          } else {
+            accept_model = (probs[static_cast<size_t>(best)] > 0.35f);
+          }
+        }
+
+        if (accept_model) {
           std::string result = color_labels_[static_cast<size_t>(best)];
           std::transform(result.begin(), result.end(), result.begin(), ::tolower);
           if (result.find("shirt") == std::string::npos &&
@@ -671,19 +660,19 @@ public:
       }
     }
 
-    // 2. FALLBACK HSV (Jika model ONNX belum tersedia)
+    // 2. FALLBACK HSV YANG ADAPTIF
     cv::Mat hsv;
-    cv::cvtColor(bgr(roi), hsv, cv::COLOR_BGR2HSV);
+    cv::cvtColor(cropped, hsv, cv::COLOR_BGR2HSV);
     std::vector<cv::Vec3b> valid_pixels;
-    valid_pixels.reserve(roi.area());
+    valid_pixels.reserve(safe_roi.area());
     for (int r = 0; r < hsv.rows; ++r) {
       const cv::Vec3b * row = hsv.ptr<cv::Vec3b>(r);
       for (int c = 0; c < hsv.cols; ++c) {
         const cv::Vec3b & p = row[c];
-        // Skin tone filter (skip leher/dada atas)
+        // Skin tone filter (skip leher/dada atas jika ada yang lolos)
         if (p[0] >= 5 && p[0] <= 25 && p[1] >= 40 && p[1] <= 160 && p[2] >= 70) continue;
-        // Filter bayangan gelap ekstrem pada lipatan kain
-        if (p[2] < 25) continue;
+        // Filter bayangan gelap ekstrem
+        if (p[2] < 20) continue;
         valid_pixels.push_back(p);
       }
     }
@@ -705,9 +694,9 @@ public:
     }
 
     std::string color = "dark";
-    if (v < 30.0 || (v < 45.0 && s < 40.0)) color = "black";
-    else if (s < 30.0 && v > 170.0) color = "white";
-    else if (s < 35.0) color = "gray";
+    if (v < 28.0 || (v < 42.0 && s < 30.0)) color = "black";
+    else if (s < 28.0 && v > 150.0) color = "white";
+    else if (s < 30.0) color = "gray";
     else if (h <= 10.0 || h >= 170.0) color = "red";
     else if (h <= 25.0) color = "orange";
     else if (h <= 38.0) color = "yellow";
@@ -716,6 +705,13 @@ public:
     else if (h <= 155.0) color = "purple";
     else if (h < 170.0) color = "pink";
     return color + " shirt";
+  }
+
+  std::string clothingColor(
+    const cv::Mat & bgr, const cv::Rect & bbox, const std::vector<sl::float2> & kpt)
+  {
+    const cv::Rect roi = computeShirtRoi(bgr, bbox, kpt);
+    return clothingColor(bgr, roi);
   }
 
   std::string hairColor(
@@ -916,12 +912,6 @@ public:
     if (right == "DOWN_RIGHT" || left == "DOWN_RIGHT") return "RIGHT";
     if (left == "DOWN_LEFT" || right == "DOWN_LEFT") return "LEFT";
     return "NONE";
-  }
-
-  static bool validKeypoint(const sl::float2 & point)
-  {
-    return std::isfinite(point.x) && std::isfinite(point.y) &&
-           point.x >= 0.0f && point.y >= 0.0f;
   }
 
   static float keypointDistance(const sl::float2 & a, const sl::float2 & b)
@@ -1288,7 +1278,10 @@ private:
     std::vector<float> feature;
     int feature_samples{0};
     cv::Scalar torso_hsv{0, 0, 0};
+    std::string clothing_color;
+    std::string gender;
     bool has_color{false};
+    bool locked{false};
     int last_tracking_id{-1};
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
@@ -1381,7 +1374,6 @@ private:
   std::vector<PrevBag> preview_bags_;
   std::vector<PrevItem> preview_drinks_;
   std::vector<PrevChair> preview_chairs_;
-  WavePos latest_wave_{};
 
   YoloDetector yolo_;
   YoloDetector coco_bag_yolo_;
@@ -1389,6 +1381,7 @@ private:
   YoloDetector cracker_yolo_;
   YoloDetector pringles_yolo_;
   YoloDetector sugarbox_yolo_;
+  YoloDetector soda_yolo_;
   YoloDetector chair_yolo_;
 
   bool enable_yolo_{true};
@@ -1449,7 +1442,8 @@ ZedNode::ZedNode()
   declare_parameter("drink_min_area", 100.0);
   declare_parameter("drink_conf", 0.20);
   declare_parameter("botol_model", std::string("models/water.onnx"));
-  declare_parameter("cracker_model", std::string("models/cheezit.onnx"));
+  declare_parameter("soda_model", std::string("models/soda.onnx"));
+  declare_parameter("cracker_model", std::string("models/crackerbox.onnx"));
   declare_parameter("pringles_model", std::string("models/pringles.onnx"));
   declare_parameter("sugarbox_model", std::string("models/sugarbox.onnx"));
   declare_parameter("enable_drinks", true);
@@ -1466,6 +1460,8 @@ ZedNode::ZedNode()
   declare_parameter("face_threshold", 0.363);
   declare_parameter("host_name", std::string("Alex"));
   declare_parameter("host_photo", std::string("models/host.jpg"));
+  declare_parameter("host_shirt_color", std::string("black shirt"));
+  declare_parameter("host_gender", std::string("male"));
   declare_parameter("enable_back_detection", true);
   declare_parameter("person_back_topic", std::string("/vision/person_back"));
 
@@ -1716,16 +1712,18 @@ void ZedNode::loadModels()
   }
 
   if (enable_drinks_) {
-    loadYolo(botol_yolo_, get_parameter("botol_model").as_string(),
-      {"models/botol.onnx"}, "Water", drink_conf, nms, size);
-    loadYolo(cracker_yolo_, get_parameter("cracker_model").as_string(),
-      {"models/cheezit.onnx", "models/best_cracker.onnx"}, "Cheez-It", drink_conf, nms, size);
+    loadYolo(soda_yolo_, get_parameter("soda_model").as_string(),
+      {"models/soda.onnx"}, "soda", drink_conf, nms, size);
     loadYolo(pringles_yolo_, get_parameter("pringles_model").as_string(),
-      {"models/pringles.onnx", "models/pringles_ chips _can.onnx"}, "Pringles",
+      {"models/pringles.onnx", "models/pringles_ chips _can.onnx"}, "pringles",
       drink_conf, nms, size);
+    loadYolo(cracker_yolo_, get_parameter("cracker_model").as_string(),
+      {"models/crackerbox.onnx", "models/cheezit.onnx", "models/best_cracker.onnx"}, "cracker", drink_conf, nms, size);
     loadYolo(sugarbox_yolo_, get_parameter("sugarbox_model").as_string(),
-      {"models/sugarbox.onnx", "models/sugar_box.onnx", "models/sugar.onnx"}, "Sugarbox",
+      {"models/sugarbox.onnx", "models/sugar_box.onnx", "models/sugar.onnx"}, "sugar",
       drink_conf, nms, size);
+    loadYolo(botol_yolo_, get_parameter("botol_model").as_string(),
+      {"models/water.onnx", "models/botol.onnx"}, "bottle", drink_conf, nms, size);
   }
 
   if (enable_chair_) {
@@ -1829,6 +1827,9 @@ void ZedNode::loadPreRegisteredHost()
   host_person.name = host_name;
   host_person.feature = feat;
   host_person.feature_samples = 30; // Pre-registered with maximum confidence
+  host_person.clothing_color = get_parameter("host_shirt_color").as_string();
+  host_person.gender = get_parameter("host_gender").as_string();
+  host_person.locked = true;
   host_person.has_color = false;
   host_person.last_tracking_id = -1;
   host_person.last_seen = now();
@@ -1979,6 +1980,13 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
     const auto & b = candidates[i];
     const double valid_dist = (b.dist < 1e8) ? b.dist : 0.0;
     preview_bags_.push_back({b.det.rect, b.ok, b.x, b.y, valid_dist});
+    if (is_help_me_carry_ && b.ok) {
+      if (max_bags > 1) {
+        RCLCPP_INFO(get_logger(), "\033[1;33m[BAG %zu]\033[0m %.2f, %.2f (%.2fm)", i + 1, b.x, b.y, valid_dist);
+      } else {
+        RCLCPP_INFO(get_logger(), "\033[1;33m[BAG]\033[0m %.2f, %.2f (%.2fm)", b.x, b.y, valid_dist);
+      }
+    }
     if (!data.empty()) data += ";";
     data += cv::format("bag:%d,%d,%d,%d|",
       b.det.rect.x, b.det.rect.y, b.det.rect.width, b.det.rect.height);
@@ -1996,8 +2004,17 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
   std::vector<YoloDetection> dets = last_drink_dets_;
   if (enable_drinks_ && drink_frame_++ % yolo_stride_ == 0) {
     dets.clear();
-    for (YoloDetector * detector : {&botol_yolo_, &cracker_yolo_, &pringles_yolo_, &sugarbox_yolo_}) {
-      if (!detector->ready()) continue;
+    std::vector<YoloDetector *> active_detectors;
+    if (is_receptionist_) {
+      // Receptionist: utamakan deteksi soda dan pringles untuk tamu
+      active_detectors = {&soda_yolo_, &pringles_yolo_, &botol_yolo_, &cracker_yolo_, &sugarbox_yolo_};
+    } else {
+      // Restaurant: deteksi lengkap semua item pesanan (pringles, crackerbox, soda, sugarbox, bottle)
+      active_detectors = {&soda_yolo_, &pringles_yolo_, &cracker_yolo_, &sugarbox_yolo_, &botol_yolo_};
+    }
+
+    for (YoloDetector * detector : active_detectors) {
+      if (!detector || !detector->ready()) continue;
       std::vector<YoloDetection> found;
       detector->detect(bgr, {}, found);
       dets.insert(dets.end(), found.begin(), found.end());
@@ -2013,6 +2030,10 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
     const bool ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
     const double dist = ok ? std::hypot(x, y) : 0.0;
     preview_drinks_.push_back({det.label, det.rect, ok, x, y, dist});
+    if ((is_receptionist_ || is_restaurant_) && ok) {
+      RCLCPP_INFO(get_logger(), "\033[1;34m[DRINK]\033[0m %s: %.2f, %.2f (%.2fm)",
+        det.label.c_str(), x, y, dist);
+    }
   }
 
   // Urutkan berdasarkan jarak terdekat (prioritaskan yang memiliki kedalaman valid)
@@ -2155,6 +2176,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     const cv::Scalar hsv = zed_vision::extractTorsoColor(bgr, op.bbox);
     op_mem_.torso_hsv = 0.85 * op_mem_.torso_hsv + 0.15 * hsv;
     op_mem_.has_color = true;
+
+    if (is_help_me_carry_ && op.has_depth) {
+      RCLCPP_INFO(get_logger(), "\033[1;32m[OPERATOR]\033[0m %.2f, %.2f (%.2fm)",
+        op.x, op.y, op.dist);
+    }
   }
 
   if (!pending_register_name_.empty() && !entries.empty() && (is_receptionist_ || is_restaurant_)) {
@@ -2212,6 +2238,13 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     } catch (...) {}
 
     const cv::Scalar torso_hsv = zed_vision::extractTorsoColor(bgr, target->bbox);
+    cv::Rect target_shirt_roi = AttributeAnalyzer::computeShirtRoi(bgr, target->bbox, target->body->keypoint_2d);
+    std::string detected_shirt = "";
+    if (target_shirt_roi.width > 5 && target_shirt_roi.height > 5) {
+      detected_shirt = analyzer_.clothingColor(bgr, target_shirt_roi);
+    }
+    std::string detected_gender = analyzer_.gender(target->body->keypoint_2d, bgr, target->bbox);
+
     bool updated = false;
     for (auto & person : registered_persons_) {
       if (person.name == pending_register_name_) {
@@ -2221,7 +2254,13 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           person.torso_hsv = torso_hsv;
           person.has_color = true;
         }
-        if (!feature.empty()) {
+        if (person.clothing_color.empty() && !detected_shirt.empty()) {
+          person.clothing_color = detected_shirt;
+        }
+        if (person.gender.empty() && !detected_gender.empty()) {
+          person.gender = detected_gender;
+        }
+        if (!feature.empty() && !person.locked) {
           if (person.feature.empty()) {
             person.feature = feature;
             person.feature_samples = 1;
@@ -2241,6 +2280,10 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         updated = true;
         if (person.feature_samples >= 5) {
           person.feature_samples = 30; // Kunci template registrasi agar kebal drift / kontaminasi
+          person.locked = true;
+          RCLCPP_INFO(get_logger(),
+            "\033[1;32m[REGISTRATION LOCKED]\033[0m Registered '%s' (Baju: %s, Gender: %s, Face Template Locked)",
+            pending_register_name_.c_str(), person.clothing_color.c_str(), person.gender.c_str());
           pending_register_name_.clear();
         }
         break;
@@ -2253,10 +2296,17 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       new_person.feature_samples = feature.empty() ? 0 : 1;
       new_person.torso_hsv = torso_hsv;
       new_person.has_color = (target->bbox.width > 20);
+      new_person.clothing_color = detected_shirt;
+      new_person.gender = detected_gender;
+      new_person.locked = false;
       new_person.last_tracking_id = target->id;
       new_person.last_seen = current_time;
       if (new_person.feature_samples >= 5) {
         new_person.feature_samples = 30;
+        new_person.locked = true;
+        RCLCPP_INFO(get_logger(),
+          "\033[1;32m[REGISTRATION LOCKED]\033[0m Registered '%s' (Baju: %s, Gender: %s, Face Template Locked)",
+          pending_register_name_.c_str(), new_person.clothing_color.c_str(), new_person.gender.c_str());
         pending_register_name_.clear();
       }
       registered_persons_.push_back(new_person);
@@ -2272,6 +2322,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     std::vector<float> face_feat;
     cv::Scalar torso_hsv{0, 0, 0};
     bool has_torso{false};
+    cv::Rect shirt_roi;
+    std::string shirt_color;
+    std::string gender;
   };
   std::vector<EntryFeature> entry_feats(entries.size());
   for (size_t i = 0; i < entries.size(); ++i) {
@@ -2281,85 +2334,173 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     }
     entry_feats[i].torso_hsv = zed_vision::extractTorsoColor(bgr, entries[i].bbox);
     entry_feats[i].has_torso = (entries[i].bbox.width > 20 && entries[i].bbox.height > 40);
+    entry_feats[i].shirt_roi = AttributeAnalyzer::computeShirtRoi(bgr, entries[i].bbox, entries[i].body->keypoint_2d);
+    if (entry_feats[i].shirt_roi.width > 5 && entry_feats[i].shirt_roi.height > 5) {
+      entry_feats[i].shirt_color = analyzer_.clothingColor(bgr, entry_feats[i].shirt_roi);
+    }
+    entry_feats[i].gender = analyzer_.gender(entries[i].body->keypoint_2d, bgr, entries[i].bbox);
   }
 
   // --------------------------------------------------------------------------
-  // MULTI-TARGET PERSON MATCHING (Face-First, Contrastive Margin & Anti-Swap)
+  // MULTI-TARGET PERSON MATCHING (Global Permutation Optimization & Anti-Swap)
   // --------------------------------------------------------------------------
-
-  // TAHAP 1: Matriks kemiripan wajah untuk semua entry dan profil
+  std::vector<std::vector<float>> score_matrix(
+    entries.size(), std::vector<float>(registered_persons_.size(), -100.0f));
   std::vector<std::vector<float>> face_sim(
     entries.size(), std::vector<float>(registered_persons_.size(), -1.0f));
+
   for (size_t i = 0; i < entries.size(); ++i) {
-    if (entry_feats[i].face_feat.empty()) continue;
     for (size_t j = 0; j < registered_persons_.size(); ++j) {
-      if (registered_persons_[j].feature.empty()) continue;
-      face_sim[i][j] = AttributeAnalyzer::matchFace(
-        entry_feats[i].face_feat, registered_persons_[j].feature);
+      const auto & prof = registered_persons_[j];
+      const bool has_face = (!entry_feats[i].face_feat.empty() && !prof.feature.empty());
+      float f_sim = -1.0f;
+      float face_score = 0.40f; // Netral jika wajah tidak terdeteksi
+
+      if (has_face) {
+        f_sim = AttributeAnalyzer::matchFace(entry_feats[i].face_feat, prof.feature);
+        face_sim[i][j] = f_sim;
+        if (f_sim >= static_cast<float>(face_threshold_)) {
+          // Range [face_threshold_, 1.0] -> [0.65, 1.0]
+          face_score = 0.65f + 0.35f * std::min(1.0f, (f_sim - static_cast<float>(face_threshold_)) /
+            std::max(0.01f, 1.0f - static_cast<float>(face_threshold_)));
+        } else if (f_sim < 0.22f) {
+          // Wajah jelas berbeda
+          face_score = 0.0f;
+        } else {
+          // Ambigu [0.22, face_threshold_) -> [0.10, 0.60]
+          face_score = 0.10f + 0.50f * ((f_sim - 0.22f) / (static_cast<float>(face_threshold_) - 0.22f));
+        }
+      }
+
+      // Skor warna baju
+      float shirt_score = 0.50f; // Netral jika belum ada data
+      if (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty()) {
+        if (prof.clothing_color == entry_feats[i].shirt_color) {
+          shirt_score = 1.0f;
+        } else {
+          // Warna teks baju berbeda
+          double hsv_sim = 0.0;
+          if (prof.has_color && entry_feats[i].has_torso) {
+            double dh = std::min(std::abs(entry_feats[i].torso_hsv[0] - prof.torso_hsv[0]),
+                                 180.0 - std::abs(entry_feats[i].torso_hsv[0] - prof.torso_hsv[0]));
+            double ds = std::abs(entry_feats[i].torso_hsv[1] - prof.torso_hsv[1]);
+            double dv = std::abs(entry_feats[i].torso_hsv[2] - prof.torso_hsv[2]);
+            double color_dist = (dh / 90.0) * 0.6 + (ds / 255.0) * 0.2 + (dv / 255.0) * 0.2;
+            hsv_sim = std::max(0.0, 1.0 - color_dist / 0.35);
+          }
+          shirt_score = static_cast<float>(hsv_sim * 0.25);
+        }
+      } else if (prof.has_color && entry_feats[i].has_torso) {
+        double dh = std::min(std::abs(entry_feats[i].torso_hsv[0] - prof.torso_hsv[0]),
+                             180.0 - std::abs(entry_feats[i].torso_hsv[0] - prof.torso_hsv[0]));
+        double ds = std::abs(entry_feats[i].torso_hsv[1] - prof.torso_hsv[1]);
+        double dv = std::abs(entry_feats[i].torso_hsv[2] - prof.torso_hsv[2]);
+        double color_dist = (dh / 90.0) * 0.6 + (ds / 255.0) * 0.2 + (dv / 255.0) * 0.2;
+        shirt_score = static_cast<float>(std::max(0.0, 1.0 - color_dist / 0.40));
+      }
+
+      // Skor gender
+      float gender_score = 0.50f;
+      if (!prof.gender.empty() && !entry_feats[i].gender.empty()) {
+        gender_score = (prof.gender == entry_feats[i].gender) ? 1.0f : 0.05f;
+      }
+
+      // Hard Veto (Konflik mutlak)
+      bool veto = false;
+      if (has_face && f_sim < 0.20f) {
+        veto = true; // Wajah jelas-jelas orang lain
+      }
+      if (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
+          prof.clothing_color != entry_feats[i].shirt_color &&
+          (!has_face || f_sim < static_cast<float>(face_threshold_)))
+      {
+        veto = true; // Warna baju bertolak belakang dan wajah tidak cocok
+      }
+      if (!prof.gender.empty() && !entry_feats[i].gender.empty() &&
+          prof.gender != entry_feats[i].gender &&
+          (!has_face || f_sim < static_cast<float>(face_threshold_)))
+      {
+        veto = true; // Gender bertolak belakang dan wajah tidak cocok
+      }
+
+      if (veto) {
+        score_matrix[i][j] = -100.0f;
+      } else if (has_face) {
+        score_matrix[i][j] = 0.50f * face_score + 0.35f * shirt_score + 0.15f * gender_score;
+      } else {
+        score_matrix[i][j] = 0.70f * shirt_score + 0.30f * gender_score;
+      }
     }
   }
 
-  // TAHAP 2: Face-First Assignment dengan Contrastive Margin
-  struct FaceCandidate {
-    size_t entry_idx;
-    size_t profile_idx;
-    float sim;
-    float margin; // Selisih dengan profil terbaik kedua untuk entry ini
+  // TAHAP 2: Global Permutation Search (Maksimalisasi Joint Affinity Score)
+  std::vector<int> best_assignment(registered_persons_.size(), -1);
+  float max_total_score = -1e9f;
+
+  std::vector<int> current_assignment(registered_persons_.size(), -1);
+  std::vector<bool> entry_used(entries.size(), false);
+
+  std::function<void(size_t, float)> search_perm = [&](size_t prof_idx, float current_score) {
+    if (prof_idx == registered_persons_.size()) {
+      if (current_score > max_total_score) {
+        max_total_score = current_score;
+        best_assignment = current_assignment;
+      }
+      return;
+    }
+
+    // Opsi 1: Profil prof_idx tidak di-assign ke siapapun (-1)
+    current_assignment[prof_idx] = -1;
+    search_perm(prof_idx + 1, current_score);
+
+    // Opsi 2: Assign profil prof_idx ke salah satu entry yang belum terpakai
+    for (size_t i = 0; i < entries.size(); ++i) {
+      if (!entry_used[i]) {
+        float s = score_matrix[i][prof_idx];
+        if (s >= 0.35f) { // Ambang batas kelayakan kecocokan
+          entry_used[i] = true;
+          current_assignment[prof_idx] = static_cast<int>(i);
+          search_perm(prof_idx + 1, current_score + s);
+          entry_used[i] = false;
+        }
+      }
+    }
   };
-  std::vector<FaceCandidate> face_candidates;
 
-  for (size_t i = 0; i < entries.size(); ++i) {
-    if (entry_feats[i].face_feat.empty()) continue;
+  search_perm(0, 0.0f);
 
-    int best_j = -1;
-    float best_sim = -1.0f;
-    float second_sim = -1.0f;
-
-    for (size_t j = 0; j < registered_persons_.size(); ++j) {
-      const float s = face_sim[i][j];
-      if (s > best_sim) {
-        second_sim = best_sim;
-        best_sim = s;
-        best_j = static_cast<int>(j);
-      } else if (s > second_sim) {
-        second_sim = s;
-      }
-    }
-
-    if (best_j >= 0 && best_sim >= static_cast<float>(face_threshold_)) {
-      const float margin = (second_sim > 0.0f) ? (best_sim - second_sim) : 1.0f;
-      face_candidates.push_back({i, static_cast<size_t>(best_j), best_sim, margin});
-    }
-  }
-
-  // Urutkan kandidat wajah berdasarkan similarity tertinggi dan margin terbaik
-  std::sort(face_candidates.begin(), face_candidates.end(),
-    [](const FaceCandidate & a, const FaceCandidate & b) {
-      if (std::abs(a.sim - b.sim) > 0.04f) {
-        return a.sim > b.sim;
-      }
-      return a.margin > b.margin;
-    });
-
+  // TAHAP 3: Terapkan Hasil Assignment Optimal & Update Terkendali
   std::vector<std::string> raw_recognized_names(entries.size(), "");
-  std::vector<bool> profile_assigned(registered_persons_.size(), false);
+  for (size_t j = 0; j < registered_persons_.size(); ++j) {
+    int assigned_entry = best_assignment[j];
+    if (assigned_entry >= 0 && score_matrix[assigned_entry][j] >= 0.35f) {
+      raw_recognized_names[assigned_entry] = registered_persons_[j].name;
 
-  // Kunci profil yang terverifikasi wajah terlebih dahulu (Face Anchoring)
-  for (const auto & fc : face_candidates) {
-    if (raw_recognized_names[fc.entry_idx].empty() && !profile_assigned[fc.profile_idx]) {
-      raw_recognized_names[fc.entry_idx] = registered_persons_[fc.profile_idx].name;
-      profile_assigned[fc.profile_idx] = true;
-
-      auto & prof = registered_persons_[fc.profile_idx];
-      prof.last_tracking_id = entries[fc.entry_idx].id;
+      auto & prof = registered_persons_[j];
+      prof.last_tracking_id = entries[assigned_entry].id;
       prof.last_seen = current_time;
 
-      // Update terkontrol (hanya jika similarity sangat tinggi >= 0.50)
-      if (!entry_feats[fc.entry_idx].face_feat.empty() && prof.feature_samples < 30) {
-        if (fc.sim >= 0.50f) {
+      // Belajar atribut baju/gender jika sebelumnya belum terekam
+      if (prof.clothing_color.empty() && !entry_feats[assigned_entry].shirt_color.empty()) {
+        if (!entry_feats[assigned_entry].face_feat.empty() && face_sim[assigned_entry][j] >= 0.45f) {
+          prof.clothing_color = entry_feats[assigned_entry].shirt_color;
+          prof.torso_hsv = entry_feats[assigned_entry].torso_hsv;
+          prof.has_color = true;
+        }
+      }
+      if (prof.gender.empty() && !entry_feats[assigned_entry].gender.empty()) {
+        if (!entry_feats[assigned_entry].face_feat.empty() && face_sim[assigned_entry][j] >= 0.45f) {
+          prof.gender = entry_feats[assigned_entry].gender;
+        }
+      }
+
+      // KUNCI: Template wajah TIDAK BOLEH di-update jika sudah terkunci (prof.locked == true)
+      // Ini mencegah rusaknya Golden Template saat orang berada di kejauhan atau sudut miring
+      if (!prof.locked && !entry_feats[assigned_entry].face_feat.empty() && prof.feature_samples < 25) {
+        if (face_sim[assigned_entry][j] >= 0.50f) {
           float norm_sq = 0.0f;
           for (size_t k = 0; k < prof.feature.size(); ++k) {
-            prof.feature[k] = prof.feature[k] * 0.95f + entry_feats[fc.entry_idx].face_feat[k] * 0.05f;
+            prof.feature[k] = prof.feature[k] * 0.95f + entry_feats[assigned_entry].face_feat[k] * 0.05f;
             norm_sq += prof.feature[k] * prof.feature[k];
           }
           const float inv_norm = 1.0f / std::sqrt(std::max(norm_sq, 1e-6f));
@@ -2368,41 +2509,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           }
           prof.feature_samples++;
         }
-      }
-    }
-  }
-
-  // TAHAP 3: Fallback Re-ID untuk orang yang wajahnya tidak terlihat (menghadap samping/belakang)
-  // Hanya gunakan profil yang BELUM terpakai oleh orang berwajah jelas
-  for (size_t i = 0; i < entries.size(); ++i) {
-    if (!raw_recognized_names[i].empty()) continue; // Sudah dikenali dari wajah
-
-    for (size_t j = 0; j < registered_persons_.size(); ++j) {
-      if (profile_assigned[j]) continue; // Jangan curi profil orang lain!
-      const auto & prof = registered_persons_[j];
-
-      // Jika wajah entry terdeteksi tapi tidak cocok dengan profil j, tolak mutlak
-      if (!entry_feats[i].face_feat.empty() && face_sim[i][j] < static_cast<float>(face_threshold_)) {
-        continue;
-      }
-
-      bool id_matched = (prof.last_tracking_id == entries[i].id &&
-                         (current_time - prof.last_seen).seconds() < 3.0);
-      bool color_matched = false;
-
-      if (prof.has_color && entry_feats[i].has_torso) {
-        double dh = std::min(std::abs(entry_feats[i].torso_hsv[0] - prof.torso_hsv[0]),
-                             180.0 - std::abs(entry_feats[i].torso_hsv[0] - prof.torso_hsv[0]));
-        double ds = std::abs(entry_feats[i].torso_hsv[1] - prof.torso_hsv[1]);
-        double dv = std::abs(entry_feats[i].torso_hsv[2] - prof.torso_hsv[2]);
-        double color_dist = (dh / 90.0) * 0.6 + (ds / 255.0) * 0.2 + (dv / 255.0) * 0.2;
-        color_matched = (color_dist < 0.30);
-      }
-
-      if (id_matched && color_matched) {
-        raw_recognized_names[i] = prof.name;
-        profile_assigned[j] = true;
-        break;
       }
     }
   }
@@ -2523,6 +2629,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     PrevPerson person;
     person.id = entry.id;
     person.bbox = entry.bbox;
+    person.shirt_bbox = AttributeAnalyzer::computeShirtRoi(bgr, entry.bbox, points);
     person.has_pos = entry.has_depth;
     person.x_m = entry.x;
     person.y_m = entry.y;
@@ -2535,9 +2642,14 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         std::isfinite(point.y) ? point.y : NAN);
     }
 
-    const bool classify = is_receptionist_ && (first_person || !pending_register_name_.empty() || !recognized_name.empty());
+    if (person.shirt_bbox.width > 5 && person.shirt_bbox.height > 5) {
+      person.clothing = analyzer_.clothingColor(bgr, person.shirt_bbox);
+    }
+    const bool classify = (first_person || !pending_register_name_.empty() || !recognized_name.empty());
     if (classify) {
-      person.clothing = analyzer_.clothingColor(bgr, entry.bbox, points);
+      if (person.clothing.empty()) {
+        person.clothing = analyzer_.clothingColor(bgr, person.shirt_bbox);
+      }
       person.hair = analyzer_.hairColor(bgr, entry.bbox, points);
       person.gender = analyzer_.gender(points, bgr, entry.bbox);
     }
@@ -2545,13 +2657,32 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     if (first_person) {
       if (!is_restaurant_) {
         gesture_result = AttributeAnalyzer::detectGesture(points);
+        if (is_help_me_carry_ && gesture_result != "NONE") {
+          RCLCPP_INFO(get_logger(), "\033[1;36m[GESTURE]\033[0m %s", gesture_result.c_str());
+        }
       }
 
       std_msgs::msg::String attr_msg;
-      attr_msg.data = classify
-        ? person.gender + ", " + person.clothing + ", " + person.hair
-        : "";
+      std::string pub_gender = !person.gender.empty() ? person.gender : "person";
+      std::string pub_cloth = !person.clothing.empty() ? person.clothing : "casual attire";
+      std::string pub_hair = !person.hair.empty() ? person.hair : "dark hair";
+      attr_msg.data = pub_gender + ", " + pub_cloth + ", " + pub_hair;
       attributes_publisher_->publish(attr_msg);
+
+      if (is_receptionist_ || is_restaurant_) {
+        std::string display;
+        if (!recognized_name.empty()) {
+          display = recognized_name;
+        } else if (is_restaurant_) {
+          display = "customer";
+        } else {
+          display = "person";
+        }
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "\033[1;36m[VISION LIVE]\033[0m %s -> Baju: \033[1;33m%s\033[0m | Rambut: %s | Gender: %s (jarak: %.2fm)",
+          display.c_str(), pub_cloth.c_str(), pub_hair.c_str(), pub_gender.c_str(), entry.range_m);
+      }
     }
 
     preview_persons_.push_back(person);
@@ -2604,12 +2735,10 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       std_msgs::msg::String order_msg;
       order_msg.data = order_ss.str();
       order_publisher_->publish(order_msg);
-      latest_wave_.side = wave_result;
-      latest_wave_.x = customer.x;
-      latest_wave_.y = customer.y;
-      latest_wave_.depth = customer.range_m;
-    } else {
-      latest_wave_ = WavePos{};
+      if (wave_result != "NONE") {
+        RCLCPP_INFO(get_logger(), "\033[1;36m[WAVE]\033[0m %s (%.2f, %.2f)",
+          wave_result.c_str(), customer.x, customer.y);
+      }
     }
   }
 
@@ -2630,6 +2759,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       std_msgs::msg::String back_msg;
       back_msg.data = back_ss.str();
       person_back_publisher_->publish(back_msg);
+      RCLCPP_INFO(get_logger(), "\033[1;35m[BACK]\033[0m %.2f, %.2f (%.2fm)",
+        back_person.x, back_person.y, back_person.range_m);
     }
   }
 
@@ -2908,6 +3039,11 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
     preview_chairs_.push_back(
       {chair.label, chair.bbox, ok, chair.x, chair.y, dist, occupied, side});
 
+    if (is_receptionist_) {
+      RCLCPP_INFO(get_logger(), "\033[1;34m[CHAIR]\033[0m %s %s [%s] %.2f, %.2f (%.2fm)",
+        chair.label.c_str(), occupied ? "OCCUPIED" : "EMPTY", side.c_str(), chair.x, chair.y, dist);
+    }
+
     if (!occupied) {
       if (ok && dist > 0.1 && dist < best_empty_dist) {
         best_empty_dist = dist;
@@ -2995,7 +3131,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
           cv::FONT_HERSHEY_SIMPLEX, scale, fg, thickness, cv::LINE_AA);
       };
 
-    for (size_t i = 0; i < std::min<size_t>(2, preview_persons_.size()); ++i) {
+    for (size_t i = 0; i < std::min<size_t>(4, preview_persons_.size()); ++i) {
       const auto & p = preview_persons_[i];
       if (p.has_pos && p.range_m > person_max_dist_) continue;
       cv::Rect r = flipRect(p.bbox);
@@ -3008,18 +3144,23 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(0, 255, 0), -1);
       cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
-      // Hanya tampilkan banner jika ada nama tamu / registered name (Alex / Guest Name)
-      if (is_receptionist_ && !is_help_me_carry_) {
-        if (!p.name.empty()) {
-          std::string label = p.name;
-          if (p.is_sitting) label += " [Seated]";
-          if (p.is_facing_back) label += " [Back]";
-          banner(label, r.x, r.y, color,
-            p.is_sitting ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0),
-            cv::Scalar(255, 255, 255), 0.58, 2);
+
+      // Bbox warna biru (BGR: 255, 0, 0) langsung di area baju untuk deteksi warna pakaian
+      if (p.shirt_bbox.width > 0 && p.shirt_bbox.height > 0) {
+        cv::Rect shirt_r = flipRect(p.shirt_bbox);
+        shirt_r &= cv::Rect(0, 0, W, H);
+        if (shirt_r.width > 0 && shirt_r.height > 0) {
+          cv::rectangle(canvas, shirt_r, cv::Scalar(255, 0, 0), 2);
+          if (!p.clothing.empty()) {
+            banner(p.clothing, shirt_r.x, shirt_r.y, cv::Scalar(255, 0, 0),
+              cv::Scalar(180, 0, 0), cv::Scalar(255, 255, 255), 0.48, 1);
+          }
         }
-      } else {
-        std::string label = "ID: " + std::to_string(p.id);
+      }
+
+      // Hanya tampilkan banner jika ada nama tamu / registered name (Alex / Guest Name)
+      if (!p.name.empty()) {
+        std::string label = p.name;
         if (p.is_sitting) label += " [Seated]";
         if (p.is_facing_back) label += " [Back]";
         banner(label, r.x, r.y, color,
@@ -3042,7 +3183,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       }
     }
 
-    for (size_t i = 0; i < std::min<size_t>(4, preview_drinks_.size()); ++i) {
+    for (size_t i = 0; i < std::min<size_t>(6, preview_drinks_.size()); ++i) {
       const auto & d = preview_drinks_[i];
       cv::Rect r = flipRect(d.bbox);
       r &= cv::Rect(0, 0, W, H);
@@ -3051,7 +3192,22 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       const int cx = r.x + r.width / 2;
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 4, cv::Scalar(255, 255, 0), -1);
-      cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
+      cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 2);
+
+      // Banner label teks singkat di atas bounding box khusus untuk 4 model target:
+      // pringles, cracker, soda, sugar
+      std::string norm_label = d.label;
+      if (norm_label == "cracker_box" || norm_label == "crackerbox") norm_label = "cracker";
+      if (norm_label == "sugar_box" || norm_label == "sugarbox") norm_label = "sugar";
+
+      if (norm_label == "soda" || norm_label == "pringles" || norm_label == "cracker" || norm_label == "sugar") {
+        std::string banner_text = norm_label;
+        if (d.has_pos) {
+          banner_text += cv::format(" (%.2fm)", d.range_m);
+        }
+        banner(banner_text, r.x, r.y, cv::Scalar(255, 255, 0),
+          cv::Scalar(180, 180, 0), cv::Scalar(0, 0, 0), 0.45, 1);
+      }
     }
 
     for (size_t i = 0; i < std::min<size_t>(4, preview_chairs_.size()); ++i) {
@@ -3066,18 +3222,23 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       cv::circle(canvas, cv::Point(cx, cy), 4, color, -1);
     }
 
-    int hud_y = 52;
-    auto hud = [&](const std::string & title, double x, double y, double dist,
+    int hud_y = 36;
+    auto hud_item = [&](const std::string & title, double x, double y, double dist, bool valid,
         const cv::Scalar & color) {
-        cv::putText(canvas, title, cv::Point(10, hud_y),
-          cv::FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv::LINE_AA);
-        cv::putText(canvas, "x : " + cv::format("%.2f m", x), cv::Point(10, hud_y + 20),
-          cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv::LINE_AA);
-        cv::putText(canvas, "y : " + cv::format("%.2f m", y), cv::Point(10, hud_y + 40),
-          cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv::LINE_AA);
-        cv::putText(canvas, "distance : " + cv::format("%.2f m", dist),
-          cv::Point(10, hud_y + 60), cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv::LINE_AA);
-        hud_y += 86;
+        std::string header = title;
+        if (valid && dist > 0.0) {
+          header += cv::format(" (%.2fm)", dist);
+        } else {
+          header += " : -";
+        }
+        cv::putText(canvas, header, cv::Point(10, hud_y),
+          cv::FONT_HERSHEY_SIMPLEX, 0.52, color, 2, cv::LINE_AA);
+
+        if (valid) {
+          cv::putText(canvas, cv::format("x: %.2fm | y: %.2fm", x, y), cv::Point(10, hud_y + 18),
+            cv::FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv::LINE_AA);
+        }
+        hud_y += valid ? 40 : 25;
       };
 
     const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos)
@@ -3085,38 +3246,36 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     std::string person_title;
     if (is_receptionist_ && !is_help_me_carry_) {
       if (!p0.name.empty()) {
-        person_title = p0.name + (p0.is_facing_back ? " [Back] :" : " :");
+        person_title = p0.name + (p0.is_facing_back ? " [Back]" : "");
       } else {
-        person_title = std::string("Person") + (p0.is_facing_back ? " [Back] :" : " :");
+        person_title = std::string("Person") + (p0.is_facing_back ? " [Back]" : "");
       }
     } else {
-      person_title = "Operator [ID " + std::to_string(p0.id) + "]" + (p0.is_facing_back ? " [Back] :" : " :");
+      person_title = std::string("Operator") + (p0.is_facing_back ? " [Back]" : "");
     }
-    hud(person_title, p0.x_m, p0.y_m, p0.range_m, cv::Scalar(0, 255, 0));
+    hud_item(person_title, p0.x_m, p0.y_m, p0.range_m, p0.has_pos, cv::Scalar(0, 255, 0));
 
     if (enable_bag_) {
-      if (preview_bags_.empty()) {
-        hud("Bag :", 0.0, 0.0, 0.0, cv::Scalar(0, 69, 255));
-      } else {
-        for (size_t i = 0; i < std::min<size_t>(2, preview_bags_.size()); ++i) {
-          const auto & b = preview_bags_[i];
-          const std::string title = (preview_bags_.size() > 1) ? cv::format("Bag %zu :", i + 1) : "Bag :";
-          hud(title, b.x_m, b.y_m, b.range_m, cv::Scalar(0, 69, 255));
-        }
-      }
+      // Selalu tampilkan status Bag 1 dan Bag 2 (kedeteksi maupun belum)
+      const bool b1_ok = (preview_bags_.size() >= 1 && preview_bags_[0].has_pos);
+      const double b1_x = b1_ok ? preview_bags_[0].x_m : 0.0;
+      const double b1_y = b1_ok ? preview_bags_[0].y_m : 0.0;
+      const double b1_d = b1_ok ? preview_bags_[0].range_m : 0.0;
+      hud_item("Bag 1", b1_x, b1_y, b1_d, b1_ok, cv::Scalar(0, 69, 255));
+
+      const bool b2_ok = (preview_bags_.size() >= 2 && preview_bags_[1].has_pos);
+      const double b2_x = b2_ok ? preview_bags_[1].x_m : 0.0;
+      const double b2_y = b2_ok ? preview_bags_[1].y_m : 0.0;
+      const double b2_d = b2_ok ? preview_bags_[1].range_m : 0.0;
+      hud_item("Bag 2", b2_x, b2_y, b2_d, b2_ok, cv::Scalar(0, 69, 255));
     }
-    for (size_t i = 0; i < std::min<size_t>(3, preview_drinks_.size()); ++i) {
-      if (preview_drinks_[i].has_pos) {
-        hud(preview_drinks_[i].label + " :", preview_drinks_[i].x_m,
-          preview_drinks_[i].y_m, preview_drinks_[i].range_m, cv::Scalar(255, 255, 0));
-      }
-    }
+
     for (const auto & c : preview_chairs_) {
       if (!c.has_pos) continue;
       std::string disp_name = c.label;
       if (!disp_name.empty()) disp_name[0] = static_cast<char>(std::toupper(disp_name[0]));
-      hud((c.occupied ? "Occupied " : "Empty ") + disp_name + " [" + c.side + "] :",
-        c.x_m, c.y_m, c.range_m,
+      hud_item((c.occupied ? "Occ " : "Empty ") + disp_name + " [" + c.side + "]",
+        c.x_m, c.y_m, c.range_m, true,
         c.occupied ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0));
     }
 
@@ -3170,69 +3329,6 @@ void ZedNode::loop()
       processPersons(bgr, zed_point_cloud_);
     processChairs(bgr, zed_point_cloud_);
     showPreview(bgr);
-
-    PersonPos person{};
-    if (!preview_persons_.empty() && preview_persons_[0].has_pos) {
-      person.x = preview_persons_[0].x_m;
-      person.y = preview_persons_[0].y_m;
-      person.depth = preview_persons_[0].range_m;
-    }
-
-    BagPos bag{};
-    if (!preview_bags_.empty() && preview_bags_[0].has_pos) {
-      bag.x = preview_bags_[0].x_m;
-      bag.y = preview_bags_[0].y_m;
-    }
-
-    if (is_help_me_carry_) {
-      IC(person.x, person.y, person.depth);
-      IC(bag.x, bag.y);
-    } else if (is_receptionist_) {
-      GuestPos guest{};
-      RegisteredPersonPos registered{};
-      for (const auto & p : preview_persons_) {
-        if (!p.has_pos) continue;
-        if (!p.name.empty() && registered.name.empty()) {
-          registered.name = p.name;
-          registered.x = p.x_m;
-          registered.y = p.y_m;
-          registered.depth = p.range_m;
-        } else if (p.name.empty() && guest.depth == 0.0) {
-          guest.x = p.x_m;
-          guest.y = p.y_m;
-          guest.depth = p.range_m;
-        }
-      }
-
-      ChairPos chair{};
-      if (!preview_chairs_.empty() && preview_chairs_[0].has_pos) {
-        chair.label = preview_chairs_[0].label;
-        chair.status = preview_chairs_[0].occupied ? "occupied" : "empty";
-        chair.x = preview_chairs_[0].x_m;
-        chair.y = preview_chairs_[0].y_m;
-        chair.depth = preview_chairs_[0].range_m;
-      }
-
-      IC(guest.x, guest.y, guest.depth);
-      if (!registered.name.empty()) {
-        IC(registered.name, registered.x, registered.y, registered.depth);
-      }
-      if (chair.label != "none") {
-        IC(chair.label, chair.status, chair.x, chair.y, chair.depth);
-      }
-    } else if (is_restaurant_) {
-      PersonPos customer{};
-      if (!preview_persons_.empty() && preview_persons_[0].has_pos) {
-        customer.x = preview_persons_[0].x_m;
-        customer.y = preview_persons_[0].y_m;
-        customer.depth = preview_persons_[0].range_m;
-      }
-
-      IC(customer.x, customer.y, customer.depth);
-      if (latest_wave_.side != "none") {
-        IC(latest_wave_.side, latest_wave_.x, latest_wave_.y, latest_wave_.depth);
-      }
-    }
   } catch (const std::exception & e) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
       "Vision loop exception: %s", e.what());

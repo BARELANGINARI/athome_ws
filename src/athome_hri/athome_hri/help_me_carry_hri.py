@@ -188,7 +188,7 @@ class BarelangHriNode(Node):
             key: self.create_client(Trigger, srv_name)
             for key, srv_name in self.SERVICE_MAP.items()
         }
-        self.get_logger().info("BarelangHriNode Task Manager aktif.")
+        self.get_logger().info("\033[1;36m[HRI]\033[0m Ready")
 
     def register_runtime_updaters(
         self, updaters: Dict[str, Callable[[Any], None]]
@@ -249,7 +249,7 @@ class BarelangHriNode(Node):
         msg = String()
         msg.data = event_name
         self.event_pub.publish(msg)
-        self.get_logger().info(f"[HRI Event] {event_name}")
+        self.get_logger().info(f"\033[1;36m[HRI]\033[0m Event: {event_name}")
 
     def _on_tts_say(self, msg: String) -> None:
         text = msg.data.strip()
@@ -299,7 +299,7 @@ class BarelangHriNode(Node):
             self.loop.call_soon_threadsafe(self.gesture_event.set)
 
         if changed:
-            self.get_logger().info(f"[HRI] Gesture terdeteksi: {gesture}")
+            self.get_logger().info(f"\033[1;33m[GESTURE]\033[0m {gesture}")
             if self.on_gesture_changed:
                 self.loop.call_soon_threadsafe(self.on_gesture_changed, gesture)
 
@@ -332,10 +332,10 @@ class BarelangHriNode(Node):
         """Memanggil ROS 2 Trigger service secara asinkron dengan batas waktu (timeout)."""
         client = self.srv_clients.get(service_key)
         if not client or not client.service_is_ready():
-            self.get_logger().warn(f"Service '{service_key}' belum siap!")
+            self.get_logger().warn(f"\033[1;33m[HRI]\033[0m Service '{service_key}' not ready!")
             return False, "Service not ready"
 
-        self.get_logger().info(f"[HRI] Memanggil service: {service_key}...")
+        self.get_logger().info(f"\033[1;36m[HRI]\033[0m Calling: {service_key}")
         ros_future = client.call_async(Trigger.Request())
         async_future: asyncio.Future[Tuple[bool, str]] = self.loop.create_future()
 
@@ -640,10 +640,10 @@ class HriCoordinator:
         await self.audio_queue.speak_and_wait("I have reached the starting point.")
         await self.audio_queue.speak_and_wait("Task Completed.")
         await self.set_state(RobotState.DONE, "Task Completed")
-        self.ros_node.get_logger().info("[HRI] TASK COMPLETED. Sistem standby.")
+        self.ros_node.get_logger().info("\033[1;32m[HRI]\033[0m Task completed, standby")
 
     async def _abort_sequence(self, reason: str) -> None:
-        self.ros_node.get_logger().error(f"[HRI Abort] {reason}")
+        self.ros_node.get_logger().error(f"\033[1;31m[HRI]\033[0m Aborted: {reason}")
         await self.set_state(RobotState.IDLE, f"Error: {reason}")
         await self.audio_queue.speak_and_wait(
             "Sorry, I encountered a problem and cannot continue the task."

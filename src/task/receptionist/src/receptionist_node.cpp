@@ -1005,16 +1005,16 @@ public:
     if (chair_found) {
       RCLCPP_INFO(
         get_logger(),
-        "\033[1;32m[SEARCH CHAIR]\033[0m Kursi kosong terdeteksi dalam pandangan! Target: %s (dist=%.2fm, angle=%.2frad, side=%s). Menyelaraskan arah hadap...",
-        current_target.raw_info.c_str(), current_target.dist, current_target.angle_err, current_target.side.c_str());
+        "\033[1;32m[CHAIR]\033[0m Target: %s (%.2fm, %s), aligning...",
+        current_target.raw_info.c_str(), current_target.dist, current_target.side.c_str());
       publishStatus("Empty chair in view! Aligning robot heading to face chair...");
 
       if (std::abs(current_target.angle_err) <= align_chair_tolerance_rad_) {
         aligned = true;
         RCLCPP_INFO(
           get_logger(),
-          "\033[1;32m[SEARCH CHAIR]\033[0m Robot sudah tepat menghadap ke kursi kosong terdekat (angle_err=%.2frad <= tol=%.2frad).",
-          current_target.angle_err, align_chair_tolerance_rad_);
+          "\033[1;32m[CHAIR]\033[0m Aligned: err=%.2frad",
+          current_target.angle_err);
       } else {
         auto align_start_time = now();
         const double align_timeout_sec = 6.0;
@@ -1023,7 +1023,7 @@ public:
         while (rclcpp::ok() && is_searching_chair_.load()) {
           const double align_elapsed = (now() - align_start_time).seconds();
           if (align_elapsed > align_timeout_sec) {
-            RCLCPP_WARN(get_logger(), "[SEARCH CHAIR] Alignment timeout (%.1fs reached), stopping.", align_timeout_sec);
+            RCLCPP_WARN(get_logger(), "\033[1;33m[CHAIR]\033[0m Alignment timeout (%.1fs)", align_timeout_sec);
             break;
           }
 
@@ -1076,14 +1076,14 @@ public:
       publishStatus(res->message);
       RCLCPP_INFO(
         get_logger(),
-        "\033[1;32m[SEARCH CHAIR SUCCESS]\033[0m %s (dist=%.2fm, angle_err=%.2frad, aligned=%s)",
-        current_target.raw_info.c_str(), current_target.dist, current_target.angle_err,
-        aligned ? "yes" : "approx");
+        "\033[1;32m[CHAIR]\033[0m Found: %s (%.2fm, %s)",
+        current_target.raw_info.c_str(), current_target.dist,
+        aligned ? "aligned" : "approx");
     } else {
       res->success = false;
       res->message = "No empty chair detected in current view";
       publishStatus(res->message);
-      RCLCPP_WARN(get_logger(), "\033[1;33m[SEARCH CHAIR]\033[0m %s", res->message.c_str());
+      RCLCPP_WARN(get_logger(), "\033[1;33m[CHAIR]\033[0m No empty chair detected");
     }
   }
 
@@ -1486,10 +1486,10 @@ public:
     auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     send_opts.goal_response_callback = [this, wp](const GoalHandleNav::SharedPtr & handle) {
       if (!handle) {
-        RCLCPP_WARN(get_logger(), "[NAV] Nav2 rejected goal for '%s'.", wp.name.c_str());
+        RCLCPP_WARN(get_logger(), "\033[1;31m[NAV]\033[0m Goal rejected: %s", wp.name.c_str());
       } else {
         current_goal_handle_ = handle;
-        RCLCPP_INFO(get_logger(), "[NAV] Nav2 accepted goal for '%s'. Navigating with recovery & replanning BT...", wp.name.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;36m[NAV]\033[0m Navigating to '%s'", wp.name.c_str());
       }
     };
     send_opts.result_callback = [promise](const GoalHandleNav::WrappedResult & res) {
@@ -1498,24 +1498,24 @@ public:
 
     auto send_future = nav_client_->async_send_goal(goal, send_opts);
     if (send_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready || !send_future.get()) {
-      RCLCPP_ERROR(get_logger(), "Failed to send navigation goal to %s", wp.name.c_str());
+      RCLCPP_ERROR(get_logger(), "\033[1;31m[NAV]\033[0m Failed sending goal to %s", wp.name.c_str());
       return false;
     }
 
     if (future.wait_for(std::chrono::seconds(static_cast<int>(nav_timeout_sec_))) == std::future_status::ready) {
       const auto code = future.get();
       if (code == rclcpp_action::ResultCode::SUCCEEDED) {
-        RCLCPP_INFO(get_logger(), "Successfully arrived at '%s'", wp.name.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;32m[NAV]\033[0m Arrived at '%s'", wp.name.c_str());
         return true;
       } else {
         RCLCPP_WARN(
-          get_logger(), "Navigation to '%s' failed or canceled (code %d)",
+          get_logger(), "\033[1;33m[NAV]\033[0m Failed: '%s' (code %d)",
           wp.name.c_str(), static_cast<int>(code));
         return false;
       }
     } else {
       RCLCPP_ERROR(
-        get_logger(), "Navigation to '%s' timed out after %.1f seconds. Canceling goal...",
+        get_logger(), "\033[1;31m[NAV]\033[0m Timeout: '%s' (%.1fs)",
         wp.name.c_str(), nav_timeout_sec_);
       if (current_goal_handle_) {
         nav_client_->async_cancel_goal(current_goal_handle_);

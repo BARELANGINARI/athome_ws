@@ -25,7 +25,8 @@ vision:
     face_model: "models/face_recognition_sface.onnx"
     face_threshold: 0.363
     botol_model: "models/water.onnx"
-    cracker_model: "models/cheezit.onnx"
+    soda_model: "models/soda.onnx"
+    cracker_model: "models/crackerbox.onnx"
     pringles_model: "models/pringles.onnx"
     sugarbox_model: "models/sugarbox.onnx"
     drink_min_area: 100.0

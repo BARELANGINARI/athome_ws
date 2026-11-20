@@ -16,7 +16,11 @@ def generate_launch_description():
         DeclareLaunchArgument('mirror', default_value='false', description='Mirror display preview horizontally'),
         DeclareLaunchArgument('publish_yaw', default_value='true', description='Publish IMU yaw topic from vision (default: true)'),
         DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 deg range (default: true)'),
-        DeclareLaunchArgument('enable_drinks', default_value='true', description='Enable drink & object detection (pringles, sugarbox, etc.)'),
+        DeclareLaunchArgument('enable_drinks', default_value='true', description='Enable drink & object detection (pringles, sugarbox, soda, crackerbox)'),
+        DeclareLaunchArgument('pringles_model', default_value='models/pringles.onnx', description='Path to pringles ONNX model'),
+        DeclareLaunchArgument('cracker_model', default_value='models/crackerbox.onnx', description='Path to crackerbox ONNX model'),
+        DeclareLaunchArgument('soda_model', default_value='models/soda.onnx', description='Path to soda ONNX model'),
+        DeclareLaunchArgument('sugarbox_model', default_value='models/sugarbox.onnx', description='Path to sugarbox ONNX model'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -40,8 +44,10 @@ def generate_launch_description():
                 'enable_drinks': LaunchConfiguration('enable_drinks'),
                 'enable_chair': 'false',
                 'enable_back_detection': 'false',
-                'pringles_model': 'models/pringles.onnx',
-                'sugarbox_model': 'models/sugarbox.onnx',
+                'pringles_model': LaunchConfiguration('pringles_model'),
+                'cracker_model': LaunchConfiguration('cracker_model'),
+                'soda_model': LaunchConfiguration('soda_model'),
+                'sugarbox_model': LaunchConfiguration('sugarbox_model'),
             }.items(),
         ),
     ])

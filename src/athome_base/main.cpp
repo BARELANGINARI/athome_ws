@@ -1,7 +1,6 @@
 #include <memory>
 #include "rclcpp/rclcpp.hpp"
 #include "nucleo_node.hpp"
-#include "icecream.hpp"
 
 #define STM32_IP_DEFAULT "192.168.0.4"
 #define STM32_PORT_DEFAULT 2002
@@ -142,7 +141,7 @@ void nucleo::setupRos()
   tfBroadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(this);
   if (publish_imu_yaw_) {
     imu_yaw_pub_ = create_publisher<std_msgs::msg::Float64>(pub_yaw_topic_, 10);
-    RCLCPP_INFO(get_logger(), "Publishing Razor IMU yaw to topic: '%s'", pub_yaw_topic_.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;34m[HW]\033[0m IMU yaw: %s", pub_yaw_topic_.c_str());
   }
   if (use_yaw_topic) {
     yaw_sub = create_subscription<std_msgs::msg::Float64>(
@@ -190,7 +189,7 @@ void nucleo::onYawTopic(const std_msgs::msg::Float64::SharedPtr msg)
 void nucleo::onLifterCmd(const std_msgs::msg::UInt8::SharedPtr msg)
 {
   lifter_target_.store(msg->data);
-  RCLCPP_INFO(get_logger(), "Lifter target set: %u", static_cast<unsigned int>(lifter_target_.load()));
+  RCLCPP_INFO(get_logger(), "\033[1;34m[HW]\033[0m Lifter target: %u", static_cast<unsigned int>(lifter_target_.load()));
 }
 
 void nucleo::handleLifterUp(
@@ -201,7 +200,7 @@ void nucleo::handleLifterUp(
   lifter_target_.store(1);
   res->success = true;
   res->message = "Lifter target UP (1) sent";
-  RCLCPP_INFO(get_logger(), "Service /lifter/naik called: lifter_target = 1");
+  RCLCPP_INFO(get_logger(), "\033[1;34m[HW]\033[0m Lifter UP");
 }
 
 void nucleo::handleLifterDown(
@@ -212,7 +211,7 @@ void nucleo::handleLifterDown(
   lifter_target_.store(0);
   res->success = true;
   res->message = "Lifter target DOWN (0) sent";
-  RCLCPP_INFO(get_logger(), "Service /lifter/turun called: lifter_target = 0");
+  RCLCPP_INFO(get_logger(), "\033[1;34m[HW]\033[0m Lifter DOWN");
 }
 
 double nucleo::normalizeDeg(double deg)
@@ -255,10 +254,9 @@ void nucleo::controlLoop()
   l_state.data = snap.lifterState;
   lifter_state_pub->publish(l_state);
 
-  IC(target.vx, target.vy, target.w);
-  IC(shaped.vx, shaped.vy, shaped.w);
-  IC(pc2stm.MKiri, pc2stm.MKanan, pc2stm.MBelakang);
-  IC(snap.Ebelakang, snap.Ekanan, snap.EKiri);
+  RCLCPP_DEBUG(get_logger(),
+    "target: vx=%.2f vy=%.2f w=%.2f | shaped: vx=%.2f vy=%.2f w=%.2f",
+    target.vx, target.vy, target.w, shaped.vx, shaped.vy, shaped.w);
 }
 
 MotionTarget nucleo::resolveTarget(const rclcpp::Time & t_now, bool & timed_out)

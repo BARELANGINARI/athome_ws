@@ -6,7 +6,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument('task', default_value='all', description='Task filter for vision IC logging: help_me_carry, receptionist, restaurant, or all'),
+        DeclareLaunchArgument('task', default_value='all', description='Task filter for vision logging: help_me_carry, receptionist, restaurant, or all'),
         DeclareLaunchArgument('camera_fps', default_value='30.0', description='Camera frame rate (FPS)'),
         DeclareLaunchArgument('publish_yaw', default_value='true', description='Publish IMU yaw topic'),
         DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 range instead of -180..180'),
@@ -30,7 +30,8 @@ def generate_launch_description():
         DeclareLaunchArgument('face_model', default_value='models/face_recognition_sface.onnx', description='Path to face recognition ONNX model'),
         DeclareLaunchArgument('face_threshold', default_value='0.363', description='Cosine similarity threshold for face recognition match'),
         DeclareLaunchArgument('botol_model', default_value='models/water.onnx', description='Path to water/botol ONNX model'),
-        DeclareLaunchArgument('cracker_model', default_value='models/cheezit.onnx', description='Path to cheezit/cracker ONNX model'),
+        DeclareLaunchArgument('soda_model', default_value='models/soda.onnx', description='Path to soda ONNX model'),
+        DeclareLaunchArgument('cracker_model', default_value='models/crackerbox.onnx', description='Path to cheezit/cracker ONNX model'),
         DeclareLaunchArgument('pringles_model', default_value='models/pringles.onnx', description='Path to pringles ONNX model'),
         DeclareLaunchArgument('sugarbox_model', default_value='models/sugarbox.onnx', description='Path to sugarbox ONNX model'),
         DeclareLaunchArgument('drink_min_area', default_value='100.0', description='Minimum bounding box area for drinks & crackers (pixels)'),
@@ -78,6 +79,7 @@ def generate_launch_description():
                 'face_model': LaunchConfiguration('face_model'),
                 'face_threshold': LaunchConfiguration('face_threshold'),
                 'botol_model': LaunchConfiguration('botol_model'),
+                'soda_model': LaunchConfiguration('soda_model'),
                 'cracker_model': LaunchConfiguration('cracker_model'),
                 'pringles_model': LaunchConfiguration('pringles_model'),
                 'sugarbox_model': LaunchConfiguration('sugarbox_model'),

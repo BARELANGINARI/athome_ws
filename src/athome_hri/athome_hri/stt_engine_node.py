@@ -80,7 +80,7 @@ class SttEngineNode(Node):
         self._loop_thread.start()
 
         self.get_logger().info(
-            f"Memuat model Whisper '{params['whisper_model']}' (language={params['stt_language']})..."
+            f"\033[1;33m[STT]\033[0m Loading model '{params['whisper_model']}' ({params['stt_language']})..."
         )
         self._stt = SpeechToText(
             model_size=str(params["whisper_model"]),
@@ -91,11 +91,11 @@ class SttEngineNode(Node):
         )
         if auto_detected:
             self.get_logger().info(
-                f"Otomatis mendeteksi USB Mic pada index {resolved_index}"
+                f"\033[1;33m[STT]\033[0m Mic device index {resolved_index}"
             )
         elif resolved_index is None:
             self.get_logger().warn(
-                "USB Mic tidak terdeteksi; menggunakan perangkat input audio default sistem."
+                "\033[1;33m[STT]\033[0m Default system mic in use"
             )
 
         self._listener = LocalMicListener(
@@ -121,7 +121,7 @@ class SttEngineNode(Node):
         if self._enable_local_mic and self._enable_visualizer:
             self._visualizer.start()
         self._listener.start()
-        self.get_logger().info("Standalone STT engine ready.")
+        self.get_logger().info("\033[1;33m[STT]\033[0m Ready")
 
     def _set_visualizer_enabled(self, enabled: bool) -> None:
         self._enable_visualizer = bool(enabled)
@@ -199,7 +199,7 @@ class SttEngineNode(Node):
         message = String()
         message.data = transcript
         self.transcript_pub.publish(message)
-        self.get_logger().info("[STT] %s", transcript)
+        self.get_logger().info("\033[1;33m[STT]\033[0m \"%s\"", transcript)
 
     async def _on_audio(self, audio_input: Union[np.ndarray, bytes]) -> None:
         await self._transcribe(audio_input)

@@ -14,6 +14,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/quaternion.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -198,6 +199,13 @@ public:
     declare_parameter("order_topic", "/vision/order");
     declare_parameter("order_frame", "base_link"); // "base_link" (relatif thd robot) atau "map" (global)
     declare_parameter("standoff_distance", 0.85);   // Jarak henti aman di depan orang (meter) agar tidak menabrak / masuk obstacle
+    declare_parameter("adaptive_standoff_enabled", true);
+    declare_parameter("adaptive_standoff_min", 0.85);
+    declare_parameter("adaptive_standoff_max", 1.40);
+    declare_parameter("adaptive_standoff_step", 0.05);
+    declare_parameter("costmap_obstacle_threshold", 60);
+    declare_parameter("costmap_topic", "/global_costmap/costmap");
+    declare_parameter("robot_radius", 0.24);
     declare_parameter("auto_navigate", false);      // Langsung navigasi saat data order masuk atau tunggu service
     declare_parameter("nav_timeout_sec", 120.0);
     declare_parameter("search_sweep_angle_deg", 90.0); // Rotasi pencarian ke kiri 90 deg dan ke kanan 90 deg
@@ -227,6 +235,13 @@ public:
     order_topic_ = get_parameter("order_topic").as_string();
     order_frame_ = get_parameter("order_frame").as_string();
     standoff_dist_ = get_parameter("standoff_distance").as_double();
+    adaptive_standoff_enabled_ = get_parameter("adaptive_standoff_enabled").as_bool();
+    adaptive_standoff_min_ = get_parameter("adaptive_standoff_min").as_double();
+    adaptive_standoff_max_ = get_parameter("adaptive_standoff_max").as_double();
+    adaptive_standoff_step_ = get_parameter("adaptive_standoff_step").as_double();
+    costmap_obstacle_threshold_ = get_parameter("costmap_obstacle_threshold").as_int();
+    costmap_topic_ = get_parameter("costmap_topic").as_string();
+    robot_radius_ = get_parameter("robot_radius").as_double();
     auto_navigate_ = get_parameter("auto_navigate").as_bool();
     nav_timeout_sec_ = get_parameter("nav_timeout_sec").as_double();
     search_sweep_angle_deg_ = get_parameter("search_sweep_angle_deg").as_double();
@@ -287,6 +302,16 @@ public:
       person_label_topic_, rclcpp::SensorDataQoS(),
       [this](const std_msgs::msg::String::SharedPtr msg) {
         onPersonLabelMessage(msg);
+      },
+      sub_opts);
+
+    // Subscription /global_costmap/costmap untuk adaptive safe standoff
+    costmap_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+      costmap_topic_,
+      rclcpp::QoS(1).reliable(),
+      [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(costmap_mutex_);
+        latest_costmap_ = msg;
       },
       sub_opts);
 
@@ -717,10 +742,10 @@ private:
     auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     send_opts.goal_response_callback = [this, label](const GoalHandleNav::SharedPtr & handle) {
       if (!handle) {
-        RCLCPP_WARN(get_logger(), "[%s] Nav2 rejected goal!", label.c_str());
+        RCLCPP_WARN(get_logger(), "\033[1;31m[%s]\033[0m Goal rejected by Nav2", label.c_str());
       } else {
         current_goal_handle_ = handle;
-        RCLCPP_INFO(get_logger(), "[%s] Nav2 accepted goal! Navigating with real-time obstacle avoidance...", label.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;36m[%s]\033[0m Goal accepted, navigating...", label.c_str());
       }
     };
     send_opts.result_callback = [promise](const GoalHandleNav::WrappedResult & res) {
@@ -729,26 +754,87 @@ private:
 
     auto send_future = nav_client_->async_send_goal(goal, send_opts);
     if (send_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready || !send_future.get()) {
-      RCLCPP_ERROR(get_logger(), "[%s] Failed sending goal to Nav2 action server!", label.c_str());
+      RCLCPP_ERROR(get_logger(), "\033[1;31m[%s]\033[0m Failed sending goal to Nav2", label.c_str());
       return false;
     }
 
     if (future.wait_for(std::chrono::seconds(static_cast<int>(nav_timeout_sec_))) == std::future_status::ready) {
       const auto code = future.get();
       if (code == rclcpp_action::ResultCode::SUCCEEDED) {
-        RCLCPP_INFO(get_logger(), "\033[1;32m[%s] Arrived safely at destination position!\033[0m", label.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;32m[%s]\033[0m Arrived safely at destination", label.c_str());
         return true;
       } else {
-        RCLCPP_WARN(get_logger(), "[%s] Navigation canceled or aborted by Nav2 (code %d).", label.c_str(), static_cast<int>(code));
+        RCLCPP_WARN(get_logger(), "\033[1;33m[%s]\033[0m Canceled/aborted (code %d)", label.c_str(), static_cast<int>(code));
         return false;
       }
     } else {
-      RCLCPP_ERROR(get_logger(), "[%s] Navigation timed out after %.1fs. Canceling goal...", label.c_str(), nav_timeout_sec_);
+      RCLCPP_ERROR(get_logger(), "\033[1;31m[%s]\033[0m Timeout (%.1fs)", label.c_str(), nav_timeout_sec_);
       if (current_goal_handle_) {
         nav_client_->async_cancel_goal(current_goal_handle_);
       }
       return false;
     }
+  }
+
+  // Mengambil nilai cell costmap pada koordinat peta global (map)
+  int getCostmapValue(double map_x, double map_y) const
+  {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex &>(costmap_mutex_));
+    if (!latest_costmap_) {
+      return -1;
+    }
+    const auto & info = latest_costmap_->info;
+    const double res = info.resolution;
+    if (res <= 1e-5) return -1;
+
+    const int mx = static_cast<int>(std::floor((map_x - info.origin.position.x) / res));
+    const int my = static_cast<int>(std::floor((map_y - info.origin.position.y) / res));
+
+    if (mx < 0 || mx >= static_cast<int>(info.width) ||
+        my < 0 || my >= static_cast<int>(info.height))
+    {
+      return 100; // Di luar jangkauan peta -> anggap rintangan
+    }
+
+    const size_t idx = static_cast<size_t>(my * info.width + mx);
+    if (idx >= latest_costmap_->data.size()) {
+      return 100;
+    }
+    return static_cast<int>(latest_costmap_->data[idx]);
+  }
+
+  // Memeriksa apakah suatu koordinat (map_x, map_y) beserta radius fisik robot aman dari dinding/rintangan costmap
+  bool isPoseSafeInCostmap(
+    double map_x, double map_y, double safety_radius, int cost_threshold, int & out_max_cost) const
+  {
+    out_max_cost = 0;
+    {
+      std::lock_guard<std::mutex> lock(const_cast<std::mutex &>(costmap_mutex_));
+      if (!latest_costmap_) {
+        // Jika costmap belum diterima, izinkan agar navigasi tetap berjalan
+        return true;
+      }
+    }
+
+    // Periksa titik tengah dan 8 titik di perimeter footprint bodi robot
+    static const double offsets[9][2] = {
+      {0.0, 0.0},
+      {1.0, 0.0}, {-1.0, 0.0}, {0.0, 1.0}, {0.0, -1.0},
+      {0.707, 0.707}, {-0.707, 0.707}, {0.707, -0.707}, {-0.707, -0.707}
+    };
+
+    for (const auto & off : offsets) {
+      const double cx = map_x + off[0] * safety_radius;
+      const double cy = map_y + off[1] * safety_radius;
+      int c = getCostmapValue(cx, cy);
+      if (c > out_max_cost) {
+        out_max_cost = c;
+      }
+      if (c < 0 || c >= cost_threshold) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // Fungsi utama: Menghitung koordinat global, standoff offset, menyimpan koordinat untuk deliver_order, dan mengirim ke Nav2
@@ -779,14 +865,67 @@ private:
     const double angle_to_person = std::atan2(dy, dx);
 
     // 3. Tentukan Titik Berhenti Aman (Standoff Offset)
-    // Robot berhenti sejauh standoff_dist_ (misal 0.85m) di depan orang dan menghadap langsung ke orang
+    // Robot berhenti sejauh standoff_dist_ di depan orang dan menghadap langsung ke orang.
+    // Jika adaptive_standoff aktif, jarak henti dimundurkan secara adaptif jika titik henti mepet dinding/rintangan.
+    double chosen_standoff = standoff_dist_;
+    if (adaptive_standoff_enabled_) {
+      double best_d = standoff_dist_;
+      int min_cost_seen = 999;
+      bool found_safe = false;
+
+      // Scan jarak henti dari terdekat (ideal) hingga terjauh yang diizinkan (Ray Back-off)
+      for (double d = adaptive_standoff_min_; d <= adaptive_standoff_max_ + 1e-4; d += adaptive_standoff_step_) {
+        if (d >= dist_to_person - 0.20) {
+          break; // Jangan mundur melampaui posisi robot saat ini
+        }
+
+        const double cand_x = target_map_x - d * std::cos(angle_to_person);
+        const double cand_y = target_map_y - d * std::sin(angle_to_person);
+
+        int max_cost = 0;
+        const bool safe = isPoseSafeInCostmap(
+          cand_x, cand_y, robot_radius_ + 0.06, costmap_obstacle_threshold_, max_cost);
+
+        if (max_cost < min_cost_seen) {
+          min_cost_seen = max_cost;
+          best_d = d;
+        }
+
+        if (safe) {
+          chosen_standoff = d;
+          found_safe = true;
+          break; // Temukan jarak terdekat yang sudah aman dari dinding!
+        }
+      }
+
+      if (!found_safe) {
+        chosen_standoff = best_d;
+        RCLCPP_WARN(
+          get_logger(),
+          "\033[1;33m[Adaptive Standoff]\033[0m Tidak ada sel bebas murni di rentang [%.2fm - %.2fm]. "
+          "Menggunakan jarak dengan cost terendah: %.2fm (cost=%d).",
+          adaptive_standoff_min_, adaptive_standoff_max_, chosen_standoff, min_cost_seen);
+      } else if (std::abs(chosen_standoff - standoff_dist_) > 0.02) {
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;33m[Adaptive Standoff]\033[0m Titik standar (%.2fm) dekat dinding/rintangan! "
+          "Jarak henti otomatis disesuaikan ke \033[1;32m%.2fm\033[0m di ruang aman.",
+          standoff_dist_, chosen_standoff);
+      } else {
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;32m[Adaptive Standoff]\033[0m Titik henti ideal %.2fm aman dan bebas dari dinding/rintangan.",
+          chosen_standoff);
+      }
+    }
+
     double goal_x = target_map_x;
     double goal_y = target_map_y;
     double goal_yaw = angle_to_person;
 
-    if (dist_to_person > standoff_dist_) {
-      goal_x = target_map_x - standoff_dist_ * std::cos(angle_to_person);
-      goal_y = target_map_y - standoff_dist_ * std::sin(angle_to_person);
+    if (dist_to_person > chosen_standoff) {
+      goal_x = target_map_x - chosen_standoff * std::cos(angle_to_person);
+      goal_y = target_map_y - chosen_standoff * std::sin(angle_to_person);
     } else {
       // Jika robot sudah sangat dekat dengan orang, pertahankan posisi robot sekarang dan hadapkan ke orang
       goal_x = rx;
@@ -795,8 +934,8 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;32m[Safe Goal]\033[0m Target Person: (%.2f, %.2f) | Goal Pose: (%.2f, %.2f, yaw=%.1f deg)",
-      target_map_x, target_map_y, goal_x, goal_y, goal_yaw * 180.0 / M_PI);
+      "\033[1;32m[Safe Goal]\033[0m Target Person: (%.2f, %.2f) | Standoff: %.2fm | Goal Pose: (%.2f, %.2f, yaw=%.1f deg)",
+      target_map_x, target_map_y, chosen_standoff, goal_x, goal_y, goal_yaw * 180.0 / M_PI);
 
     // 4. Simpan koordinat tujuan ini agar bisa digunakan kembali oleh service /deliver_order
     {
@@ -1153,7 +1292,7 @@ private:
           if ((now() - phase_start_time).seconds() >= 0.4) {
             phase = SearchPhase::SWEEP_LEFT;
             phase_start_time = now();
-            RCLCPP_INFO(get_logger(), "[Search] Sweeping Left to +%.1f deg...", search_sweep_angle_deg_);
+            RCLCPP_INFO(get_logger(), "\033[1;36m[SEARCH]\033[0m Sweep left (+%.0f°)", search_sweep_angle_deg_);
           }
           break;
         }
@@ -1164,7 +1303,7 @@ private:
             cmd_vel_pub_->publish(cmd); // Stop sejenak
             phase = SearchPhase::HOLD_LEFT;
             phase_start_time = now();
-            RCLCPP_INFO(get_logger(), "[Search] Reached Left position. Holding for visual detection...");
+            RCLCPP_INFO(get_logger(), "\033[1;36m[SEARCH]\033[0m Hold left");
           } else {
             cmd.angular.z = computeAngularVel(cur_yaw, target_left);
             cmd_vel_pub_->publish(cmd);
@@ -1177,7 +1316,7 @@ private:
           if ((now() - phase_start_time).seconds() >= search_hold_time_sec_) {
             phase = SearchPhase::RETURN_FROM_LEFT;
             phase_start_time = now();
-            RCLCPP_INFO(get_logger(), "[Search] Returning to center from left...");
+            RCLCPP_INFO(get_logger(), "\033[1;36m[SEARCH]\033[0m Return center");
           }
           break;
         }
@@ -1188,7 +1327,7 @@ private:
             cmd_vel_pub_->publish(cmd); // Stop
             phase = SearchPhase::SWEEP_RIGHT;
             phase_start_time = now();
-            RCLCPP_INFO(get_logger(), "[Search] At center. Sweeping Right to -%.1f deg...", search_sweep_angle_deg_);
+            RCLCPP_INFO(get_logger(), "\033[1;36m[SEARCH]\033[0m Sweep right (-%.0f°)", search_sweep_angle_deg_);
           } else {
             cmd.angular.z = computeAngularVel(cur_yaw, target_center);
             cmd_vel_pub_->publish(cmd);
@@ -1202,7 +1341,7 @@ private:
             cmd_vel_pub_->publish(cmd); // Stop
             phase = SearchPhase::HOLD_RIGHT;
             phase_start_time = now();
-            RCLCPP_INFO(get_logger(), "[Search] Reached Right position. Holding for visual detection...");
+            RCLCPP_INFO(get_logger(), "\033[1;36m[SEARCH]\033[0m Hold right");
           } else {
             cmd.angular.z = computeAngularVel(cur_yaw, target_right);
             cmd_vel_pub_->publish(cmd);
@@ -1215,7 +1354,7 @@ private:
           if ((now() - phase_start_time).seconds() >= search_hold_time_sec_) {
             phase = SearchPhase::RETURN_FROM_RIGHT;
             phase_start_time = now();
-            RCLCPP_INFO(get_logger(), "[Search] Returning to center from right...");
+            RCLCPP_INFO(get_logger(), "\033[1;36m[SEARCH]\033[0m Return center");
           }
           break;
         }
@@ -1225,7 +1364,7 @@ private:
           if (std::abs(err) <= 0.06 || (now() - phase_start_time).seconds() > 10.0) {
             cmd_vel_pub_->publish(cmd); // Stop
             phase = SearchPhase::DONE;
-            RCLCPP_INFO(get_logger(), "[Search] Rotation search sweep finished.");
+            RCLCPP_INFO(get_logger(), "\033[1;32m[SEARCH]\033[0m Sweep complete");
           } else {
             cmd.angular.z = computeAngularVel(cur_yaw, target_center);
             cmd_vel_pub_->publish(cmd);
@@ -1339,6 +1478,18 @@ private:
   double saved_order_x_{0.0};
   double saved_order_y_{0.0};
   double saved_order_yaw_{0.0};
+
+  // Adaptive Standoff Settings & State
+  bool adaptive_standoff_enabled_{true};
+  double adaptive_standoff_min_{0.85};
+  double adaptive_standoff_max_{1.40};
+  double adaptive_standoff_step_{0.05};
+  int costmap_obstacle_threshold_{60};
+  std::string costmap_topic_{"/global_costmap/costmap"};
+  double robot_radius_{0.24};
+  std::mutex costmap_mutex_;
+  nav_msgs::msg::OccupancyGrid::SharedPtr latest_costmap_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
 
   // Align Heading to Person BBox Settings & State
   bool align_to_person_enabled_{true};

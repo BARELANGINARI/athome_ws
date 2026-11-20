@@ -27,6 +27,7 @@
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/quaternion.hpp"
+#include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -233,6 +234,13 @@ public:
     declare_parameter<std::string>("order_frame", "base_link");
     declare_parameter<double>("customer_standoff_distance", 0.85);
     declare_parameter<double>("object_standoff_distance", 0.45);
+    declare_parameter<bool>("adaptive_standoff_enabled", true);
+    declare_parameter<double>("adaptive_standoff_min", 0.85);
+    declare_parameter<double>("adaptive_standoff_max", 1.40);
+    declare_parameter<double>("adaptive_standoff_step", 0.05);
+    declare_parameter<int>("costmap_obstacle_threshold", 60);
+    declare_parameter<std::string>("costmap_topic", "/global_costmap/costmap");
+    declare_parameter<double>("robot_radius", 0.24);
     declare_parameter<double>("nav_timeout_sec", 120.0);
     declare_parameter<double>("order1_detect_timeout_sec", 8.0);
     declare_parameter<int>("max_customers", 2);
@@ -254,6 +262,13 @@ public:
     order_frame_ = get_parameter("order_frame").as_string();
     customer_standoff_dist_ = get_parameter("customer_standoff_distance").as_double();
     object_standoff_dist_ = get_parameter("object_standoff_distance").as_double();
+    adaptive_standoff_enabled_ = get_parameter("adaptive_standoff_enabled").as_bool();
+    adaptive_standoff_min_ = get_parameter("adaptive_standoff_min").as_double();
+    adaptive_standoff_max_ = get_parameter("adaptive_standoff_max").as_double();
+    adaptive_standoff_step_ = get_parameter("adaptive_standoff_step").as_double();
+    costmap_obstacle_threshold_ = get_parameter("costmap_obstacle_threshold").as_int();
+    costmap_topic_ = get_parameter("costmap_topic").as_string();
+    robot_radius_ = get_parameter("robot_radius").as_double();
     nav_timeout_sec_ = get_parameter("nav_timeout_sec").as_double();
     order1_detect_timeout_sec_ = get_parameter("order1_detect_timeout_sec").as_double();
     max_customers_ = std::max(1, static_cast<int>(get_parameter("max_customers").as_int()));
@@ -327,6 +342,16 @@ public:
     bag_sub_ = create_subscription<std_msgs::msg::String>(
       "/vision/bag_detections", rclcpp::SensorDataQoS(),
       std::bind(&RestaurantTaskNode::onBagDetections, this, std::placeholders::_1),
+      sub_opts);
+
+    // Subscription /global_costmap/costmap untuk adaptive standoff
+    costmap_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+      costmap_topic_,
+      rclcpp::QoS(1).reliable(),
+      [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(costmap_mutex_);
+        latest_costmap_ = msg;
+      },
       sub_opts);
 
     // --------------------------------------------------------------------------
@@ -488,6 +513,18 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr order_pos_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr drink_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr bag_sub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr costmap_sub_;
+
+  // Adaptive Standoff Settings & State
+  bool adaptive_standoff_enabled_{true};
+  double adaptive_standoff_min_{0.85};
+  double adaptive_standoff_max_{1.40};
+  double adaptive_standoff_step_{0.05};
+  int costmap_obstacle_threshold_{60};
+  std::string costmap_topic_{"/global_costmap/costmap"};
+  double robot_radius_{0.24};
+  std::mutex costmap_mutex_;
+  nav_msgs::msg::OccupancyGrid::SharedPtr latest_costmap_;
 
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_action_client_;
   TriggerClient::SharedPtr vision_wave_hand_client_;
@@ -518,7 +555,7 @@ private:
       msg.data = text;
       status_pub_->publish(msg);
     }
-    RCLCPP_INFO(get_logger(), "\033[1;32m[RESTAURANT STATUS]\033[0m %s", text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;34m[STATUS]\033[0m %s", text.c_str());
   }
 
   void publishCustomerHmi(bool show)
@@ -547,7 +584,7 @@ private:
       msg.data = "{\"action\":\"hide\"}";
     }
     hmi_customer_pub_->publish(msg);
-    RCLCPP_INFO(get_logger(), "\033[1;36m[HMI DISPLAY]\033[0m Customer Order Card -> %s", show ? "SHOW" : "HIDE");
+    RCLCPP_INFO(get_logger(), "\033[1;36m[HMI]\033[0m Order Card -> %s", show ? "SHOW" : "HIDE");
   }
 
   void publishExpression(const std::string & expr)
@@ -556,7 +593,7 @@ private:
       std_msgs::msg::String msg;
       msg.data = expr;
       face_expression_pub_->publish(msg);
-      RCLCPP_INFO(get_logger(), "\033[1;35m[FACE EXPR]\033[0m Robot Eye Expression -> %s", expr.c_str());
+      RCLCPP_INFO(get_logger(), "\033[1;35m[FACE]\033[0m Expression -> %s", expr.c_str());
     }
   }
 
@@ -586,7 +623,7 @@ private:
   {
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;36m[FSM STATE]\033[0m %s \033[1;33m->\033[0m \033[1;32m%s\033[0m (Customer %d) | %s",
+      "\033[1;34m[STATE]\033[0m %s -> %s (C%d: %s)",
       stateToString(state_.load()).c_str(),
       stateToString(next_state).c_str(),
       customer_idx_,
@@ -715,20 +752,20 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;34m[NAV2]\033[0m Sending Goal Pose: (x=%.2f, y=%.2f, yaw=%.1f deg)",
+      "\033[1;36m[NAV]\033[0m Goal: (x=%.2f, y=%.2f, yaw=%.1f°)",
       goal_x, goal_y, goal_yaw * 180.0 / M_PI);
 
     auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     send_opts.goal_response_callback =
       [this, on_finished](const GoalHandleNav::SharedPtr & handle) {
         if (!handle) {
-          RCLCPP_WARN(get_logger(), "[Nav2] Goal ditolak oleh server Nav2!");
+          RCLCPP_WARN(get_logger(), "\033[1;31m[NAV]\033[0m Goal rejected by Nav2");
           nav_busy_ = false;
           last_nav_fail_time_ = now();
           if (on_finished) on_finished(false);
         } else {
           current_goal_handle_ = handle;
-          RCLCPP_INFO(get_logger(), "[Nav2] Goal diterima! Robot sedang bergerak...");
+          RCLCPP_INFO(get_logger(), "\033[1;32m[NAV]\033[0m Goal accepted, navigating...");
         }
       };
 
@@ -738,10 +775,10 @@ private:
         nav_busy_ = false;
         const bool ok = (result.code == rclcpp_action::ResultCode::SUCCEEDED);
         if (ok) {
-          RCLCPP_INFO(get_logger(), "\033[1;32m[NAV2]\033[0m Robot tiba di tujuan!");
+          RCLCPP_INFO(get_logger(), "\033[1;32m[NAV]\033[0m Arrived safely at destination");
         } else {
           RCLCPP_WARN(
-            get_logger(), "[Nav2] Navigasi gagal/dibatalkan (code=%d).",
+            get_logger(), "\033[1;33m[NAV]\033[0m Navigation failed/aborted (code %d)",
             static_cast<int>(result.code));
           last_nav_fail_time_ = now();
         }
@@ -752,6 +789,67 @@ private:
       };
 
     nav_action_client_->async_send_goal(goal, send_opts);
+  }
+
+  // Mengambil nilai cell costmap pada koordinat peta global (map)
+  int getCostmapValue(double map_x, double map_y) const
+  {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex &>(costmap_mutex_));
+    if (!latest_costmap_) {
+      return -1;
+    }
+    const auto & info = latest_costmap_->info;
+    const double res = info.resolution;
+    if (res <= 1e-5) return -1;
+
+    const int mx = static_cast<int>(std::floor((map_x - info.origin.position.x) / res));
+    const int my = static_cast<int>(std::floor((map_y - info.origin.position.y) / res));
+
+    if (mx < 0 || mx >= static_cast<int>(info.width) ||
+        my < 0 || my >= static_cast<int>(info.height))
+    {
+      return 100; // Di luar jangkauan peta -> anggap rintangan
+    }
+
+    const size_t idx = static_cast<size_t>(my * info.width + mx);
+    if (idx >= latest_costmap_->data.size()) {
+      return 100;
+    }
+    return static_cast<int>(latest_costmap_->data[idx]);
+  }
+
+  // Memeriksa apakah suatu koordinat (map_x, map_y) beserta radius fisik robot aman dari dinding/rintangan costmap
+  bool isPoseSafeInCostmap(
+    double map_x, double map_y, double safety_radius, int cost_threshold, int & out_max_cost) const
+  {
+    out_max_cost = 0;
+    {
+      std::lock_guard<std::mutex> lock(const_cast<std::mutex &>(costmap_mutex_));
+      if (!latest_costmap_) {
+        // Jika costmap belum diterima, izinkan agar navigasi tetap berjalan
+        return true;
+      }
+    }
+
+    static const double angles[8] = {
+      0.0, M_PI_4, M_PI_2, 3.0 * M_PI_4, M_PI, -3.0 * M_PI_4, -M_PI_2, -M_PI_4};
+
+    int c = getCostmapValue(map_x, map_y);
+    out_max_cost = std::max(out_max_cost, c);
+    if (c < 0 || c >= cost_threshold) {
+      return false;
+    }
+
+    for (int i = 0; i < 8; ++i) {
+      const double px = map_x + safety_radius * std::cos(angles[i]);
+      const double py = map_y + safety_radius * std::sin(angles[i]);
+      c = getCostmapValue(px, py);
+      out_max_cost = std::max(out_max_cost, c);
+      if (c < 0 || c >= cost_threshold) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // Navigasi ke target (orang atau objek) dengan jarak henti aman (standoff distance)
@@ -774,13 +872,60 @@ private:
     const double dist = std::hypot(dx, dy);
     const double angle = std::atan2(dy, dx);
 
+    double chosen_standoff = standoff_dist;
+    // Terapkan adaptive standoff jika navigasi ke orang (standoff >= 0.70m) dan adaptive aktif
+    if (adaptive_standoff_enabled_ && standoff_dist >= 0.70) {
+      double best_d = standoff_dist;
+      int min_cost_seen = 999;
+      bool found_safe = false;
+
+      for (double d = adaptive_standoff_min_; d <= adaptive_standoff_max_ + 1e-4; d += adaptive_standoff_step_) {
+        if (d >= dist - 0.20) {
+          break;
+        }
+
+        const double cand_x = map_tx - d * std::cos(angle);
+        const double cand_y = map_ty - d * std::sin(angle);
+
+        int max_cost = 0;
+        const bool safe = isPoseSafeInCostmap(
+          cand_x, cand_y, robot_radius_ + 0.06, costmap_obstacle_threshold_, max_cost);
+
+        if (max_cost < min_cost_seen) {
+          min_cost_seen = max_cost;
+          best_d = d;
+        }
+
+        if (safe) {
+          chosen_standoff = d;
+          found_safe = true;
+          break;
+        }
+      }
+
+      if (!found_safe) {
+        chosen_standoff = best_d;
+        RCLCPP_WARN(
+          get_logger(),
+          "\033[1;33m[Manager Adaptive Standoff]\033[0m Tidak ada sel bebas murni di rentang [%.2fm - %.2fm]. "
+          "Menggunakan jarak dengan cost terendah: %.2fm (cost=%d).",
+          adaptive_standoff_min_, adaptive_standoff_max_, chosen_standoff, min_cost_seen);
+      } else if (std::abs(chosen_standoff - standoff_dist) > 0.02) {
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;33m[Manager Adaptive Standoff]\033[0m Titik henti standar (%.2fm) dekat dinding! "
+          "Jarak disesuaikan ke \033[1;32m%.2fm\033[0m.",
+          standoff_dist, chosen_standoff);
+      }
+    }
+
     double goal_x = map_tx;
     double goal_y = map_ty;
     const double goal_yaw = angle;
 
-    if (dist > standoff_dist) {
-      goal_x = map_tx - standoff_dist * std::cos(angle);
-      goal_y = map_ty - standoff_dist * std::sin(angle);
+    if (dist > chosen_standoff) {
+      goal_x = map_tx - chosen_standoff * std::cos(angle);
+      goal_y = map_ty - chosen_standoff * std::sin(angle);
     } else {
       goal_x = rx;
       goal_y = ry;
@@ -885,10 +1030,7 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
-    RCLCPP_INFO(
-      get_logger(),
-      "\033[1;35m[TTS SAY]\033[0m \"%s\" | Mic: \033[1;31m[MUTED]\033[0m",
-      text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;32m[TTS]\033[0m \"%s\"", text.c_str());
   }
 
   void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
@@ -906,9 +1048,9 @@ private:
       pending_tts_done_ = nullptr;
     }
 
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
       get_logger(),
-      "\033[1;32m[TTS FINISHED]\033[0m Playback complete | Mic: \033[1;32m[LISTENING]\033[0m | State: \033[1;36m%s\033[0m",
+      "[TTS] Done | State: %s",
       stateToString(state_.load()).c_str());
 
     if (callback) {
@@ -1186,9 +1328,8 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;33m[STT HEARD]\033[0m \"%s\" | State: \033[1;36m%s\033[0m",
-      message->data.c_str(),
-      stateToString(state_.load()).c_str());
+      "\033[1;33m[STT]\033[0m \"%s\"",
+      message->data.c_str());
   }
 
   // Callback deteksi lambaian tangan / gesture dari Vision (/vision/gesture)
@@ -1462,7 +1603,7 @@ private:
     callTrigger(
       release_client, release_srv_name,
       [this, on_done](bool /*rel_ok*/, const std::string & rel_msg) {
-        RCLCPP_INFO(get_logger(), "[ARM] Release gripper result: %s", rel_msg.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;35m[ARM]\033[0m Release gripper: %s", rel_msg.c_str());
 
         TriggerClient::SharedPtr free_client = arm_free_client_;
         std::string free_srv_name = "/arm/free";
@@ -1473,15 +1614,10 @@ private:
           free_srv_name = "/arm/relax";
         }
 
-        RCLCPP_INFO(
-          get_logger(),
-          "\033[1;36m[ARM]\033[0m Turning off arm torque via %s...",
-          free_srv_name.c_str());
-
         callTrigger(
           free_client, free_srv_name,
           [this, on_done](bool /*free_ok*/, const std::string & free_msg) {
-            RCLCPP_INFO(get_logger(), "[ARM] Torque off result: %s", free_msg.c_str());
+            RCLCPP_INFO(get_logger(), "\033[1;35m[ARM]\033[0m Torque off: %s", free_msg.c_str());
             if (on_done) {
               on_done();
             }
@@ -2256,7 +2392,7 @@ private:
           o1 = current_customer_.order_1;
         }
         speakAsync(
-          "for " + o1 + ", please hold out your hand beneath this order, i'm going to let go on one .. two .. three",
+          "for " + o1 + ", please hold out your hand beneath this order, i'm going to let go on one two and three",
           [this]() {
             transitionTo(
               RestaurantState::RELEASE_GRIPPER_AND_TORQUE_OFF,
