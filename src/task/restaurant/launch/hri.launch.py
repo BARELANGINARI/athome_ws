@@ -1,7 +1,7 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.conditions import IfCondition
 from launch.substitutions import (
     LaunchConfiguration,
@@ -17,6 +17,8 @@ def generate_launch_description():
     default_task_params = os.path.join(pkg_restaurant, 'config', 'restaurant_params.yaml')
 
     return LaunchDescription([
+        SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
+        SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
         DeclareLaunchArgument(
             'params_file',
             default_value=PathJoinSubstitution([

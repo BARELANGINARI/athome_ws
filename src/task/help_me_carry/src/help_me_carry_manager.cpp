@@ -182,11 +182,7 @@ public:
     state_enter_time_ = now();
 
     RCLCPP_INFO(get_logger(),
-      "\n============================================================\n"
-      "  \033[1;32m[SYSTEM]\033[0m Help Me Carry Orchestrator Started\n"
-      "  \033[1;36m[STATE]\033[0m  INIT\n"
-      "  \033[1;33m[MIC]\033[0m    LISTENING\n"
-      "============================================================");
+      "\033[1;32m[HELP_ME_CARRY]\033[0m Orchestrator started (State: INIT, Mic: LISTENING)");
   }
 
 private:
@@ -1093,6 +1089,7 @@ private:
 // ==============================================================================
 int main(int argc, char ** argv)
 {
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   auto node = std::make_shared<HelpMeCarryOrchestrator>();
 

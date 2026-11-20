@@ -270,12 +270,8 @@ public:
     initCurrentGuest(1);
 
     RCLCPP_INFO(get_logger(),
-      "\n============================================================\n"
-      "  \033[1;32m[SYSTEM]\033[0m Receptionist Task Manager Started\n"
-      "  \033[1;36m[HOST]\033[0m   %s | Drink: %s | Interest: %s\n"
-      "  \033[1;33m[STATE]\033[0m  INIT\n"
-      "============================================================",
-      host_.name.c_str(), host_.drink.c_str(), host_.interest.c_str());
+      "\033[1;32m[RECEPTIONIST]\033[0m Task Manager started (Host: %s, Drink: %s)",
+      host_.name.c_str(), host_.drink.c_str());
   }
 
 private:
@@ -2176,6 +2172,7 @@ private:
 // ==============================================================================
 int main(int argc, char ** argv)
 {
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   auto node = std::make_shared<ReceptionistTaskNode>();
   rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2);

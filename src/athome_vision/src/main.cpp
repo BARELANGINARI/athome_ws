@@ -1488,7 +1488,7 @@ ZedNode::ZedNode()
   }
   enable_bag_ = get_parameter("enable_bag").as_bool();
   RCLCPP_INFO(
-    get_logger(), "Vision Task Mode: %s, enable_bag: %s",
+    get_logger(), "Vision task mode: %s (enable_bag: %s)",
     task_mode_.c_str(), enable_bag_ ? "true" : "false");
 
   camera_fps_ = get_parameter("camera_fps").as_double();
@@ -1553,7 +1553,7 @@ ZedNode::ZedNode()
   init.depth_minimum_distance =
     static_cast<float>(get_parameter("depth_minimum_distance").as_double());
 
-  RCLCPP_INFO(get_logger(), "################Start capturing################");
+  RCLCPP_INFO(get_logger(), "ZED camera capturing started");
   sl::ERROR_CODE state = sl::ERROR_CODE::FAILURE;
   for (int attempt = 1; attempt <= 5; ++attempt) {
     state = zed_.open(init);
@@ -1831,7 +1831,7 @@ void ZedNode::loadPreRegisteredHost()
       full_path = fallback;
     } else {
       RCLCPP_INFO(get_logger(),
-        "[Host Pre-Register] Info: File foto host tidak ditemukan di '%s'. Pre-registrasi dari foto dilewati.",
+        "[RECEPTIONIST] Host photo '%s' not found, skipped",
         host_photo.c_str());
       return;
     }
@@ -1840,14 +1840,14 @@ void ZedNode::loadPreRegisteredHost()
   cv::Mat img = cv::imread(full_path);
   if (img.empty()) {
     RCLCPP_WARN(get_logger(),
-      "[Host Pre-Register] Gagal membaca gambar foto host: %s", full_path.c_str());
+      "[RECEPTIONIST] Failed to read host photo: %s", full_path.c_str());
     return;
   }
 
   std::vector<float> feat = analyzer_.extractFaceFromImage(img);
   if (feat.empty()) {
     RCLCPP_WARN(get_logger(),
-      "[Host Pre-Register] Gagal mengekstrak fitur wajah host dari: %s", full_path.c_str());
+      "[RECEPTIONIST] Failed to extract face features from host photo: %s", full_path.c_str());
     return;
   }
 
@@ -1868,8 +1868,8 @@ void ZedNode::loadPreRegisteredHost()
 
   registered_persons_.push_back(host_person);
   RCLCPP_INFO(get_logger(),
-    "\033[1;32m[Host Pre-Register] Berhasil mendaftarkan Host '%s' dari file foto: %s (%dx%d px)\033[0m",
-    host_name.c_str(), full_path.c_str(), img.cols, img.rows);
+    "\033[1;32m[RECEPTIONIST]\033[0m Host '%s' registered from photo (%dx%d)",
+    host_name.c_str(), img.cols, img.rows);
 }
 
 void ZedNode::publishYaw()

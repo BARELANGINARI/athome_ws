@@ -4207,6 +4207,7 @@ private:
 
 int main(int argc, char ** argv)
 {
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   std::string node_name = "help_me_carry_node";
   if (argc > 0 && argv[0]) {

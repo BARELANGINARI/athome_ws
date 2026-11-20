@@ -1633,6 +1633,7 @@ private:
 
 int main(int argc, char ** argv)
 {
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   auto node = std::make_shared<receptionist::ReceptionistNode>();
 

@@ -10,6 +10,7 @@
 
 int main(int argc, char ** argv)
 {
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   auto node = rclcpp::Node::make_shared("return_to_origin_cli");
 

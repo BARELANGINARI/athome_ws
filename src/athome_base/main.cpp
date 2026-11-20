@@ -462,6 +462,7 @@ void nucleo::publishOdom(const rclcpp::Time & t_now)
 
 int main(int argc, char ** argv)
 {
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<nucleo>());
   rclcpp::shutdown();

@@ -400,11 +400,7 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "\n============================================================\n"
-      "  \033[1;32m[SYSTEM]\033[0m Restaurant Task Manager Started\n"
-      "  \033[1;36m[ORIGIN]\033[0m x=%.2f, y=%.2f, yaw=%.2f\n"
-      "  \033[1;33m[STATE]\033[0m  INIT\n"
-      "============================================================",
+      "\033[1;32m[RESTAURANT]\033[0m Task Manager started (Origin: %.2f, %.2f, %.2f)",
       origin_x_, origin_y_, origin_yaw_);
   }
 
@@ -2495,6 +2491,7 @@ private:
 // ==============================================================================
 int main(int argc, char ** argv)
 {
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   auto node = std::make_shared<restaurant::RestaurantTaskNode>();
 
