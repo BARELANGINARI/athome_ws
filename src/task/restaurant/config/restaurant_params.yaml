@@ -83,3 +83,4 @@ restaurant_manager:
     tts_sec_per_word: 0.5                # Estimasi durasi ucapan per kata (detik/kata)
     tts_timeout_margin_sec: 2.0          # Margin latensi sintesis dan output audio TTS (detik)
     nav_retry_cooldown_sec: 2.0          # Waktu tunggu jeda sebelum mengulang navigasi yang gagal (detik)
+    tray_wait_sec: 10.0                  # Lama jeda diam menunggu barman menaruh order ke tray sebelum bertanya konfirmasi (detik)

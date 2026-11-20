@@ -252,6 +252,7 @@ public:
     declare_parameter<double>("tts_sec_per_word", 0.5);
     declare_parameter<double>("tts_timeout_margin_sec", 2.0);
     declare_parameter<double>("nav_retry_cooldown_sec", 2.0);
+    declare_parameter<double>("tray_wait_sec", 10.0);
 
     origin_x_ = get_parameter("origin_x").as_double();
     origin_y_ = get_parameter("origin_y").as_double();
@@ -280,6 +281,7 @@ public:
     tts_sec_per_word_ = get_parameter("tts_sec_per_word").as_double();
     tts_timeout_margin_sec_ = get_parameter("tts_timeout_margin_sec").as_double();
     nav_retry_cooldown_sec_ = get_parameter("nav_retry_cooldown_sec").as_double();
+    tray_wait_sec_ = std::max(0.0, get_parameter("tray_wait_sec").as_double());
     tts_timeout_sec_ = tts_min_timeout_sec_;
 
     // TF2 Buffer & Listener
@@ -415,6 +417,7 @@ private:
   double tts_sec_per_word_{0.5};
   double tts_timeout_margin_sec_{2.0};
   double nav_retry_cooldown_sec_{2.0};
+  double tray_wait_sec_{10.0};
 
   // ----------------------------------------------------------------------------
   // Parameter & State Variables
@@ -2134,8 +2137,8 @@ private:
               "please place " + o1 + " in front of my gripper",
               [this]() {
                 transitionTo(
-                  RestaurantState::DETECT_AND_NAV_TO_ORDER1,
-                  "Waiting to detect order_1 position");
+                  RestaurantState::GRASP_ORDER1,
+                  "Order_1 requested in front of gripper, proceeding directly to grasp");
               });
           });
         break;
@@ -2235,10 +2238,10 @@ private:
       }
 
       case RestaurantState::WAIT_TRAY_SILENT_5S:
-        if ((now() - state_enter_time_).seconds() >= 5.0) {
+        if ((now() - state_enter_time_).seconds() >= tray_wait_sec_) {
           transitionTo(
             RestaurantState::ASK_TRAY_CONFIRMATION,
-            "5 seconds silent wait elapsed");
+            "Silent tray wait elapsed");
         }
         break;
 
