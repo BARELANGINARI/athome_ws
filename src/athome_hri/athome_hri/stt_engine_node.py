@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 import time
 from typing import Union
@@ -124,17 +125,17 @@ class SttEngineNode(Node):
         if self._enable_local_mic and self._enable_visualizer:
             self._visualizer.start()
         self._listener.start()
-        self.get_logger().info(f"{self.task_tag}\033[1;33m[STT]\033[0m Ready")
+        self.get_logger().info(f"{self.task_header}\n  STT: Ready")
 
     @property
-    def task_tag(self) -> str:
+    def task_header(self) -> str:
         if self._task_mode in ("receptionist", "rec"):
-            return "\033[1;36m[RECEPTIONIST]\033[0m "
+            return "\033[1;36m[RECEPTIONIST]\033[0m"
         elif self._task_mode in ("help_me_carry", "hmc"):
-            return "\033[1;32m[HELP_ME_CARRY]\033[0m "
+            return "\033[1;32m[HELP_ME_CARRY]\033[0m"
         elif self._task_mode in ("restaurant", "resto", "waiter"):
-            return "\033[1;34m[RESTAURANT]\033[0m "
-        return ""
+            return "\033[1;34m[RESTAURANT]\033[0m"
+        return "\033[1;33m[HRI]\033[0m"
 
     def _set_visualizer_enabled(self, enabled: bool) -> None:
         self._enable_visualizer = bool(enabled)
@@ -212,7 +213,7 @@ class SttEngineNode(Node):
         message = String()
         message.data = transcript
         self.transcript_pub.publish(message)
-        self.get_logger().info(f"{self.task_tag}\033[1;33m[STT]\033[0m \"{transcript}\"")
+        self.get_logger().info(f"{self.task_header}\n  STT: \"{transcript}\"")
 
     async def _on_audio(self, audio_input: Union[np.ndarray, bytes]) -> None:
         await self._transcribe(audio_input)

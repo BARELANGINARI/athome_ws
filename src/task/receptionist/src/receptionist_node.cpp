@@ -352,7 +352,7 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
-    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m [NAV] Node ready");
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Nav: Node ready");
     publishStatus("Receptionist navigation node ready");
   }
 
@@ -361,7 +361,7 @@ public:
     std_msgs::msg::String msg;
     msg.data = msg_str;
     status_pub_->publish(msg);
-    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m [STATUS] %s", msg_str.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Status: %s", msg_str.c_str());
   }
 
   Waypoint getWaypoint(const std::string & prefix)
@@ -1246,12 +1246,12 @@ public:
       res->success = true;
       res->message = "Robot aligned facing " + display_name + " (detected: " + current_target.label + ")";
       publishStatus(res->message);
-      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m [FACE] %s", res->message.c_str());
+      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Face: %s", res->message.c_str());
     } else if (person_found && !aligned) {
       res->success = true;
       res->message = "Robot aligned approximately facing " + display_name + " (detected: " + current_target.label + ")";
       publishStatus(res->message);
-      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m [FACE] %s", res->message.c_str());
+      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Face: %s", res->message.c_str());
     } else {
       res->success = false;
       res->message = "No " + display_name + " detected in current view";
@@ -1399,7 +1399,7 @@ public:
                    std::to_string(current_target.dist) + "m, target=" +
                    std::to_string(guest_door_distance_) + "m)";
     publishStatus(res->message);
-    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m [ALIGN] %s", res->message.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Align: %s", res->message.c_str());
   }
 
   void handleGoTo(
@@ -1481,7 +1481,7 @@ public:
         RCLCPP_WARN(get_logger(), "\033[1;31m[NAV]\033[0m Goal rejected: %s", wp.name.c_str());
       } else {
         current_goal_handle_ = handle;
-        RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m [NAV] Navigating to '%s'", wp.name.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Nav: Navigating to '%s'", wp.name.c_str());
       }
     };
     send_opts.result_callback = [promise](const GoalHandleNav::WrappedResult & res) {
@@ -1497,7 +1497,7 @@ public:
     if (future.wait_for(std::chrono::seconds(static_cast<int>(nav_timeout_sec_))) == std::future_status::ready) {
       const auto code = future.get();
       if (code == rclcpp_action::ResultCode::SUCCEEDED) {
-        RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m [NAV] Arrived at '%s'", wp.name.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Nav: Arrived at '%s'", wp.name.c_str());
         return true;
       } else {
         RCLCPP_WARN(

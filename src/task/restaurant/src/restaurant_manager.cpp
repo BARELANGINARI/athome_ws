@@ -551,7 +551,7 @@ private:
       msg.data = text;
       status_pub_->publish(msg);
     }
-    RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m [STATUS] %s", text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Status: %s", text.c_str());
   }
 
   void publishCustomerHmi(bool show)
@@ -580,7 +580,7 @@ private:
       msg.data = "{\"action\":\"hide\"}";
     }
     hmi_customer_pub_->publish(msg);
-    RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m [HMI] Order Card -> %s", show ? "SHOW" : "HIDE");
+    RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  HMI: Order Card -> %s", show ? "SHOW" : "HIDE");
   }
 
   void publishExpression(const std::string & expr)
@@ -589,7 +589,7 @@ private:
       std_msgs::msg::String msg;
       msg.data = expr;
       face_expression_pub_->publish(msg);
-      RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m [FACE] Expression -> %s", expr.c_str());
+      RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Face: Expression -> %s", expr.c_str());
     }
   }
 
@@ -761,7 +761,7 @@ private:
           if (on_finished) on_finished(false);
         } else {
           current_goal_handle_ = handle;
-          RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m [NAV] Goal accepted, navigating...");
+          RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Nav: Goal accepted, navigating...");
         }
       };
 
@@ -771,7 +771,7 @@ private:
         nav_busy_ = false;
         const bool ok = (result.code == rclcpp_action::ResultCode::SUCCEEDED);
         if (ok) {
-          RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m [NAV] Arrived safely at destination");
+          RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Nav: Arrived safely at destination");
         } else {
           RCLCPP_WARN(
             get_logger(), "\033[1;33m[NAV]\033[0m Navigation failed/aborted (code %d)",
@@ -1026,7 +1026,7 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
-    RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m [TTS] \"%s\"", text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  TTS: \"%s\"", text.c_str());
   }
 
   void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
@@ -1599,7 +1599,7 @@ private:
     callTrigger(
       release_client, release_srv_name,
       [this, on_done](bool /*rel_ok*/, const std::string & rel_msg) {
-        RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m [ARM] Release gripper: %s", rel_msg.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Arm: Release gripper: %s", rel_msg.c_str());
 
         TriggerClient::SharedPtr free_client = arm_free_client_;
         std::string free_srv_name = "/arm/free";
@@ -1613,7 +1613,7 @@ private:
         callTrigger(
           free_client, free_srv_name,
           [this, on_done](bool /*free_ok*/, const std::string & free_msg) {
-            RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m [ARM] Torque off: %s", free_msg.c_str());
+            RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Arm: Torque off: %s", free_msg.c_str());
             if (on_done) {
               on_done();
             }
