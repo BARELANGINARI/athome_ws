@@ -253,6 +253,7 @@ public:
     declare_parameter<double>("tts_timeout_margin_sec", 2.0);
     declare_parameter<double>("nav_retry_cooldown_sec", 2.0);
     declare_parameter<double>("tray_wait_sec", 10.0);
+    declare_parameter<double>("tts_post_delay_sec", 2.0);
 
     origin_x_ = get_parameter("origin_x").as_double();
     origin_y_ = get_parameter("origin_y").as_double();
@@ -282,6 +283,7 @@ public:
     tts_timeout_margin_sec_ = get_parameter("tts_timeout_margin_sec").as_double();
     nav_retry_cooldown_sec_ = get_parameter("nav_retry_cooldown_sec").as_double();
     tray_wait_sec_ = std::max(0.0, get_parameter("tray_wait_sec").as_double());
+    tts_post_delay_sec_ = std::max(0.0, get_parameter("tts_post_delay_sec").as_double());
     tts_timeout_sec_ = tts_min_timeout_sec_;
 
     // TF2 Buffer & Listener
@@ -418,6 +420,7 @@ private:
   double tts_timeout_margin_sec_{2.0};
   double nav_retry_cooldown_sec_{2.0};
   double tray_wait_sec_{10.0};
+  double tts_post_delay_sec_{2.0};
 
   // ----------------------------------------------------------------------------
   // Parameter & State Variables
@@ -481,6 +484,9 @@ private:
   std::mutex tts_mutex_;
   double tts_timeout_sec_{4.0};
   std::function<void()> pending_tts_done_;
+  std::atomic<bool> tts_post_delay_active_{false};
+  rclcpp::Time tts_post_delay_until_{0, 0, RCL_ROS_TIME};
+  std::function<void()> pending_post_tts_cb_;
 
   std::mutex srv_mutex_;
   rclcpp::Time srv_started_time_{0, 0, RCL_ROS_TIME};
@@ -1020,6 +1026,8 @@ private:
     {
       std::lock_guard<std::mutex> lock(tts_mutex_);
       speaking_ = true;
+      tts_post_delay_active_ = false;
+      pending_post_tts_cb_ = nullptr;
       tts_started_time_ = now();
       tts_timeout_sec_ = estimateTtsTimeout(text);
       tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.5);
@@ -1035,22 +1043,40 @@ private:
   void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
   {
     std::function<void()> callback;
+    bool deferred = false;
     {
       std::lock_guard<std::mutex> lock(tts_mutex_);
       if (!speaking_.load()) {
         return;
       }
-      in_callback_ = true;
       speaking_ = false;
-      tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.4);
-      callback = std::move(pending_tts_done_);
-      pending_tts_done_ = nullptr;
+      const auto current_now = now();
+      const auto min_cooldown_until = current_now + rclcpp::Duration::from_seconds(0.4);
+      if (tts_post_delay_sec_ > 0.0) {
+        tts_post_delay_active_ = true;
+        tts_post_delay_until_ = current_now + rclcpp::Duration::from_seconds(tts_post_delay_sec_);
+        tts_cooldown_until_ =
+          (tts_post_delay_until_ > min_cooldown_until) ? tts_post_delay_until_ : min_cooldown_until;
+        pending_post_tts_cb_ = std::move(pending_tts_done_);
+        pending_tts_done_ = nullptr;
+        deferred = true;
+      } else {
+        in_callback_ = true;
+        tts_cooldown_until_ = min_cooldown_until;
+        callback = std::move(pending_tts_done_);
+        pending_tts_done_ = nullptr;
+      }
     }
 
     RCLCPP_DEBUG(
       get_logger(),
-      "[TTS] Done | State: %s",
-      stateToString(state_.load()).c_str());
+      "[TTS] Done | State: %s | PostDelay: %.2fs",
+      stateToString(state_.load()).c_str(),
+      deferred ? tts_post_delay_sec_ : 0.0);
+
+    if (deferred) {
+      return;
+    }
 
     if (callback) {
       callback();
@@ -1060,7 +1086,7 @@ private:
 
   bool canListen() const
   {
-    return !isBusy() && now() >= tts_cooldown_until_;
+    return !isBusy() && !tts_post_delay_active_.load() && now() >= tts_cooldown_until_;
   }
 
   static std::string normalize(const std::string & text)
@@ -1682,6 +1708,30 @@ private:
         tts_timeout);
       onTtsDone(nullptr);
       return;
+    }
+
+    // 4. Non-blocking post-TTS delay sebelum callback on_done / state berikutnya berjalan
+    if (tts_post_delay_active_.load()) {
+      std::function<void()> post_tts_cb;
+      {
+        std::lock_guard<std::mutex> lock(tts_mutex_);
+        if (tts_post_delay_active_.load()) {
+          if (now() < tts_post_delay_until_) {
+            return;
+          }
+          tts_post_delay_active_ = false;
+          post_tts_cb = std::move(pending_post_tts_cb_);
+          pending_post_tts_cb_ = nullptr;
+          if (post_tts_cb) {
+            in_callback_ = true;
+          }
+        }
+      }
+      if (post_tts_cb) {
+        post_tts_cb();
+        in_callback_ = false;
+        return;
+      }
     }
 
     if (isBusy()) {
