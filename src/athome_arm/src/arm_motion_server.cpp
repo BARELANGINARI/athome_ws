@@ -1038,25 +1038,17 @@ private:
         std::shared_ptr<std_srvs::srv::Trigger::Response> response)
     {
         std::lock_guard<std::mutex> lock(hardware_mutex_);
-        if (!initHardware()) {
-            response->success = false;
-            response->message = "Failed to connect to Dynamixel hardware on port " + port_name_;
-            RCLCPP_ERROR(this->get_logger(), "%s\033[1;31m[ARM]\033[0m %s", getTaskTag().c_str(), response->message.c_str());
-            return;
-        }
-        try {
-            double cur[3] = {0.0, 0.0, 0.0};
-            readCurrentPose(cur);
-            dynamixel::GroupSyncWrite gsw(portHandler, packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
-            lockCurrentPose(gsw, cur);
-            releaseGripper(gsw, cur, DEFAULT_RELEASE_DEG);
+
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Release gripper start...", getTaskTag().c_str());
+        std::string err;
+        if (runMotionByName("release_gripper", err)) {
             response->success = true;
-            response->message = "Gripper released successfully.";
-            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Gripper released", getTaskTag().c_str());
-        } catch (const std::exception &e) {
+            response->message = "Motion release_gripper executed successfully.";
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Release gripper done", getTaskTag().c_str());
+        } else {
             response->success = false;
-            response->message = std::string("Release gripper error: ") + e.what();
-            RCLCPP_ERROR(this->get_logger(), "%s\033[1;31m[ARM]\033[0m %s", getTaskTag().c_str(), response->message.c_str());
+            response->message = err;
+            RCLCPP_ERROR(this->get_logger(), "%s\033[1;31m[ARM]\033[0m %s", getTaskTag().c_str(), err.c_str());
         }
     }
 
