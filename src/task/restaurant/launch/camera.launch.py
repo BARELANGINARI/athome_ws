@@ -21,6 +21,9 @@ def generate_launch_description():
         DeclareLaunchArgument('cracker_model', default_value='models/crackerbox.onnx', description='Path to crackerbox ONNX model'),
         DeclareLaunchArgument('soda_model', default_value='models/soda.onnx', description='Path to soda ONNX model'),
         DeclareLaunchArgument('sugarbox_model', default_value='models/sugarbox.onnx', description='Path to sugarbox ONNX model'),
+        DeclareLaunchArgument('drink_min_area', default_value='180.0', description='Minimum bounding box area for drinks & crackers (pixels)'),
+        DeclareLaunchArgument('drink_conf', default_value='0.48', description='Confidence threshold for drinks & crackers'),
+        DeclareLaunchArgument('drink_max_dist', default_value='2.5', description='Maximum distance (m) to detect drinks & crackers'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -48,6 +51,9 @@ def generate_launch_description():
                 'cracker_model': LaunchConfiguration('cracker_model'),
                 'soda_model': LaunchConfiguration('soda_model'),
                 'sugarbox_model': LaunchConfiguration('sugarbox_model'),
+                'drink_min_area': LaunchConfiguration('drink_min_area'),
+                'drink_conf': LaunchConfiguration('drink_conf'),
+                'drink_max_dist': LaunchConfiguration('drink_max_dist'),
             }.items(),
         ),
     ])

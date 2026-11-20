@@ -29,8 +29,9 @@ vision:
     cracker_model: "models/crackerbox.onnx"
     pringles_model: "models/pringles.onnx"
     sugarbox_model: "models/sugarbox.onnx"
-    drink_min_area: 100.0
-    drink_conf: 0.20
+    drink_min_area: 180.0
+    drink_conf: 0.48
+    drink_max_dist: 2.5
     enable_drinks: true
     chair_model: ""
     enable_chair: true

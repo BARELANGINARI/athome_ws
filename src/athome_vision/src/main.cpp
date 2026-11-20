@@ -238,6 +238,7 @@ struct PrevItem
   cv::Rect bbox;
   bool has_pos{false};
   double x_m{0.0}, y_m{0.0}, range_m{0.0};
+  float score{0.0f};
 };
 
 struct PrevChair
@@ -1391,7 +1392,7 @@ private:
   std::vector<std::string> bag_labels_;
   std::vector<std::string> chair_labels_;
   double yolo_min_area_{500.0};
-  double drink_min_area_{100.0};
+  double drink_min_area_{180.0};
   int yolo_stride_{2};
   int yolo_frame_{0};
   int drink_frame_{0};
@@ -1413,6 +1414,7 @@ private:
   bool is_restaurant_{false};
   double person_max_dist_{2.8};
   double bag_max_dist_{2.5};
+  double drink_max_dist_{2.5};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_name_sub_;
 };
 
@@ -1439,8 +1441,9 @@ ZedNode::ZedNode()
   declare_parameter("yolo_stride", 2);
   declare_parameter("bag_labels", std::vector<std::string>{"bag", "paper_bag", "backpack", "handbag", "suitcase"});
   declare_parameter("yolo_min_area", 250.0);
-  declare_parameter("drink_min_area", 100.0);
-  declare_parameter("drink_conf", 0.20);
+  declare_parameter("drink_min_area", 180.0);
+  declare_parameter("drink_conf", 0.48);
+  declare_parameter("drink_max_dist", 2.5);
   declare_parameter("botol_model", std::string("models/water.onnx"));
   declare_parameter("soda_model", std::string("models/soda.onnx"));
   declare_parameter("cracker_model", std::string("models/crackerbox.onnx"));
@@ -1589,6 +1592,7 @@ ZedNode::ZedNode()
   face_threshold_ = get_parameter("face_threshold").as_double();
   person_max_dist_ = get_parameter("person_max_dist").as_double();
   bag_max_dist_ = get_parameter("bag_max_dist").as_double();
+  drink_max_dist_ = get_parameter("drink_max_dist").as_double();
 
   if (is_restaurant_) {
     enable_back_detection_ = false;
@@ -2001,6 +2005,8 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
 
 void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
 {
+  if (bgr.empty()) return;
+
   std::vector<YoloDetection> dets = last_drink_dets_;
   if (enable_drinks_ && drink_frame_++ % yolo_stride_ == 0) {
     dets.clear();
@@ -2013,11 +2019,57 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
       active_detectors = {&soda_yolo_, &pringles_yolo_, &cracker_yolo_, &sugarbox_yolo_, &botol_yolo_};
     }
 
+    std::vector<YoloDetection> raw_dets;
     for (YoloDetector * detector : active_detectors) {
       if (!detector || !detector->ready()) continue;
       std::vector<YoloDetection> found;
       detector->detect(bgr, {}, found);
-      dets.insert(dets.end(), found.begin(), found.end());
+      for (auto & item : found) {
+        // Normalisasi label target
+        if (item.label == "cracker_box" || item.label == "crackerbox") item.label = "cracker";
+        if (item.label == "sugar_box" || item.label == "sugarbox") item.label = "sugar";
+
+        // 1. Filter dimensi piksel 2D (minimum area dan maksimum proporsi layar)
+        const int area = item.rect.width * item.rect.height;
+        if (area < drink_min_area_ || area > static_cast<int>(bgr.cols * bgr.rows * 0.35)) continue;
+        if (item.rect.width < 10 || item.rect.height < 12) continue;
+
+        // 2. Filter rasio aspek (height / width) spesifik bentuk fisik objek
+        //    (Mencegah deteksi palsu pada tiang kursi, kaki meja, garis lantai, atau dinding)
+        const float ar = static_cast<float>(item.rect.height) / static_cast<float>(std::max(1, item.rect.width));
+        if ((item.label == "soda" || item.label == "bottle") && (ar < 0.9f || ar > 3.2f)) continue;
+        if (item.label == "pringles" && (ar < 1.1f || ar > 3.8f)) continue;
+        if ((item.label == "cracker" || item.label == "sugar") && (ar < 0.5f || ar > 2.6f)) continue;
+
+        raw_dets.push_back(item);
+      }
+    }
+
+    // 3. Cross-Model Non-Maximum Suppression (Inter-Class NMS):
+    // Urutkan semua deteksi dari berbagai model berdasarkan confidence tertinggi
+    std::sort(raw_dets.begin(), raw_dets.end(), [](const YoloDetection & a, const YoloDetection & b) {
+      return a.score > b.score;
+    });
+
+    for (const auto & cand : raw_dets) {
+      bool suppressed = false;
+      for (const auto & kept : dets) {
+        const cv::Rect inter = cand.rect & kept.rect;
+        if (inter.area() > 0) {
+          const float iou = static_cast<float>(inter.area()) /
+                            static_cast<float>(cand.rect.area() + kept.rect.area() - inter.area());
+          const float min_overlap = static_cast<float>(inter.area()) /
+                                    static_cast<float>(std::min(cand.rect.area(), kept.rect.area()));
+          // Jika dua model berbeda mendeteksi objek yang sama/tumpang tindih, pertahankan HANYA model dengan confidence lebih tinggi
+          if (iou > 0.35f || min_overlap > 0.55f) {
+            suppressed = true;
+            break;
+          }
+        }
+      }
+      if (!suppressed) {
+        dets.push_back(cand);
+      }
     }
     last_drink_dets_ = dets;
   }
@@ -2029,10 +2081,27 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
     double x = 0.0, y = 0.0, z = 0.0;
     const bool ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
     const double dist = ok ? std::hypot(x, y) : 0.0;
-    preview_drinks_.push_back({det.label, det.rect, ok, x, y, dist});
+
+    // 4. Validasi jarak 3D dan dimensi fisik objek (mencegah false positive pada meja, dinding, atau orang)
+    if (ok) {
+      if (dist > drink_max_dist_) continue;
+      if (std::isfinite(x) && x > 0.25) {
+        const double real_w = (det.rect.width * x) / 530.0;
+        const double real_h = (det.rect.height * x) / 530.0;
+        // Objek makanan / kaleng minuman berukuran maksimal lebar 35cm, tinggi 45cm
+        if (real_w > 0.35 || real_h > 0.45) continue;
+        if (real_w < 0.02 || real_h < 0.03) continue;
+      }
+    } else {
+      // Tolak deteksi tanpa kedalaman 3D valid jika score di bawah 0.65 untuk mencegah noise phantom 2D
+      if (det.score < 0.65f) continue;
+    }
+
+    preview_drinks_.push_back({det.label, det.rect, ok, x, y, dist, det.score});
     if ((is_receptionist_ || is_restaurant_) && ok) {
-      RCLCPP_INFO(get_logger(), "\033[1;34m[DRINK]\033[0m %s: %.2f, %.2f (%.2fm)",
-        det.label.c_str(), x, y, dist);
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
+        "\033[1;34m[DRINK]\033[0m %s: %.2f, %.2f (%.2fm, conf: %.2f)",
+        det.label.c_str(), x, y, dist, det.score);
     }
   }
 
@@ -2040,6 +2109,9 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
   std::sort(preview_drinks_.begin(), preview_drinks_.end(),
     [](const PrevItem & a, const PrevItem & b) {
       if (a.has_pos != b.has_pos) return a.has_pos > b.has_pos;
+      if (std::abs(a.range_m - b.range_m) < 0.20) {
+        return a.score > b.score;
+      }
       return a.range_m < b.range_m;
     });
 
@@ -2047,8 +2119,8 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
     if (!data.empty()) data += ";";
     data += cv::format("%s:%d,%d,%d,%d|", item.label.c_str(),
       item.bbox.x, item.bbox.y, item.bbox.width, item.bbox.height);
-    data += item.has_pos ? cv::format("%.2f,%.2f,%.2f|1.00", item.x_m, item.y_m, item.range_m)
-                         : "nan,nan,nan|0.00";
+    data += item.has_pos ? cv::format("%.2f,%.2f,%.2f|%.2f", item.x_m, item.y_m, item.range_m, item.score)
+                         : cv::format("nan,nan,nan|%.2f", item.score);
   }
 
   std_msgs::msg::String msg;
