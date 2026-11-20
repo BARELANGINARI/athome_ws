@@ -34,6 +34,7 @@ nucleo::nucleo()
 
   last_time = now();
   last_cmd_time = last_time;
+  last_vel_log_time_ = last_time;
   timer = create_wall_timer(
         std::chrono::duration<double>(1.0 / loop_hz),
         std::bind(&nucleo::controlLoop, this));
@@ -87,6 +88,7 @@ void nucleo::loadParam()
   declare_parameter("pub_yaw_topic", "/yaw");
   declare_parameter("wheel_yaw_deg", 0.0);
   declare_parameter("odom_yaw_source", "stm32");
+  declare_parameter("vel_log_interval", 0.5);
 
   publish_imu_yaw_ = get_parameter("publish_imu_yaw").as_bool();
   pub_yaw_topic_ = get_parameter("pub_yaw_topic").as_string();
@@ -124,6 +126,7 @@ void nucleo::loadParam()
   pulses_per_rev_ = get_parameter("pulses_per_rev").as_double();
   wheel_radius_cm_ = get_parameter("wheel_radius_cm").as_double();
   base_length_cm_ = get_parameter("base_length_cm").as_double();
+  vel_log_interval_ = get_parameter("vel_log_interval").as_double();
 }
 
 void nucleo::setupHardware()
@@ -275,6 +278,15 @@ void nucleo::controlLoop()
   std_msgs::msg::UInt8 l_state;
   l_state.data = snap.lifterState;
   lifter_state_pub->publish(l_state);
+
+  if ((t_now - last_vel_log_time_).seconds() >= vel_log_interval_) {
+    last_vel_log_time_ = t_now;
+    RCLCPP_INFO(get_logger(),
+      "%s\033[1;34m[HW]\033[0m Vel: vx=%.2f, vy=%.2f, w=%.2f | Motor: L=%d, R=%d, B=%d",
+      getTaskTag().c_str(),
+      shaped.vx, shaped.vy, shaped.w,
+      pc2stm.MKiri, pc2stm.MKanan, pc2stm.MBelakang);
+  }
 
   RCLCPP_DEBUG(get_logger(),
     "target: vx=%.2f vy=%.2f w=%.2f | shaped: vx=%.2f vy=%.2f w=%.2f",
