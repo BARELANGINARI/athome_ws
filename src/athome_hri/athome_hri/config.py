@@ -20,7 +20,27 @@ DEFAULT_HRI_PARAMS: Dict[str, Any] = {
     "hangover_frames": 25,
     "min_speech_frames": 15,
     "whisper_model": "deepdml/faster-whisper-large-v3-turbo-ct2",
+    "stt_fallback_model": "base.en",
     "stt_language": "en",
+    "stt_beam_size": 2,
+    "stt_no_speech_threshold": 0.6,
+    "stt_log_prob_threshold": -1.0,
+    "stt_compression_ratio_threshold": 1.8,
+    "stt_vad_silence_ms": 400,
+    "stt_vad_speech_pad_ms": 200,
+    "stt_initial_prompt": (
+        "Hello robot, halo robot, follow me, please follow me, "
+        "stop, we have arrived at the location, this is the location."
+    ),
+    "stt_hotwords": "hello robot halo robot follow me arrived we are here stop berhenti",
+    "stt_hallucination_blacklist": [
+        "terima kasih",
+        "terimakasih",
+        "thank you",
+        "thanks",
+        "thank you very much",
+        "you",
+    ],
     "tts_model": "en_US-lessac-medium.onnx",
     "tts_use_cuda": True,
     "nlu_threshold": 0.68,
@@ -69,6 +89,11 @@ def coerce_param_value(raw_value: Any, template: Any) -> Any:
         return float(raw_value)
     if isinstance(template, str):
         return str(raw_value)
+    if isinstance(template, list):
+        if isinstance(raw_value, str):
+            return [item.strip() for item in raw_value.split(",") if item.strip()]
+        if isinstance(raw_value, (list, tuple, set)):
+            return [str(item).strip() for item in raw_value if str(item).strip()]
     return raw_value
 
 

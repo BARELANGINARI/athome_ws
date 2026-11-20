@@ -23,7 +23,23 @@
 
     # Speech-to-Text (Faster-Whisper)
     whisper_model: "deepdml/faster-whisper-large-v3-turbo-ct2"
+    stt_fallback_model: "base.en"
     stt_language: "en"
+    stt_beam_size: 2
+    stt_no_speech_threshold: 0.6
+    stt_log_prob_threshold: -1.0
+    stt_compression_ratio_threshold: 1.8
+    stt_vad_silence_ms: 400
+    stt_vad_speech_pad_ms: 200
+    stt_initial_prompt: "Hello robot, halo robot, follow me, please follow me, stop, we have arrived at the location, this is the location."
+    stt_hotwords: "hello robot halo robot follow me arrived we are here stop berhenti"
+    stt_hallucination_blacklist:
+      - "terima kasih"
+      - "terimakasih"
+      - "thank you"
+      - "thanks"
+      - "thank you very much"
+      - "you"
 
     # Text-to-Speech (Piper)
     tts_model: "en_US-lessac-medium.onnx"
