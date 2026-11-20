@@ -1553,6 +1553,27 @@ ZedNode::ZedNode()
         } else if (guest_2_name_.empty() && name != guest_1_name_) {
           guest_2_name_ = name;
         }
+
+        // Segera pasangkan tracking ID orang terdekat yang sedang berdiri di depan robot
+        if (!preview_persons_.empty()) {
+          bool exists = false;
+          for (auto & rp : registered_persons_) {
+            if (rp.name == name) {
+              rp.last_tracking_id = preview_persons_[0].id;
+              rp.last_seen = now();
+              exists = true;
+              break;
+            }
+          }
+          if (!exists) {
+            RegisteredPerson rp;
+            rp.name = name;
+            rp.last_tracking_id = preview_persons_[0].id;
+            rp.last_seen = now();
+            rp.locked = false;
+            registered_persons_.push_back(rp);
+          }
+        }
       } else {
         if (!guest_2_name_.empty()) {
           guest_2_name_.clear();
@@ -1629,8 +1650,9 @@ ZedNode::ZedNode()
     enable_drinks_ = true;
     enable_bag_ = false;
     enable_back_detection_ = false;
-    enable_chair_ = false;
-    RCLCPP_INFO(get_logger(), "\033[1;32m[RECEPTIONIST]\033[0m Active: Person, Soda, Pringles, Attributes (Color, Gender, Name)");
+    enable_chair_ = true;
+    enable_yolo_ = true;
+    RCLCPP_INFO(get_logger(), "\033[1;32m[RECEPTIONIST]\033[0m Active: Person, Chair, Soda, Milk, Attributes (Color, Gender, Name)");
   } else if (is_restaurant_ && !is_help_me_carry_ && !is_receptionist_) {
     enable_body_tracking_ = true;
     enable_drinks_ = true;
@@ -1725,30 +1747,39 @@ void ZedNode::loadModels()
       enable_yolo_ = false;
     } else {
       std::string err;
-      const std::string classes = resolvePath(get_parameter("yolo_classes").as_string());
-      if (!yolo_.load(model_path, classes, bag_conf, nms, size, "bag", &err)) {
+      std::string classes = resolvePath(get_parameter("yolo_classes").as_string());
+      if (is_receptionist_ || model_path.find("yolov8n") != std::string::npos) {
+        if (classes.find("paper_bag") != std::string::npos || !std::filesystem::exists(classes)) {
+          classes = resolvePath("models/coco_names.txt");
+        }
+      }
+      const float active_yolo_conf = is_receptionist_ ? conf : bag_conf;
+      const std::string active_yolo_label = is_receptionist_ ? "chair" : "bag";
+      if (!yolo_.load(model_path, classes, active_yolo_conf, nms, size, active_yolo_label, &err)) {
         RCLCPP_ERROR(get_logger(), "YOLO load error: %s", err.c_str());
         enable_yolo_ = false;
       } else {
-        RCLCPP_INFO(get_logger(), "Primary Bag YOLO loaded: %s", model_path.c_str());
+        RCLCPP_INFO(get_logger(), "Primary %s YOLO loaded: %s", active_yolo_label.c_str(), model_path.c_str());
       }
     }
 
-    // Muat model pelengkap ansambel: paper_bag.onnx + yolov8n_sim.onnx (COCO backpack/handbag/suitcase)
-    std::string secondary_model;
-    std::string secondary_classes;
-    if (model_path.find("paper_bag") != std::string::npos) {
-      secondary_model = resolvePath("models/yolov8n_sim.onnx");
-      secondary_classes = resolvePath("models/coco_names.txt");
-    } else {
-      secondary_model = resolvePath("models/paper_bag.onnx");
-      secondary_classes = resolvePath("models/paper_bag_classes.txt");
-    }
+    // Muat model pelengkap ansambel tas hanya jika deteksi tas diaktifkan (misal Help Me Carry)
+    if (enable_bag_) {
+      std::string secondary_model;
+      std::string secondary_classes;
+      if (model_path.find("paper_bag") != std::string::npos) {
+        secondary_model = resolvePath("models/yolov8n_sim.onnx");
+        secondary_classes = resolvePath("models/coco_names.txt");
+      } else {
+        secondary_model = resolvePath("models/paper_bag.onnx");
+        secondary_classes = resolvePath("models/paper_bag_classes.txt");
+      }
 
-    if (!secondary_model.empty() && std::filesystem::exists(secondary_model)) {
-      std::string err;
-      if (coco_bag_yolo_.load(secondary_model, secondary_classes, bag_conf, nms, size, "bag", &err)) {
-        RCLCPP_INFO(get_logger(), "Ensemble Complementary Bag YOLO loaded: %s", secondary_model.c_str());
+      if (!secondary_model.empty() && std::filesystem::exists(secondary_model)) {
+        std::string err;
+        if (coco_bag_yolo_.load(secondary_model, secondary_classes, bag_conf, nms, size, "bag", &err)) {
+          RCLCPP_INFO(get_logger(), "Ensemble Complementary Bag YOLO loaded: %s", secondary_model.c_str());
+        }
       }
     }
   }
@@ -2393,7 +2424,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           }
         }
         updated = true;
-        if (person.feature_samples >= 5) {
+        if (person.feature_samples >= 2 || !feature.empty() || person.has_color) {
           person.feature_samples = 30; // Kunci template registrasi agar kebal drift / kontaminasi
           person.locked = true;
           if (is_receptionist_) {
@@ -2422,7 +2453,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       new_person.locked = false;
       new_person.last_tracking_id = target->id;
       new_person.last_seen = current_time;
-      if (new_person.feature_samples >= 5) {
+      if (new_person.feature_samples >= 2 || !feature.empty() || new_person.has_color) {
         new_person.feature_samples = 30;
         new_person.locked = true;
         if (is_receptionist_) {
@@ -2552,12 +2583,21 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         veto = true; // Gender bertolak belakang dan wajah tidak cocok
       }
 
+      const bool same_tracker_id = (prof.last_tracking_id >= 0 && prof.last_tracking_id == entries[i].id);
+      if (same_tracker_id) {
+        veto = false; // Jangan pernah veto orang yang sedang di-track dengan Body ID yang sama
+      }
+
       if (veto) {
         score_matrix[i][j] = -100.0f;
       } else if (has_face) {
         score_matrix[i][j] = 0.50f * face_score + 0.35f * shirt_score + 0.15f * gender_score;
       } else {
         score_matrix[i][j] = 0.70f * shirt_score + 0.30f * gender_score;
+      }
+
+      if (same_tracker_id && !veto) {
+        score_matrix[i][j] += 0.50f; // Boost kontinuitas tracking ZED
       }
     }
   }
@@ -2749,6 +2789,16 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     // Jika sedang mendaftarkan nama tamu baru di pintu / restoran
     if (recognized_name.empty() && (is_receptionist_ || is_restaurant_) && !pending_register_name_.empty() && first_person) {
       recognized_name = pending_register_name_;
+    }
+
+    // Cek kesinambungan ID tracking untuk orang yang sudah terdaftar
+    if (recognized_name.empty() && is_receptionist_) {
+      for (const auto & prof : registered_persons_) {
+        if (prof.last_tracking_id >= 0 && prof.last_tracking_id == entry.id) {
+          recognized_name = prof.name;
+          break;
+        }
+      }
     }
 
     if (first_recognized_name.empty() && !recognized_name.empty()) {
@@ -3065,8 +3115,8 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       // 2. Cek konsistensi kedalaman 3D (jika keduanya memiliki posisi 3D valid)
       if (chair.has_pos && person.has_pos) {
         const double dist_3d = std::hypot(chair.x - person.x_m, chair.y - person.y_m);
-        // Jika jarak 3D > 1.2m, orang ini di latar depan/belakang, bukan duduk di kursi ini
-        if (dist_3d > 1.20) return 0.0;
+        // Jika jarak 3D > 1.5m, orang ini di latar depan/belakang, bukan duduk di kursi ini
+        if (dist_3d > 1.50) return 0.0;
       }
 
       // 3. Keselarasan horizontal (X-axis)
@@ -3100,10 +3150,9 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       }
 
       // Syarat kelayakan:
-      // Harus memiliki overlap 2D yang nyata (> 12% dari kursi atau orang)
-      // ATAU memiliki keselarasan horizontal yang kuat (x_ratio > 0.40) dengan hip/center/keypoint berada di dalam kursi
-      const bool qualified = (overlap_chair > 0.12 || overlap_person > 0.12) ||
-                             (x_ratio > 0.40 && (hip_inside || center_inside || chair_center_inside || kpt_inside));
+      // Memiliki overlap 2D (> 8% dari kursi atau orang) ATAU keselarasan horizontal (x_ratio > 0.30) dengan posisi tubuh di dalam kursi
+      const bool qualified = (overlap_chair > 0.08 || overlap_person > 0.08) ||
+                             (x_ratio > 0.30 && (hip_inside || center_inside || chair_center_inside || kpt_inside));
 
       if (!qualified) return 0.0;
 
@@ -3113,7 +3162,7 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       if (kpt_inside) score += 0.5;
       if (chair.has_pos && person.has_pos) {
         const double dist_3d = std::hypot(chair.x - person.x_m, chair.y - person.y_m);
-        score += std::max(0.0, 1.20 - dist_3d);
+        score += std::max(0.0, 1.50 - dist_3d);
       }
       return score;
     };
@@ -3305,14 +3354,22 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         }
       }
 
-      // Hanya tampilkan banner jika ada nama tamu / registered name di Receptionist
-      if (is_receptionist_ && !p.name.empty()) {
-        std::string label = p.name;
+      // Tampilkan banner nama tamu / registered name / Guest
+      if (is_receptionist_) {
+        std::string label = !p.name.empty() ? p.name : "Guest";
         if (p.is_sitting) label += " [Seated]";
         if (p.is_facing_back) label += " [Back]";
         banner(label, r.x, r.y, color,
           p.is_sitting ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0),
           cv::Scalar(255, 255, 255), 0.58, 2);
+      } else if (is_restaurant_) {
+        std::string label = "Customer";
+        if (p.is_facing_back) label += " [Back]";
+        banner(label, r.x, r.y, color, cv::Scalar(180, 100, 0), cv::Scalar(255, 255, 255), 0.55, 2);
+      } else {
+        std::string label = "Operator";
+        if (p.is_facing_back) label += " [Back]";
+        banner(label, r.x, r.y, color, cv::Scalar(0, 140, 0), cv::Scalar(255, 255, 255), 0.55, 2);
       }
     }
 
@@ -3419,14 +3476,6 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       hud_item("Bag 2", b2_x, b2_y, b2_d, b2_ok, cv::Scalar(0, 69, 255));
     }
 
-    for (const auto & c : preview_chairs_) {
-      if (!c.has_pos) continue;
-      std::string disp_name = c.label;
-      if (!disp_name.empty()) disp_name[0] = static_cast<char>(std::toupper(disp_name[0]));
-      hud_item((c.occupied ? "Occ " : "Empty ") + disp_name + " [" + c.side + "]",
-        c.x_m, c.y_m, c.range_m, true,
-        c.occupied ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 0));
-    }
 
     static bool window_ready = false;
     if (!window_ready) {
@@ -3581,6 +3630,25 @@ void ZedNode::printSummaryLog()
         milk->x_m, milk->y_m, milk->range_m));
     } else {
       lines.push_back("  milk: 0.00, 0.00 (0.00m)");
+    }
+
+    // 4. Chair
+    const PrevChair * best_chair = nullptr;
+    for (const auto & c : preview_chairs_) {
+      if (!c.occupied && c.has_pos) {
+        best_chair = &c;
+        break;
+      }
+    }
+    if (!best_chair && !preview_chairs_.empty() && preview_chairs_[0].has_pos) {
+      best_chair = &preview_chairs_[0];
+    }
+
+    if (best_chair && best_chair->has_pos) {
+      lines.push_back(cv::format("  Chair: %.2f, %.2f (%.2fm)",
+        best_chair->x_m, best_chair->y_m, best_chair->range_m));
+    } else {
+      lines.push_back("  Chair: 0.00, 0.00 (0.00m)");
     }
 
     std::string out = "\033[1;36m[RECEPTIONIST]\033[0m";
