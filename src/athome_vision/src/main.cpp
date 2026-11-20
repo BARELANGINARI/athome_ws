@@ -1409,8 +1409,8 @@ private:
   std::unordered_map<int, BackMemory> back_memory_;
   std::unordered_map<int, PersonNameMemory> name_memory_;
   std::string task_mode_{"all"};
-  bool is_help_me_carry_{true};
-  bool is_receptionist_{true};
+  bool is_help_me_carry_{false};
+  bool is_receptionist_{false};
   bool is_restaurant_{false};
   double person_max_dist_{2.8};
   double bag_max_dist_{2.5};
@@ -1471,15 +1471,19 @@ ZedNode::ZedNode()
   task_mode_ = get_parameter("task").as_string();
   std::string task = task_mode_;
   std::transform(task.begin(), task.end(), task.begin(), ::tolower);
+  is_help_me_carry_ = false;
+  is_receptionist_ = false;
+  is_restaurant_ = false;
   if (task == "help_me_carry" || task == "hmc") {
     is_help_me_carry_ = true;
-    is_receptionist_ = false;
   } else if (task == "receptionist" || task == "rec") {
-    is_help_me_carry_ = false;
     is_receptionist_ = true;
   } else if (task == "restaurant" || task == "resto" || task == "waiter") {
-    is_help_me_carry_ = false;
-    is_receptionist_ = false;
+    is_restaurant_ = true;
+  } else {
+    // Mode "all": aktifkan semua
+    is_help_me_carry_ = true;
+    is_receptionist_ = true;
     is_restaurant_ = true;
   }
   enable_bag_ = get_parameter("enable_bag").as_bool();
@@ -1594,12 +1598,27 @@ ZedNode::ZedNode()
   bag_max_dist_ = get_parameter("bag_max_dist").as_double();
   drink_max_dist_ = get_parameter("drink_max_dist").as_double();
 
-  if (is_restaurant_) {
-    enable_back_detection_ = false;
-    enable_drinks_ = true;
+  if (is_help_me_carry_ && !is_receptionist_ && !is_restaurant_) {
+    enable_body_tracking_ = true;
+    enable_bag_ = true;
+    enable_back_detection_ = true;
+    enable_drinks_ = false;
     enable_chair_ = false;
+    RCLCPP_INFO(get_logger(), "\033[1;32m[HMC Vision]\033[0m Active: Person, Bag, Person Back");
+  } else if (is_receptionist_ && !is_help_me_carry_ && !is_restaurant_) {
+    enable_body_tracking_ = true;
+    enable_drinks_ = true;
     enable_bag_ = false;
-    RCLCPP_INFO(get_logger(), "\033[1;32m[Restaurant Vision]\033[0m Mode Restaurant aktif: Deteksi person, gesture wave, serta Pringles & Sugarbox aktif (deteksi back & bag dimatikan).");
+    enable_back_detection_ = false;
+    enable_chair_ = false;
+    RCLCPP_INFO(get_logger(), "\033[1;32m[Receptionist Vision]\033[0m Active: Person, Soda, Pringles");
+  } else if (is_restaurant_ && !is_help_me_carry_ && !is_receptionist_) {
+    enable_body_tracking_ = true;
+    enable_drinks_ = true;
+    enable_bag_ = false;
+    enable_back_detection_ = false;
+    enable_chair_ = false;
+    RCLCPP_INFO(get_logger(), "\033[1;32m[Restaurant Vision]\033[0m Active: Soda, Pringles, Sugar, Cracker");
   }
 
   loadModels();
@@ -1716,18 +1735,23 @@ void ZedNode::loadModels()
   }
 
   if (enable_drinks_) {
+    // Soda & Pringles dimuat untuk Receptionist, Restaurant, maupun All
     loadYolo(soda_yolo_, get_parameter("soda_model").as_string(),
       {"models/soda.onnx"}, "soda", drink_conf, nms, size);
     loadYolo(pringles_yolo_, get_parameter("pringles_model").as_string(),
       {"models/pringles.onnx", "models/pringles_ chips _can.onnx"}, "pringles",
       drink_conf, nms, size);
-    loadYolo(cracker_yolo_, get_parameter("cracker_model").as_string(),
-      {"models/crackerbox.onnx", "models/cheezit.onnx", "models/best_cracker.onnx"}, "cracker", drink_conf, nms, size);
-    loadYolo(sugarbox_yolo_, get_parameter("sugarbox_model").as_string(),
-      {"models/sugarbox.onnx", "models/sugar_box.onnx", "models/sugar.onnx"}, "sugar",
-      drink_conf, nms, size);
-    loadYolo(botol_yolo_, get_parameter("botol_model").as_string(),
-      {"models/water.onnx", "models/botol.onnx"}, "bottle", drink_conf, nms, size);
+
+    // Cracker & Sugar hanya dimuat jika mode Restaurant atau All (Receptionist HANYA soda & pringles)
+    if (is_restaurant_ || (!is_help_me_carry_ && !is_receptionist_)) {
+      loadYolo(cracker_yolo_, get_parameter("cracker_model").as_string(),
+        {"models/crackerbox.onnx", "models/cheezit.onnx", "models/best_cracker.onnx"}, "cracker", drink_conf, nms, size);
+      loadYolo(sugarbox_yolo_, get_parameter("sugarbox_model").as_string(),
+        {"models/sugarbox.onnx", "models/sugar_box.onnx", "models/sugar.onnx"}, "sugar",
+        drink_conf, nms, size);
+      loadYolo(botol_yolo_, get_parameter("botol_model").as_string(),
+        {"models/water.onnx", "models/botol.onnx"}, "bottle", drink_conf, nms, size);
+    }
   }
 
   if (enable_chair_) {
@@ -1986,9 +2010,11 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
     preview_bags_.push_back({b.det.rect, b.ok, b.x, b.y, valid_dist});
     if (is_help_me_carry_ && b.ok) {
       if (max_bags > 1) {
-        RCLCPP_INFO(get_logger(), "\033[1;33m[BAG %zu]\033[0m %.2f, %.2f (%.2fm)", i + 1, b.x, b.y, valid_dist);
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
+          "\033[1;33m[HMC]\033[0m Bag %zu: %.2f, %.2f (%.2fm)", i + 1, b.x, b.y, valid_dist);
       } else {
-        RCLCPP_INFO(get_logger(), "\033[1;33m[BAG]\033[0m %.2f, %.2f (%.2fm)", b.x, b.y, valid_dist);
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
+          "\033[1;33m[HMC]\033[0m Bag: %.2f, %.2f (%.2fm)", b.x, b.y, valid_dist);
       }
     }
     if (!data.empty()) data += ";";
@@ -2012,11 +2038,13 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
     dets.clear();
     std::vector<YoloDetector *> active_detectors;
     if (is_receptionist_) {
-      // Receptionist: utamakan deteksi soda dan pringles untuk tamu
-      active_detectors = {&soda_yolo_, &pringles_yolo_, &botol_yolo_, &cracker_yolo_, &sugarbox_yolo_};
+      // Receptionist: HANYA deteksi soda dan pringles
+      active_detectors = {&soda_yolo_, &pringles_yolo_};
+    } else if (is_restaurant_) {
+      // Restaurant: HANYA deteksi soda, pringles, sugar, dan cracker
+      active_detectors = {&soda_yolo_, &pringles_yolo_, &sugarbox_yolo_, &cracker_yolo_};
     } else {
-      // Restaurant: deteksi lengkap semua item pesanan (pringles, crackerbox, soda, sugarbox, bottle)
-      active_detectors = {&soda_yolo_, &pringles_yolo_, &cracker_yolo_, &sugarbox_yolo_, &botol_yolo_};
+      active_detectors = {&soda_yolo_, &pringles_yolo_, &sugarbox_yolo_, &cracker_yolo_, &botol_yolo_};
     }
 
     std::vector<YoloDetection> raw_dets;
@@ -2098,10 +2126,20 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
     }
 
     preview_drinks_.push_back({det.label, det.rect, ok, x, y, dist, det.score});
-    if ((is_receptionist_ || is_restaurant_) && ok) {
-      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
-        "\033[1;34m[DRINK]\033[0m %s: %.2f, %.2f (%.2fm, conf: %.2f)",
-        det.label.c_str(), x, y, dist, det.score);
+    if (ok) {
+      if (is_receptionist_) {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
+          "\033[1;34m[REC]\033[0m %s: %.2f, %.2f (%.2fm)",
+          det.label.c_str(), x, y, dist);
+      } else if (is_restaurant_) {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
+          "\033[1;34m[RESTO]\033[0m %s: %.2f, %.2f (%.2fm)",
+          det.label.c_str(), x, y, dist);
+      } else {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
+          "\033[1;34m[DRINK]\033[0m %s: %.2f, %.2f (%.2fm)",
+          det.label.c_str(), x, y, dist);
+      }
     }
   }
 
@@ -2250,8 +2288,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     op_mem_.has_color = true;
 
     if (is_help_me_carry_ && op.has_depth) {
-      RCLCPP_INFO(get_logger(), "\033[1;32m[OPERATOR]\033[0m %.2f, %.2f (%.2fm)",
-        op.x, op.y, op.dist);
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
+        "\033[1;32m[HMC]\033[0m Operator: %.2f, %.2f (%.2fm)", op.x, op.y, op.dist);
     }
   }
 
@@ -2741,19 +2779,17 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       attr_msg.data = pub_gender + ", " + pub_cloth + ", " + pub_hair;
       attributes_publisher_->publish(attr_msg);
 
-      if (is_receptionist_ || is_restaurant_) {
-        std::string display;
-        if (!recognized_name.empty()) {
-          display = recognized_name;
-        } else if (is_restaurant_) {
-          display = "customer";
-        } else {
-          display = "person";
-        }
+      if (is_receptionist_ && entry.has_depth) {
+        std::string tag = !recognized_name.empty() ? recognized_name : "Guest";
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 1500,
+          "\033[1;36m[REC]\033[0m %s: %.2f, %.2f (%.2fm)",
+          tag.c_str(), entry.x, entry.y, entry.range_m);
+      } else if (is_restaurant_ && entry.has_depth) {
         RCLCPP_INFO_THROTTLE(
           get_logger(), *get_clock(), 2000,
-          "\033[1;36m[VISION LIVE]\033[0m %s -> Baju: \033[1;33m%s\033[0m | Rambut: %s | Gender: %s (jarak: %.2fm)",
-          display.c_str(), pub_cloth.c_str(), pub_hair.c_str(), pub_gender.c_str(), entry.range_m);
+          "\033[1;36m[RESTO]\033[0m Customer: %.2f, %.2f (%.2fm)",
+          entry.x, entry.y, entry.range_m);
       }
     }
 
@@ -2808,8 +2844,14 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       order_msg.data = order_ss.str();
       order_publisher_->publish(order_msg);
       if (wave_result != "NONE") {
-        RCLCPP_INFO(get_logger(), "\033[1;36m[WAVE]\033[0m %s (%.2f, %.2f)",
-          wave_result.c_str(), customer.x, customer.y);
+        if (is_restaurant_) {
+          RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
+            "\033[1;36m[RESTO]\033[0m Wave: %.2f, %.2f", customer.x, customer.y);
+        } else {
+          RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
+            "\033[1;36m[WAVE]\033[0m %s (%.2f, %.2f)",
+            wave_result.c_str(), customer.x, customer.y);
+        }
       }
     }
   }
@@ -2831,8 +2873,15 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       std_msgs::msg::String back_msg;
       back_msg.data = back_ss.str();
       person_back_publisher_->publish(back_msg);
-      RCLCPP_INFO(get_logger(), "\033[1;35m[BACK]\033[0m %.2f, %.2f (%.2fm)",
-        back_person.x, back_person.y, back_person.range_m);
+      if (is_help_me_carry_) {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
+          "\033[1;35m[HMC]\033[0m Back: %.2f, %.2f (%.2fm)",
+          back_person.x, back_person.y, back_person.range_m);
+      } else {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
+          "\033[1;35m[BACK]\033[0m %.2f, %.2f (%.2fm)",
+          back_person.x, back_person.y, back_person.range_m);
+      }
     }
   }
 
@@ -3316,12 +3365,14 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos)
       ? preview_persons_[0] : PrevPerson{};
     std::string person_title;
-    if (is_receptionist_ && !is_help_me_carry_) {
+    if (is_receptionist_) {
       if (!p0.name.empty()) {
         person_title = p0.name + (p0.is_facing_back ? " [Back]" : "");
       } else {
-        person_title = std::string("Person") + (p0.is_facing_back ? " [Back]" : "");
+        person_title = std::string("Guest") + (p0.is_facing_back ? " [Back]" : "");
       }
+    } else if (is_restaurant_) {
+      person_title = std::string("Customer") + (p0.is_facing_back ? " [Back]" : "");
     } else {
       person_title = std::string("Operator") + (p0.is_facing_back ? " [Back]" : "");
     }
