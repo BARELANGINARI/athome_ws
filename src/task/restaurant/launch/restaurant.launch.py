@@ -60,6 +60,11 @@ def generate_launch_description():
             default_value='false',
             description='Launch ZED camera vision stack for restaurant.',
         ),
+        DeclareLaunchArgument(
+            'arm',
+            default_value='false',
+            description='Launch Dynamixel robotic arm motion server.',
+        ),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -123,5 +128,21 @@ def generate_launch_description():
             condition=IfCondition(
                 PythonExpression(["'", LaunchConfiguration('camera'), "' == 'true'"])
             ),
+        ),
+
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                PathJoinSubstitution([
+                    FindPackageShare('athome_arm'),
+                    'launch',
+                    'arm.launch.py',
+                ])
+            ),
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('arm'), "' == 'true'"])
+            ),
+            launch_arguments={
+                'task': 'restaurant',
+            }.items(),
         ),
     ])

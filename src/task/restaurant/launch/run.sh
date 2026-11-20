@@ -17,11 +17,12 @@ cd "${WS_DIR}"
 
 if command -v terminator >/dev/null 2>&1; then
     echo "=========================================================="
-    echo " Meluncurkan Restaurant Task dalam Layout 2x2 (Terminator)..."
-    echo " [Kiri Atas ] Hardware   (STM32 & RPLiDAR)"
-    echo " [Kanan Atas] Navigation (Nav2 SLAM & Restaurant Node)"
-    echo " [Kiri Bawah] Camera     (ZED Vision & Gesture/Face)"
-    echo " [Kanan Bwh ] HRI        (Whisper, Piper & Manager)"
+    echo " Meluncurkan Restaurant Task dalam Layout 5-Pane (Terminator)..."
+    echo " [Kiri Atas   ] Hardware   (STM32 & RPLiDAR)"
+    echo " [Kanan Atas  ] Navigation (Nav2 SLAM & Restaurant Node)"
+    echo " [Kiri Bawah  ] Camera     (ZED Vision & Gesture/Face)"
+    echo " [Tengah Bawah] HRI        (Whisper, Piper & Manager)"
+    echo " [Kanan Bawah ] Arm        (Dynamixel Arm Motion Server)"
     echo "=========================================================="
 
     if [ -f "$CONFIG_FILE" ]; then
@@ -30,7 +31,7 @@ if command -v terminator >/dev/null 2>&1; then
         terminator --working-directory="${WS_DIR}" -u -l restaurant &
     fi
 
-    echo "Terminator layout 2x2 berhasil diluncurkan!"
+    echo "Terminator layout 5-pane berhasil diluncurkan!"
 else
     echo "[WARN] Terminator tidak ditemukan, menggunakan GNOME Terminal..."
     SETUP="cd \"${WS_DIR}\" && source /opt/ros/jazzy/setup.bash && source install/setup.bash"
@@ -41,4 +42,6 @@ else
     gnome-terminal --tab --working-directory="${WS_DIR}" --title="Camera" -- bash -c "${SETUP} && sleep 3 && ros2 launch restaurant camera.launch.py; exec bash"
     sleep 1
     gnome-terminal --tab --working-directory="${WS_DIR}" --title="HRI" -- bash -c "${SETUP} && sleep 4 && ros2 launch restaurant hri.launch.py; exec bash"
+    sleep 1
+    gnome-terminal --tab --working-directory="${WS_DIR}" --title="Arm" -- bash -c "${SETUP} && sleep 5 && ros2 launch athome_arm arm.launch.py task:=restaurant; exec bash"
 fi
