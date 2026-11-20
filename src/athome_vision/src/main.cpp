@@ -1604,21 +1604,21 @@ ZedNode::ZedNode()
     enable_back_detection_ = true;
     enable_drinks_ = false;
     enable_chair_ = false;
-    RCLCPP_INFO(get_logger(), "\033[1;32m[HMC Vision]\033[0m Active: Person, Bag, Person Back");
+    RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m Active: Person, Bag, Back");
   } else if (is_receptionist_ && !is_help_me_carry_ && !is_restaurant_) {
     enable_body_tracking_ = true;
     enable_drinks_ = true;
     enable_bag_ = false;
     enable_back_detection_ = false;
     enable_chair_ = false;
-    RCLCPP_INFO(get_logger(), "\033[1;32m[Receptionist Vision]\033[0m Active: Person, Soda, Pringles");
+    RCLCPP_INFO(get_logger(), "\033[1;32m[RECEPTIONIST]\033[0m Active: Person, Soda, Pringles");
   } else if (is_restaurant_ && !is_help_me_carry_ && !is_receptionist_) {
     enable_body_tracking_ = true;
     enable_drinks_ = true;
     enable_bag_ = false;
     enable_back_detection_ = false;
     enable_chair_ = false;
-    RCLCPP_INFO(get_logger(), "\033[1;32m[Restaurant Vision]\033[0m Active: Soda, Pringles, Sugar, Cracker");
+    RCLCPP_INFO(get_logger(), "\033[1;32m[RESTAURANT]\033[0m Active: Soda, Pringles, Sugar, Cracker");
   }
 
   loadModels();
@@ -2011,10 +2011,10 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
     if (is_help_me_carry_ && b.ok) {
       if (max_bags > 1) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
-          "\033[1;33m[HMC]\033[0m Bag %zu: %.2f, %.2f (%.2fm)", i + 1, b.x, b.y, valid_dist);
+          "\033[1;33m[HELP_ME_CARRY]\033[0m Bag %zu: %.2f, %.2f (%.2fm)", i + 1, b.x, b.y, valid_dist);
       } else {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
-          "\033[1;33m[HMC]\033[0m Bag: %.2f, %.2f (%.2fm)", b.x, b.y, valid_dist);
+          "\033[1;33m[HELP_ME_CARRY]\033[0m Bag: %.2f, %.2f (%.2fm)", b.x, b.y, valid_dist);
       }
     }
     if (!data.empty()) data += ";";
@@ -2129,11 +2129,11 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
     if (ok) {
       if (is_receptionist_) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
-          "\033[1;34m[REC]\033[0m %s: %.2f, %.2f (%.2fm)",
+          "\033[1;34m[RECEPTIONIST]\033[0m %s: %.2f, %.2f (%.2fm)",
           det.label.c_str(), x, y, dist);
       } else if (is_restaurant_) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
-          "\033[1;34m[RESTO]\033[0m %s: %.2f, %.2f (%.2fm)",
+          "\033[1;34m[RESTAURANT]\033[0m %s: %.2f, %.2f (%.2fm)",
           det.label.c_str(), x, y, dist);
       } else {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
@@ -2289,7 +2289,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
 
     if (is_help_me_carry_ && op.has_depth) {
       RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
-        "\033[1;32m[HMC]\033[0m Operator: %.2f, %.2f (%.2fm)", op.x, op.y, op.dist);
+        "\033[1;32m[HELP_ME_CARRY]\033[0m Operator: %.2f, %.2f (%.2fm)", op.x, op.y, op.dist);
     }
   }
 
@@ -2391,9 +2391,15 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         if (person.feature_samples >= 5) {
           person.feature_samples = 30; // Kunci template registrasi agar kebal drift / kontaminasi
           person.locked = true;
-          RCLCPP_INFO(get_logger(),
-            "\033[1;32m[REGISTRATION LOCKED]\033[0m Registered '%s' (Baju: %s, Gender: %s, Face Template Locked)",
-            pending_register_name_.c_str(), person.clothing_color.c_str(), person.gender.c_str());
+          if (is_receptionist_) {
+            RCLCPP_INFO(get_logger(),
+              "\033[1;32m[RECEPTIONIST]\033[0m Registered '%s' (%s, %s)",
+              pending_register_name_.c_str(), person.clothing_color.c_str(), person.gender.c_str());
+          } else {
+            RCLCPP_INFO(get_logger(),
+              "\033[1;32m[REGISTRATION]\033[0m Registered '%s' (%s, %s)",
+              pending_register_name_.c_str(), person.clothing_color.c_str(), person.gender.c_str());
+          }
           pending_register_name_.clear();
         }
         break;
@@ -2414,9 +2420,15 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       if (new_person.feature_samples >= 5) {
         new_person.feature_samples = 30;
         new_person.locked = true;
-        RCLCPP_INFO(get_logger(),
-          "\033[1;32m[REGISTRATION LOCKED]\033[0m Registered '%s' (Baju: %s, Gender: %s, Face Template Locked)",
-          pending_register_name_.c_str(), new_person.clothing_color.c_str(), new_person.gender.c_str());
+        if (is_receptionist_) {
+          RCLCPP_INFO(get_logger(),
+            "\033[1;32m[RECEPTIONIST]\033[0m Registered '%s' (%s, %s)",
+            pending_register_name_.c_str(), new_person.clothing_color.c_str(), new_person.gender.c_str());
+        } else {
+          RCLCPP_INFO(get_logger(),
+            "\033[1;32m[REGISTRATION]\033[0m Registered '%s' (%s, %s)",
+            pending_register_name_.c_str(), new_person.clothing_color.c_str(), new_person.gender.c_str());
+        }
         pending_register_name_.clear();
       }
       registered_persons_.push_back(new_person);
@@ -2768,7 +2780,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       if (!is_restaurant_) {
         gesture_result = AttributeAnalyzer::detectGesture(points);
         if (is_help_me_carry_ && gesture_result != "NONE") {
-          RCLCPP_INFO(get_logger(), "\033[1;36m[GESTURE]\033[0m %s", gesture_result.c_str());
+          RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
+            "\033[1;36m[HELP_ME_CARRY]\033[0m Gesture: %s", gesture_result.c_str());
         }
       }
 
@@ -2783,12 +2796,12 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         std::string tag = !recognized_name.empty() ? recognized_name : "Guest";
         RCLCPP_INFO_THROTTLE(
           get_logger(), *get_clock(), 1500,
-          "\033[1;36m[REC]\033[0m %s: %.2f, %.2f (%.2fm)",
+          "\033[1;36m[RECEPTIONIST]\033[0m %s: %.2f, %.2f (%.2fm)",
           tag.c_str(), entry.x, entry.y, entry.range_m);
       } else if (is_restaurant_ && entry.has_depth) {
         RCLCPP_INFO_THROTTLE(
           get_logger(), *get_clock(), 2000,
-          "\033[1;36m[RESTO]\033[0m Customer: %.2f, %.2f (%.2fm)",
+          "\033[1;36m[RESTAURANT]\033[0m Customer: %.2f, %.2f (%.2fm)",
           entry.x, entry.y, entry.range_m);
       }
     }
@@ -2846,7 +2859,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       if (wave_result != "NONE") {
         if (is_restaurant_) {
           RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
-            "\033[1;36m[RESTO]\033[0m Wave: %.2f, %.2f", customer.x, customer.y);
+            "\033[1;36m[RESTAURANT]\033[0m Wave: %.2f, %.2f", customer.x, customer.y);
         } else {
           RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
             "\033[1;36m[WAVE]\033[0m %s (%.2f, %.2f)",
@@ -2875,7 +2888,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       person_back_publisher_->publish(back_msg);
       if (is_help_me_carry_) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
-          "\033[1;35m[HMC]\033[0m Back: %.2f, %.2f (%.2fm)",
+          "\033[1;35m[HELP_ME_CARRY]\033[0m Back: %.2f, %.2f (%.2fm)",
           back_person.x, back_person.y, back_person.range_m);
       } else {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1200,
@@ -3161,8 +3174,9 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       {chair.label, chair.bbox, ok, chair.x, chair.y, dist, occupied, side});
 
     if (is_receptionist_) {
-      RCLCPP_INFO(get_logger(), "\033[1;34m[CHAIR]\033[0m %s %s [%s] %.2f, %.2f (%.2fm)",
-        chair.label.c_str(), occupied ? "OCCUPIED" : "EMPTY", side.c_str(), chair.x, chair.y, dist);
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
+        "\033[1;34m[RECEPTIONIST]\033[0m Chair: %s [%s] %.2f, %.2f (%.2fm)",
+        occupied ? "OCCUPIED" : "EMPTY", side.c_str(), chair.x, chair.y, dist);
     }
 
     if (!occupied) {
