@@ -42,6 +42,7 @@ def generate_launch_description():
         DeclareLaunchArgument('base_length_cm', default_value='20.8', description='Base distance between wheels (cm)'),
         DeclareLaunchArgument('publish_imu_yaw', default_value='true', description='Publish Razor IMU yaw to ROS topic'),
         DeclareLaunchArgument('pub_yaw_topic', default_value='/yaw', description='Topic name for published IMU yaw'),
+        DeclareLaunchArgument('vel_log_interval', default_value='1.0', description='Velocity log print interval (seconds)'),
 
         Node(
             package='athome_base',
@@ -73,6 +74,7 @@ def generate_launch_description():
                 'angular_accel_limit': LaunchConfiguration('angular_accel_limit'),
                 'stop_decel_scale': LaunchConfiguration('stop_decel_scale'),
                 'pulses_per_rev': LaunchConfiguration('pulses_per_rev'),
+                'vel_log_interval': LaunchConfiguration('vel_log_interval'),
                 'wheel_radius_cm': LaunchConfiguration('wheel_radius_cm'),
                 'base_length_cm': LaunchConfiguration('base_length_cm'),
                 'publish_imu_yaw': LaunchConfiguration('publish_imu_yaw'),

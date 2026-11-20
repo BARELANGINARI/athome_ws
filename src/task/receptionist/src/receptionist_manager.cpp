@@ -407,7 +407,7 @@ private:
       msg.data = status_text;
       status_pub_->publish(msg);
     }
-    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m [STATUS] %s", status_text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Status: %s", status_text.c_str());
   }
 
   void publishGuestNames()
@@ -527,7 +527,7 @@ private:
       srv_name = "/receptionist/go_to_living_room";
     }
 
-    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m [NAV] Navigating to '%s' (%s)...",
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Nav: Navigating to '%s' (%s)",
       waypoint_name.c_str(), srv_name.c_str());
 
     const rclcpp::Time nav_start = now();
@@ -579,7 +579,7 @@ private:
       srv_name = "/arm/ambil_tas_simple";
     }
 
-    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m [ARM] Point seat (%s)...", srv_name.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Arm: Point seat (%s)", srv_name.c_str());
 
     callTrigger(
       client, srv_name,
@@ -587,7 +587,7 @@ private:
         if (success) {
           RCLCPP_INFO(
             get_logger(),
-            "\033[1;36m[RECEPTIONIST]\033[0m [ARM] Point seat done");
+            "\033[1;36m[RECEPTIONIST]\033[0m\n  Arm: Point seat done");
         } else {
           RCLCPP_WARN(
             get_logger(),
@@ -964,7 +964,7 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
-    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m [TTS] \"%s\"", text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  TTS: \"%s\"", text.c_str());
   }
 
   void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
@@ -1552,7 +1552,7 @@ private:
         {
           return;
         }
-        RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m Starting task");
+        RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Status: Starting task");
         guests_.clear();
         initCurrentGuest(1);
         publishGuestNames();
@@ -2154,7 +2154,7 @@ private:
         speakAsync("The second guest is now seated in the provided spot.", [this]() {
           speakAsync("Receptionist task complete.", [this]() {
             publishTaskStatus("SUCCESS: Receptionist task complete.");
-            RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m Task completed successfully");
+            RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Status: Task completed successfully");
             transitionTo(ReceptionistState::COMPLETED, "Receptionist task complete");
           });
         });

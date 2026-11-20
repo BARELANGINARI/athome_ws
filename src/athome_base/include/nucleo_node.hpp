@@ -119,6 +119,8 @@ private:
 
   rclcpp::Time last_time;
   rclcpp::Time last_cmd_time;
+  rclcpp::Time last_vel_log_time_{0, 0, RCL_ROS_TIME};
+  double vel_log_interval_{1.0};
 };
 
 #endif  // NUCLEO_NUCLEO_NODE_HPP
