@@ -467,8 +467,9 @@ class HriCoordinator:
                     metrics,
                     self.mic_listener.threshold_dbfs,
                     self.mic_listener.threshold_flatness,
+                    task_header="\033[1;32m[HELP_ME_CARRY]\033[0m",
                 ),
-                throttle_duration_sec=0.25,
+                throttle_duration_sec=1.0,
             )
 
     def shutdown(self) -> None:

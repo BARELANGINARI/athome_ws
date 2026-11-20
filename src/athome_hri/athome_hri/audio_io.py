@@ -135,27 +135,29 @@ def resolve_speaker_device_index(configured_index: Optional[int]) -> Optional[in
 
 
 def format_vad_meter(
-    metrics: VadFrameMetrics, thresh_dbfs: float, thresh_flatness: float
+    metrics: VadFrameMetrics,
+    thresh_dbfs: float,
+    thresh_flatness: float,
+    task_header: str = "",
 ) -> str:
     """Format terminal meter string for real-time VAD frame telemetry."""
     is_voice = (metrics.dbfs_speech > thresh_dbfs) and (
         metrics.flatness < thresh_flatness
     )
-    bars = int(max(0, min(15, (metrics.dbfs_speech + 60) / 3.33)))
-    bar_str = "#" * bars + "-" * (15 - bars)
+    bars = int(max(0, min(6, (metrics.dbfs_speech + 60) / 10.0)))
+    bar_str = "#" * bars + "-" * (6 - bars)
 
     if is_voice:
-        status = "\033[1;32m[VOICE DETECTED]\033[0m"
+        status = "\033[1;32m[VOICE]\033[0m"
     elif metrics.is_speaking:
-        status = "\033[1;33m[HOLD / HANGOVER]\033[0m"
+        status = "\033[1;33m[HOLD]\033[0m"
     else:
-        status = "\033[2m[SILENCE / NOISE]\033[0m"
+        status = "\033[2m[SILENCE]\033[0m"
 
-    return (
-        f"[VAD METER] [{bar_str}] {metrics.dbfs_speech:5.1f} dBFS "
-        f"(min: {thresh_dbfs:.1f}) | Flatness: {metrics.flatness:.2f} "
-        f"(max: {thresh_flatness:.2f}) | {status}"
-    )
+    meter = f"VAD: [{bar_str}] {metrics.dbfs_speech:5.1f} dBFS {status}"
+    if task_header:
+        return f"{task_header}\n  {meter}"
+    return f"[VAD] [{bar_str}] {metrics.dbfs_speech:5.1f} dBFS {status}"
 
 
 class AudioSpeechQueue:

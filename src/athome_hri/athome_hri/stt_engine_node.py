@@ -202,8 +202,9 @@ class SttEngineNode(Node):
                 m,
                 self._listener.threshold_dbfs,
                 self._listener.threshold_flatness,
+                task_header=self.task_header,
             ),
-            throttle_duration_sec=0.25,
+            throttle_duration_sec=1.0,
         )
 
     async def _transcribe(self, audio_input: Union[np.ndarray, bytes]) -> None:
