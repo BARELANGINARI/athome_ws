@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     LaunchConfiguration,
@@ -10,6 +10,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     return LaunchDescription([
+        SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
         DeclareLaunchArgument('camera_fps', default_value='30.0', description='Camera frame rate (FPS)'),
         DeclareLaunchArgument('depth_minimum_distance', default_value='30.0', description='Minimum depth sensing distance (cm)'),
         DeclareLaunchArgument('image_stride', default_value='2', description='Publish preview image every N frames'),

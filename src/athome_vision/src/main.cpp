@@ -3474,6 +3474,9 @@ void ZedNode::loop()
 
 int main(int argc, char ** argv)
 {
+  // Remove long nanosecond timestamp to keep terminal logs concise and on a single line
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
+
   rclcpp::init(argc, argv);
   try {
     auto node = std::make_shared<ZedNode>();

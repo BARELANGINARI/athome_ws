@@ -1,11 +1,12 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     return LaunchDescription([
+        SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
         DeclareLaunchArgument('task', default_value='all', description='Task filter for vision logging: help_me_carry, receptionist, restaurant, or all'),
         DeclareLaunchArgument('camera_fps', default_value='30.0', description='Camera frame rate (FPS)'),
         DeclareLaunchArgument('publish_yaw', default_value='true', description='Publish IMU yaw topic'),
