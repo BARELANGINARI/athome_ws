@@ -88,7 +88,7 @@ void nucleo::loadParam()
   declare_parameter("pub_yaw_topic", "/yaw");
   declare_parameter("wheel_yaw_deg", 0.0);
   declare_parameter("odom_yaw_source", "stm32");
-  declare_parameter("vel_log_interval", 0.5);
+  declare_parameter("vel_log_interval", 1.0);
 
   publish_imu_yaw_ = get_parameter("publish_imu_yaw").as_bool();
   pub_yaw_topic_ = get_parameter("pub_yaw_topic").as_string();
@@ -281,11 +281,23 @@ void nucleo::controlLoop()
 
   if ((t_now - last_vel_log_time_).seconds() >= vel_log_interval_) {
     last_vel_log_time_ = t_now;
-    RCLCPP_INFO(get_logger(),
-      "%s\033[1;34m[HW]\033[0m Vel: vx=%.2f, vy=%.2f, w=%.2f | Motor: L=%d, R=%d, B=%d",
-      getTaskTag().c_str(),
+    std::string out;
+    if (task_mode_ == "receptionist" || task_mode_ == "rec") {
+      out = "\033[1;36m[RECEPTIONIST]\033[0m";
+    } else if (task_mode_ == "help_me_carry" || task_mode_ == "hmc") {
+      out = "\033[1;32m[HELP_ME_CARRY]\033[0m";
+    } else if (task_mode_ == "restaurant" || task_mode_ == "resto" || task_mode_ == "waiter") {
+      out = "\033[1;34m[RESTAURANT]\033[0m";
+    } else {
+      out = "\033[1;34m[HARDWARE]\033[0m";
+    }
+
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "\n  Vel: vx=%.2f, vy=%.2f, w=%.2f\n  Motor: L=%d, R=%d, B=%d",
       shaped.vx, shaped.vy, shaped.w,
       pc2stm.MKiri, pc2stm.MKanan, pc2stm.MBelakang);
+    out += buf;
+    RCLCPP_INFO(get_logger(), "%s", out.c_str());
   }
 
   RCLCPP_DEBUG(get_logger(),

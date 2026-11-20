@@ -42,7 +42,7 @@ def generate_launch_description():
         DeclareLaunchArgument('base_length_cm', default_value='20.8', description='Base distance between wheels (cm)'),
         DeclareLaunchArgument('publish_imu_yaw', default_value='true', description='Publish Razor IMU yaw to ROS topic'),
         DeclareLaunchArgument('pub_yaw_topic', default_value='/yaw', description='Topic name for published IMU yaw'),
-        DeclareLaunchArgument('vel_log_interval', default_value='0.5', description='Velocity log print interval (seconds)'),
+        DeclareLaunchArgument('vel_log_interval', default_value='1.0', description='Velocity log print interval (seconds)'),
 
         Node(
             package='athome_base',
