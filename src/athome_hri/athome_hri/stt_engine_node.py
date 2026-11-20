@@ -39,7 +39,17 @@ class SttEngineNode(Node):
         "hangover_frames",
         "min_speech_frames",
         "whisper_model",
+        "stt_fallback_model",
         "stt_language",
+        "stt_beam_size",
+        "stt_no_speech_threshold",
+        "stt_log_prob_threshold",
+        "stt_compression_ratio_threshold",
+        "stt_vad_silence_ms",
+        "stt_vad_speech_pad_ms",
+        "stt_initial_prompt",
+        "stt_hotwords",
+        "stt_hallucination_blacklist",
     )
     _LEGACY_ALIASES = {
         "device_index": "mic_device_index",
@@ -89,6 +99,16 @@ class SttEngineNode(Node):
         self._stt = SpeechToText(
             model_size=str(params["whisper_model"]),
             language=str(params["stt_language"]),
+            fallback_model_size=str(params["stt_fallback_model"]),
+            beam_size=int(params["stt_beam_size"]),
+            no_speech_threshold=float(params["stt_no_speech_threshold"]),
+            log_prob_threshold=float(params["stt_log_prob_threshold"]),
+            compression_ratio_threshold=float(params["stt_compression_ratio_threshold"]),
+            vad_silence_ms=int(params["stt_vad_silence_ms"]),
+            vad_speech_pad_ms=int(params["stt_vad_speech_pad_ms"]),
+            initial_prompt=str(params["stt_initial_prompt"]),
+            hotwords=str(params["stt_hotwords"]),
+            hallucination_blacklist=params["stt_hallucination_blacklist"],
         )
         resolved_index, auto_detected = resolve_mic_device_index(
             params["mic_device_index"]
@@ -166,12 +186,21 @@ class SttEngineNode(Node):
                 min_speech_frames=int(v)
             ),
             "stt_language": lambda v: setattr(self._stt, "language", str(v)),
+            "stt_beam_size": lambda v: setattr(self._stt, "beam_size", int(v)),
+            "stt_no_speech_threshold": lambda v: setattr(self._stt, "no_speech_threshold", float(v)),
+            "stt_log_prob_threshold": lambda v: setattr(self._stt, "log_prob_threshold", float(v)),
+            "stt_compression_ratio_threshold": lambda v: setattr(self._stt, "compression_ratio_threshold", float(v)),
+            "stt_vad_silence_ms": lambda v: setattr(self._stt, "vad_silence_ms", int(v)),
+            "stt_vad_speech_pad_ms": lambda v: setattr(self._stt, "vad_speech_pad_ms", int(v)),
+            "stt_initial_prompt": lambda v: setattr(self._stt, "initial_prompt", str(v)),
+            "stt_hotwords": lambda v: setattr(self._stt, "hotwords", str(v)),
+            "stt_hallucination_blacklist": lambda v: self._stt.set_hallucination_blacklist(v),
         }
         return apply_param_updates(
             params,
             updaters,
             node_logger=self.get_logger(),
-            restart_required=("mic_device_index", "whisper_model", "pre_roll_frames"),
+            restart_required=("mic_device_index", "whisper_model", "stt_fallback_model", "pre_roll_frames"),
         )
 
     def _is_mic_paused(self) -> bool:

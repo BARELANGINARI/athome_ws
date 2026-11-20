@@ -5,31 +5,60 @@
 # Cukup ubah nilai di sini, seluruh node otomatis mengikuti.
 /**:
   ros__parameters:
-    # Audio Input / Output (-1 = auto-detect USB mic / default system speaker)
-    mic_device_index: -1
-    speaker_device_index: -1
-    enable_local_mic: true
-    enable_ws_audio: true
-    enable_visualizer: true #false untuk mematikan visualisasi VAD
-    enable_live_meter: true
-    enable_local_speaker: true
+    # -------------------------------------------------------------------------
+    # 1. Audio Input / Output (Perangkat Mikrofon, Speaker, & Tampilan Monitor)
+    # -------------------------------------------------------------------------
+    mic_device_index: -1                 # Indeks perangkat mic (-1 = auto-detect mic USB; untuk mic jack 3.5mm isi indeks soundcard)
+    speaker_device_index: -1             # Indeks perangkat speaker (-1 = pakai speaker default sistem)
+    enable_local_mic: true               # true = aktifkan mic yang terpasang langsung di robot/PC
+    enable_ws_audio: true                # true = terima audio dari Web UI lewat WebSocket
+    enable_visualizer: true              # true = tampilkan jendela grafik gelombang/spektrum VAD (false = matikan GUI)
+    enable_live_meter: true              # true = tampilkan bar level suara [VAD] di terminal log
+    enable_local_speaker: true           # true = putar suara TTS langsung lewat speaker lokal robot
 
-    # Voice Activity Detection (VAD)
-    threshold_dbfs: -30.0
-    threshold_flatness: 0.40
-    pre_roll_frames: 10
-    hangover_frames: 25
-    min_speech_frames: 15
+    # -------------------------------------------------------------------------
+    # 2. Voice Activity Detection / VAD (Penyaring awal suara vs hening di CPU)
+    # -------------------------------------------------------------------------
+    threshold_dbfs: -30.0                # Batas volume minimum agar suara dianggap ucapan (semakin kecil mis. -40 = lebih peka suara pelan)
+    threshold_flatness: 0.40             # Batas kerataan spektrum (0-1); lebih kecil = lebih ketat menolak noise datar (kipas/AC)
+    pre_roll_frames: 10                  # Jumlah frame (x30 ms = 300 ms) yang ikut direkam SEBELUM suara terdeteksi agar awal kata tidak terpotong
+    hangover_frames: 25                  # Lama jeda hening (x30 ms = 750 ms) sebelum sistem yakin kalimat selesai diucapkan
+    min_speech_frames: 15                # Durasi minimal ucapan (x30 ms = 450 ms) agar dianggap valid (abaikan suara klik/batuk singkat)
 
-    # Speech-to-Text (Faster-Whisper)
-    whisper_model: "deepdml/faster-whisper-large-v3-turbo-ct2"
-    stt_language: "en"
+    # -------------------------------------------------------------------------
+    # 3. Speech-to-Text / Faster-Whisper (Pengubah audio ucapan menjadi teks)
+    # -------------------------------------------------------------------------
+    whisper_model: "deepdml/faster-whisper-large-v3-turbo-ct2"  # Nama/path model Whisper utama yang dimuat ke GPU/CPU
+    stt_fallback_model: "base.en"        # Model cadangan lebih ringan jika model utama gagal dimuat
+    stt_language: "en"                   # Kode bahasa yang dikenali STT ("en" = Inggris, "id" = Indonesia)
+    stt_beam_size: 2                     # Lebar pencarian kata (1-5); makin besar makin akurat, tapi proses sedikit lebih lambat
+    stt_no_speech_threshold: 0.6         # Batas probabilitas hening (0-1); jika probabilitas hening >= nilai ini, teks ditolak sebagai noise
+    stt_log_prob_threshold: -1.0         # Batas keyakinan model (log-prob); jika di bawah nilai ini (mis. -1.5), hasil dianggap tidak yakin & dibuang
+    stt_compression_ratio_threshold: 1.8 # Batas pengulangan kata; menolak halusinasi Whisper yang mengulang-ulang kalimat yang sama
+    stt_vad_silence_ms: 400              # Silero VAD internal Whisper: jeda hening (ms) untuk memotong segmen di dalam rekaman
+    stt_vad_speech_pad_ms: 200           # Silero VAD internal Whisper: bantalan waktu (ms) di awal & akhir ucapan agar tidak terpotong
+    # Kalimat petunjuk konteks agar Whisper lebih mudah mengenali gaya bahasa & istilah perintah robot
+    stt_initial_prompt: "Hello robot, halo robot, follow me, please follow me, stop, we have arrived at the location, this is the location."
+    # Daftar kata prioritas (dipisah spasi) yang bobot pengenalannya diperkuat oleh Whisper
+    stt_hotwords: "hello robot halo robot follow me arrived we are here stop berhenti"
+    # Daftar teks halusinasi yang otomatis dibuang jika Whisper mendeteksinya saat hening/noise
+    stt_hallucination_blacklist:
+      - "terima kasih"
+      - "terimakasih"
+      - "thank you"
+      - "thanks"
+      - "thank you very much"
+      - "you"
 
-    # Text-to-Speech (Piper)
-    tts_model: "en_US-lessac-medium.onnx"
-    tts_use_cuda: false
+    # -------------------------------------------------------------------------
+    # 4. Text-to-Speech / Piper (Pengubah teks menjadi suara robot)
+    # -------------------------------------------------------------------------
+    tts_model: "en_US-lessac-medium.onnx" # Nama file model suara Piper (.onnx di folder model/)
+    tts_use_cuda: false                   # true = jalankan Piper di GPU CUDA, false = jalankan di CPU (lebih hemat VRAM)
 
-    # Web Server & NLU (Standalone Barelang HRI Server)
-    nlu_threshold: 0.68
-    http_port: 8000
-    ws_port: 8765
+    # -------------------------------------------------------------------------
+    # 5. Web Server & NLU (Antarmuka web dan pencocokan intent)
+    # -------------------------------------------------------------------------
+    nlu_threshold: 0.68                  # Ambang batas kemiripan teks minimum (0-1) agar perintah suara diterima NLU
+    http_port: 8000                      # Port server halaman web HMI
+    ws_port: 8765                        # Port WebSocket untuk komunikasi audio/status real-time dengan web HMI

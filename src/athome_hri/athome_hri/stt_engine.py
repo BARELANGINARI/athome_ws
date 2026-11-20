@@ -3,7 +3,7 @@ import os
 import tempfile
 import threading
 import time
-from typing import Callable, Optional, Set, Union
+from typing import Callable, Iterable, Optional, Set, Union
 
 import numpy as np
 
@@ -50,8 +50,9 @@ class SpeechToText:
     DEFAULT_VAD_SPEECH_PAD_MS: int = 200
     COMMAND_INITIAL_PROMPT: str = (
         "Hello robot, halo robot, follow me, please follow me, "
-        "stop, we have arrived at the location."
+        "stop, we have arrived at the location, this is the location."
     )
+    DEFAULT_HOTWORDS: str = "hello robot halo robot follow me arrived we are here stop berhenti"
 
     HALLUCINATION_BLACKLIST: Set[str] = {
         "terima kasih",
@@ -67,10 +68,34 @@ class SpeechToText:
         model_size: str = DEFAULT_MODEL_SIZE,
         language: str = "en",
         on_asr_result: Optional[AsrResultCallback] = None,
+        fallback_model_size: str = FALLBACK_MODEL_SIZE,
+        beam_size: int = DEFAULT_BEAM_SIZE,
+        no_speech_threshold: float = DEFAULT_NO_SPEECH_THRESHOLD,
+        log_prob_threshold: float = DEFAULT_LOG_PROB_THRESHOLD,
+        compression_ratio_threshold: float = DEFAULT_COMPRESSION_RATIO_THRESHOLD,
+        vad_silence_ms: int = DEFAULT_VAD_SILENCE_MS,
+        vad_speech_pad_ms: int = DEFAULT_VAD_SPEECH_PAD_MS,
+        initial_prompt: str = COMMAND_INITIAL_PROMPT,
+        hotwords: str = DEFAULT_HOTWORDS,
+        hallucination_blacklist: Optional[Iterable[str]] = None,
     ) -> None:
         self.model_size = model_size
+        self.fallback_model_size = fallback_model_size
         self.language = language
         self.on_asr_result = on_asr_result
+        self.beam_size = int(beam_size)
+        self.no_speech_threshold = float(no_speech_threshold)
+        self.log_prob_threshold = float(log_prob_threshold)
+        self.compression_ratio_threshold = float(compression_ratio_threshold)
+        self.vad_silence_ms = int(vad_silence_ms)
+        self.vad_speech_pad_ms = int(vad_speech_pad_ms)
+        self.initial_prompt = str(initial_prompt)
+        self.hotwords = str(hotwords)
+        self.set_hallucination_blacklist(
+            hallucination_blacklist
+            if hallucination_blacklist is not None
+            else self.HALLUCINATION_BLACKLIST
+        )
         self.whisper: Optional["WhisperModel"] = None
         self._lock = threading.Lock()
 
@@ -99,22 +124,27 @@ class SpeechToText:
             logger.info("CTranslate2 fallback to CPU (int8).")
         return "cpu", "int8"
 
+    def set_hallucination_blacklist(self, items: Iterable[str]) -> None:
+        self.hallucination_blacklist = {
+            str(item).strip().lower() for item in items if str(item).strip()
+        }
+
     def _load_model(self, device: str, compute_type: str) -> None:
-        """Load Faster-Whisper model with fallback to CPU or base.en on failure."""
+        """Load Faster-Whisper model with fallback to CPU or fallback_model_size on failure."""
         candidates = [(self.model_size, device, compute_type)]
         if device == "cuda":
             candidates.append((self.model_size, "cuda", "float16"))
             candidates.append((self.model_size, "cpu", "int8"))
-        if self.model_size != self.FALLBACK_MODEL_SIZE:
+        if self.fallback_model_size and self.model_size != self.fallback_model_size:
             candidates.append(
                 (
-                    self.FALLBACK_MODEL_SIZE,
+                    self.fallback_model_size,
                     device,
                     "float16" if device == "cuda" else "int8",
                 )
             )
             if device == "cuda":
-                candidates.append((self.FALLBACK_MODEL_SIZE, "cpu", "int8"))
+                candidates.append((self.fallback_model_size, "cpu", "int8"))
 
         for model_name, dev, comp in candidates:
             try:
@@ -174,25 +204,23 @@ class SpeechToText:
                 audio_source = temp_path
 
             transcribe_kwargs = {
-                "beam_size": self.DEFAULT_BEAM_SIZE,
+                "beam_size": self.beam_size,
                 "language": self.language,
-                "initial_prompt": self.COMMAND_INITIAL_PROMPT,
+                "initial_prompt": self.initial_prompt,
                 "condition_on_previous_text": False,
-                "no_speech_threshold": self.DEFAULT_NO_SPEECH_THRESHOLD,
-                "log_prob_threshold": self.DEFAULT_LOG_PROB_THRESHOLD,
-                "compression_ratio_threshold": self.DEFAULT_COMPRESSION_RATIO_THRESHOLD,
+                "no_speech_threshold": self.no_speech_threshold,
+                "log_prob_threshold": self.log_prob_threshold,
+                "compression_ratio_threshold": self.compression_ratio_threshold,
                 "vad_filter": True,
                 "vad_parameters": {
-                    "min_silence_duration_ms": self.DEFAULT_VAD_SILENCE_MS,
-                    "speech_pad_ms": self.DEFAULT_VAD_SPEECH_PAD_MS,
+                    "min_silence_duration_ms": self.vad_silence_ms,
+                    "speech_pad_ms": self.vad_speech_pad_ms,
                 },
             }
             try:
                 import inspect
-                if "hotwords" in inspect.signature(self.whisper.transcribe).parameters:
-                    transcribe_kwargs["hotwords"] = (
-                        "hello robot halo robot follow me arrived we are here stop berhenti"
-                    )
+                if self.hotwords and "hotwords" in inspect.signature(self.whisper.transcribe).parameters:
+                    transcribe_kwargs["hotwords"] = self.hotwords
             except Exception:
                 pass
 
@@ -207,8 +235,8 @@ class SpeechToText:
                     seg.text.strip()
                     for seg in segments
                     if (
-                        seg.no_speech_prob < self.DEFAULT_NO_SPEECH_THRESHOLD
-                        and seg.avg_logprob >= self.DEFAULT_LOG_PROB_THRESHOLD
+                        seg.no_speech_prob < self.no_speech_threshold
+                        and seg.avg_logprob >= self.log_prob_threshold
                     )
                 ]
 
@@ -220,7 +248,7 @@ class SpeechToText:
             cleaned_check = text.lower().rstrip(".!,?")
             if (
                 text
-                and cleaned_check not in self.HALLUCINATION_BLACKLIST
+                and cleaned_check not in self.hallucination_blacklist
                 and len(cleaned_check) > 2
             ):
                 metrics_str = (
