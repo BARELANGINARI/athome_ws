@@ -212,7 +212,7 @@ int classifyColorBucket(const cv::Vec3b & bgr, const cv::Vec3b & hsv)
 
   // Kategori akromatik berbasis chroma & kecerahan agar tahan noise/color-cast indoor
   if ((v < 58 && chroma < 30) || (v < 38 && chroma < 42)) return 0; // black
-  if ((v > 155 && chroma < 34) || (v > 175 && s < 38)) return 1;    // white
+  if ((v > 150 && chroma < 48) || (v > 175 && s < 42)) return 1;    // white
   if (chroma < 26 || s < 32) return 2;                              // gray
 
   // Kategori kromatik berdasarkan Hue (skala OpenCV 0..179)
@@ -684,10 +684,10 @@ public:
       const float shoulder_w = std::abs(kpt[12].x - kpt[5].x);
 
       if (shoulder_w > 15.0f) {
-        int tw = static_cast<int>(shoulder_w * 0.90f);
-        int th = static_cast<int>(shoulder_w * 1.10f);
+        int tw = static_cast<int>(shoulder_w * 0.75f);
+        int th = static_cast<int>(shoulder_w * 0.85f);
         int tx = static_cast<int>(sx - tw * 0.5f);
-        int ty = static_cast<int>(sy + shoulder_w * 0.10f); // Area torso lebih luas agar tidak terdominasi teks/logo dada
+        int ty = static_cast<int>(sy + shoulder_w * 0.12f); // Area torso cukup luas abaikan teks tapi tidak keluar ke lengan/kursi
 
         cv::Rect roi(tx, ty, tw, th);
         roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
@@ -700,9 +700,9 @@ public:
 
     // 2. Fallback jika keypoint bahu tidak terdeteksi, gunakan proporsi torso dari bbox
     if (bbox.width > 10 && bbox.height > 10) {
-      const int tw = std::max(10, static_cast<int>(bbox.width * 0.65f));
-      const int th = std::max(10, static_cast<int>(bbox.height * 0.40f));
-      const int tx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.175f), 0, bgr.cols - tw);
+      const int tw = std::max(10, static_cast<int>(bbox.width * 0.55f));
+      const int th = std::max(10, static_cast<int>(bbox.height * 0.35f));
+      const int tx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.225f), 0, bgr.cols - tw);
       const int ty = std::clamp(bbox.y + static_cast<int>(bbox.height * 0.20f), 0, bgr.rows - th);
 
       cv::Rect roi(tx, ty, tw, th);
@@ -741,17 +741,8 @@ public:
         }
       }
 
-      cv::Mat ready_img;
-      // Normalisasi ringan hanya jika warna kromatik redup (bukan hitam/abu-abu)
-      if (dom.mean_s > 35.0 && dom.chroma > 26.0 && dom.mean_v > 25.0 && dom.mean_v < 130.0) {
-        const double scale = std::min(1.8, 150.0 / std::max(1.0, dom.mean_v));
-        cv::convertScaleAbs(masked_cropped, ready_img, scale, 0);
-      } else {
-        ready_img = masked_cropped;
-      }
-
       cv::Mat resized;
-      cv::resize(ready_img, resized, cv::Size(224, 224));
+      cv::resize(masked_cropped, resized, cv::Size(224, 224));
       cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
       cv::Mat blob = cv::dnn::blobFromImage(
         resized, 1.0 / 255.0, cv::Size(224, 224), cv::Scalar(0, 0, 0), false, false);
@@ -778,13 +769,11 @@ public:
           if (cand == dom.name) {
             accept_model = (prob > 0.30f);
           } else if (cand == "black") {
-            accept_model = (dom.mean_v < 75.0 && dom.chroma < 38.0 && prob > 0.45f);
+            accept_model = (dom.mean_v < 105.0 && prob > 0.45f);
           } else if (cand == "white") {
-            accept_model = (dom.mean_v > 145.0 && dom.chroma < 42.0 && prob > 0.45f);
-          } else if (dom.ratio < 0.60) {
-            accept_model = (prob > 0.55f);
+            accept_model = (dom.mean_v > 130.0 && prob > 0.45f);
           } else {
-            accept_model = (prob > 0.72f);
+            accept_model = (prob > 0.45f);
           }
 
           if (accept_model) {
@@ -3288,6 +3277,30 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       }
 
+      // Cek apakah postur skeleton jelas sedang berdiri tegak di dekat kursi
+      auto valid2d = [](const cv::Point2f & p) {
+        return std::isfinite(p.x) && std::isfinite(p.y) && p.x > 0.0f && p.y > 0.0f;
+      };
+      bool standing_straight = false;
+      if (person.kpt.size() >= 25 && person.bbox.height > 20) {
+        auto check_leg_straight = [&](int hip_i, int knee_i, int ankle_i) {
+          const auto & hip = person.kpt[hip_i];
+          const auto & knee = person.kpt[knee_i];
+          const auto & ankle = person.kpt[ankle_i];
+          if (!valid2d(hip) || !valid2d(knee) || !valid2d(ankle)) return false;
+          const float thigh_dy = knee.y - hip.y;
+          const float shin_dy = ankle.y - knee.y;
+          const float leg_dx = std::abs(knee.x - hip.x);
+          return (thigh_dy > 0.20f * person.bbox.height) &&
+                 (shin_dy > 0.18f * person.bbox.height) &&
+                 (leg_dx < thigh_dy * 0.65f);
+        };
+        standing_straight = check_leg_straight(18, 19, 20) || check_leg_straight(22, 23, 24);
+      }
+      if (standing_straight && overlap_person < 0.35 && !chair_center_inside) {
+        return 0.0;
+      }
+
       // 4. Cek konsistensi kedalaman 3D (longgarkan jika overlap & posisi tubuh sangat kuat di dalam kursi)
       if (chair.has_pos && person.has_pos) {
         const double dist_3d = std::hypot(chair.x - person.x_m, chair.y - person.y_m);
@@ -3519,7 +3532,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       // Tampilkan banner nama tamu / registered name / Guest
       if (is_receptionist_) {
         std::string label = !p.name.empty() ? p.name : "Guest";
-        if (p.is_sitting) label += " [Seated]";
+        if (p.is_sitting && p.name.empty()) label += " [Seated]";
         if (p.is_facing_back) label += " [Back]";
         banner(label, r.x, r.y, color,
           p.is_sitting ? cv::Scalar(0, 0, 180) : cv::Scalar(0, 140, 0),
