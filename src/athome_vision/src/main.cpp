@@ -12,6 +12,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -183,6 +184,118 @@ bool get3dWithOffset(
   return true;
 }
 
+struct DominantColorInfo
+{
+  bool valid{false};
+  int best_idx{0};
+  std::string name{"dark"};
+  double ratio{0.0};
+  double mean_h{0.0}, mean_s{0.0}, mean_v{0.0};
+  double chroma{0.0};
+  cv::Vec3b mean_bgr{0, 0, 0};
+  cv::Mat hsv_roi;
+  cv::Mat bucket_map;
+};
+
+int classifyColorBucket(const cv::Vec3b & bgr, const cv::Vec3b & hsv)
+{
+  const int b = bgr[0];
+  const int g = bgr[1];
+  const int r = bgr[2];
+  const int max_c = std::max({b, g, r});
+  const int min_c = std::min({b, g, r});
+  const int chroma = max_c - min_c;
+
+  const int h = hsv[0];
+  const int s = hsv[1];
+  const int v = hsv[2];
+
+  // Kategori akromatik berbasis chroma & kecerahan agar tahan noise/color-cast indoor
+  if ((v < 58 && chroma < 30) || (v < 38 && chroma < 42)) return 0; // black
+  if ((v > 155 && chroma < 34) || (v > 175 && s < 38)) return 1;    // white
+  if (chroma < 26 || s < 32) return 2;                              // gray
+
+  // Kategori kromatik berdasarkan Hue (skala OpenCV 0..179)
+  if (h <= 8 || h >= 170) {
+    return (v > 170 && s < 135) ? 9 : 3; // pink vs red
+  }
+  if (h <= 21) return 4;  // orange
+  if (h <= 36) return 5;  // yellow
+  if (h <= 84) return 6;  // green
+  if (h <= 130) return 7; // blue
+  if (h <= 155) return 8; // purple
+  return 9;               // pink
+}
+
+DominantColorInfo analyzeDominantColor(const cv::Mat & bgr_roi)
+{
+  static constexpr std::array<const char *, 10> kColorNames = {
+    "black", "white", "gray", "red", "orange", "yellow", "green", "blue", "purple", "pink"
+  };
+
+  DominantColorInfo info;
+  if (bgr_roi.empty()) return info;
+
+  cv::cvtColor(bgr_roi, info.hsv_roi, cv::COLOR_BGR2HSV);
+  info.bucket_map = cv::Mat(bgr_roi.size(), CV_8UC1);
+
+  std::array<int, 10> counts{};
+  std::array<double, 10> sum_b{}, sum_g{}, sum_r{};
+  std::array<double, 10> sum_cos_h{}, sum_sin_h{}, sum_s{}, sum_v{};
+
+  const int total = bgr_roi.rows * bgr_roi.cols;
+  if (total <= 0) return info;
+
+  for (int row = 0; row < bgr_roi.rows; ++row) {
+    const cv::Vec3b * bgr_ptr = bgr_roi.ptr<cv::Vec3b>(row);
+    const cv::Vec3b * hsv_ptr = info.hsv_roi.ptr<cv::Vec3b>(row);
+    uint8_t * map_ptr = info.bucket_map.ptr<uint8_t>(row);
+    for (int col = 0; col < bgr_roi.cols; ++col) {
+      const cv::Vec3b & p_bgr = bgr_ptr[col];
+      const cv::Vec3b & p_hsv = hsv_ptr[col];
+      const int idx = classifyColorBucket(p_bgr, p_hsv);
+      map_ptr[col] = static_cast<uint8_t>(idx);
+
+      counts[idx]++;
+      sum_b[idx] += p_bgr[0];
+      sum_g[idx] += p_bgr[1];
+      sum_r[idx] += p_bgr[2];
+
+      const double rad = static_cast<double>(p_hsv[0]) * 2.0 * PI_F / 180.0;
+      sum_cos_h[idx] += std::cos(rad);
+      sum_sin_h[idx] += std::sin(rad);
+      sum_s[idx] += p_hsv[1];
+      sum_v[idx] += p_hsv[2];
+    }
+  }
+
+  int best_idx = 0;
+  for (int i = 1; i < 10; ++i) {
+    if (counts[i] > counts[best_idx]) best_idx = i;
+  }
+
+  const int best_cnt = counts[best_idx];
+  if (best_cnt <= 0) return info;
+
+  info.valid = true;
+  info.best_idx = best_idx;
+  info.name = kColorNames[static_cast<size_t>(best_idx)];
+  info.ratio = static_cast<double>(best_cnt) / static_cast<double>(total);
+
+  const uint8_t mb = static_cast<uint8_t>(std::clamp(std::lround(sum_b[best_idx] / best_cnt), 0L, 255L));
+  const uint8_t mg = static_cast<uint8_t>(std::clamp(std::lround(sum_g[best_idx] / best_cnt), 0L, 255L));
+  const uint8_t mr = static_cast<uint8_t>(std::clamp(std::lround(sum_r[best_idx] / best_cnt), 0L, 255L));
+  info.mean_bgr = cv::Vec3b(mb, mg, mr);
+  info.chroma = static_cast<double>(std::max({mb, mg, mr}) - std::min({mb, mg, mr}));
+
+  double angle = std::atan2(sum_sin_h[best_idx], sum_cos_h[best_idx]) * 180.0 / (2.0 * PI_F);
+  if (angle < 0.0) angle += 180.0;
+  info.mean_h = angle;
+  info.mean_s = sum_s[best_idx] / best_cnt;
+  info.mean_v = sum_v[best_idx] / best_cnt;
+  return info;
+}
+
 cv::Scalar extractTorsoColor(const cv::Mat & bgr, const cv::Rect & bbox)
 {
   if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return cv::Scalar(0, 0, 0);
@@ -196,6 +309,10 @@ cv::Scalar extractTorsoColor(const cv::Mat & bgr, const cv::Rect & bbox)
   roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
   if (roi.area() <= 0) return cv::Scalar(0, 0, 0);
 
+  const DominantColorInfo dom = analyzeDominantColor(bgr(roi));
+  if (dom.valid) {
+    return cv::Scalar(dom.mean_h, dom.mean_s, dom.mean_v);
+  }
   cv::Mat hsv;
   cv::cvtColor(bgr(roi), hsv, cv::COLOR_BGR2HSV);
   return cv::mean(hsv);
@@ -259,6 +376,8 @@ struct ChairMemory
   double x{0.0}, y{0.0}, z{0.0};
   double range_m{0.0};
   rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
+  bool was_occupied{false};
+  rclcpp::Time last_occupied{0, 0, RCL_ROS_TIME};
 };
 
 static std::vector<std::string> loadLabels(const std::string & path)
@@ -603,21 +722,32 @@ public:
 
     cv::Mat cropped = bgr(safe_roi);
 
-    // 1. INFERENSI DENGAN DEEP LEARNING MODEL (color_model.onnx)
+    // 1. Cari warna dominan (jumlah piksel terbanyak) di torso agar teks/logo terabaikan
+    const zed_vision::DominantColorInfo dom = zed_vision::analyzeDominantColor(cropped);
+    if (!dom.valid) return "casual attire";
+
+    std::string chosen_color = dom.name;
+
+    // 2. INFERENSI DEEP LEARNING MODEL (color_model.onnx) pada patch yang sudah di-mask dari teks/logo
     if (color_.ready() && !color_labels_.empty()) {
-      cv::Mat hsv_roi;
-      cv::cvtColor(cropped, hsv_roi, cv::COLOR_BGR2HSV);
-      const cv::Scalar mean_hsv = cv::mean(hsv_roi);
-      const double avg_s = mean_hsv[1];
-      const double avg_v = mean_hsv[2];
+      cv::Mat masked_cropped = cropped.clone();
+      for (int row = 0; row < masked_cropped.rows; ++row) {
+        cv::Vec3b * dst = masked_cropped.ptr<cv::Vec3b>(row);
+        const uint8_t * map_ptr = dom.bucket_map.ptr<uint8_t>(row);
+        for (int col = 0; col < masked_cropped.cols; ++col) {
+          if (map_ptr[col] != static_cast<uint8_t>(dom.best_idx)) {
+            dst[col] = dom.mean_bgr;
+          }
+        }
+      }
 
       cv::Mat ready_img;
-      // Normalisasi kecerahan jika kondisi indoor redup tapi kain memiliki saturasi warna
-      if (avg_s > 35.0 && avg_v > 20.0 && avg_v < 140.0) {
-        const double scale = std::min(2.5, 160.0 / std::max(1.0, avg_v));
-        cv::convertScaleAbs(cropped, ready_img, scale, 0);
+      // Normalisasi ringan hanya jika warna kromatik redup (bukan hitam/abu-abu)
+      if (dom.mean_s > 35.0 && dom.chroma > 26.0 && dom.mean_v > 25.0 && dom.mean_v < 130.0) {
+        const double scale = std::min(1.8, 150.0 / std::max(1.0, dom.mean_v));
+        cv::convertScaleAbs(masked_cropped, ready_img, scale, 0);
       } else {
-        ready_img = cropped;
+        ready_img = masked_cropped;
       }
 
       cv::Mat resized;
@@ -638,77 +768,38 @@ public:
           if (probs[static_cast<size_t>(i)] > probs[static_cast<size_t>(best)]) best = i;
         }
 
-        bool accept_model = false;
         if (best < static_cast<int>(color_labels_.size())) {
           std::string cand = color_labels_[static_cast<size_t>(best)];
-          if (cand == "black") {
-            // Hanya terima "black" jika kain memang fisik gelap & saturasi rendah
-            if (avg_v < 38.0 || (avg_v < 55.0 && avg_s < 35.0)) {
-              accept_model = (probs[static_cast<size_t>(best)] > 0.40f);
-            }
+          std::transform(cand.begin(), cand.end(), cand.begin(), ::tolower);
+          if (cand == "grey") cand = "gray";
+
+          const float prob = probs[static_cast<size_t>(best)];
+          bool accept_model = false;
+          if (cand == dom.name) {
+            accept_model = (prob > 0.30f);
+          } else if (cand == "black") {
+            accept_model = (dom.mean_v < 75.0 && dom.chroma < 38.0 && prob > 0.45f);
+          } else if (cand == "white") {
+            accept_model = (dom.mean_v > 145.0 && dom.chroma < 42.0 && prob > 0.45f);
+          } else if (dom.ratio < 0.60) {
+            accept_model = (prob > 0.55f);
           } else {
-            accept_model = (probs[static_cast<size_t>(best)] > 0.35f);
+            accept_model = (prob > 0.72f);
+          }
+
+          if (accept_model) {
+            chosen_color = cand;
           }
         }
-
-        if (accept_model) {
-          std::string result = color_labels_[static_cast<size_t>(best)];
-          std::transform(result.begin(), result.end(), result.begin(), ::tolower);
-          if (result.find("shirt") == std::string::npos &&
-              result.find("clothes") == std::string::npos)
-          {
-            result += " shirt";
-          }
-          return result;
-        }
       }
     }
 
-    // 2. FALLBACK HSV YANG ADAPTIF
-    cv::Mat hsv;
-    cv::cvtColor(cropped, hsv, cv::COLOR_BGR2HSV);
-    std::vector<cv::Vec3b> valid_pixels;
-    valid_pixels.reserve(safe_roi.area());
-    for (int r = 0; r < hsv.rows; ++r) {
-      const cv::Vec3b * row = hsv.ptr<cv::Vec3b>(r);
-      for (int c = 0; c < hsv.cols; ++c) {
-        const cv::Vec3b & p = row[c];
-        // Skin tone filter (skip leher/dada atas jika ada yang lolos)
-        if (p[0] >= 5 && p[0] <= 25 && p[1] >= 40 && p[1] <= 160 && p[2] >= 70) continue;
-        // Filter bayangan gelap ekstrem
-        if (p[2] < 20) continue;
-        valid_pixels.push_back(p);
-      }
+    if (chosen_color.find("shirt") == std::string::npos &&
+        chosen_color.find("clothes") == std::string::npos)
+    {
+      chosen_color += " shirt";
     }
-
-    double h = 0, s = 0, v = 0;
-    if (!valid_pixels.empty()) {
-      double sh = 0, ss = 0, sv = 0;
-      for (const auto & p : valid_pixels) {
-        sh += p[0];
-        ss += p[1];
-        sv += p[2];
-      }
-      h = sh / valid_pixels.size();
-      s = ss / valid_pixels.size();
-      v = sv / valid_pixels.size();
-    } else {
-      const cv::Scalar mean = cv::mean(hsv);
-      h = mean[0]; s = mean[1]; v = mean[2];
-    }
-
-    std::string color = "dark";
-    if (v < 28.0 || (v < 42.0 && s < 30.0)) color = "black";
-    else if (s < 28.0 && v > 150.0) color = "white";
-    else if (s < 30.0) color = "gray";
-    else if (h <= 10.0 || h >= 170.0) color = "red";
-    else if (h <= 25.0) color = "orange";
-    else if (h <= 38.0) color = "yellow";
-    else if (h <= 85.0) color = "green";
-    else if (h <= 130.0) color = "blue";
-    else if (h <= 155.0) color = "purple";
-    else if (h < 170.0) color = "pink";
-    return color + " shirt";
+    return chosen_color;
   }
 
   std::string clothingColor(
@@ -1321,6 +1412,12 @@ private:
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
 
+  struct ShirtColorMemory
+  {
+    std::deque<std::string> history;
+    rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
+  };
+
   void publishYaw();
   void loop();
   void processBags(const cv::Mat & bgr, const sl::Mat & cloud);
@@ -1412,6 +1509,7 @@ private:
   std::string person_back_topic_{"/vision/person_back"};
   std::unordered_map<int, BackMemory> back_memory_;
   std::unordered_map<int, PersonNameMemory> name_memory_;
+  std::unordered_map<int, ShirtColorMemory> shirt_color_memory_;
   std::string task_mode_{"all"};
   bool is_help_me_carry_{false};
   bool is_receptionist_{false};
@@ -2727,10 +2825,17 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     recognized_names[i] = mem.confirmed_name;
   }
 
-  // Bersihkan name_memory_ yang sudah tidak terlihat lebih dari 5.0 detik
+  // Bersihkan name_memory_ dan shirt_color_memory_ yang sudah tidak terlihat lebih dari 5.0 detik
   for (auto it = name_memory_.begin(); it != name_memory_.end(); ) {
     if ((current_time - it->second.last_seen).seconds() > 5.0) {
       it = name_memory_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (auto it = shirt_color_memory_.begin(); it != shirt_color_memory_.end(); ) {
+    if ((current_time - it->second.last_seen).seconds() > 5.0) {
+      it = shirt_color_memory_.erase(it);
     } else {
       ++it;
     }
@@ -2825,16 +2930,38 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     }
 
     if (is_receptionist_) {
+      std::string raw_cloth;
       if (person.shirt_bbox.width > 5 && person.shirt_bbox.height > 5) {
-        person.clothing = analyzer_.clothingColor(bgr, person.shirt_bbox);
+        raw_cloth = analyzer_.clothingColor(bgr, person.shirt_bbox);
       }
       const bool classify = (first_person || !pending_register_name_.empty() || !recognized_name.empty());
       if (classify) {
-        if (person.clothing.empty()) {
-          person.clothing = analyzer_.clothingColor(bgr, person.shirt_bbox);
+        if (raw_cloth.empty()) {
+          raw_cloth = analyzer_.clothingColor(bgr, person.shirt_bbox);
         }
         person.hair = analyzer_.hairColor(bgr, entry.bbox, points);
         person.gender = analyzer_.gender(points, bgr, entry.bbox);
+      }
+      if (!raw_cloth.empty() && raw_cloth != "casual attire") {
+        auto & cm = shirt_color_memory_[entry.id];
+        cm.history.push_back(raw_cloth);
+        if (cm.history.size() > 7) cm.history.pop_front();
+        cm.last_seen = current_time;
+
+        std::unordered_map<std::string, int> counts;
+        for (const auto & c : cm.history) counts[c]++;
+        std::string best_cloth = raw_cloth;
+        int best_cnt = 0;
+        for (const auto & c : cm.history) {
+          const int cnt = counts[c];
+          if (cnt >= best_cnt) {
+            best_cnt = cnt;
+            best_cloth = c;
+          }
+        }
+        person.clothing = best_cloth;
+      } else {
+        person.clothing = raw_cloth;
       }
     }
 
@@ -3038,6 +3165,8 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       const double union_area =
         static_cast<double>(memory.bbox.area()) + det.rect.area() - inter_area;
       const double iou = union_area > 0.0 ? inter_area / union_area : 0.0;
+      const double min_area = static_cast<double>(std::min(memory.bbox.area(), det.rect.area()));
+      const double containment = min_area > 0.0 ? inter_area / min_area : 0.0;
       const double mcx = memory.bbox.x + memory.bbox.width * 0.5;
       const double mcy = memory.bbox.y + memory.bbox.height * 0.5;
       const double dcx = det.rect.x + det.rect.width * 0.5;
@@ -3046,16 +3175,27 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
         std::max(memory.bbox.width, memory.bbox.height),
         std::max(det.rect.width, det.rect.height)));
       const double center_dist = std::hypot(mcx - dcx, mcy - dcy);
+      const double max_depth_diff = memory.was_occupied ? 1.45 : 1.0;
       const bool depth_ok = !has_pos || !memory.has_pos ||
-        std::hypot(x - memory.x, y - memory.y) < 1.0;
-      return depth_ok && (iou > 0.20 || center_dist < scale * 0.75);
+        std::hypot(x - memory.x, y - memory.y) < max_depth_diff ||
+        iou > 0.35 || containment > 0.65;
+      return depth_ok && (iou > 0.20 || containment > 0.55 || center_dist < scale * 0.75);
     };
 
   if (fresh_detections) {
     for (const auto & det : dets) {
       if (static_cast<double>(det.rect.area()) < yolo_min_area_) continue;
       double x = 0.0, y = 0.0, z = 0.0;
-      const bool ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
+      bool ok = false;
+      sl::float4 median_pt{NAN, NAN, NAN, NAN};
+      if (zed_vision::get3dCoordinates(det.rect, cloud, median_pt) && std::isfinite(median_pt.z)) {
+        x = (median_pt.x + zed_vision::kOffsetX) / zed_vision::kOffsetScale;
+        y = (-median_pt.y + zed_vision::kOffsetY) / zed_vision::kOffsetScale;
+        z = (median_pt.z + zed_vision::kOffsetZ) / zed_vision::kOffsetScale;
+        ok = true;
+      } else {
+        ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
+      }
       const std::string det_label = (det.label == "couch" || det.label == "sofa") ? "sofa" : det.label;
 
       int match = -1;
@@ -3077,7 +3217,10 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       if (match >= 0) {
         auto & memory = chair_memory_[static_cast<size_t>(match)];
         memory.label = det_label.empty() ? "chair" : det_label;
-        memory.bbox = det.rect;
+        // Saat kursi diduduki orang, jangan biarkan bbox menyusut menjadi serpihan kecil akibat oklusi
+        if (!(memory.was_occupied && det.rect.area() < memory.bbox.area() * 0.45)) {
+          memory.bbox = det.rect;
+        }
         memory.last_seen = current_time;
         if (ok) {
           memory.has_pos = true;
@@ -3115,21 +3258,14 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       const double overlap_chair = static_cast<double>(inter.area()) / chair_area;
       const double overlap_person = static_cast<double>(inter.area()) / person_area;
 
-      // 2. Cek konsistensi kedalaman 3D (jika keduanya memiliki posisi 3D valid)
-      if (chair.has_pos && person.has_pos) {
-        const double dist_3d = std::hypot(chair.x - person.x_m, chair.y - person.y_m);
-        // Jika jarak 3D > 1.5m, orang ini di latar depan/belakang, bukan duduk di kursi ini
-        if (dist_3d > 1.50) return 0.0;
-      }
-
-      // 3. Keselarasan horizontal (X-axis)
+      // 2. Keselarasan horizontal (X-axis)
       const int inter_x = std::max(0,
         std::min(chair.bbox.x + chair.bbox.width, person.bbox.x + person.bbox.width) -
         std::max(chair.bbox.x, person.bbox.x));
       const int min_w = std::min(chair.bbox.width, person.bbox.width);
       const double x_ratio = min_w > 0 ? static_cast<double>(inter_x) / min_w : 0.0;
 
-      // 4. Pengecekan posisi tubuh orang terhadap kursi
+      // 3. Pengecekan posisi tubuh orang terhadap kursi
       const int cx = person.bbox.x + person.bbox.width / 2;
       const int cy = person.bbox.y + person.bbox.height / 2;
       const int hip_y = person.bbox.y + static_cast<int>(person.bbox.height * 0.65);
@@ -3152,10 +3288,18 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       }
 
+      // 4. Cek konsistensi kedalaman 3D (longgarkan jika overlap & posisi tubuh sangat kuat di dalam kursi)
+      if (chair.has_pos && person.has_pos) {
+        const double dist_3d = std::hypot(chair.x - person.x_m, chair.y - person.y_m);
+        const double max_dist_3d =
+          (overlap_chair > 0.25 && (hip_inside || kpt_inside || chair_center_inside)) ? 2.20 : 1.75;
+        if (dist_3d > max_dist_3d) return 0.0;
+      }
+
       // Syarat kelayakan:
-      // Memiliki overlap 2D (> 8% dari kursi atau orang) ATAU keselarasan horizontal (x_ratio > 0.30) dengan posisi tubuh di dalam kursi
-      const bool qualified = (overlap_chair > 0.08 || overlap_person > 0.08) ||
-                             (x_ratio > 0.30 && (hip_inside || center_inside || chair_center_inside || kpt_inside));
+      // Memiliki overlap 2D (> 6% dari kursi atau orang) ATAU keselarasan horizontal dengan posisi tubuh di dalam kursi
+      const bool qualified = (overlap_chair > 0.06 || overlap_person > 0.06) ||
+                             (x_ratio > 0.25 && (hip_inside || center_inside || chair_center_inside || kpt_inside));
 
       if (!qualified) return 0.0;
 
@@ -3165,7 +3309,7 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       if (kpt_inside) score += 0.5;
       if (chair.has_pos && person.has_pos) {
         const double dist_3d = std::hypot(chair.x - person.x_m, chair.y - person.y_m);
-        score += std::max(0.0, 1.50 - dist_3d);
+        score += std::max(0.0, 1.75 - dist_3d);
       }
       return score;
     };
@@ -3223,14 +3367,29 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
   double best_empty_x = 0.0, best_empty_y = 0.0, best_empty_z = 0.0;
   double best_empty_depth = 0.0;
   bool best_has_pos = false;
-  constexpr double memory_timeout = 10.0;
+  constexpr double occupied_hold_sec = 2.0;
+  constexpr double empty_memory_timeout = 10.0;
+  constexpr double occupied_memory_timeout = 20.0;
 
   for (size_t i = 0; i < chair_memory_.size(); ) {
     ChairMemory & chair = chair_memory_[i];
-    const bool occupied = chair_occupied[i];
+    bool occupied = chair_occupied[i];
     if (occupied) {
+      chair.was_occupied = true;
+      chair.last_occupied = current_time;
       chair.last_seen = current_time;
-    } else if ((current_time - chair.last_seen).seconds() > memory_timeout) {
+    } else if (chair.was_occupied) {
+      if ((current_time - chair.last_occupied).seconds() <= occupied_hold_sec) {
+        // Hold status occupied sementara agar glitch ZED body tracking tidak membuat kursi berkedip/hilang
+        occupied = true;
+        chair.last_seen = current_time;
+      } else {
+        chair.was_occupied = false;
+      }
+    }
+
+    const double timeout = chair.was_occupied ? occupied_memory_timeout : empty_memory_timeout;
+    if (!occupied && (current_time - chair.last_seen).seconds() > timeout) {
       chair_memory_.erase(chair_memory_.begin() + i);
       chair_occupied.erase(chair_occupied.begin() + i);
       continue;
@@ -3417,7 +3576,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       }
     }
 
-    for (size_t i = 0; i < std::min<size_t>(4, preview_chairs_.size()); ++i) {
+    for (size_t i = 0; i < std::min<size_t>(6, preview_chairs_.size()); ++i) {
       const auto & c = preview_chairs_[i];
       cv::Rect r = flipRect(c.bbox);
       r &= cv::Rect(0, 0, W, H);

@@ -568,7 +568,9 @@ public:
       last_occupied_chair_time_ = now();
       occupied_chair_detected_ = true;
     } else {
-      occupied_chair_detected_ = false;
+      if ((now() - last_occupied_chair_time_).seconds() > 2.0) {
+        occupied_chair_detected_ = false;
+      }
     }
   }
 
