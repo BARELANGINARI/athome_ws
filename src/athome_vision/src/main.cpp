@@ -210,10 +210,11 @@ int classifyColorBucket(const cv::Vec3b & bgr, const cv::Vec3b & hsv)
   const int s = hsv[1];
   const int v = hsv[2];
 
-  // Kategori akromatik berbasis chroma & kecerahan agar tahan noise/color-cast indoor
-  if ((v < 58 && chroma < 30) || (v < 38 && chroma < 42)) return 0; // black
-  if ((v > 150 && chroma < 48) || (v > 175 && s < 42)) return 1;    // white
-  if (chroma < 26 || s < 32) return 2;                              // gray
+  // Kategori akromatik: bedakan hitam asli vs warna gelap jenuh (navy, maroon, dark green)
+  if (v < 20) return 0; // terlalu gelap untuk membedakan hue
+  if ((v < 52 && s < 65 && chroma < 20) || (v < 32 && s < 90 && chroma < 16)) return 0; // black
+  if ((v > 155 && s < 42) || (v > 180 && chroma < 38)) return 1; // white
+  if (s < 42 || (chroma < 14 && s < 85)) return 2; // gray
 
   // Kategori kromatik berdasarkan Hue (skala OpenCV 0..179)
   if (h <= 8 || h >= 170) {
@@ -337,6 +338,7 @@ struct PrevPerson
   bool has_pos{false};
   double x_m{0.0}, y_m{0.0}, range_m{0.0};
   bool is_sitting{false};
+  bool is_standing_posture{false};
   bool is_facing_back{false};
   std::vector<cv::Point2f> kpt;
   std::string clothing, hair, gender, name;
@@ -366,18 +368,6 @@ struct PrevChair
   double x_m{0.0}, y_m{0.0}, range_m{0.0};
   bool occupied{false};
   std::string side{"center"};
-};
-
-struct ChairMemory
-{
-  std::string label{"chair"};
-  cv::Rect bbox;
-  bool has_pos{false};
-  double x{0.0}, y{0.0}, z{0.0};
-  double range_m{0.0};
-  rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
-  bool was_occupied{false};
-  rclcpp::Time last_occupied{0, 0, RCL_ROS_TIME};
 };
 
 static std::vector<std::string> loadLabels(const std::string & path)
@@ -741,8 +731,19 @@ public:
         }
       }
 
+      cv::Mat ready_img;
+      // Naikkan brightness sementara untuk warna kromatik gelap agar CNN tidak menganggapnya black
+      if (dom.best_idx >= 3 && dom.mean_s > 50.0 && dom.chroma > 16.0 &&
+          dom.mean_v > 20.0 && dom.mean_v < 135.0)
+      {
+        const double scale = std::min(2.4, 150.0 / std::max(1.0, dom.mean_v));
+        cv::convertScaleAbs(masked_cropped, ready_img, scale, 0);
+      } else {
+        ready_img = masked_cropped;
+      }
+
       cv::Mat resized;
-      cv::resize(masked_cropped, resized, cv::Size(224, 224));
+      cv::resize(ready_img, resized, cv::Size(224, 224));
       cv::cvtColor(resized, resized, cv::COLOR_BGR2RGB);
       cv::Mat blob = cv::dnn::blobFromImage(
         resized, 1.0 / 255.0, cv::Size(224, 224), cv::Scalar(0, 0, 0), false, false);
@@ -769,9 +770,10 @@ public:
           if (cand == dom.name) {
             accept_model = (prob > 0.30f);
           } else if (cand == "black") {
-            accept_model = (dom.mean_v < 105.0 && prob > 0.45f);
+            // Jangan izinkan model menimpa warna kromatik gelap (navy/maroon/dark green) menjadi black
+            accept_model = (dom.mean_v < 60.0 && dom.mean_s < 65.0 && dom.chroma < 22.0 && prob > 0.55f);
           } else if (cand == "white") {
-            accept_model = (dom.mean_v > 130.0 && prob > 0.45f);
+            accept_model = (dom.mean_v > 145.0 && dom.mean_s < 48.0 && prob > 0.45f);
           } else {
             accept_model = (prob > 0.45f);
           }
@@ -1490,7 +1492,6 @@ private:
   std::vector<YoloDetection> last_bag_dets_;
   std::vector<YoloDetection> last_drink_dets_;
   std::vector<YoloDetection> last_chair_dets_;
-  std::vector<ChairMemory> chair_memory_;
 
   OperatorMemory op_mem_;
   std::unordered_map<int, WaveMemory> wave_memory_;
@@ -1503,7 +1504,7 @@ private:
   bool is_help_me_carry_{false};
   bool is_receptionist_{false};
   bool is_restaurant_{false};
-  double person_max_dist_{2.8};
+  double person_max_dist_{1.5};
   double bag_max_dist_{2.5};
   double drink_max_dist_{2.5};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_name_sub_;
@@ -1535,7 +1536,7 @@ ZedNode::ZedNode()
   declare_parameter("yaw_360", true);
   declare_parameter("enable_body_tracking", true);
   declare_parameter("depth_minimum_distance", 30.0);
-  declare_parameter("person_max_dist", 2.8);
+  declare_parameter("person_max_dist", 1.5);
   declare_parameter("bag_max_dist", 2.5);
   declare_parameter("enable_yolo", true);
   declare_parameter("debug_window", false);
@@ -2883,8 +2884,10 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
     }
 
+    const bool within_person_max_dist = entry.has_depth && entry.range_m <= person_max_dist_;
+
     // Jika sedang mendaftarkan nama tamu baru di pintu / restoran
-    if (recognized_name.empty() && (is_receptionist_ || is_restaurant_) && !pending_register_name_.empty() && first_person) {
+    if (within_person_max_dist && recognized_name.empty() && (is_receptionist_ || is_restaurant_) && !pending_register_name_.empty() && first_person) {
       recognized_name = pending_register_name_;
     }
 
@@ -2898,7 +2901,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
     }
 
-    if (first_recognized_name.empty() && !recognized_name.empty()) {
+    if (within_person_max_dist && first_recognized_name.empty() && !recognized_name.empty()) {
       first_recognized_name = recognized_name;
     }
 
@@ -2912,6 +2915,42 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     person.range_m = entry.range_m;
     person.is_facing_back = is_facing_back;
     person.name = recognized_name;
+
+    // Deteksi postur berdiri tegak menggunakan keypoint 3D ZED (unit cm, +Z atas)
+    if (entry.body->keypoint.size() >= 25) {
+      const auto & k3 = entry.body->keypoint;
+      auto valid3d = [](const sl::float3 & p) {
+        return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+      };
+      auto eval_leg_3d = [&](int hip_i, int knee_i, int ankle_i, bool & is_straight, bool & is_bent) {
+        is_straight = false;
+        is_bent = false;
+        const auto & hip = k3[hip_i];
+        const auto & knee = k3[knee_i];
+        const auto & ankle = k3[ankle_i];
+        if (!valid3d(hip) || !valid3d(knee) || !valid3d(ankle)) return;
+        const float thigh_dz = hip.z - knee.z;
+        const float shin_dz = knee.z - ankle.z;
+        const float thigh_horiz = std::hypot(knee.x - hip.x, knee.y - hip.y);
+        const float ux = hip.x - knee.x, uy = hip.y - knee.y, uz = hip.z - knee.z;
+        const float vx = ankle.x - knee.x, vy = ankle.y - knee.y, vz = ankle.z - knee.z;
+        const float un = std::sqrt(ux * ux + uy * uy + uz * uz);
+        const float vn = std::sqrt(vx * vx + vy * vy + vz * vz);
+        if (un < 1e-3f || vn < 1e-3f) return;
+        const float cos_knee = (ux * vx + uy * vy + uz * vz) / (un * vn);
+        if (thigh_dz > 22.0f && shin_dz > 20.0f &&
+            thigh_dz > thigh_horiz * 1.4f && cos_knee < -0.80f)
+        {
+          is_straight = true;
+        } else if (thigh_horiz > thigh_dz * 1.1f || cos_knee > -0.60f || thigh_dz < 18.0f) {
+          is_bent = true;
+        }
+      };
+      bool l_straight = false, l_bent = false, r_straight = false, r_bent = false;
+      eval_leg_3d(18, 19, 20, l_straight, l_bent);
+      eval_leg_3d(22, 23, 24, r_straight, r_bent);
+      person.is_standing_posture = (l_straight || r_straight) && !(l_bent || r_bent);
+    }
     for (const auto & point : points) {
       person.kpt.emplace_back(
         std::isfinite(point.x) ? point.x : NAN,
@@ -2954,7 +2993,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
     }
 
-    if (first_person) {
+    if (within_person_max_dist && first_person) {
       if (!is_restaurant_) {
         gesture_result = AttributeAnalyzer::detectGesture(points);
         if (is_help_me_carry_ && gesture_result != "NONE") {
@@ -2990,6 +3029,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     }
 
     preview_persons_.push_back(person);
+
+    if (!within_person_max_dist) continue;
 
     if (!first_person) ss << ";";
     std::string label;
@@ -3130,9 +3171,20 @@ void ZedNode::publishGuestNames()
 
 void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
 {
+  if (!enable_chair_) {
+    last_chair_dets_.clear();
+    preview_chairs_.clear();
+    std_msgs::msg::String chair_msg;
+    chair_msg.data = "";
+    chair_dets_publisher_->publish(chair_msg);
+    std_msgs::msg::String seat_msg;
+    seat_msg.data = "none";
+    empty_seat_publisher_->publish(seat_msg);
+    return;
+  }
+
   std::vector<YoloDetection> dets = last_chair_dets_;
-  bool fresh_detections = false;
-  if (enable_chair_ && chair_frame_++ % yolo_stride_ == 0) {
+  if (chair_frame_++ % yolo_stride_ == 0) {
     dets.clear();
     if (chair_yolo_.ready()) {
       chair_yolo_.detect(bgr, {}, dets);
@@ -3140,102 +3192,48 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       yolo_.detect(bgr, chair_labels_, dets);
     }
     last_chair_dets_ = dets;
-    fresh_detections = true;
   }
 
-  if (!enable_chair_) chair_memory_.clear();
+  struct ActiveChair
+  {
+    std::string label{"chair"};
+    cv::Rect bbox;
+    bool has_pos{false};
+    double x{0.0}, y{0.0}, z{0.0};
+    double range_m{0.0};
+    bool occupied{false};
+  };
 
-  const auto current_time = now();
-
-  auto same_chair = [](const ChairMemory & memory, const YoloDetection & det,
-      bool has_pos, double x, double y) {
-      const cv::Rect inter = memory.bbox & det.rect;
-      const double inter_area = static_cast<double>(inter.area());
-      const double union_area =
-        static_cast<double>(memory.bbox.area()) + det.rect.area() - inter_area;
-      const double iou = union_area > 0.0 ? inter_area / union_area : 0.0;
-      const double min_area = static_cast<double>(std::min(memory.bbox.area(), det.rect.area()));
-      const double containment = min_area > 0.0 ? inter_area / min_area : 0.0;
-      const double mcx = memory.bbox.x + memory.bbox.width * 0.5;
-      const double mcy = memory.bbox.y + memory.bbox.height * 0.5;
-      const double dcx = det.rect.x + det.rect.width * 0.5;
-      const double dcy = det.rect.y + det.rect.height * 0.5;
-      const double scale = static_cast<double>(std::max(
-        std::max(memory.bbox.width, memory.bbox.height),
-        std::max(det.rect.width, det.rect.height)));
-      const double center_dist = std::hypot(mcx - dcx, mcy - dcy);
-      const double max_depth_diff = memory.was_occupied ? 1.45 : 1.0;
-      const bool depth_ok = !has_pos || !memory.has_pos ||
-        std::hypot(x - memory.x, y - memory.y) < max_depth_diff ||
-        iou > 0.35 || containment > 0.65;
-      return depth_ok && (iou > 0.20 || containment > 0.55 || center_dist < scale * 0.75);
-    };
-
-  if (fresh_detections) {
-    for (const auto & det : dets) {
-      if (static_cast<double>(det.rect.area()) < yolo_min_area_) continue;
-      double x = 0.0, y = 0.0, z = 0.0;
-      bool ok = false;
-      sl::float4 median_pt{NAN, NAN, NAN, NAN};
-      if (zed_vision::get3dCoordinates(det.rect, cloud, median_pt) && std::isfinite(median_pt.z)) {
-        x = (median_pt.x + zed_vision::kOffsetX) / zed_vision::kOffsetScale;
-        y = (-median_pt.y + zed_vision::kOffsetY) / zed_vision::kOffsetScale;
-        z = (median_pt.z + zed_vision::kOffsetZ) / zed_vision::kOffsetScale;
-        ok = true;
-      } else {
-        ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
-      }
-      const std::string det_label = (det.label == "couch" || det.label == "sofa") ? "sofa" : det.label;
-
-      int match = -1;
-      double best_dist = 1e9;
-      for (size_t i = 0; i < chair_memory_.size(); ++i) {
-        const auto & memory = chair_memory_[i];
-        if (!same_chair(memory, det, ok, x, y)) continue;
-        const double mcx = memory.bbox.x + memory.bbox.width * 0.5;
-        const double mcy = memory.bbox.y + memory.bbox.height * 0.5;
-        const double dcx = det.rect.x + det.rect.width * 0.5;
-        const double dcy = det.rect.y + det.rect.height * 0.5;
-        const double center_dist = std::hypot(mcx - dcx, mcy - dcy);
-        if (center_dist < best_dist) {
-          best_dist = center_dist;
-          match = static_cast<int>(i);
-        }
-      }
-
-      if (match >= 0) {
-        auto & memory = chair_memory_[static_cast<size_t>(match)];
-        memory.label = det_label.empty() ? "chair" : det_label;
-        // Saat kursi diduduki orang, jangan biarkan bbox menyusut menjadi serpihan kecil akibat oklusi
-        if (!(memory.was_occupied && det.rect.area() < memory.bbox.area() * 0.45)) {
-          memory.bbox = det.rect;
-        }
-        memory.last_seen = current_time;
-        if (ok) {
-          memory.has_pos = true;
-          memory.x = x;
-          memory.y = y;
-          memory.z = z;
-          memory.range_m = std::hypot(x, y);
-        }
-      } else {
-        ChairMemory memory;
-        memory.label = det_label.empty() ? "chair" : det_label;
-        memory.bbox = det.rect;
-        memory.last_seen = current_time;
-        if (ok) {
-          memory.has_pos = true;
-          memory.x = x;
-          memory.y = y;
-          memory.z = z;
-          memory.range_m = std::hypot(x, y);
-        }
-        chair_memory_.push_back(memory);
-      }
+  std::vector<ActiveChair> chairs;
+  for (const auto & det : dets) {
+    if (static_cast<double>(det.rect.area()) < yolo_min_area_) continue;
+    double x = 0.0, y = 0.0, z = 0.0;
+    bool ok = false;
+    sl::float4 median_pt{NAN, NAN, NAN, NAN};
+    if (zed_vision::get3dCoordinates(det.rect, cloud, median_pt) && std::isfinite(median_pt.z)) {
+      x = (median_pt.x + zed_vision::kOffsetX) / zed_vision::kOffsetScale;
+      y = (-median_pt.y + zed_vision::kOffsetY) / zed_vision::kOffsetScale;
+      z = (median_pt.z + zed_vision::kOffsetZ) / zed_vision::kOffsetScale;
+      ok = true;
+    } else {
+      ok = zed_vision::get3dWithOffset(det.rect, cloud, x, y, z);
     }
+    const std::string det_label = (det.label == "couch" || det.label == "sofa") ? "sofa" : det.label;
+
+    ActiveChair chair;
+    chair.label = det_label.empty() ? "chair" : det_label;
+    chair.bbox = det.rect;
+    chair.has_pos = ok;
+    if (ok) {
+      chair.x = x;
+      chair.y = y;
+      chair.z = z;
+      chair.range_m = std::hypot(x, y);
+    }
+    chairs.push_back(chair);
   }
 
-  auto compute_match_score = [&](const ChairMemory & chair, const PrevPerson & person) -> double {
+  auto compute_match_score = [&](const ActiveChair & chair, const PrevPerson & person) -> double {
       // 1. WAJIB: Ada irisan 2D antara bounding box kursi dan orang
       const cv::Rect inter = chair.bbox & person.bbox;
       if (inter.area() <= 0) return 0.0;
@@ -3277,35 +3275,21 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       }
 
-      // Cek apakah postur skeleton jelas sedang berdiri tegak di dekat kursi
-      auto valid2d = [](const cv::Point2f & p) {
-        return std::isfinite(p.x) && std::isfinite(p.y) && p.x > 0.0f && p.y > 0.0f;
-      };
-      bool standing_straight = false;
-      if (person.kpt.size() >= 25 && person.bbox.height > 20) {
-        auto check_leg_straight = [&](int hip_i, int knee_i, int ankle_i) {
-          const auto & hip = person.kpt[hip_i];
-          const auto & knee = person.kpt[knee_i];
-          const auto & ankle = person.kpt[ankle_i];
-          if (!valid2d(hip) || !valid2d(knee) || !valid2d(ankle)) return false;
-          const float thigh_dy = knee.y - hip.y;
-          const float shin_dy = ankle.y - knee.y;
-          const float leg_dx = std::abs(knee.x - hip.x);
-          return (thigh_dy > 0.20f * person.bbox.height) &&
-                 (shin_dy > 0.18f * person.bbox.height) &&
-                 (leg_dx < thigh_dy * 0.65f);
-        };
-        standing_straight = check_leg_straight(18, 19, 20) || check_leg_straight(22, 23, 24);
-      }
-      if (standing_straight && overlap_person < 0.35 && !chair_center_inside) {
+      // Tolak hanya jika keypoint 3D jelas menunjukkan postur berdiri tegak & hanya menyenggol tepi kursi
+      if (person.is_standing_posture &&
+          overlap_person < 0.30 && overlap_chair < 0.30 &&
+          !hip_inside && !chair_center_inside)
+      {
         return 0.0;
       }
 
-      // 4. Cek konsistensi kedalaman 3D (longgarkan jika overlap & posisi tubuh sangat kuat di dalam kursi)
+      // 4. Cek konsistensi kedalaman 3D (longgarkan jika overlap & posisi tubuh kuat di dalam kursi)
       if (chair.has_pos && person.has_pos) {
         const double dist_3d = std::hypot(chair.x - person.x_m, chair.y - person.y_m);
-        const double max_dist_3d =
-          (overlap_chair > 0.25 && (hip_inside || kpt_inside || chair_center_inside)) ? 2.20 : 1.75;
+        const bool strong_2d =
+          (overlap_chair > 0.25 || overlap_person > 0.25) &&
+          (hip_inside || kpt_inside || chair_center_inside);
+        const double max_dist_3d = strong_2d ? 2.20 : 1.75;
         if (dist_3d > max_dist_3d) return 0.0;
       }
 
@@ -3333,9 +3317,9 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
     double score;
   };
   std::vector<MatchPair> match_candidates;
-  for (size_t c = 0; c < chair_memory_.size(); ++c) {
+  for (size_t c = 0; c < chairs.size(); ++c) {
     for (size_t p = 0; p < preview_persons_.size(); ++p) {
-      const double score = compute_match_score(chair_memory_[c], preview_persons_[p]);
+      const double score = compute_match_score(chairs[c], preview_persons_[p]);
       if (score > 0.0) {
         match_candidates.push_back({c, p, score});
       }
@@ -3349,12 +3333,10 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
     });
 
   // Pencocokan eksklusif 1-ke-1: 1 orang hanya bisa menempati MAKSIMAL 1 kursi!
-  std::vector<bool> chair_occupied(chair_memory_.size(), false);
   std::vector<bool> person_assigned(preview_persons_.size(), false);
-
   for (const auto & match : match_candidates) {
-    if (!chair_occupied[match.chair_idx] && !person_assigned[match.person_idx]) {
-      chair_occupied[match.chair_idx] = true;
+    if (!chairs[match.chair_idx].occupied && !person_assigned[match.person_idx]) {
+      chairs[match.chair_idx].occupied = true;
       person_assigned[match.person_idx] = true;
       preview_persons_[match.person_idx].is_sitting = true;
     }
@@ -3380,42 +3362,16 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
   double best_empty_x = 0.0, best_empty_y = 0.0, best_empty_z = 0.0;
   double best_empty_depth = 0.0;
   bool best_has_pos = false;
-  constexpr double occupied_hold_sec = 2.0;
-  constexpr double empty_memory_timeout = 10.0;
-  constexpr double occupied_memory_timeout = 20.0;
 
-  for (size_t i = 0; i < chair_memory_.size(); ) {
-    ChairMemory & chair = chair_memory_[i];
-    bool occupied = chair_occupied[i];
-    if (occupied) {
-      chair.was_occupied = true;
-      chair.last_occupied = current_time;
-      chair.last_seen = current_time;
-    } else if (chair.was_occupied) {
-      if ((current_time - chair.last_occupied).seconds() <= occupied_hold_sec) {
-        // Hold status occupied sementara agar glitch ZED body tracking tidak membuat kursi berkedip/hilang
-        occupied = true;
-        chair.last_seen = current_time;
-      } else {
-        chair.was_occupied = false;
-      }
-    }
-
-    const double timeout = chair.was_occupied ? occupied_memory_timeout : empty_memory_timeout;
-    if (!occupied && (current_time - chair.last_seen).seconds() > timeout) {
-      chair_memory_.erase(chair_memory_.begin() + i);
-      chair_occupied.erase(chair_occupied.begin() + i);
-      continue;
-    }
-
+  for (const auto & chair : chairs) {
     const bool ok = chair.has_pos;
     const double dist = ok ? chair.range_m : 0.0;
     const std::string side = side_of(chair.bbox, ok, chair.y);
 
     preview_chairs_.push_back(
-      {chair.label, chair.bbox, ok, chair.x, chair.y, dist, occupied, side});
+      {chair.label, chair.bbox, ok, chair.x, chair.y, dist, chair.occupied, side});
 
-    if (!occupied) {
+    if (!chair.occupied) {
       if (ok && dist > 0.1 && dist < best_empty_dist) {
         best_empty_dist = dist;
         best_empty_side = side;
@@ -3443,9 +3399,8 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
     data += ok
       ? cv::format("%.2f,%.2f,%.2f|", chair.x, chair.y, chair.z)
       : "nan,nan,nan|";
-    data += occupied ? "occupied|" : "empty|";
+    data += chair.occupied ? "occupied|" : "empty|";
     data += side;
-    ++i;
   }
 
   std_msgs::msg::String chair_msg;
@@ -3620,7 +3575,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         hud_y += valid ? 40 : 25;
       };
 
-    const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos)
+    const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos &&
+                           preview_persons_[0].range_m <= person_max_dist_)
       ? preview_persons_[0] : PrevPerson{};
     std::string person_title;
     if (is_receptionist_) {

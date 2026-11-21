@@ -41,5 +41,5 @@ vision:
     host_photo: "models/host.jpg"
     enable_back_detection: true
     person_back_topic: "/vision/person_back"
-    person_max_dist: 2.5
+    person_max_dist: 1.5
     bag_max_dist: 2.0

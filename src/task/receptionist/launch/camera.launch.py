@@ -41,6 +41,7 @@ def generate_launch_description():
         DeclareLaunchArgument('host_photo', default_value='models/host.jpg', description='Optional photo of the host to pre-register face'),
         DeclareLaunchArgument('color_model', default_value='models/color_model.onnx', description='Path to clothing color ONNX model'),
         DeclareLaunchArgument('color_labels', default_value='models/color_names.txt', description='Path to clothing color labels file'),
+        DeclareLaunchArgument('person_max_dist', default_value='1.5', description='Maximum distance (m) to detect guest/person'),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -82,6 +83,7 @@ def generate_launch_description():
                 'host_photo': LaunchConfiguration('host_photo'),
                 'color_model': LaunchConfiguration('color_model'),
                 'color_labels': LaunchConfiguration('color_labels'),
+                'person_max_dist': LaunchConfiguration('person_max_dist'),
             }.items(),
         ),
     ])
