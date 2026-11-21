@@ -187,10 +187,10 @@ cv::Scalar extractTorsoColor(const cv::Mat & bgr, const cv::Rect & bbox)
 {
   if (bgr.empty() || bbox.width <= 0 || bbox.height <= 0) return cv::Scalar(0, 0, 0);
 
-  const int tw = std::max(4, bbox.width / 3);
-  const int th = std::max(4, bbox.height / 4);
-  const int tx = std::clamp(bbox.x + bbox.width / 3, 0, bgr.cols - tw);
-  const int ty = std::clamp(bbox.y + bbox.height / 5, 0, bgr.rows - th);
+  const int tw = std::max(4, static_cast<int>(bbox.width * 0.60f));
+  const int th = std::max(4, static_cast<int>(bbox.height * 0.38f));
+  const int tx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.20f), 0, bgr.cols - tw);
+  const int ty = std::clamp(bbox.y + static_cast<int>(bbox.height * 0.20f), 0, bgr.rows - th);
 
   cv::Rect roi(tx, ty, tw, th);
   roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
@@ -565,23 +565,26 @@ public:
       const float shoulder_w = std::abs(kpt[12].x - kpt[5].x);
 
       if (shoulder_w > 15.0f) {
-        int tw = static_cast<int>(shoulder_w * 0.55f);
-        int th = static_cast<int>(shoulder_w * 0.65f);
+        int tw = static_cast<int>(shoulder_w * 0.90f);
+        int th = static_cast<int>(shoulder_w * 1.10f);
         int tx = static_cast<int>(sx - tw * 0.5f);
-        int ty = static_cast<int>(sy + shoulder_w * 0.15f); // Posisi dada tepat di bawah leher
+        int ty = static_cast<int>(sy + shoulder_w * 0.10f); // Area torso lebih luas agar tidak terdominasi teks/logo dada
 
         cv::Rect roi(tx, ty, tw, th);
         roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+        if (bbox.width > 10 && bbox.height > 10) {
+          roi &= bbox;
+        }
         if (roi.width >= 10 && roi.height >= 10) return roi;
       }
     }
 
-    // 2. Fallback jika keypoint bahu tidak terdeteksi, gunakan proporsi dada dari bbox
+    // 2. Fallback jika keypoint bahu tidak terdeteksi, gunakan proporsi torso dari bbox
     if (bbox.width > 10 && bbox.height > 10) {
-      const int tw = std::max(10, static_cast<int>(bbox.width * 0.45f));
-      const int th = std::max(10, static_cast<int>(bbox.height * 0.28f));
-      const int tx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.275f), 0, bgr.cols - tw);
-      const int ty = std::clamp(bbox.y + static_cast<int>(bbox.height * 0.22f), 0, bgr.rows - th);
+      const int tw = std::max(10, static_cast<int>(bbox.width * 0.65f));
+      const int th = std::max(10, static_cast<int>(bbox.height * 0.40f));
+      const int tx = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.175f), 0, bgr.cols - tw);
+      const int ty = std::clamp(bbox.y + static_cast<int>(bbox.height * 0.20f), 0, bgr.rows - th);
 
       cv::Rect roi(tx, ty, tw, th);
       roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
