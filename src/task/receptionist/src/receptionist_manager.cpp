@@ -245,6 +245,10 @@ public:
       "/receptionist/guest1", rclcpp::ServicesQoS(), callback_group_);
     adjust_guest_client_ = create_client<Trigger>(
       "/receptionist/adjust_guest", rclcpp::ServicesQoS(), callback_group_);
+    rotate_left_client_ = create_client<Trigger>(
+      "/receptionist/left", rclcpp::ServicesQoS(), callback_group_);
+    rotate_right_client_ = create_client<Trigger>(
+      "/receptionist/right", rclcpp::ServicesQoS(), callback_group_);
 
     arm_ambil_tas_client_ = create_client<Trigger>(
       "/arm/ambil_tas", rclcpp::ServicesQoS(), callback_group_);
@@ -372,6 +376,8 @@ private:
   TriggerClient::SharedPtr face_host_client_;
   TriggerClient::SharedPtr face_guest1_client_;
   TriggerClient::SharedPtr adjust_guest_client_;
+  TriggerClient::SharedPtr rotate_left_client_;
+  TriggerClient::SharedPtr rotate_right_client_;
 
   TriggerClient::SharedPtr arm_ambil_tas_client_;
   TriggerClient::SharedPtr arm_ambil_tas_simple_client_;
@@ -725,6 +731,70 @@ private:
         }
       },
       35.0);
+  }
+
+  // Merotasi robot ke kiri via /receptionist/left
+  void rotateLeft(std::function<void(bool, const std::string &)> on_finished)
+  {
+    TriggerClient::SharedPtr client = rotate_left_client_;
+    std::string srv_name = "/receptionist/left";
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[ROTATE]\033[0m Calling %s to rotate robot left...",
+      srv_name.c_str());
+
+    callTrigger(
+      client, srv_name,
+      [this, srv_name, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[ROTATE]\033[0m %s succeeded: %s",
+            srv_name.c_str(), msg.c_str());
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[ROTATE]\033[0m %s finished with warning/failure: %s",
+            srv_name.c_str(), msg.c_str());
+        }
+        if (on_finished) {
+          on_finished(success, msg);
+        }
+      },
+      20.0);
+  }
+
+  // Merotasi robot kembali ke kanan via /receptionist/right
+  void rotateRight(std::function<void(bool, const std::string &)> on_finished)
+  {
+    TriggerClient::SharedPtr client = rotate_right_client_;
+    std::string srv_name = "/receptionist/right";
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[ROTATE]\033[0m Calling %s to rotate robot right...",
+      srv_name.c_str());
+
+    callTrigger(
+      client, srv_name,
+      [this, srv_name, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[ROTATE]\033[0m %s succeeded: %s",
+            srv_name.c_str(), msg.c_str());
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[ROTATE]\033[0m %s finished with warning/failure: %s",
+            srv_name.c_str(), msg.c_str());
+        }
+        if (on_finished) {
+          on_finished(success, msg);
+        }
+      },
+      20.0);
   }
 
   // Menyelaraskan arah hadap robot ke tamu di pintu dan mundur hingga jarak 1.5m
@@ -1808,9 +1878,11 @@ private:
             prompt = "There are " + std::to_string(drink_count) + " drinks on the table. What is your favorite drinks?";
           }
 
-          // tanyakan minuman favorit dan tunggu jawaban
+          // tanyakan minuman favorit, lalu rotasi ke kiri sebelum menunggu jawaban
           speakAsync(prompt, [this]() {
-            transitionTo(ReceptionistState::WAIT_DRINK, "Asked for favorite drink after table check");
+            rotateLeft([this](bool /*ok*/, const std::string & /*msg*/) {
+              transitionTo(ReceptionistState::WAIT_DRINK, "Asked for favorite drink and rotated left");
+            });
           });
         });
         break;
@@ -1840,7 +1912,9 @@ private:
               "\033[1;32m[DIALOG DRINK]\033[0m Guest %d Drink -> \033[1;32m\"%s\"\033[0m (from \"%s\")",
               guest_idx_, parsed_drink.c_str(), raw.c_str());
 
-            transitionTo(ReceptionistState::CHECK_BEVERAGE, "Favorite drink captured and stored");
+            rotateRight([this](bool /*ok*/, const std::string & /*msg*/) {
+              transitionTo(ReceptionistState::CHECK_BEVERAGE, "Favorite drink captured and rotated right");
+            });
           } else {
             RCLCPP_WARN(
               get_logger(),
