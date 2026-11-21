@@ -168,10 +168,11 @@ local_costmap:
           clearing: True                 # Clear free space along laser rays
           marking: True                  # Mark obstacle cells on laser hit
           data_type: "LaserScan"         # ROS 2 message type
-          raytrace_max_range: 5.0        # Max raytracing range (m, ditingkatkan agar pembersihan rintangan dinamis cepat)
+          raytrace_max_range: 8.0        # Max raytracing range (m, ditingkatkan agar pembersihan rintangan dinamis cepat dan luas)
           raytrace_min_range: 0.0        # Min raytracing range (m)
           obstacle_max_range: 4.0        # Max obstacle marking range (m, ditingkatkan dari 3.0 agar rintangan terdeteksi dari jauh)
           obstacle_min_range: 0.22       # Min obstacle marking range (m, diselaraskan dengan bodi 0.22m agar rintangan dekat tidak terhapus)
+          inf_is_valid: true             # KUNCI: Sinar tak-hingga (inf) saat rintangan hilang tetap dipakai untuk clearing raytrace
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Safety buffer layer around obstacles
         cost_scaling_factor: 25.0        # Exponential cost decay factor (ditingkatkan dari 10.0 agar objek kecil seperti kaki tidak menggelembung tebal)
@@ -184,7 +185,7 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      update_frequency: 1.0              # Update frequency (Hz)
+      update_frequency: 3.0              # Update frequency dinaikkan ke 3.0 Hz agar pembersihan rintangan saat rotasi tidak melompati sel
       publish_frequency: 1.0             # Publish frequency (Hz)
       global_frame: map                  # Global map frame
       robot_base_frame: base_link        # Robot base frame
@@ -193,12 +194,27 @@ global_costmap:
       resolution: 0.05                   # Grid resolution (m/cell)
       track_unknown_space: false         # Izinkan bergerak ke area unmapped (anggap unmapped area sebagai traversable)
       transform_tolerance: 0.5           # TF transform tolerance (s)
-      plugins: ["static_layer", "inflation_layer"] # Costmap layers (hanya peta SLAM statis + buffer dinding agar rintangan dinamis tidak memutus global path)
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"] # Costmap layers
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer" # Static map layer from map_server
         map_subscribe_transient_local: True # Transient local QoS for map
         subscribe_to_updates: True       # Subscribe to /map_updates during SLAM
         track_unknown_space: false       # Anggap area unknown sebagai traversable agar bebas bergerak ke koordinat baru
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer" # Dynamic LiDAR obstacle layer
+        enabled: True
+        observation_sources: scan
+        scan:
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          raytrace_max_range: 8.0        # Max raytracing range (m, ditingkatkan agar jejak orang yang sudah pergi bersih)
+          raytrace_min_range: 0.0
+          obstacle_max_range: 4.0
+          obstacle_min_range: 0.22
+          inf_is_valid: true             # KUNCI: Sinar tak-hingga (inf) saat rintangan hilang tetap dipakai untuk clearing raytrace
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
         cost_scaling_factor: 25.0        # Exponential cost decay factor

@@ -50,6 +50,7 @@ enum class ReceptionistState {
   INTRODUCE_G1_TO_G2,
   INTRODUCE_G2_TO_G1,
   EVALUATE_SIMILARITY,
+  RETURN_TO_LIVING_ROOM,
   SEARCH_CHAIR,
   OFFER_SEAT,
   WAIT_GUEST_SIT,
@@ -80,6 +81,7 @@ static std::string stateToString(ReceptionistState state)
     case ReceptionistState::INTRODUCE_G1_TO_G2:      return "INTRODUCE_G1_TO_G2";
     case ReceptionistState::INTRODUCE_G2_TO_G1:      return "INTRODUCE_G2_TO_G1";
     case ReceptionistState::EVALUATE_SIMILARITY:     return "EVALUATE_SIMILARITY";
+    case ReceptionistState::RETURN_TO_LIVING_ROOM:   return "RETURN_TO_LIVING_ROOM";
     case ReceptionistState::SEARCH_CHAIR:            return "SEARCH_CHAIR";
     case ReceptionistState::OFFER_SEAT:              return "OFFER_SEAT";
     case ReceptionistState::WAIT_GUEST_SIT:          return "WAIT_GUEST_SIT";
@@ -308,6 +310,7 @@ private:
   std::vector<PersonProfile> guests_;
   PersonProfile current_guest_;
   int guest_idx_{1};
+  ReceptionistState after_return_living_room_state_{ReceptionistState::SEARCH_CHAIR};
   int camera_width_{672};
 
   // Data Persepsi Vision
@@ -402,6 +405,7 @@ private:
            current != ReceptionistState::NAV_TO_DOOR &&
            current != ReceptionistState::NAV_TO_BEVERAGE &&
            current != ReceptionistState::NAV_TO_LIVING_ROOM &&
+           current != ReceptionistState::RETURN_TO_LIVING_ROOM &&
            current != ReceptionistState::COMPLETED &&
            current != ReceptionistState::ABORTED;
   }
@@ -2018,13 +2022,15 @@ private:
 
           speakAsync(intro_msg, [this, g_idx]() {
             if (g_idx == 1) {
+              after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
               transitionTo(
-                ReceptionistState::SEARCH_CHAIR,
-                "Guest introduced to seated person; searching for empty chair");
+                ReceptionistState::RETURN_TO_LIVING_ROOM,
+                "Guest introduced to seated person; returning to living_room before searching chair");
             } else {
+              after_return_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_G2;
               transitionTo(
-                ReceptionistState::INTRODUCE_G1_TO_G2,
-                "Guest introduced to seated person; starting guest introductions");
+                ReceptionistState::RETURN_TO_LIVING_ROOM,
+                "Guest introduced to seated person; returning to living_room before guest introductions");
             }
           });
         });
@@ -2141,11 +2147,35 @@ private:
 
         if (!similarity_speech.empty()) {
           speakAsync(similarity_speech, [this]() {
-            transitionTo(ReceptionistState::SEARCH_CHAIR, "Shared interest announced; searching for empty chair");
+            after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
+            transitionTo(
+              ReceptionistState::RETURN_TO_LIVING_ROOM,
+              "Shared interest announced; returning to living_room before searching chair");
           });
         } else {
-          transitionTo(ReceptionistState::SEARCH_CHAIR, "No identical interest found; searching for empty chair");
+          after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
+          transitionTo(
+            ReceptionistState::RETURN_TO_LIVING_ROOM,
+            "No identical interest found; returning to living_room before searching chair");
         }
+        break;
+      }
+
+      // ------------------------------------------------------------------------
+      // STATE 4.5: KEMBALI KE LIVING_ROOM SETELAH PERKENALAN (HOST / GUEST)
+      // ------------------------------------------------------------------------
+      case ReceptionistState::RETURN_TO_LIVING_ROOM: {
+        navigateTo("living_room", [this](bool success) {
+          if (!success) {
+            RCLCPP_WARN(
+              get_logger(),
+              "\033[1;33m[LIVING ROOM]\033[0m go_to_living_room setelah perkenalan gagal/timeout, tetap lanjut ke %s.",
+              stateToString(after_return_living_room_state_).c_str());
+          }
+          transitionTo(
+            after_return_living_room_state_,
+            "Returned to living_room after introduction");
+        });
         break;
       }
 
