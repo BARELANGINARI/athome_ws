@@ -17,7 +17,7 @@ vision:
     yolo_size: 640
     yolo_min_area: 250.0
     bag_labels: ["bag", "paper_bag", "backpack", "handbag", "suitcase"]
-    gender_model: "models/gender_model_weights.onnx"
+    gender_model: "models/genderage.onnx"
     color_model: "models/color_model.onnx"
     color_labels: "models/color_names.txt"
     hair_model: "models/hair_model.onnx"

@@ -10,7 +10,7 @@ receptionist_node:
       # yaw : 1.4
     beverage_area:
       x: 1.9
-      y: 1.9
+      y: 2.1
       yaw: 270.0
       # x: 2.28
       # y: 0.5
@@ -44,7 +44,7 @@ receptionist_node:
     align_chair_tolerance_rad: 0.07
     camera_width: 672
 
-    guest_door_distance: 1.0
+    guest_door_distance: 1.2
     guest_door_step_back_speed: 0.16
     guest_door_timeout_sec: 15.0
 

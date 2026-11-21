@@ -46,6 +46,7 @@ enum class ReceptionistState {
   WAIT_DRINK,
   CHECK_BEVERAGE,
   NAV_TO_LIVING_ROOM,
+  SCAN_LIVING_ROOM,
   FACE_AND_INTRODUCE_HOST,
   INTRODUCE_G1_TO_G2,
   INTRODUCE_G2_TO_G1,
@@ -77,6 +78,7 @@ static std::string stateToString(ReceptionistState state)
     case ReceptionistState::WAIT_DRINK:              return "WAIT_DRINK";
     case ReceptionistState::CHECK_BEVERAGE:          return "CHECK_BEVERAGE";
     case ReceptionistState::NAV_TO_LIVING_ROOM:      return "NAV_TO_LIVING_ROOM";
+    case ReceptionistState::SCAN_LIVING_ROOM:        return "SCAN_LIVING_ROOM";
     case ReceptionistState::FACE_AND_INTRODUCE_HOST: return "FACE_AND_INTRODUCE_HOST";
     case ReceptionistState::INTRODUCE_G1_TO_G2:      return "INTRODUCE_G1_TO_G2";
     case ReceptionistState::INTRODUCE_G2_TO_G1:      return "INTRODUCE_G2_TO_G1";
@@ -251,6 +253,10 @@ public:
       "/receptionist/left", rclcpp::ServicesQoS(), callback_group_);
     rotate_right_client_ = create_client<Trigger>(
       "/receptionist/right", rclcpp::ServicesQoS(), callback_group_);
+    scan_living_room_client_ = create_client<Trigger>(
+      "/receptionist/scan_living_room", rclcpp::ServicesQoS(), callback_group_);
+    clear_locks_client_ = create_client<Trigger>(
+      "/receptionist/clear_living_room_locks", rclcpp::ServicesQoS(), callback_group_);
 
     arm_ambil_tas_client_ = create_client<Trigger>(
       "/arm/ambil_tas", rclcpp::ServicesQoS(), callback_group_);
@@ -319,6 +325,7 @@ private:
   rclcpp::Time last_drink_msg_time_{0, 0, RCL_ROS_TIME};
   std::vector<DetectedObject> table_drinks_snapshot_;
   bool drinks_detected_on_arrival_{false};
+  bool beverage_snapshot_locked_{false};
   std::vector<std::string> latest_attributes_{
     "male", "casual attire", "dark hair"
   };
@@ -381,6 +388,8 @@ private:
   TriggerClient::SharedPtr adjust_guest_client_;
   TriggerClient::SharedPtr rotate_left_client_;
   TriggerClient::SharedPtr rotate_right_client_;
+  TriggerClient::SharedPtr scan_living_room_client_;
+  TriggerClient::SharedPtr clear_locks_client_;
 
   TriggerClient::SharedPtr arm_ambil_tas_client_;
   TriggerClient::SharedPtr arm_ambil_tas_simple_client_;
@@ -479,7 +488,9 @@ private:
     {
       std::lock_guard<std::mutex> lock(vision_mutex_);
       table_drinks_snapshot_.clear();
+      beverage_snapshot_locked_ = false;
       latest_drinks_.clear();
+      latest_attributes_.clear();
       has_explicit_empty_seat_ = false;
       nearest_person_bbox_w_ = 0;
     }
@@ -506,6 +517,9 @@ private:
       last_wait_prompt_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
       std::lock_guard<std::mutex> lock(vision_mutex_);
       if (next_state == ReceptionistState::ASK_DRINK) {
+        table_drinks_snapshot_.clear();
+        drinks_detected_on_arrival_ = false;
+        beverage_snapshot_locked_ = false;
         latest_drinks_.clear();
       }
       if (next_state == ReceptionistState::OFFER_SEAT) {
@@ -737,6 +751,41 @@ private:
       35.0);
   }
 
+  // Memindai ruang tamu saat tiba dan mengunci sudut yaw Host / Guest 1 / Kursi Kosong
+  void scanLivingRoom(std::function<void(bool, const std::string &)> on_finished)
+  {
+    const std::string srv_name = "/receptionist/scan_living_room";
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[LIVING ROOM]\033[0m Scanning living room via %s to lock person & seat positions...",
+      srv_name.c_str());
+
+    callTrigger(
+      scan_living_room_client_, srv_name,
+      [this, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(get_logger(), "\033[1;32m[LIVING ROOM]\033[0m Lock ready: %s", msg.c_str());
+        } else {
+          RCLCPP_WARN(get_logger(), "\033[1;33m[LIVING ROOM]\033[0m Scan lock warning: %s", msg.c_str());
+        }
+        if (on_finished) on_finished(success, msg);
+      },
+      25.0);
+  }
+
+  // Menghapus kunci posisi sementara ruang tamu setelah tamu mendapat kursi
+  void clearLivingRoomLocks(std::function<void()> on_finished)
+  {
+    const std::string srv_name = "/receptionist/clear_living_room_locks";
+    callTrigger(
+      clear_locks_client_, srv_name,
+      [this, on_finished](bool /*success*/, const std::string & msg) {
+        RCLCPP_INFO(get_logger(), "\033[1;36m[LIVING ROOM]\033[0m %s", msg.c_str());
+        if (on_finished) on_finished();
+      },
+      5.0);
+  }
+
   // Merotasi robot ke kiri via /receptionist/left
   void rotateLeft(std::function<void(bool, const std::string &)> on_finished)
   {
@@ -846,11 +895,45 @@ private:
     return "center";
   }
 
+  static std::string canonicalDrinkName(const std::string & raw_name)
+  {
+    const std::string n = normalize(raw_name);
+    if (n == "coke" || n == "cola" || n == "pepsi" || n == "sprite" || n == "fanta" || n == "soda") {
+      return "soda";
+    }
+    if (n == "water" || n == "mineral water" || n == "mineral_water" ||
+        n == "botol" || n == "bottle")
+    {
+      return "water";
+    }
+    return n;
+  }
+
+  void mergeDrinksIntoSnapshotLocked(const std::vector<DetectedObject> & items)
+  {
+    for (const auto & item : items) {
+      const std::string canon = canonicalDrinkName(item.name);
+      if (canon.empty()) continue;
+      bool updated = false;
+      for (auto & existing : table_drinks_snapshot_) {
+        if (canonicalDrinkName(existing.name) == canon) {
+          existing = item;
+          updated = true;
+          break;
+        }
+      }
+      if (!updated) {
+        table_drinks_snapshot_.push_back(item);
+      }
+    }
+  }
+
   // Menyimpan snapshot minuman di meja saat tiba di beverage area
   size_t snapshotBeveragesOnTable()
   {
     std::lock_guard<std::mutex> lock(vision_mutex_);
-    table_drinks_snapshot_ = latest_drinks_;
+    beverage_snapshot_locked_ = true;
+    mergeDrinksIntoSnapshotLocked(latest_drinks_);
     drinks_detected_on_arrival_ = !table_drinks_snapshot_.empty();
     return table_drinks_snapshot_.size();
   }
@@ -860,24 +943,76 @@ private:
   {
     std::lock_guard<std::mutex> lock(vision_mutex_);
     found_match = false;
-    const std::string target = normalize(favorite_drink);
+    const std::string target_raw = normalize(favorite_drink);
+    const std::string target = canonicalDrinkName(favorite_drink);
 
-    const auto & drinks_list = !table_drinks_snapshot_.empty()
+    const auto & raw_list = !table_drinks_snapshot_.empty()
       ? table_drinks_snapshot_
       : latest_drinks_;
 
-    for (const auto & drink : drinks_list) {
-      const std::string d_name = normalize(drink.name);
-      if (!d_name.empty() &&
-          (d_name == target || d_name.find(target) != std::string::npos ||
-           target.find(d_name) != std::string::npos))
-      {
+    // Deduplikasi per jenis minuman lalu urutkan dari kiri ke kanan berdasarkan posisi bbox
+    std::vector<DetectedObject> drinks_list;
+    for (const auto & item : raw_list) {
+      const std::string canon = canonicalDrinkName(item.name);
+      if (canon.empty()) continue;
+      bool exists = false;
+      for (auto & d : drinks_list) {
+        if (canonicalDrinkName(d.name) == canon) {
+          d = item;
+          exists = true;
+          break;
+        }
+      }
+      if (!exists) {
+        drinks_list.push_back(item);
+      }
+    }
+
+    auto centerX = [](const DetectedObject & d) {
+      return static_cast<double>(d.bbox_x) + static_cast<double>(d.bbox_w) * 0.5;
+    };
+    std::sort(drinks_list.begin(), drinks_list.end(),
+      [&](const DetectedObject & a, const DetectedObject & b) {
+        return centerX(a) < centerX(b);
+      });
+
+    auto sideByIndex = [&](size_t idx) -> std::string {
+      if (drinks_list.size() >= 3) {
+        if (idx == 0) return "left";
+        if (idx == drinks_list.size() - 1) return "right";
+        return "center";
+      }
+      if (drinks_list.size() == 2) {
+        const std::string s0 = calculateHorizontalPosition(drinks_list[0].bbox_x, drinks_list[0].bbox_w);
+        const std::string s1 = calculateHorizontalPosition(drinks_list[1].bbox_x, drinks_list[1].bbox_w);
+        if (s0 != s1) {
+          return (idx == 0) ? s0 : s1;
+        }
+        if (centerX(drinks_list[1]) - centerX(drinks_list[0]) > static_cast<double>(camera_width_) * 0.08) {
+          return (idx == 0) ? "left" : "right";
+        }
+        return (idx == 0) ? s0 : s1;
+      }
+      return calculateHorizontalPosition(drinks_list[idx].bbox_x, drinks_list[idx].bbox_w);
+    };
+
+    for (size_t i = 0; i < drinks_list.size(); ++i) {
+      const auto & drink = drinks_list[i];
+      const std::string d_raw = normalize(drink.name);
+      const std::string d_canon = canonicalDrinkName(drink.name);
+      const bool match =
+        (!d_canon.empty() && !target.empty() && d_canon == target) ||
+        (!d_raw.empty() && !target_raw.empty() &&
+         (d_raw == target_raw || d_raw.find(target_raw) != std::string::npos ||
+          target_raw.find(d_raw) != std::string::npos));
+      if (match) {
         found_match = true;
-        const std::string side = calculateHorizontalPosition(drink.bbox_x, drink.bbox_w);
+        const std::string side = sideByIndex(i);
         RCLCPP_INFO(
           get_logger(),
-          "\033[1;32m[BEVERAGE]\033[0m Cocok item '%s' di sisi %s (3D: x=%.2f m, y=%.2f m)",
-          drink.name.c_str(), side.c_str(), drink.x, drink.y);
+          "\033[1;32m[BEVERAGE]\033[0m Cocok item '%s' di sisi %s (rank %zu/%zu, cx=%.0f, 3D: x=%.2f m, y=%.2f m)",
+          drink.name.c_str(), side.c_str(), i + 1, drinks_list.size(),
+          centerX(drink), drink.x, drink.y);
         return side;
       }
     }
@@ -885,7 +1020,7 @@ private:
     if (!drinks_list.empty()) {
       found_match = true;
       const auto & first = drinks_list.front();
-      const std::string side = calculateHorizontalPosition(first.bbox_x, first.bbox_w);
+      const std::string side = sideByIndex(0);
       RCLCPP_INFO(
         get_logger(),
         "\033[1;33m[BEVERAGE]\033[0m Fallback item terdekat '%s' di sisi %s (3D: x=%.2f m, y=%.2f m)",
@@ -1182,7 +1317,7 @@ private:
       static const std::vector<std::string> kKnownDrinks = {
         "orange juice", "apple juice", "iced tea", "green tea",
         "coke", "cola", "pepsi", "sprite", "fanta",
-        "milk", "water", "coffee", "tea", "juice", "soda",
+        "mineral water", "milk", "water", "coffee", "tea", "juice", "soda",
         "botol", "bottle", "cracker", "cracker box", "snack",
         "pringles", "sugar", "sugar box", "cheezit", "cheez-it", "chips"
       };
@@ -1385,6 +1520,9 @@ private:
       return;
     }
     latest_drinks_ = parseDetectionString(message->data);
+    if (state_.load() == ReceptionistState::ASK_DRINK && !beverage_snapshot_locked_) {
+      mergeDrinksIntoSnapshotLocked(latest_drinks_);
+    }
     for (const auto & item : latest_drinks_) {
       RCLCPP_INFO_THROTTLE(
         get_logger(), *get_clock(), 2000,
@@ -1411,10 +1549,23 @@ private:
     }
   }
 
-  // Callback atribut visual tamu (/zed/person_attributes)
+  // Callback atribut visual tamu (/vision/person_attributes)
   void onPersonAttributes(const std_msgs::msg::String::SharedPtr message)
   {
     if (!isVisionActive() || !message || message->data.empty()) return;
+    // Hanya terima update atribut visual saat robot berhadapan langsung dengan tamu di pintu
+    // agar tidak tertimpa background meja minuman atau host di ruang tamu.
+    const ReceptionistState cur = state_.load();
+    if (cur != ReceptionistState::WAIT_GUEST &&
+        cur != ReceptionistState::ALIGN_GUEST &&
+        cur != ReceptionistState::ASK_NAME &&
+        cur != ReceptionistState::WAIT_NAME &&
+        cur != ReceptionistState::ASK_INTEREST &&
+        cur != ReceptionistState::WAIT_INTEREST &&
+        cur != ReceptionistState::CONFIRM_GUEST_INFO)
+    {
+      return;
+    }
     std::lock_guard<std::mutex> lock(vision_mutex_);
     std::vector<std::string> parsed;
     std::stringstream ss(message->data);
@@ -1714,6 +1865,12 @@ private:
               "\033[1;32m[DIALOG NAME]\033[0m Guest %d Name -> \033[1;32m\"%s\"\033[0m (from \"%s\")",
               guest_idx_, parsed_name.c_str(), raw.c_str());
             updateCurrentGuestVisualAttributes(nearest_person_id_.load());
+            {
+              std::lock_guard<std::mutex> lock(guest_mutex_);
+              if (guest_idx_ >= 1 && guests_.size() >= static_cast<size_t>(guest_idx_)) {
+                guests_[static_cast<size_t>(guest_idx_ - 1)] = current_guest_;
+              }
+            }
             transitionTo(ReceptionistState::ASK_INTEREST, "Guest name captured and stored");
           } else {
             RCLCPP_WARN(
@@ -1758,6 +1915,12 @@ private:
               current_guest_.interest = parsed_interest;
             }
             updateCurrentGuestVisualAttributes(nearest_person_id_.load());
+            {
+              std::lock_guard<std::mutex> lock(guest_mutex_);
+              if (guest_idx_ >= 1 && guests_.size() >= static_cast<size_t>(guest_idx_)) {
+                guests_[static_cast<size_t>(guest_idx_ - 1)] = current_guest_;
+              }
+            }
             RCLCPP_INFO(
               get_logger(),
               "\033[1;32m[DIALOG INTEREST]\033[0m Guest %d Interest -> \033[1;32m\"%s\"\033[0m (from \"%s\")",
@@ -1901,7 +2064,15 @@ private:
           }
           const std::string parsed_drink = parseSlotIntent(raw, "drink");
           if (!parsed_drink.empty()) {
-            updateCurrentGuestVisualAttributes(nearest_person_id_.load());
+            bool need_fallback_attrs = false;
+            {
+              std::lock_guard<std::mutex> lock(guest_mutex_);
+              need_fallback_attrs =
+                (current_guest_.shirt_color.empty() || current_guest_.shirt_color == "casual attire");
+            }
+            if (need_fallback_attrs) {
+              updateCurrentGuestVisualAttributes(nearest_person_id_.load());
+            }
             {
               std::lock_guard<std::mutex> lock(guest_mutex_);
               current_guest_.drink = parsed_drink;
@@ -1992,11 +2163,23 @@ private:
             return; //retry di tick berikutnya setelah TTS dan cooldown selesai
           }
           transitionTo(
-            ReceptionistState::FACE_AND_INTRODUCE_HOST,
-            "Arrived at living_room; facing Host to introduce guest");
+            ReceptionistState::SCAN_LIVING_ROOM,
+            "Arrived at living_room; scanning & locking person/chair positions");
         });
         break;
 
+      }
+
+      case ReceptionistState::SCAN_LIVING_ROOM: {
+        if ((now() - state_enter_time_).seconds() < vision_initial_settle_sec_) {
+          return;
+        }
+        scanLivingRoom([this](bool /*success*/, const std::string & /*msg*/) {
+          transitionTo(
+            ReceptionistState::FACE_AND_INTRODUCE_HOST,
+            "Living room scan locked; facing Host to introduce guest");
+        });
+        break;
       }
 
       case ReceptionistState::FACE_AND_INTRODUCE_HOST:
@@ -2232,16 +2415,19 @@ private:
             "SUCCESS: Guest " + std::to_string(guest_idx_) + " (" +
             cg_name + ") occupied the indicated chair.");
 
-          if (guest_idx_ == 1) {
-            initCurrentGuest(2);
-            transitionTo(
-              ReceptionistState::NAV_TO_DOOR,
-              "Guest 1 seated confirmed; returning to door for Guest 2");
-          } else {
-            transitionTo(
-              ReceptionistState::FINISH_TASK,
-              "Guest 2 seated confirmed; completing task");
-          }
+          const int finished_guest_idx = guest_idx_;
+          clearLivingRoomLocks([this, finished_guest_idx]() {
+            if (finished_guest_idx == 1) {
+              initCurrentGuest(2);
+              transitionTo(
+                ReceptionistState::NAV_TO_DOOR,
+                "Guest 1 seated confirmed; cleared locks and returning to door for Guest 2");
+            } else {
+              transitionTo(
+                ReceptionistState::FINISH_TASK,
+                "Guest 2 seated confirmed; cleared locks and completing task");
+            }
+          });
         } else {
           RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 3000,
