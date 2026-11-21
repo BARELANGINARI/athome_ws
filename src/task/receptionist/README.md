@@ -35,6 +35,9 @@ ros2 service call /receptionist/adjust_guest std_srvs/srv/Trigger {}
 90∘ ≈ 1.57 rad
 180∘ ≈ 3.14 rad
 270∘ / −90∘ ≈ −1.57 rad
+
+### ini cara cek yaw robot
+ros2 run tf2_ros tf2_echo map base_link
 ```
 
 ---

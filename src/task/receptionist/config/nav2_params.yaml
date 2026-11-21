@@ -138,7 +138,7 @@ controller_server:
       PathAlign.forward_point_distance: 0.30 # KUNCI: Dinaikkan ke 0.30m agar leverage torsi pelurusan haluan kuat saat menyusuri path
       RotateToGoal.scale: 36.0           # Bobot rotasi yaw tujuan akhir (dinaikkan dominan ke 36.0 agar robot tegas mengunci yaw target)
       RotateToGoal.slowing_factor: 5.0
-      RotateToGoal.lookahead_time: -1.0  # -1.0 = KUNCI: nonaktifkan orientasi tujuan selama di perjalanan, hanya aktif saat tiba di titik X,Y final
+      RotateToGoal.lookahead_time: 5.0  # -1.0 = KUNCI: nonaktifkan orientasi tujuan selama di perjalanan, hanya aktif saat tiba di titik X,Y final
 
 # ---------------------------------------------------------------------
 # 4. LOCAL COSTMAP (Sensor-based Dynamic Costmap)
