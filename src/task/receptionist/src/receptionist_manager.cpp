@@ -128,11 +128,11 @@ public:
   : Node("receptionist_manager")
   {
     // Parameter Host & Konfigurasi Task
-    declare_parameter<std::string>("host.name", "Jon");
-    declare_parameter<std::string>("host.drink", "Tea");
+    declare_parameter<std::string>("host.name", "Alex");
+    declare_parameter<std::string>("host.drink", "Coke");
     declare_parameter<std::string>("host.interest", "Robotics");
     declare_parameter<std::string>("host.gender", "male");
-    declare_parameter<std::string>("host.shirt_color", "navy");
+    declare_parameter<std::string>("host.shirt_color", "black");
     declare_parameter<std::string>("host.hair_color", "black");
     declare_parameter<int>("camera_width", 672);
 
@@ -963,7 +963,7 @@ private:
 
   static std::string formatPersonDescription(const PersonProfile & person)
   {
-    std::string gender = (person.gender.empty() || person.gender == "unknown") ? "person" : person.gender;
+    std::string gender = person.gender.empty() ? "person" : person.gender;
     std::string shirt = person.shirt_color.empty() ? "casual attire" : person.shirt_color;
     std::string hair = person.hair_color.empty() ? "dark hair" : person.hair_color;
 
@@ -1160,7 +1160,7 @@ private:
 
     if (slot == "person_name") {
       static const std::vector<std::string> kKnownNames = {
-        "adel", "angel", "axel", "charlie", "jane", "john", "jon", "jules", "morgan",
+        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan",
         "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma"
       };
       for (const auto & name : kKnownNames) {

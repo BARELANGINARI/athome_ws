@@ -37,7 +37,7 @@ vision:
     chair_model: ""
     enable_chair: true
     enable_bag: true
-    host_name: "Jon"
+    host_name: "Alex"
     host_photo: "models/host.jpg"
     enable_back_detection: true
     person_back_topic: "/vision/person_back"
