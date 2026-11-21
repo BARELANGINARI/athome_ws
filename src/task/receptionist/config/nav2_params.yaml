@@ -83,7 +83,7 @@ controller_server:
     general_goal_checker:
       stateful: True                     # Stateful goal checking
       plugin: "nav2_controller::SimpleGoalChecker" # Goal checker plugin
-      xy_goal_tolerance: 0.25            # Goal XY position tolerance (m)
+      xy_goal_tolerance: 0.30            # Goal XY position tolerance (m)
       yaw_goal_tolerance: 0.20           # Goal yaw orientation tolerance (rad, 0.38 rad ≈ 21.8 derajat)
 
     FollowPath:
@@ -175,7 +175,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Safety buffer layer around obstacles
         cost_scaling_factor: 10.0        # Diturunkan dari 25.0 ke 10.0 agar medan tolak rintangan menyebar lebih luas dan landai
-        inflation_radius: 0.27           # Dinaikkan dari 0.35m ke 0.48m agar jarak aman avoidance bertambah (+24cm di luar bodi robot)
+        inflation_radius: 0.25           # Dinaikkan dari 0.35m ke 0.48m agar jarak aman avoidance bertambah (+24cm di luar bodi robot)
       always_send_full_costmap: True     # Send full costmap on publish
 
 # ---------------------------------------------------------------------
@@ -216,7 +216,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
         cost_scaling_factor: 12.0        # Diturunkan dari 25.0 ke 12.0 agar rute global berjarak dari dinding
-        inflation_radius: 0.27           # Dinaikkan dari 0.35m ke 0.45m (+21cm dari bodi fisik)
+        inflation_radius: 0.25           # Dinaikkan dari 0.35m ke 0.45m (+21cm dari bodi fisik)
       always_send_full_costmap: True     # Send full costmap on publish
 
 # ---------------------------------------------------------------------

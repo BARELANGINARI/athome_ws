@@ -115,6 +115,14 @@ public:
     declare_parameter<double>("face_person_max_speed", 0.30);
     declare_parameter<double>("face_person_tolerance_rad", 0.07);
 
+    // Relative 90-degree turn parameters (/receptionist/left & /receptionist/right)
+    declare_parameter<double>("turn_90_angular_speed", 0.30);
+    declare_parameter<double>("turn_90_min_speed", 0.14);
+    declare_parameter<double>("turn_90_max_speed", 0.35);
+    declare_parameter<double>("turn_90_tolerance_rad", 0.04);
+    declare_parameter<double>("turn_90_timeout_sec", 8.0);
+    declare_parameter<double>("turn_90_p_gain", 1.5);
+
     // Chair search & motion parameters
     declare_parameter<std::string>("cmd_vel_topic", "cmd_vel");
     declare_parameter<std::string>("chair_topic", "/vision/chair_detections");
@@ -152,6 +160,13 @@ public:
     face_person_min_speed_ = get_parameter("face_person_min_speed").as_double();
     face_person_max_speed_ = get_parameter("face_person_max_speed").as_double();
     face_person_tolerance_rad_ = get_parameter("face_person_tolerance_rad").as_double();
+
+    turn_90_angular_speed_ = get_parameter("turn_90_angular_speed").as_double();
+    turn_90_min_speed_ = get_parameter("turn_90_min_speed").as_double();
+    turn_90_max_speed_ = get_parameter("turn_90_max_speed").as_double();
+    turn_90_tolerance_rad_ = get_parameter("turn_90_tolerance_rad").as_double();
+    turn_90_timeout_sec_ = get_parameter("turn_90_timeout_sec").as_double();
+    turn_90_p_gain_ = get_parameter("turn_90_p_gain").as_double();
 
     cmd_vel_topic_ = get_parameter("cmd_vel_topic").as_string();
     chair_topic_ = get_parameter("chair_topic").as_string();
@@ -348,6 +363,25 @@ public:
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
         handleAdjustGuest(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    // Services for 90-degree relative rotation (/receptionist/left dan /receptionist/right)
+    srv_turn_left_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/left",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleTurnRelative(M_PI / 2.0, "left", req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_turn_right_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/right",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleTurnRelative(-M_PI / 2.0, "right", req, res);
       },
       rclcpp::ServicesQoS(),
       srv_cb_group_);
@@ -944,6 +978,13 @@ public:
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
+
     if (is_navigating_.load()) {
       res->success = false;
       res->message = "Robot is currently busy with another navigation task";
@@ -1084,6 +1125,12 @@ public:
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
     if (is_navigating_.load()) {
       res->success = false;
       res->message = "Robot is currently busy with navigation task";
@@ -1264,6 +1311,12 @@ public:
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
     if (is_navigating_.load()) {
       res->success = false;
       res->message = "Robot is currently busy with navigation task";
@@ -1402,10 +1455,159 @@ public:
     RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Align: %s", res->message.c_str());
   }
 
+  static double normalize_angle(double angle)
+  {
+    while (angle > M_PI) angle -= 2.0 * M_PI;
+    while (angle < -M_PI) angle += 2.0 * M_PI;
+    return angle;
+  }
+
+  void handleTurnRelative(
+    double angle_rad,
+    const std::string & direction_name,
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_navigating_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy with navigation task";
+      publishStatus(res->message);
+      return;
+    }
+
+    if (is_facing_person_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy facing person";
+      publishStatus(res->message);
+      return;
+    }
+
+    if (is_searching_chair_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy searching for a chair";
+      publishStatus(res->message);
+      return;
+    }
+
+    if (is_turning_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is already executing a turn";
+      publishStatus(res->message);
+      return;
+    }
+
+    publishStatus("Service /receptionist/" + direction_name + " called: Turning 90 degrees " + direction_name + "...");
+
+    // Tunggu pembacaan yaw awal dari odometry (maksimal ~1 detik)
+    double start_yaw = 0.0;
+    bool got_yaw = false;
+    for (int i = 0; i < 20; ++i) {
+      if (getRobotYaw(start_yaw)) {
+        got_yaw = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    if (!got_yaw) {
+      is_turning_ = false;
+      res->success = false;
+      res->message = "Failed to turn: Odometry yaw not available";
+      publishStatus(res->message);
+      RCLCPP_ERROR(get_logger(), "\033[1;31m[TURN]\033[0m Odometry yaw not available");
+      return;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;32m[TURN]\033[0m Starting 90-degree turn %s (target delta: %.2f rad, start yaw: %.2f rad)",
+      direction_name.c_str(), angle_rad, start_yaw);
+
+    const double target_turn = angle_rad;
+    double last_yaw = start_yaw;
+    double accumulated_turn = 0.0;
+    auto start_time = now();
+    rclcpp::Rate loop_rate(30.0);
+    int centered_count = 0;
+    bool success = false;
+
+    while (rclcpp::ok() && is_turning_.load()) {
+      const double elapsed = (now() - start_time).seconds();
+      if (elapsed > turn_90_timeout_sec_) {
+        RCLCPP_WARN(get_logger(), "\033[1;33m[TURN]\033[0m Timeout reached (%.1fs)", turn_90_timeout_sec_);
+        break;
+      }
+
+      double cur_yaw = 0.0;
+      if (getRobotYaw(cur_yaw)) {
+        double dyaw = normalize_angle(cur_yaw - last_yaw);
+        accumulated_turn += dyaw;
+        last_yaw = cur_yaw;
+      }
+
+      const double remaining = target_turn - accumulated_turn;
+
+      if (std::abs(remaining) <= turn_90_tolerance_rad_) {
+        centered_count++;
+        if (centered_count >= 3) {
+          success = true;
+          break;
+        }
+      } else {
+        centered_count = 0;
+      }
+
+      // Hitung kecepatan sudut proporsional
+      double w = turn_90_p_gain_ * remaining;
+      double spd = std::abs(w);
+      if (spd < turn_90_min_speed_) spd = turn_90_min_speed_;
+      else if (spd > turn_90_max_speed_) spd = turn_90_max_speed_;
+
+      geometry_msgs::msg::Twist twist;
+      twist.linear.x = 0.0;
+      twist.linear.y = 0.0;
+      twist.angular.z = (remaining >= 0.0) ? spd : -spd;
+      cmd_vel_pub_->publish(twist);
+
+      loop_rate.sleep();
+    }
+
+    stopRobot();
+    is_turning_ = false;
+
+    const double turned_deg = accumulated_turn * 180.0 / M_PI;
+    if (success) {
+      res->success = true;
+      res->message = "Successfully turned 90 degrees " + direction_name +
+                     " (turned " + std::to_string(turned_deg) + " deg)";
+      publishStatus(res->message);
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[1;32m[TURN]\033[0m Complete: turned %.1f deg %s",
+        turned_deg, direction_name.c_str());
+    } else {
+      res->success = false;
+      res->message = "Turn 90 degrees " + direction_name + " timed out or incomplete" +
+                     " (turned " + std::to_string(turned_deg) + " deg)";
+      publishStatus(res->message);
+      RCLCPP_WARN(
+        get_logger(),
+        "\033[1;33m[TURN]\033[0m Incomplete: turned %.1f deg %s",
+        turned_deg, direction_name.c_str());
+    }
+  }
+
   void handleGoTo(
     const std::string & target_name,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
+
     if (is_searching_chair_.load()) {
       res->success = false;
       res->message = "Robot is currently busy searching for a chair";
@@ -1619,6 +1821,18 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_guest_2_alias_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_adjust_guest_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_adjust_guest_alias_;
+
+  // 90-degree relative turn (/receptionist/left dan /receptionist/right)
+  std::atomic<bool> is_turning_{false};
+  double turn_90_angular_speed_{0.30};
+  double turn_90_min_speed_{0.14};
+  double turn_90_max_speed_{0.35};
+  double turn_90_tolerance_rad_{0.04};
+  double turn_90_timeout_sec_{8.0};
+  double turn_90_p_gain_{1.5};
+
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_left_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_right_;
 };
 
 }  // namespace receptionist
