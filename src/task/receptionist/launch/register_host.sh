@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Script Pra-Registrasi Wajah Host (Opsi A) Sebelum Task Receptionist Dimulai
-# Penggunaan: ./register_host.sh [NamaHost] (default: Alex)
+# Penggunaan: ./register_host.sh [NamaHost] (default: Jon)
 # ==============================================================================
 
-HOST_NAME="${1:-Alex}"
+HOST_NAME="${1:-Jon}"
 
 echo "===================================================================="
 echo " [Receptionist] Mendaftarkan Wajah Host: \"${HOST_NAME}\""

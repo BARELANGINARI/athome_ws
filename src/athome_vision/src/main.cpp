@@ -335,10 +335,11 @@ struct PrevPerson
   cv::Rect bbox;
   cv::Rect shirt_bbox;
   bool has_pos{false};
-  double x_m{0.0}, y_m{0.0}, range_m{0.0};
+  double x_m{0.0}, y_m{0.0}, z_m{0.0}, range_m{0.0};
   bool is_sitting{false};
   bool is_facing_back{false};
   std::vector<cv::Point2f> kpt;
+  std::string default_label{"person"};
   std::string clothing, hair, gender, name;
 };
 
@@ -1424,6 +1425,7 @@ private:
   void processDrinks(const cv::Mat & bgr, const sl::Mat & cloud);
   void processPersons(const cv::Mat & bgr, const sl::Mat & cloud);
   void processChairs(const cv::Mat & bgr, const sl::Mat & cloud);
+  void publishPersonLabels();
   void showPreview(const cv::Mat & bgr);
 
   std::string resolvePath(const std::string & path) const;
@@ -1517,6 +1519,7 @@ private:
   double person_max_dist_{2.8};
   double bag_max_dist_{2.5};
   double drink_max_dist_{2.5};
+  std::string host_name_{"Jon"};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_name_sub_;
 
   // State log ringkasan per frame
@@ -1581,9 +1584,9 @@ ZedNode::ZedNode()
   declare_parameter("hair_labels", std::string("models/hair_names.txt"));
   declare_parameter("face_model", std::string("models/face_recognition_sface.onnx"));
   declare_parameter("face_threshold", 0.363);
-  declare_parameter("host_name", std::string("Alex"));
+  declare_parameter("host_name", std::string("Jon"));
   declare_parameter("host_photo", std::string("models/host.jpg"));
-  declare_parameter("host_shirt_color", std::string("black shirt"));
+  declare_parameter("host_shirt_color", std::string("navy shirt"));
   declare_parameter("host_gender", std::string("male"));
   declare_parameter("enable_back_detection", true);
   declare_parameter("person_back_topic", std::string("/vision/person_back"));
@@ -1738,6 +1741,8 @@ ZedNode::ZedNode()
   person_max_dist_ = get_parameter("person_max_dist").as_double();
   bag_max_dist_ = get_parameter("bag_max_dist").as_double();
   drink_max_dist_ = get_parameter("drink_max_dist").as_double();
+  host_name_ = get_parameter("host_name").as_string();
+  if (host_name_.empty()) host_name_ = "Jon";
 
   if (is_help_me_carry_ && !is_receptionist_ && !is_restaurant_) {
     enable_body_tracking_ = true;
@@ -2307,9 +2312,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
 
   if (bodies_.body_list.empty()) {
     back_memory_.clear();
-    std_msgs::msg::String person_msg;
-    person_msg.data = "NO_PERSON";
-    persons_publisher_->publish(person_msg);
     std_msgs::msg::String gesture_msg;
     gesture_msg.data = "NONE";
     gesture_publisher_->publish(gesture_msg);
@@ -2634,12 +2636,20 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
 
       // Skor warna baju
+      auto shirt_compatible = [](const std::string & a, const std::string & b) {
+        if (a == b) return true;
+        if (a == "navy shirt" && (b == "blue shirt" || b == "black shirt")) return true;
+        if (b == "navy shirt" && (a == "blue shirt" || a == "black shirt")) return true;
+        return false;
+      };
       float shirt_score = 0.50f; // Netral jika belum ada data
       if (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty()) {
         if (prof.clothing_color == entry_feats[i].shirt_color) {
           shirt_score = 1.0f;
+        } else if (shirt_compatible(prof.clothing_color, entry_feats[i].shirt_color)) {
+          shirt_score = 0.85f;
         } else {
-          // Warna teks baju berbeda
+          // Warna baju berbeda
           double hsv_sim = 0.0;
           if (prof.has_color && entry_feats[i].has_torso) {
             double dh = std::min(std::abs(entry_feats[i].torso_hsv[0] - prof.torso_hsv[0]),
@@ -2661,8 +2671,10 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
 
       // Skor gender
+      const bool valid_gender = !prof.gender.empty() && prof.gender != "unknown" &&
+                                !entry_feats[i].gender.empty() && entry_feats[i].gender != "unknown";
       float gender_score = 0.50f;
-      if (!prof.gender.empty() && !entry_feats[i].gender.empty()) {
+      if (valid_gender) {
         gender_score = (prof.gender == entry_feats[i].gender) ? 1.0f : 0.05f;
       }
 
@@ -2672,12 +2684,12 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         veto = true; // Wajah jelas-jelas orang lain
       }
       if (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
-          prof.clothing_color != entry_feats[i].shirt_color &&
+          !shirt_compatible(prof.clothing_color, entry_feats[i].shirt_color) &&
           (!has_face || f_sim < static_cast<float>(face_threshold_)))
       {
         veto = true; // Warna baju bertolak belakang dan wajah tidak cocok
       }
-      if (!prof.gender.empty() && !entry_feats[i].gender.empty() &&
+      if (valid_gender &&
           prof.gender != entry_feats[i].gender &&
           (!has_face || f_sim < static_cast<float>(face_threshold_)))
       {
@@ -2842,7 +2854,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   }
   }
 
-  std::ostringstream ss;
   bool first_person = true;
   std::string gesture_result = "NONE";
   std::string first_recognized_name;
@@ -2920,8 +2931,10 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     person.has_pos = entry.has_depth;
     person.x_m = entry.x;
     person.y_m = entry.y;
+    person.z_m = entry.z;
     person.range_m = entry.range_m;
     person.is_facing_back = is_facing_back;
+    person.default_label = entry.label;
     person.name = recognized_name;
     for (const auto & point : points) {
       person.kpt.emplace_back(
@@ -3001,35 +3014,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     }
 
     preview_persons_.push_back(person);
-
-    if (!first_person) ss << ";";
-    std::string label;
-    if (is_receptionist_ && !is_help_me_carry_) {
-      if (!recognized_name.empty()) {
-        label = recognized_name;
-      } else {
-        label = first_person ? "guest" : "person";
-      }
-    } else {
-      label = entry.label;
-    }
     first_person = false;
-    ss << label << ":" << entry.bbox.x << "," << entry.bbox.y << ","
-       << entry.bbox.width << "," << entry.bbox.height << "|";
-    if (entry.has_depth) {
-      ss << std::fixed << std::setprecision(2) << entry.x << "," << entry.y << "," << entry.z;
-    } else {
-      ss << "nan,nan,nan";
-    }
-    ss << "|id=" << entry.id << "|back=" << (is_facing_back ? "1" : "0") << "|kpt=";
-    for (size_t k = 0; k < 34; ++k) {
-      if (k > 0) ss << ",";
-      if (k < points.size() && std::isfinite(points[k].x) && std::isfinite(points[k].y)) {
-        ss << std::fixed << std::setprecision(2) << points[k].x << "," << points[k].y;
-      } else {
-        ss << "-1,-1";
-      }
-    }
   }
 
   if (is_restaurant_) {
@@ -3098,10 +3083,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   gesture_msg.data = gesture_result;
   gesture_publisher_->publish(gesture_msg);
 
-  std_msgs::msg::String person_msg;
-  person_msg.data = first_person ? "NO_PERSON" : ss.str();
-  persons_publisher_->publish(person_msg);
-
   std_msgs::msg::String name_msg;
   name_msg.data = is_receptionist_ ? first_recognized_name : "";
   recognized_name_publisher_->publish(name_msg);
@@ -3109,6 +3090,63 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   if (is_receptionist_) {
     publishGuestNames();
   }
+}
+
+void ZedNode::publishPersonLabels()
+{
+  if (preview_persons_.empty()) {
+    std_msgs::msg::String person_msg;
+    person_msg.data = "NO_PERSON";
+    persons_publisher_->publish(person_msg);
+    return;
+  }
+
+  if (is_receptionist_ && latest_guest_found_ &&
+      preview_persons_[0].name.empty() && preview_persons_[0].is_sitting)
+  {
+    latest_guest_tag_ = host_name_;
+  }
+
+  std::ostringstream ss;
+  for (size_t i = 0; i < preview_persons_.size(); ++i) {
+    if (i > 0) ss << ";";
+    const auto & p = preview_persons_[i];
+    std::string label;
+    if (is_receptionist_ && !is_help_me_carry_) {
+      if (!p.name.empty()) {
+        label = p.name;
+      } else if (p.is_sitting) {
+        // Orang duduk di kursi & belum terdaftar namanya dianggap Host (Jon)
+        label = host_name_;
+      } else {
+        // Orang tidak duduk di kursi & belum terdaftar namanya dianggap Guest
+        label = "guest";
+      }
+    } else {
+      label = p.default_label;
+    }
+
+    ss << label << ":" << p.bbox.x << "," << p.bbox.y << ","
+       << p.bbox.width << "," << p.bbox.height << "|";
+    if (p.has_pos) {
+      ss << std::fixed << std::setprecision(2) << p.x_m << "," << p.y_m << "," << p.z_m;
+    } else {
+      ss << "nan,nan,nan";
+    }
+    ss << "|id=" << p.id << "|back=" << (p.is_facing_back ? "1" : "0") << "|kpt=";
+    for (size_t k = 0; k < 34; ++k) {
+      if (k > 0) ss << ",";
+      if (k < p.kpt.size() && std::isfinite(p.kpt[k].x) && std::isfinite(p.kpt[k].y)) {
+        ss << std::fixed << std::setprecision(2) << p.kpt[k].x << "," << p.kpt[k].y;
+      } else {
+        ss << "-1,-1";
+      }
+    }
+  }
+
+  std_msgs::msg::String person_msg;
+  person_msg.data = ss.str();
+  persons_publisher_->publish(person_msg);
 }
 
 void ZedNode::publishGuestNames()
@@ -3516,9 +3554,9 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         }
       }
 
-      // Tampilkan banner nama tamu / registered name / Guest
+      // Tampilkan banner nama tamu / registered name / Jon (jika duduk) / Guest (jika berdiri)
       if (is_receptionist_) {
-        std::string label = !p.name.empty() ? p.name : "Guest";
+        std::string label = !p.name.empty() ? p.name : (p.is_sitting ? host_name_ : "Guest");
         if (p.is_sitting) label += " [Seated]";
         if (p.is_facing_back) label += " [Back]";
         banner(label, r.x, r.y, color,
@@ -3695,6 +3733,7 @@ void ZedNode::loop()
     processDrinks(bgr, zed_point_cloud_);
     processPersons(bgr, zed_point_cloud_);
     processChairs(bgr, zed_point_cloud_);
+    publishPersonLabels();
     printSummaryLog();
     showPreview(bgr);
   } catch (const std::exception & e) {

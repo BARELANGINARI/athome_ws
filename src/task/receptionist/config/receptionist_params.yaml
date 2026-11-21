@@ -49,7 +49,7 @@ receptionist_node:
     guest_door_timeout_sec: 15.0
 
     # Face person settings
-    host_name: "Alex"
+    host_name: "Jon"
     person_label_topic: "/vision/person_label"
     guest_1_name_topic: "/vision/guest_1_name"
     guest_2_name_topic: "/vision/guest_2_name"
@@ -72,11 +72,11 @@ receptionist_node:
 receptionist_manager:
   ros__parameters:
     host:
-      name: "Alex"
-      drink: "Coke"
+      name: "Jon"
+      drink: "Tea"
       interest: "Robotics"
       gender: "male"
-      shirt_color: "black"
+      shirt_color: "navy"
       hair_color: "black"
     camera_width: 672
     global_timeout_sec: 600.0

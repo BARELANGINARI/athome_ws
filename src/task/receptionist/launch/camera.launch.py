@@ -37,7 +37,7 @@ def generate_launch_description():
         DeclareLaunchArgument('mirror', default_value='false', description='Mirror display preview horizontally'),
         DeclareLaunchArgument('publish_yaw', default_value='false', description='Publish IMU yaw from ZED vision (default: false, receptionist uses /yaw from Razor IMU)'),
         DeclareLaunchArgument('yaw_360', default_value='true', description='Publish IMU yaw in 0-360 deg range (default: true)'),
-        DeclareLaunchArgument('host_name', default_value='Alex', description='Default host name for pre-registration'),
+        DeclareLaunchArgument('host_name', default_value='Jon', description='Default host name for pre-registration'),
         DeclareLaunchArgument('host_photo', default_value='models/host.jpg', description='Optional photo of the host to pre-register face'),
         DeclareLaunchArgument('color_model', default_value='models/color_model.onnx', description='Path to clothing color ONNX model'),
         DeclareLaunchArgument('color_labels', default_value='models/color_names.txt', description='Path to clothing color labels file'),

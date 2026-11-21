@@ -99,7 +99,7 @@ public:
     declare_parameter<double>("living_room.yaw", 270.0);
 
     // Face person parameters
-    declare_parameter<std::string>("host_name", "Alex");
+    declare_parameter<std::string>("host_name", "Jon");
     declare_parameter<std::string>("person_label_topic", "/vision/person_label");
     declare_parameter<std::string>("guest_1_name_topic", "/vision/guest_1_name");
     declare_parameter<std::string>("guest_2_name_topic", "/vision/guest_2_name");
@@ -917,8 +917,9 @@ public:
 
       if (target_role == "door_guest") {
         is_match = true;
-        // Tamu di pintu: prioritaskan orang terdekat dan paling lurus di depan kamera
+        // Tamu di pintu: prioritaskan orang terdekat, paling lurus di depan, dan berlabel guest (tidak duduk)
         priority = 100.0 - (dist * 10.0) - (std::abs(angle) * 5.0);
+        if (label_lower == "guest") priority += 30.0;
       } else if (target_role == "host") {
         if (!host_name_lower.empty() && label_lower.find(host_name_lower) != std::string::npos) {
           is_match = true;
@@ -1190,7 +1191,7 @@ public:
             target.valid = true;
             target.angle_err = occ.angle_err;
             target.dist = occ.dist;
-            target.label = "Seated Guest (" + occ.side + ")";
+            target.label = "Seated Host (" + host_name_ + " - " + occ.side + ")";
             return target;
           }
         }
@@ -1787,7 +1788,7 @@ private:
 
   // Face person tracking & services
   std::atomic<bool> is_facing_person_{false};
-  std::string host_name_{"Alex"};
+  std::string host_name_{"Jon"};
   std::string person_label_topic_{"/vision/person_label"};
   std::string guest_1_name_topic_{"/vision/guest_1_name"};
   std::string guest_2_name_topic_{"/vision/guest_2_name"};
