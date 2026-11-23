@@ -1816,6 +1816,7 @@ private:
   AttributeAnalyzer analyzer_;
   std::vector<RegisteredPerson> registered_persons_;
   std::string pending_register_name_;
+  std::string active_guest_name_;
   rclcpp::Time register_start_time_{0, 0, RCL_ROS_TIME};
   std::string guest_1_name_;
   std::string guest_2_name_;
@@ -2000,6 +2001,7 @@ ZedNode::ZedNode()
       }
       while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) name.erase(name.begin());
       pending_register_name_ = name;
+      active_guest_name_ = name;
       if (!name.empty()) {
         register_start_time_ = now();
         if (guest_1_name_.empty()) {
@@ -3587,6 +3589,22 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         person.hair = entry_hairs[idx];
         person.gender = entry_genders[idx];
       }
+      if (!recognized_name.empty()) {
+        for (const auto & prof : registered_persons_) {
+          if (prof.name == recognized_name && prof.locked) {
+            if ((person.gender.empty() || person.gender == "unknown") && !prof.gender.empty()) {
+              person.gender = prof.gender;
+            }
+            if ((person.clothing.empty() || person.clothing == "casual attire") && !prof.clothing_color.empty()) {
+              person.clothing = prof.clothing_color;
+            }
+            if (person.hair.empty() && !prof.hair_color.empty()) {
+              person.hair = prof.hair_color;
+            }
+            break;
+          }
+        }
+      }
     }
 
     if (first_person) {
@@ -3595,15 +3613,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         if (is_help_me_carry_ && gesture_result != "NONE") {
           latest_gesture_ = gesture_result;
         }
-      }
-
-      if (is_receptionist_) {
-        std_msgs::msg::String attr_msg;
-        std::string pub_gender = !person.gender.empty() ? person.gender : "person";
-        std::string pub_cloth = !person.clothing.empty() ? person.clothing : "casual attire";
-        std::string pub_hair = !person.hair.empty() ? person.hair : "dark hair";
-        attr_msg.data = pub_gender + ", " + pub_cloth + ", " + pub_hair;
-        attributes_publisher_->publish(attr_msg);
       }
 
       if (is_receptionist_ && entry.has_depth) {
@@ -3654,6 +3663,83 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         ss << "-1,-1";
       }
     }
+  }
+
+  if (is_receptionist_ && !preview_persons_.empty()) {
+    // Ikat publikasi atribut ke tamu terdaftar (RegisteredPerson) yang aktif/terkunci
+    // alih-alih selalu mengambil entries[0] (first_person).
+    std::string pub_gender;
+    std::string pub_cloth;
+    std::string pub_hair;
+    bool bound_to_registered = false;
+
+    const std::string target_name = !pending_register_name_.empty()
+      ? pending_register_name_
+      : active_guest_name_;
+
+    if (!target_name.empty()) {
+      const RegisteredPerson * target_prof = nullptr;
+      for (const auto & prof : registered_persons_) {
+        if (prof.name == target_name) {
+          target_prof = &prof;
+          break;
+        }
+      }
+
+      int target_entry_idx = -1;
+      for (size_t i = 0; i < entries.size(); ++i) {
+        if (recognized_names[i] == target_name) {
+          target_entry_idx = static_cast<int>(i);
+          break;
+        }
+      }
+      if (target_entry_idx < 0 && target_prof != nullptr && target_prof->last_tracking_id >= 0) {
+        for (size_t i = 0; i < entries.size(); ++i) {
+          if (entries[i].id == target_prof->last_tracking_id) {
+            target_entry_idx = static_cast<int>(i);
+            break;
+          }
+        }
+      }
+
+      if (target_entry_idx >= 0) {
+        const size_t tidx = static_cast<size_t>(target_entry_idx);
+        pub_gender = entry_genders[tidx];
+        pub_cloth = entry_clothes[tidx];
+        pub_hair = entry_hairs[tidx];
+        if (target_prof != nullptr) {
+          if ((pub_gender.empty() || pub_gender == "unknown") && !target_prof->gender.empty()) {
+            pub_gender = target_prof->gender;
+          }
+          if ((pub_cloth.empty() || pub_cloth == "casual attire") && !target_prof->clothing_color.empty()) {
+            pub_cloth = target_prof->clothing_color;
+          }
+          if (pub_hair.empty() && !target_prof->hair_color.empty()) {
+            pub_hair = target_prof->hair_color;
+          }
+        }
+        bound_to_registered = true;
+      } else if (target_prof != nullptr && target_prof->locked) {
+        pub_gender = target_prof->gender;
+        pub_cloth = target_prof->clothing_color;
+        pub_hair = target_prof->hair_color;
+        bound_to_registered = true;
+      }
+    }
+
+    if (!bound_to_registered) {
+      pub_gender = preview_persons_.front().gender;
+      pub_cloth = preview_persons_.front().clothing;
+      pub_hair = preview_persons_.front().hair;
+    }
+
+    if (pub_gender.empty()) pub_gender = "person";
+    if (pub_cloth.empty()) pub_cloth = "casual attire";
+    if (pub_hair.empty()) pub_hair = "dark hair";
+
+    std_msgs::msg::String attr_msg;
+    attr_msg.data = pub_gender + ", " + pub_cloth + ", " + pub_hair;
+    attributes_publisher_->publish(attr_msg);
   }
 
   if (is_restaurant_) {
