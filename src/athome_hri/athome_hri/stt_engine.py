@@ -7,6 +7,8 @@ from typing import Callable, Iterable, Optional, Set, Union
 
 import numpy as np
 
+from athome_hri.config import load_default_hri_params
+
 logger = logging.getLogger("athome_hri.stt")
 
 # PyAV & Faster-Whisper compatibility patch
@@ -37,64 +39,92 @@ class SpeechToText:
     """
     Modul khusus transkripsi audio (numpy float32 array atau .wav/.webm bytes)
     ke teks via Faster-Whisper dengan thread-safety dan proteksi halusinasi.
+    Seluruh parameter bawaan dimuat dari config/params.yaml.
     """
-
-    DEFAULT_MODEL_SIZE: str = "deepdml/faster-whisper-large-v3-turbo-ct2"
-    FALLBACK_MODEL_SIZE: str = "base.en"
-    SAMPLE_RATE: int = 16000
-    DEFAULT_BEAM_SIZE: int = 2
-    DEFAULT_NO_SPEECH_THRESHOLD: float = 0.6
-    DEFAULT_LOG_PROB_THRESHOLD: float = -1.0
-    DEFAULT_COMPRESSION_RATIO_THRESHOLD: float = 1.8
-    DEFAULT_VAD_SILENCE_MS: int = 400
-    DEFAULT_VAD_SPEECH_PAD_MS: int = 200
-    COMMAND_INITIAL_PROMPT: str = (
-        "Hello robot, halo robot, follow me, please follow me, "
-        "stop, we have arrived at the location, this is the location."
-    )
-    DEFAULT_HOTWORDS: str = "hello robot halo robot follow me arrived we are here stop berhenti"
-
-    HALLUCINATION_BLACKLIST: Set[str] = {
-        "terima kasih",
-        "terimakasih",
-        "thank you",
-        "thanks",
-        "thank you very much",
-        "you",
-    }
 
     def __init__(
         self,
-        model_size: str = DEFAULT_MODEL_SIZE,
-        language: str = "en",
+        model_size: Optional[str] = None,
+        language: Optional[str] = None,
         on_asr_result: Optional[AsrResultCallback] = None,
-        fallback_model_size: str = FALLBACK_MODEL_SIZE,
-        beam_size: int = DEFAULT_BEAM_SIZE,
-        no_speech_threshold: float = DEFAULT_NO_SPEECH_THRESHOLD,
-        log_prob_threshold: float = DEFAULT_LOG_PROB_THRESHOLD,
-        compression_ratio_threshold: float = DEFAULT_COMPRESSION_RATIO_THRESHOLD,
-        vad_silence_ms: int = DEFAULT_VAD_SILENCE_MS,
-        vad_speech_pad_ms: int = DEFAULT_VAD_SPEECH_PAD_MS,
-        initial_prompt: str = COMMAND_INITIAL_PROMPT,
-        hotwords: str = DEFAULT_HOTWORDS,
+        fallback_model_size: Optional[str] = None,
+        sample_rate: Optional[int] = None,
+        beam_size: Optional[int] = None,
+        no_speech_threshold: Optional[float] = None,
+        log_prob_threshold: Optional[float] = None,
+        compression_ratio_threshold: Optional[float] = None,
+        vad_threshold: Optional[float] = None,
+        vad_min_speech_ms: Optional[int] = None,
+        vad_silence_ms: Optional[int] = None,
+        vad_speech_pad_ms: Optional[int] = None,
+        repetition_penalty: Optional[float] = None,
+        no_repeat_ngram_size: Optional[int] = None,
+        temperature: Optional[float] = None,
+        initial_prompt: Optional[str] = None,
+        hotwords: Optional[str] = None,
         hallucination_blacklist: Optional[Iterable[str]] = None,
     ) -> None:
-        self.model_size = model_size
-        self.fallback_model_size = fallback_model_size
-        self.language = language
+        defaults = load_default_hri_params("stt_engine")
+        self.model_size = str(defaults["whisper_model"] if model_size is None else model_size)
+        self.fallback_model_size = str(
+            defaults["stt_fallback_model"] if fallback_model_size is None else fallback_model_size
+        )
+        self.language = str(defaults["stt_language"] if language is None else language)
+        self.sample_rate = int(defaults["stt_sample_rate"] if sample_rate is None else sample_rate)
         self.on_asr_result = on_asr_result
-        self.beam_size = int(beam_size)
-        self.no_speech_threshold = float(no_speech_threshold)
-        self.log_prob_threshold = float(log_prob_threshold)
-        self.compression_ratio_threshold = float(compression_ratio_threshold)
-        self.vad_silence_ms = int(vad_silence_ms)
-        self.vad_speech_pad_ms = int(vad_speech_pad_ms)
-        self.initial_prompt = str(initial_prompt)
-        self.hotwords = str(hotwords)
+        self.beam_size = int(defaults["stt_beam_size"] if beam_size is None else beam_size)
+        self.no_speech_threshold = float(
+            defaults["stt_no_speech_threshold"]
+            if no_speech_threshold is None
+            else no_speech_threshold
+        )
+        self.log_prob_threshold = float(
+            defaults["stt_log_prob_threshold"]
+            if log_prob_threshold is None
+            else log_prob_threshold
+        )
+        self.compression_ratio_threshold = float(
+            defaults["stt_compression_ratio_threshold"]
+            if compression_ratio_threshold is None
+            else compression_ratio_threshold
+        )
+        self.vad_threshold = float(
+            defaults["stt_vad_threshold"] if vad_threshold is None else vad_threshold
+        )
+        self.vad_min_speech_ms = int(
+            defaults["stt_vad_min_speech_ms"]
+            if vad_min_speech_ms is None
+            else vad_min_speech_ms
+        )
+        self.vad_silence_ms = int(
+            defaults["stt_vad_silence_ms"] if vad_silence_ms is None else vad_silence_ms
+        )
+        self.vad_speech_pad_ms = int(
+            defaults["stt_vad_speech_pad_ms"]
+            if vad_speech_pad_ms is None
+            else vad_speech_pad_ms
+        )
+        self.repetition_penalty = float(
+            defaults["stt_repetition_penalty"]
+            if repetition_penalty is None
+            else repetition_penalty
+        )
+        self.no_repeat_ngram_size = int(
+            defaults["stt_no_repeat_ngram_size"]
+            if no_repeat_ngram_size is None
+            else no_repeat_ngram_size
+        )
+        self.temperature = float(
+            defaults["stt_temperature"] if temperature is None else temperature
+        )
+        self.initial_prompt = str(
+            defaults["stt_initial_prompt"] if initial_prompt is None else initial_prompt
+        )
+        self.hotwords = str(defaults["stt_hotwords"] if hotwords is None else hotwords)
         self.set_hallucination_blacklist(
             hallucination_blacklist
             if hallucination_blacklist is not None
-            else self.HALLUCINATION_BLACKLIST
+            else defaults["stt_hallucination_blacklist"]
         )
         self.whisper: Optional["WhisperModel"] = None
         self._lock = threading.Lock()
@@ -193,7 +223,7 @@ class SpeechToText:
         try:
             if isinstance(audio_input, np.ndarray):
                 audio_source: Union[np.ndarray, str] = audio_input.astype(np.float32)
-                dur = len(audio_source) / float(self.SAMPLE_RATE)
+                dur = len(audio_source) / float(self.sample_rate)
             else:
                 suffix = ".wav" if audio_input[:4] == b"RIFF" else ".webm"
                 with tempfile.NamedTemporaryFile(
@@ -206,21 +236,29 @@ class SpeechToText:
             transcribe_kwargs = {
                 "beam_size": self.beam_size,
                 "language": self.language,
-                "initial_prompt": self.initial_prompt,
+                "initial_prompt": self.initial_prompt or None,
                 "condition_on_previous_text": False,
+                "temperature": self.temperature,
                 "no_speech_threshold": self.no_speech_threshold,
                 "log_prob_threshold": self.log_prob_threshold,
                 "compression_ratio_threshold": self.compression_ratio_threshold,
                 "vad_filter": True,
                 "vad_parameters": {
+                    "threshold": self.vad_threshold,
+                    "min_speech_duration_ms": self.vad_min_speech_ms,
                     "min_silence_duration_ms": self.vad_silence_ms,
                     "speech_pad_ms": self.vad_speech_pad_ms,
                 },
             }
             try:
                 import inspect
-                if self.hotwords and "hotwords" in inspect.signature(self.whisper.transcribe).parameters:
+                sig_params = inspect.signature(self.whisper.transcribe).parameters
+                if self.hotwords and "hotwords" in sig_params:
                     transcribe_kwargs["hotwords"] = self.hotwords
+                if "repetition_penalty" in sig_params:
+                    transcribe_kwargs["repetition_penalty"] = self.repetition_penalty
+                if "no_repeat_ngram_size" in sig_params:
+                    transcribe_kwargs["no_repeat_ngram_size"] = self.no_repeat_ngram_size
             except Exception:
                 pass
 
@@ -230,13 +268,14 @@ class SpeechToText:
                     **transcribe_kwargs,
                 )
 
-                # Filter ketat: segmen diterima jika no_speech rendah DAN rata-rata logprob memadai
+                # Filter ketat: no_speech rendah, logprob memadai, dan bebas loop (compression_ratio)
                 valid_text = [
                     seg.text.strip()
                     for seg in segments
                     if (
                         seg.no_speech_prob < self.no_speech_threshold
                         and seg.avg_logprob >= self.log_prob_threshold
+                        and seg.compression_ratio < self.compression_ratio_threshold
                     )
                 ]
 
