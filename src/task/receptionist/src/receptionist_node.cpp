@@ -1265,20 +1265,42 @@ public:
       }
     };
 
-    // 1. Sample 15 frame (~0.75s) dari pandangan tiba di living_room
+    // 1. Scan diam terlebih dahulu (1.5 - 3.0 detik @ 20 Hz) untuk mencari Host, Guest 1, & kursi kosong
+    stopRobot();
     rclcpp::Rate scan_rate(20.0);
-    for (int i = 0; i < 15 && rclcpp::ok() && is_facing_person_.load(); ++i) {
+    for (int i = 0; i < 60 && rclcpp::ok() && is_facing_person_.load(); ++i) {
       sample_current_view();
+      if (i >= 30 && best_host.valid && (!is_guest2_session || best_g1.valid) && best_empty.valid) {
+        break;
+      }
       scan_rate.sleep();
     }
 
-    // 2. Jika target yang dibutuhkan belum terlihat di tengah, sweep ringan +-25 derajat lalu kembali
-    const bool need_sweep = !best_host.valid || (is_guest2_session && !best_g1.valid && seated_slots.size() < 2);
-    if (need_sweep && rclcpp::ok() && is_facing_person_.load()) {
+    // 2. Kunci posisi awal yang sudah terdeteksi saat scan diam
+    {
+      std::lock_guard<std::mutex> lock(living_room_lock_mutex_);
+      has_locked_host_yaw_ = best_host.valid;
+      locked_host_yaw_ = best_host.abs_yaw;
+      has_locked_guest1_yaw_ = best_g1.valid;
+      locked_guest1_yaw_ = best_g1.abs_yaw;
+      has_locked_empty_chair_yaw_ = best_empty.valid;
+      locked_empty_chair_yaw_ = best_empty.abs_yaw;
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[LIVING ROOM LOCK]\033[0m Stationary scan locked: Host=%s, Guest1=%s, EmptySeat=%s",
+      best_host.valid ? "OK" : "NO",
+      best_g1.valid ? "OK" : "NO",
+      best_empty.valid ? "OK" : "NO");
+
+    // 3. Rotasi untuk scan ulang HANYA jika masih ada target yang belum terkunci
+    const bool need_rescan =
+      !best_host.valid || (is_guest2_session && !best_g1.valid) || !best_empty.valid;
+    if (need_rescan && rclcpp::ok() && is_facing_person_.load()) {
       for (double offset : {0.42, -0.42}) {
         rotateToAbsYaw(normalize_angle(arrival_yaw + offset), is_facing_person_,
           0.08, face_person_p_gain_, face_person_min_speed_, face_person_max_speed_, 3.5, "SCAN");
-        for (int i = 0; i < 8 && rclcpp::ok() && is_facing_person_.load(); ++i) {
+        for (int i = 0; i < 10 && rclcpp::ok() && is_facing_person_.load(); ++i) {
           sample_current_view();
           scan_rate.sleep();
         }
@@ -1287,7 +1309,7 @@ public:
         0.08, face_person_p_gain_, face_person_min_speed_, face_person_max_speed_, 3.5, "SCAN");
     }
 
-    // 3. Resolusi eliminasi pada kunjungan Person 2 bila salah satu wajah sedang menoleh
+    // 4. Resolusi eliminasi pada kunjungan Person 2 bila salah satu wajah sedang menoleh
     if (is_guest2_session) {
       std::sort(seated_slots.begin(), seated_slots.end(),
         [](const SeatedSlot & a, const SeatedSlot & b) { return a.dist < b.dist; });
