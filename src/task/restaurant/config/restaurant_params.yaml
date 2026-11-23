@@ -73,12 +73,14 @@ restaurant_manager:
     adaptive_standoff_step: 0.05         # Resolusi langkah mundur saat mencari ruang bebas (meter)
     costmap_obstacle_threshold: 60       # Nilai batas cost costmap (0-100) aman dari dinding/rintangan
     costmap_topic: "/global_costmap/costmap" # Topik global costmap Nav2
+    robot_radius: 0.24                   # Radius fisik robot untuk pengecekan safety costmap (meter)
     nav_timeout_sec: 120.0               # Batas waktu navigasi Nav2 sebelum timeout (detik)
     order1_detect_timeout_sec: 8.0       # Timeout deteksi visual order 1 di meja (detik)
     max_customers: 2                     # Jumlah maksimal pelanggan yang dilayani dalam 1 sesi
+    # Hri Mode
     global_timeout_sec: 900.0            # Batas waktu total seluruh task Restaurant (detik, 15 menit)
-    dialog_reprompt_sec: 12.0            # Waktu reprompt dialog jika pelanggan tidak merespons (detik)
-    wave_reprompt_sec: 10.0              # Interval pemanggilan ajakan melambaikan tangan (detik)
+    dialog_reprompt_sec: 10.0            # Waktu reprompt dialog jika pelanggan tidak merespons (detik)
+    wave_reprompt_sec: 5.0              # Interval pemanggilan ajakan melambaikan tangan (detik)
     tts_min_timeout_sec: 4.0             # Watchdog minimal durasi ucapan TTS (detik)
     tts_sec_per_word: 0.5                # Estimasi durasi ucapan per kata (detik/kata)
     tts_timeout_margin_sec: 2.0          # Margin latensi sintesis dan output audio TTS (detik)
