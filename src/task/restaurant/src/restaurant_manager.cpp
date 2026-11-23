@@ -232,11 +232,11 @@ public:
     declare_parameter<std::string>("global_frame", "map");
     declare_parameter<std::string>("base_frame", "base_link");
     declare_parameter<std::string>("order_frame", "base_link");
-    declare_parameter<double>("customer_standoff_distance", 0.85);
+    declare_parameter<double>("customer_standoff_distance", 1.0);
     declare_parameter<double>("object_standoff_distance", 0.45);
     declare_parameter<bool>("adaptive_standoff_enabled", true);
-    declare_parameter<double>("adaptive_standoff_min", 0.85);
-    declare_parameter<double>("adaptive_standoff_max", 1.40);
+    declare_parameter<double>("adaptive_standoff_min", 1.0);
+    declare_parameter<double>("adaptive_standoff_max", 1.6);
     declare_parameter<double>("adaptive_standoff_step", 0.05);
     declare_parameter<int>("costmap_obstacle_threshold", 60);
     declare_parameter<std::string>("costmap_topic", "/global_costmap/costmap");
@@ -523,8 +523,8 @@ private:
 
   // Adaptive Standoff Settings & State
   bool adaptive_standoff_enabled_{true};
-  double adaptive_standoff_min_{0.85};
-  double adaptive_standoff_max_{1.40};
+  double adaptive_standoff_min_{1.0};
+  double adaptive_standoff_max_{1.60};
   double adaptive_standoff_step_{0.05};
   int costmap_obstacle_threshold_{60};
   std::string costmap_topic_{"/global_costmap/costmap"};
@@ -1908,6 +1908,28 @@ private:
           get_logger(),
           "\033[1;32m[CUSTOMER %d POSE SAVED]\033[0m x=%.2f, y=%.2f, yaw=%.2f",
           customer_idx_, cx, cy, cyaw);
+
+        // Capture image person upon arriving at waving customer location
+        std::string def_name = "customer_" + std::to_string(customer_idx_);
+        if (person_name_pub_) {
+          std_msgs::msg::String msg;
+          msg.data = def_name;
+          person_name_pub_->publish(msg);
+        }
+        if (vision_capture_face_client_ && vision_capture_face_client_->service_is_ready()) {
+          callTrigger(
+            vision_capture_face_client_, "/vision/camera_capture_face",
+            [this](bool ok, const std::string & msg) {
+              RCLCPP_INFO(
+                get_logger(),
+                "[VISION] /vision/camera_capture_face on arrival (ok=%s, msg='%s')",
+                ok ? "true" : "false", msg.c_str());
+            },
+            3.0);
+        }
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;32m[RESTAURANT]\033[0m Arrived at waving customer location. Capturing customer image...");
 
         speakAsync(
           "Hello, Welcome to the bar!! Can you please tell your name?",

@@ -20,7 +20,7 @@ restaurant_node:
     standoff_distance: 1.0              # Jarak henti ideal di depan pelanggan (meter)
     adaptive_standoff_enabled: true      # Aktifkan penyesuaian jarak henti adaptif jika titik goal mepet dinding/rintangan
     adaptive_standoff_min: 1.0          # Jarak henti minimal (meter) - saat area terbuka
-    adaptive_standoff_max: 1.60          # Jarak henti maksimal (meter) - saat orang mepet dinding
+    adaptive_standoff_max: 1.6          # Jarak henti maksimal (meter) - saat orang mepet dinding
     adaptive_standoff_step: 0.05         # Resolusi langkah mundur saat mencari ruang bebas (meter)
     costmap_obstacle_threshold: 60       # Nilai batas cost costmap (0-100) aman dari dinding/rintangan
     costmap_topic: "/global_costmap/costmap" # Topik global costmap Nav2
@@ -69,7 +69,7 @@ restaurant_manager:
     object_standoff_distance: 0.45       # Jarak henti di depan meja objek (meter)
     adaptive_standoff_enabled: true      # Aktifkan penyesuaian jarak henti adaptif jika titik goal mepet dinding/rintangan
     adaptive_standoff_min: 1.0          # Jarak henti minimal (meter) - saat area terbuka
-    adaptive_standoff_max: 1.60          # Jarak henti maksimal (meter) - saat orang mepet dinding
+    adaptive_standoff_max: 1.6          # Jarak henti maksimal (meter) - saat orang mepet dinding
     adaptive_standoff_step: 0.05         # Resolusi langkah mundur saat mencari ruang bebas (meter)
     costmap_obstacle_threshold: 60       # Nilai batas cost costmap (0-100) aman dari dinding/rintangan
     costmap_topic: "/global_costmap/costmap" # Topik global costmap Nav2
