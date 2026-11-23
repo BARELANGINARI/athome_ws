@@ -922,6 +922,42 @@ public:
     bool valid{false};
   };
 
+  struct GenderPrediction
+  {
+    std::string label{"unknown"};
+    float prob_female{0.0f};
+    float prob_male{0.0f};
+    float margin{0.0f}; // prob_male - prob_female (positive = male, negative = female)
+    float confidence{0.0f};
+    bool is_high_quality{false};
+  };
+
+  static float computeBodyGenderScore(const std::vector<sl::float2> & kpt)
+  {
+    if (kpt.size() <= 22) return 0.0f;
+    const auto valid = [](const sl::float2 & p) {
+      return std::isfinite(p.x) && std::isfinite(p.y) && p.x > 0.0f && p.y > 0.0f;
+    };
+    if (!valid(kpt[5]) || !valid(kpt[12]) || !valid(kpt[18]) || !valid(kpt[22])) {
+      return 0.0f;
+    }
+
+    const float shoulder_w = std::hypot(kpt[12].x - kpt[5].x, kpt[12].y - kpt[5].y);
+    const float hip_w = std::hypot(kpt[22].x - kpt[18].x, kpt[22].y - kpt[18].y);
+    if (shoulder_w < 15.0f || hip_w < 10.0f) return 0.0f;
+
+    const float ratio = shoulder_w / hip_w;
+    // Rasio antropometrik lebar bahu terhadap lebar pinggul:
+    // Pria dewasa rata-rata: 1.45 - 1.75
+    // Wanita dewasa rata-rata: 1.15 - 1.35
+    if (ratio >= 1.48f) {
+      return std::min(0.15f, (ratio - 1.48f) * 0.35f + 0.05f); // Positif = tend to male
+    } else if (ratio <= 1.25f) {
+      return -std::min(0.15f, (1.25f - ratio) * 0.35f + 0.05f); // Negatif = tend to female
+    }
+    return 0.0f;
+  }
+
   bool loadFaceDetector(const std::string & path, float conf_thresh = 0.55f, std::string * err = nullptr)
   {
     try {
@@ -1278,24 +1314,54 @@ public:
     return "dark hair";
   }
 
-  std::string gender(
+  GenderPrediction predictGenderDetailed(
     const std::vector<sl::float2> & kpt, const cv::Mat & bgr, const cv::Rect & bbox)
   {
+    GenderPrediction result;
     if (!gender_.ready() || bgr.empty() || bbox.width <= 0 || bbox.height <= 0) {
-      return "unknown";
+      return result;
     }
 
     const int size = gender_input_size_;
     cv::Mat blob;
     bool yunet_aligned = false;
+    bool high_quality = false;
 
     if (gender_is_genderage_) {
-      // 1. Prioritaskan YuNet face detector untuk ekstraksi 5 landmark sub-pixel dan perataan wajah
+      // 1. Prioritaskan YuNet face detector dengan Quality & Frontality Gate
       if (faceDetectorReady()) {
         DetectedFace df = detectFace(bgr, bbox);
-        if (df.valid && df.score >= 0.45f) {
+        if (df.valid && df.score >= 0.50f) {
           const float eye_dist = std::hypot(df.left_eye.x - df.right_eye.x, df.left_eye.y - df.right_eye.y);
-          if (eye_dist >= 7.0f) {
+
+          // Quality Gate: Ukuran wajah minimal (eye_dist >= 12 px, bbox >= 35x35 px)
+          const bool size_ok = (eye_dist >= 12.0f && df.bbox.width >= 35 && df.bbox.height >= 35);
+
+          // Frontality Gate: Cek apakah wajah menghadap depan (yaw ratio <= 1.80)
+          const float d_re = std::hypot(df.nose.x - df.right_eye.x, df.nose.y - df.right_eye.y);
+          const float d_le = std::hypot(df.nose.x - df.left_eye.x, df.nose.y - df.left_eye.y);
+          const float yaw_ratio = std::max(d_re, d_le) / std::max(1.0f, std::min(d_re, d_le));
+          const bool front_ok = (yaw_ratio <= 1.80f);
+
+          // Roll Gate: Sudut kemiringan kepala <= 32 derajat
+          const float roll_deg = std::abs(
+            std::atan2(df.left_eye.y - df.right_eye.y, df.left_eye.x - df.right_eye.x) * 180.0f / zed_vision::PI_F);
+          const bool roll_ok = (roll_deg <= 32.0f);
+
+          // Sharpness Gate: Uji variansi Laplacian untuk memfilter blur gerakan / kamera guncang
+          bool sharp_ok = false;
+          const cv::Rect f_box = df.bbox & cv::Rect(0, 0, bgr.cols, bgr.rows);
+          if (f_box.width >= 24 && f_box.height >= 24) {
+            cv::Mat gray_face, lap;
+            cv::cvtColor(bgr(f_box), gray_face, cv::COLOR_BGR2GRAY);
+            cv::Laplacian(gray_face, lap, CV_32F);
+            cv::Scalar mean, stddev;
+            cv::meanStdDev(lap, mean, stddev);
+            const double sharpness = stddev[0] * stddev[0];
+            sharp_ok = (sharpness >= 30.0);
+          }
+
+          if (size_ok && front_ok && roll_ok && sharp_ok) {
             const float s = static_cast<float>(size) / 112.0f;
             std::vector<cv::Point2f> from{
               df.right_eye, df.left_eye, df.nose, df.right_mouth, df.left_mouth};
@@ -1316,20 +1382,21 @@ public:
               blob = cv::dnn::blobFromImage(
                 rgb, 1.0f, cv::Size(size, size), cv::Scalar(0, 0, 0), false, false);
               yunet_aligned = true;
+              high_quality = true;
             }
           }
         }
       }
 
-      // 2. Fallback ke landmark ZED skeleton jika YuNet tidak mendeteksi wajah
+      // 2. Fallback ke landmark ZED skeleton jika YuNet tidak lolos gate
       if (!yunet_aligned) {
         cv::Point2f eye_left, eye_right, nose;
         if (!faceLandmarks(kpt, eye_left, eye_right, nose)) {
-          return "unknown";
+          return result;
         }
         const float eye_dist = std::hypot(eye_right.x - eye_left.x, eye_right.y - eye_left.y);
-        if (eye_dist < 7.0f) {
-          return "unknown";
+        if (eye_dist < 9.0f) {
+          return result;
         }
 
         const float s = static_cast<float>(size) / 112.0f;
@@ -1347,7 +1414,7 @@ public:
             cv::INTER_LINEAR, cv::BORDER_REPLICATE);
         } else {
           const cv::Rect roi = faceRegion(bbox, kpt, bgr.cols, bgr.rows) & cv::Rect(0, 0, bgr.cols, bgr.rows);
-          if (roi.width < 12 || roi.height < 12) return "unknown";
+          if (roi.width < 14 || roi.height < 14) return result;
           cv::resize(bgr(roi), aligned, cv::Size(size, size));
         }
 
@@ -1369,17 +1436,17 @@ public:
       }
 
       roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
-      if (roi.width < 12 || roi.height < 12) return "unknown";
-
+      if (roi.width < 14 || roi.height < 14) return result;
       blob = letterboxBlob(bgr, roi, size, gender_nhwc_, 1.0f / 255.0f);
     }
-    if (blob.empty()) return "unknown";
+
+    if (blob.empty()) return result;
 
     const std::array<int64_t, 4> shape = gender_nhwc_
       ? std::array<int64_t, 4>{1, size, size, 3}
       : std::array<int64_t, 4>{1, 3, size, size};
     std::vector<Ort::Value> outputs = gender_.run(blob, shape);
-    if (outputs.empty()) return "unknown";
+    if (outputs.empty()) return result;
 
     const auto out_shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
     const int out_len = (out_shape.size() >= 2)
@@ -1388,16 +1455,42 @@ public:
     std::vector<float> probs;
     probabilities(outputs.front().GetTensorData<float>(), classes, probs);
     if (probs.size() >= 2) {
-      float female_thresh = 0.58f;
-      float male_thresh = 0.54f;
+      float f_p = probs[0];
+      float m_p = probs[1];
+
+      // Fusi dengan postur tubuh antropometrik ZED skeleton (rasio bahu/pinggul)
+      const float body_score = computeBodyGenderScore(kpt);
+      f_p = std::clamp(f_p - body_score * 0.5f, 0.01f, 0.99f);
+      m_p = std::clamp(m_p + body_score * 0.5f, 0.01f, 0.99f);
+      const float norm = f_p + m_p;
+      f_p /= norm;
+      m_p /= norm;
+
+      result.prob_female = f_p;
+      result.prob_male = m_p;
+      result.margin = m_p - f_p;
+      result.confidence = std::max(f_p, m_p);
+      result.is_high_quality = high_quality;
+
+      float female_thresh = 0.57f;
+      float male_thresh = 0.53f;
       if (!yunet_aligned && gender_is_genderage_) {
-        female_thresh = 0.70f;
+        female_thresh = 0.68f;
         male_thresh = 0.56f;
       }
-      if (probs[0] >= female_thresh && probs[0] >= probs[1]) return "female";
-      if (probs[1] >= male_thresh && probs[1] > probs[0]) return "male";
+      if (f_p >= female_thresh && f_p > m_p) {
+        result.label = "female";
+      } else if (m_p >= male_thresh && m_p > f_p) {
+        result.label = "male";
+      }
     }
-    return "unknown";
+    return result;
+  }
+
+  std::string gender(
+    const std::vector<sl::float2> & kpt, const cv::Mat & bgr, const cv::Rect & bbox)
+  {
+    return predictGenderDetailed(kpt, bgr, bbox).label;
   }
 
   static cv::Mat twoEyeSimilarityTransform(
@@ -1976,6 +2069,47 @@ private:
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
 
+  struct GenderMemory
+  {
+    std::deque<std::string> history;
+    double accumulated_margin{0.0};
+    int high_quality_samples{0};
+    rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
+  };
+
+  std::string updateGenderVote(
+    int id, const AttributeAnalyzer::GenderPrediction & pred, const rclcpp::Time & now_time)
+  {
+    auto & mem = gender_memory_[id];
+    mem.last_seen = now_time;
+
+    if (pred.label != "unknown") {
+      const double weight = pred.is_high_quality ? 1.6 : 0.7;
+      mem.accumulated_margin = std::clamp(
+        mem.accumulated_margin * 0.88 + static_cast<double>(pred.margin) * weight,
+        -5.0, 5.0
+      );
+      if (pred.is_high_quality) mem.high_quality_samples++;
+      mem.history.push_back(pred.label);
+      if (mem.history.size() > 9) mem.history.pop_front();
+    }
+
+    if (mem.accumulated_margin >= 0.65) return "male";
+    if (mem.accumulated_margin <= -0.65) return "female";
+
+    if (!mem.history.empty()) {
+      int m_cnt = 0, f_cnt = 0;
+      for (const auto & v : mem.history) {
+        if (v == "male") m_cnt++;
+        else if (v == "female") f_cnt++;
+      }
+      if (m_cnt >= f_cnt + 2) return "male";
+      if (f_cnt >= m_cnt + 2) return "female";
+    }
+
+    return "unknown";
+  }
+
   static std::string updateAttributeVote(
     std::unordered_map<int, ShirtColorMemory> & memory_map,
     int id, const std::string & raw_val, const rclcpp::Time & now_time)
@@ -2109,7 +2243,7 @@ private:
   std::unordered_map<int, BackMemory> back_memory_;
   std::unordered_map<int, PersonNameMemory> name_memory_;
   std::unordered_map<int, ShirtColorMemory> shirt_color_memory_;
-  std::unordered_map<int, ShirtColorMemory> gender_memory_;
+  std::unordered_map<int, GenderMemory> gender_memory_;
   std::string task_mode_{"all"};
   bool is_help_me_carry_{false};
   bool is_receptionist_{false};
@@ -3164,24 +3298,18 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         }
         auto git = gender_memory_.find(e.id);
         auto currentGenderVote = [&]() -> std::string {
-          if (git == gender_memory_.end() || git->second.history.empty()) return "unknown";
-          std::unordered_map<std::string, int> g_counts;
-          for (const auto & g : git->second.history) g_counts[g]++;
-          std::string best_g = git->second.history.back();
-          int best_gc = 0;
-          for (const auto & g : git->second.history) {
-            if (g_counts[g] >= best_gc) {
-              best_gc = g_counts[g];
-              best_g = g;
-            }
-          }
-          return best_g;
+          if (git == gender_memory_.end()) return "unknown";
+          if (git->second.accumulated_margin >= 0.65) return "male";
+          if (git->second.accumulated_margin <= -0.65) return "female";
+          if (!git->second.history.empty()) return git->second.history.back();
+          return "unknown";
         };
 
         if (run_attr_infer && !entry_facing_back[i]) {
-          const std::string raw_gender = analyzer_.gender(kpt2d, bgr, e.bbox);
-          if (!raw_gender.empty() && raw_gender != "unknown") {
-            entry_genders[i] = updateAttributeVote(gender_memory_, e.id, raw_gender, current_time);
+          const auto pred = analyzer_.predictGenderDetailed(kpt2d, bgr, e.bbox);
+          const std::string voted = updateGenderVote(e.id, pred, current_time);
+          if (voted != "unknown") {
+            entry_genders[i] = voted;
           } else {
             entry_genders[i] = currentGenderVote();
           }
