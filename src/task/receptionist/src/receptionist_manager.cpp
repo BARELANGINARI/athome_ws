@@ -1429,7 +1429,8 @@ private:
     if (slot == "person_name") {
       static const std::vector<std::string> kKnownNames = {
         "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal"
-        "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma",
+        "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma", "maria", "muhammad",
+        "budi", "abdul", "jefrey", "jefri",
       };
       for (const auto & name : kKnownNames) {
         if (containsWholePhrase(norm, name)) {
@@ -1469,7 +1470,9 @@ private:
       static const std::vector<std::string> kKnownInterests = {
         "artificial intelligence", "robotics", "reading", "music", "sports",
         "cooking", "gaming", "traveling", "photography", "movies", "swimming",
-        "football", "basketball", "coding", "programming", "dancing", "painting"
+        "football", "basketball", "coding", "programming", "dancing", "painting",
+        "program", "dancing", "dance", "drawing", "playing football", "playing badminton",
+        "playing tennis", "playing golf", "playing"
       };
       for (const auto & interest : kKnownInterests) {
         if (containsWholePhrase(norm, interest)) {
@@ -2110,7 +2113,7 @@ private:
         }
         const std::string confirm_text =
           "Hello " + g_name + ", you have an interest in " +
-          g_interest + ". Is that correct? Please say yes if it is, or no if it is not.";
+          g_interest + ". Is that correct? Please say yes or no";
 
         speakAsync(confirm_text, [this]() {
           transitionTo(ReceptionistState::WAIT_CONFIRM_GUEST_INFO, "Waiting for confirmation (yes/no)");

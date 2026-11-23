@@ -1122,6 +1122,120 @@ public:
     };
     std::vector<SeatedSlot> seated_slots;
 
+    // Akumulasi vote per klaster sudut (abs_yaw +-0.30 rad) untuk menghitung modus label
+    struct YawClusterVote
+    {
+      double cos_sum{0.0};
+      double sin_sum{0.0};
+      double dist_sum{0.0};
+      int samples{0};
+      int host_votes{0};
+      int g1_votes{0};
+      int unnamed_guest_votes{0};
+      int seated_votes{0};
+
+      double meanYaw() const
+      {
+        return std::atan2(sin_sum, cos_sum);
+      }
+      double meanDist() const
+      {
+        return (samples > 0) ? (dist_sum / static_cast<double>(samples)) : 999.0;
+      }
+    };
+    std::vector<YawClusterVote> yaw_clusters;
+
+    enum class ClusterRoleVote { HOST_NAME, G1_NAME, UNNAMED_GUEST, SEATED };
+    auto record_cluster_vote = [&](double abs_yaw, double dist, ClusterRoleVote role) {
+      YawClusterVote * matched = nullptr;
+      for (auto & c : yaw_clusters) {
+        if (std::abs(normalize_angle(c.meanYaw() - abs_yaw)) < 0.30) {
+          matched = &c;
+          break;
+        }
+      }
+      if (!matched) {
+        yaw_clusters.push_back(YawClusterVote{});
+        matched = &yaw_clusters.back();
+      }
+      matched->cos_sum += std::cos(abs_yaw);
+      matched->sin_sum += std::sin(abs_yaw);
+      matched->dist_sum += dist;
+      matched->samples++;
+      switch (role) {
+        case ClusterRoleVote::HOST_NAME:     matched->host_votes++; break;
+        case ClusterRoleVote::G1_NAME:       matched->g1_votes++; break;
+        case ClusterRoleVote::UNNAMED_GUEST: matched->unnamed_guest_votes++; break;
+        case ClusterRoleVote::SEATED:        matched->seated_votes++; break;
+      }
+    };
+
+    auto resolve_clusters_to_targets = [&]() {
+      best_host = LockedObs{};
+      best_g1 = LockedObs{};
+
+      int host_cluster_idx = -1;
+      int best_host_votes = 0;
+      for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
+        if (yaw_clusters[idx].host_votes > best_host_votes) {
+          best_host_votes = yaw_clusters[idx].host_votes;
+          host_cluster_idx = static_cast<int>(idx);
+        }
+      }
+      if (host_cluster_idx >= 0) {
+        const auto & c = yaw_clusters[static_cast<size_t>(host_cluster_idx)];
+        best_host = {true, c.meanYaw(), c.meanDist(), 100};
+      }
+
+      int g1_cluster_idx = -1;
+      if (is_guest2_session) {
+        int best_g1_votes = 0;
+        for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
+          if (static_cast<int>(idx) == host_cluster_idx) continue;
+          if (yaw_clusters[idx].g1_votes > best_g1_votes) {
+            best_g1_votes = yaw_clusters[idx].g1_votes;
+            g1_cluster_idx = static_cast<int>(idx);
+          }
+        }
+        if (g1_cluster_idx >= 0) {
+          const auto & c = yaw_clusters[static_cast<size_t>(g1_cluster_idx)];
+          best_g1 = {true, c.meanYaw(), c.meanDist(), 100};
+        }
+      }
+
+      if (!best_host.valid) {
+        int unnamed_idx = -1;
+        int best_unnamed_votes = 0;
+        for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
+          if (static_cast<int>(idx) == g1_cluster_idx) continue;
+          if (yaw_clusters[idx].unnamed_guest_votes > best_unnamed_votes) {
+            best_unnamed_votes = yaw_clusters[idx].unnamed_guest_votes;
+            unnamed_idx = static_cast<int>(idx);
+          }
+        }
+        if (unnamed_idx >= 0) {
+          const auto & c = yaw_clusters[static_cast<size_t>(unnamed_idx)];
+          best_host = {true, c.meanYaw(), c.meanDist(), 90};
+          host_cluster_idx = unnamed_idx;
+        }
+      }
+
+      if (!best_host.valid && !is_guest2_session) {
+        int seated_idx = -1;
+        int best_seated_votes = 0;
+        for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
+          if (yaw_clusters[idx].seated_votes > best_seated_votes) {
+            best_seated_votes = yaw_clusters[idx].seated_votes;
+            seated_idx = static_cast<int>(idx);
+          }
+        }
+        if (seated_idx >= 0) {
+          const auto & c = yaw_clusters[static_cast<size_t>(seated_idx)];
+          best_host = {true, c.meanYaw(), c.meanDist(), 70};
+        }
+      }
+    };
+
     auto record_seated_slot = [&](double abs_yaw, double dist) {
       for (auto & s : seated_slots) {
         if (std::abs(normalize_angle(s.abs_yaw - abs_yaw)) < 0.25) {
@@ -1196,24 +1310,25 @@ public:
           const bool matches_g1 = (!g1_lower.empty() && lbl_lower.find(g1_lower) != std::string::npos) ||
                                   (lbl_lower.find("guest_1") != std::string::npos || lbl_lower.find("guest 1") != std::string::npos);
           const bool matches_g2 = (!g2_lower.empty() && lbl_lower.find(g2_lower) != std::string::npos);
+          const bool is_unnamed_guest =
+            (lbl_lower == "guest" || lbl_lower == "person" || lbl_lower == "unknown") &&
+            !matches_g1 && !matches_g2 && dist < host_seated_max_dist_;
 
           if (matches_host && !matches_g1 && !matches_g2) {
-            if (!best_host.valid || 100 >= best_host.priority) {
-              best_host = {true, abs_yaw, dist, 100};
-            }
+            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::HOST_NAME);
           } else if (is_guest2_session && matches_g1 && !matches_host && !matches_g2) {
-            if (!best_g1.valid || 100 >= best_g1.priority) {
-              best_g1 = {true, abs_yaw, dist, 100};
-            }
+            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::G1_NAME);
+          } else if (is_unnamed_guest) {
+            // Guest tanpa nama di living room dijadikan Host sementara
+            record_seated_slot(abs_yaw, dist);
+            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::UNNAMED_GUEST);
           }
 
           if (is_seated && dist < host_seated_max_dist_ && !matches_g2 &&
               (is_guest2_session || !matches_g1))
           {
             record_seated_slot(abs_yaw, dist);
-            if (!is_guest2_session && (!best_host.valid || 80 > best_host.priority)) {
-              best_host = {true, abs_yaw, dist, 80};
-            }
+            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::SEATED);
           }
         }
       }
@@ -1246,9 +1361,7 @@ public:
           if (dist < host_seated_max_dist_) {
             const double abs_yaw = normalize_angle(cur_yaw + rel_ang);
             record_seated_slot(abs_yaw, dist);
-            if (!is_guest2_session && (!best_host.valid || 60 > best_host.priority)) {
-              best_host = {true, abs_yaw, dist, 60};
-            }
+            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::SEATED);
           }
         }
       }
@@ -1270,11 +1383,13 @@ public:
     rclcpp::Rate scan_rate(20.0);
     for (int i = 0; i < 60 && rclcpp::ok() && is_facing_person_.load(); ++i) {
       sample_current_view();
+      resolve_clusters_to_targets();
       if (i >= 30 && best_host.valid && (!is_guest2_session || best_g1.valid) && best_empty.valid) {
         break;
       }
       scan_rate.sleep();
     }
+    resolve_clusters_to_targets();
 
     // 2. Kunci posisi awal yang sudah terdeteksi saat scan diam
     {
@@ -1307,6 +1422,7 @@ public:
       }
       rotateToAbsYaw(arrival_yaw, is_facing_person_,
         0.08, face_person_p_gain_, face_person_min_speed_, face_person_max_speed_, 3.5, "SCAN");
+      resolve_clusters_to_targets();
     }
 
     // 4. Resolusi eliminasi pada kunjungan Person 2 bila salah satu wajah sedang menoleh

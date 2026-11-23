@@ -1737,6 +1737,7 @@ private:
     std::string confirmed_name;
     std::string candidate_name;
     int candidate_streak{0};
+    std::deque<std::string> history;
     rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
   };
 
@@ -3353,13 +3354,32 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     }
   }
 
-  // TAHAP 4: Temporal Name Smoothing & Anti-Flicker Filter per Body ID
+  // TAHAP 4: Sliding-Window Majority Voting & Hysteresis Anti-Flicker per Body ID
   for (size_t i = 0; i < entries.size(); ++i) {
     const int body_id = entries[i].id;
     auto & mem = name_memory_[body_id];
     const std::string & raw_name = raw_recognized_names[i];
 
     if (!raw_name.empty()) {
+      mem.history.push_back(raw_name);
+      if (mem.history.size() > 12) {
+        mem.history.pop_front();
+      }
+
+      // Hitung modus pada jendela 12 frame terakhir
+      std::unordered_map<std::string, int> counts;
+      for (const auto & h : mem.history) {
+        counts[h]++;
+      }
+      std::string mode_name = raw_name;
+      int mode_count = 0;
+      for (const auto & kv : counts) {
+        if (kv.second > mode_count) {
+          mode_count = kv.second;
+          mode_name = kv.first;
+        }
+      }
+
       if (mem.confirmed_name.empty()) {
         if (raw_name == mem.candidate_name) {
           mem.candidate_streak++;
@@ -3367,17 +3387,18 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           mem.candidate_name = raw_name;
           mem.candidate_streak = 1;
         }
-        // Kecocokan wajah kuat langsung dikonfirmasi; selainnya butuh 4 frame stabil
-        if (raw_strong_face[i] || mem.candidate_streak >= 4) {
-          mem.confirmed_name = raw_name;
+        // Konfirmasi awal: kecocokan wajah kuat langsung, atau modus >= 4 frame
+        if (raw_strong_face[i] || mode_count >= 4 || mem.candidate_streak >= 4) {
+          mem.confirmed_name = (mode_count >= 4) ? mode_name : raw_name;
           mem.candidate_streak = 0;
           mem.last_seen = current_time;
         }
-      } else if (raw_name == mem.confirmed_name) {
+      } else if (raw_name == mem.confirmed_name || mode_name == mem.confirmed_name) {
         mem.candidate_streak = 0;
         mem.last_seen = current_time;
       } else {
-        // Nama berbeda terdeteksi -> Butuh 10 frame (atau 5 frame jika wajah sangat cocok & unggul margin)
+        // Hysteresis: ganti label terkunci HANYA jika nama baru mendominasi >= 70% jendela
+        // (minimal 8 frame di riwayat) atau >= 5 frame dengan kecocokan wajah sangat kuat.
         if (raw_name == mem.candidate_name) {
           mem.candidate_streak++;
         } else {
@@ -3385,9 +3406,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           mem.candidate_streak = 1;
         }
 
-        const int required_streak = raw_strong_face[i] ? 5 : 10;
-        if (mem.candidate_streak >= required_streak) {
-          mem.confirmed_name = raw_name;
+        const int win_size = static_cast<int>(mem.history.size());
+        const bool mode_dominant = (win_size >= 8 && mode_count * 10 >= win_size * 7);
+        const bool strong_override = (raw_strong_face[i] && mode_count >= 5);
+        if (mode_dominant || strong_override) {
+          mem.confirmed_name = mode_name;
           mem.candidate_streak = 0;
           mem.last_seen = current_time;
         }
@@ -3398,6 +3421,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         // Pertahankan mem.confirmed_name
       } else {
         mem.confirmed_name.clear();
+        mem.history.clear();
         mem.candidate_streak = 0;
       }
     }
