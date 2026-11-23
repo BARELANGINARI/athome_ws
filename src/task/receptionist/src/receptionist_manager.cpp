@@ -2241,7 +2241,7 @@ private:
         }
         const std::string confirm_text =
           "Hello " + g_name + ", you have an interest in " +
-          g_interest + ". Is that correct? Please say yes or no";
+          g_interest + ". Is that correct? Please say yes robot or no robot";
 
         speakAsync(confirm_text, [this]() {
           transitionTo(ReceptionistState::WAIT_CONFIRM_GUEST_INFO, "Waiting for confirmation (yes/no)");
@@ -2297,7 +2297,7 @@ private:
               "\033[1;33m[DIALOG CONFIRM]\033[0m Heard: \"%s\" | Decision: \033[1;33mUNRECOGNIZED\033[0m (reprompting yes/no)",
               raw.c_str());
             state_enter_time_ = now();
-            speakAsync("Please say yes if it is, or no if it is not.");
+            speakAsync("Please say yes robot if it is, or no robot if it is not.");
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           RCLCPP_INFO(
@@ -2305,7 +2305,7 @@ private:
             "\033[1;33m[DIALOG CONFIRM]\033[0m Confirmation timeout (%.1fs without speech), reprompting.",
             dialog_reprompt_sec_);
           state_enter_time_ = now();
-          speakAsync("Please say yes if it is, or no if it is not.");
+          speakAsync("Please say yes robot, or no robot.");
         }
         break;
 
