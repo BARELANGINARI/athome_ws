@@ -30,7 +30,6 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
-#include "icecream.hpp"
 #include "person_kalman_filter.hpp"
 
 namespace
@@ -1313,8 +1312,7 @@ private:
 
     resp->success = true;
     resp->message = "Person following active (Start distance: >0.7m, Stop distance: <0.5m).";
-    RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
-    IC(resp->success, resp->message);
+    RCLCPP_INFO(get_logger(), "%s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
   }
 
   void handle_stop_follow(std::shared_ptr<Trigger::Response> resp)
@@ -1354,8 +1352,7 @@ private:
 
     resp->success = true;
     resp->message = "Person following stopped.";
-    RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
-    IC(resp->success, resp->message);
+    RCLCPP_INFO(get_logger(), "%s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
   }
 
   void check_safety_watchdog()
@@ -1577,8 +1574,7 @@ private:
     resp->success = true;
     resp->message = std::string("Robot aligned and approached ") +
                     (is_right ? "right" : "left") + " bag, then stopped.";
-    RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
-    IC(resp->success, resp->message);
+    RCLCPP_INFO(get_logger(), "%s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
   }
 
   void handle_step_back(
@@ -1798,7 +1794,6 @@ private:
     }
 
     RCLCPP_INFO(get_logger(), "[Step Back] %s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
-    IC(resp->success, resp->message);
   }
 
   double get_robot_heading()
@@ -2457,8 +2452,7 @@ private:
                   safe_yaw * 180.0 / M_PI, clearance);
     resp->success = ok;
     resp->message = buf;
-    RCLCPP_INFO(get_logger(), "[Rotate Safe] %s", resp->message.c_str());
-    IC(resp->success, resp->message);
+    RCLCPP_INFO(get_logger(), "[Rotate Safe] %s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
   }
 
   // ===========================================================================
@@ -3951,9 +3945,11 @@ private:
     } else {
       resp->success = false;
       resp->message = "Navigasi homing timeout.";
+      RCLCPP_WARN(get_logger(), "[Homing] %s", resp->message.c_str());
       cancel_homing_nav2_goal();
     }
-    IC(resp->success, resp->message);
+    RCLCPP_INFO(get_logger(), "[Homing] Selesai: success=%s, message=%s",
+      resp->success ? "true" : "false", resp->message.c_str());
   }
 
     std::string person_topic_;

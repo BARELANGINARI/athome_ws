@@ -274,6 +274,8 @@ public:
       "/receptionist/scan_living_room", rclcpp::ServicesQoS(), callback_group_);
     clear_locks_client_ = create_client<Trigger>(
       "/receptionist/clear_living_room_locks", rclcpp::ServicesQoS(), callback_group_);
+    reset_living_room_yaw_client_ = create_client<Trigger>(
+      "/receptionist/reset_living_room_yaw", rclcpp::ServicesQoS(), callback_group_);
 
     arm_ambil_tas_client_ = create_client<Trigger>(
       "/arm/ambil_tas", rclcpp::ServicesQoS(), callback_group_);
@@ -352,6 +354,7 @@ private:
   PersonProfile current_guest_;
   int guest_idx_{1};
   ReceptionistState after_return_living_room_state_{ReceptionistState::SEARCH_CHAIR};
+  bool return_yaw_only_{false};
   int camera_width_{0};
 
   // Data Persepsi Vision
@@ -428,6 +431,7 @@ private:
   TriggerClient::SharedPtr rotate_right_client_;
   TriggerClient::SharedPtr scan_living_room_client_;
   TriggerClient::SharedPtr clear_locks_client_;
+  TriggerClient::SharedPtr reset_living_room_yaw_client_;
 
   TriggerClient::SharedPtr arm_ambil_tas_client_;
   TriggerClient::SharedPtr arm_ambil_tas_simple_client_;
@@ -892,6 +896,36 @@ private:
         if (on_finished) on_finished();
       },
       5.0);
+  }
+
+  // Memutar robot di tempat kembali ke yaw living_room via /receptionist/reset_living_room_yaw
+  void resetLivingRoomYaw(std::function<void(bool, const std::string &)> on_finished)
+  {
+    const std::string srv_name = "/receptionist/reset_living_room_yaw";
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[LIVING ROOM]\033[0m Calling %s to reset robot yaw in-place...",
+      srv_name.c_str());
+
+    callTrigger(
+      reset_living_room_yaw_client_, srv_name,
+      [this, srv_name, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[LIVING ROOM]\033[0m Reset yaw (%s) succeeded: %s",
+            srv_name.c_str(), msg.c_str());
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[LIVING ROOM]\033[0m Reset yaw (%s) warning/failure: %s",
+            srv_name.c_str(), msg.c_str());
+        }
+        if (on_finished) {
+          on_finished(success, msg);
+        }
+      },
+      10.0);
   }
 
   // Merotasi robot ke kiri via /receptionist/left
@@ -2444,14 +2478,16 @@ private:
           speakAsync(intro_msg, [this, g_idx]() {
             if (g_idx == 1) {
               after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
+              return_yaw_only_ = false;
               transitionTo(
                 ReceptionistState::RETURN_TO_LIVING_ROOM,
                 "Guest introduced to seated person; returning to living_room before searching chair");
             } else {
               after_return_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_G2;
+              return_yaw_only_ = true;
               transitionTo(
                 ReceptionistState::RETURN_TO_LIVING_ROOM,
-                "Guest introduced to seated person; returning to living_room before guest introductions");
+                "Guest introduced to seated person; resetting yaw to living_room before guest introductions");
             }
           });
         });
@@ -2588,17 +2624,34 @@ private:
       // next person or searching for an empty chair (after_return_living_room_state_).
       // ------------------------------------------------------------------------
       case ReceptionistState::RETURN_TO_LIVING_ROOM: {
-        navigateTo("living_room", [this](bool success) {
-          if (!success) {
-            RCLCPP_WARN(
-              get_logger(),
-              "\033[1;33m[LIVING ROOM]\033[0m go_to_living_room setelah perkenalan gagal/timeout, tetap lanjut ke %s.",
-              stateToString(after_return_living_room_state_).c_str());
-          }
-          transitionTo(
-            after_return_living_room_state_,
-            "Returned to living_room after introduction");
-        });
+        const bool yaw_only = return_yaw_only_;
+        return_yaw_only_ = false;
+
+        if (yaw_only) {
+          resetLivingRoomYaw([this](bool success, const std::string & /*msg*/) {
+            if (!success) {
+              RCLCPP_WARN(
+                get_logger(),
+                "\033[1;33m[LIVING ROOM]\033[0m reset_living_room_yaw setelah perkenalan gagal/timeout, tetap lanjut ke %s.",
+                stateToString(after_return_living_room_state_).c_str());
+            }
+            transitionTo(
+              after_return_living_room_state_,
+              "Reset yaw to living_room after introduction");
+          });
+        } else {
+          navigateTo("living_room", [this](bool success) {
+            if (!success) {
+              RCLCPP_WARN(
+                get_logger(),
+                "\033[1;33m[LIVING ROOM]\033[0m go_to_living_room setelah perkenalan gagal/timeout, tetap lanjut ke %s.",
+                stateToString(after_return_living_room_state_).c_str());
+            }
+            transitionTo(
+              after_return_living_room_state_,
+              "Returned to living_room after introduction");
+          });
+        }
         break;
       }
 

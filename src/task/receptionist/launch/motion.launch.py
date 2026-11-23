@@ -57,12 +57,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'initial_x',
-            default_value='6.0',
+            default_value='3.35',
             description='Initial robot X pose on map.',
         ),
         DeclareLaunchArgument(
             'initial_y',
-            default_value='-1.0',
+            default_value='0.0',
             description='Initial robot Y pose on map.',
         ),
         DeclareLaunchArgument(

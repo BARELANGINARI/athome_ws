@@ -120,7 +120,7 @@ public:
     declare_parameter<double>("turn_90_min_speed", 0.14);
     declare_parameter<double>("turn_90_max_speed", 0.35);
     declare_parameter<double>("turn_90_tolerance_rad", 0.04);
-    declare_parameter<double>("turn_90_timeout_sec", 8.0);
+    declare_parameter<double>("turn_90_timeout_sec", 15.0);
     declare_parameter<double>("turn_90_p_gain", 1.5);
 
     // Chair search & motion parameters
@@ -307,7 +307,7 @@ public:
       "/receptionist/host",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
-        handleFacePerson("guest", req, res); //ubah lagi ini kembali ke host
+        handleFacePerson("host", req, res);
       },
       rclcpp::ServicesQoS(),
       srv_cb_group_);
@@ -400,6 +400,15 @@ public:
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
         handleClearLivingRoomLocks(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_reset_living_room_yaw_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/reset_living_room_yaw",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleResetLivingRoomYaw(req, res);
       },
       rclcpp::ServicesQoS(),
       srv_cb_group_);
@@ -937,7 +946,7 @@ public:
         is_match = true;
         // Tamu di pintu: prioritaskan orang terdekat dan paling lurus di depan kamera
         priority = 100.0 - (dist * 10.0) - (std::abs(angle) * 5.0);
-      } else if (target_role == "host") {
+      } else if (target_role == "host" || target_role == "guest") {
         if (!host_name_lower.empty() && label_lower.find(host_name_lower) != std::string::npos) {
           is_match = true;
           priority = 100.0;
@@ -951,6 +960,13 @@ public:
           // Logic OR: orang yang sedang duduk (seated) jika jarak < 3.0m
           is_match = true;
           priority = 90.0;
+        } else if ((label_lower == "guest" || label_lower == "person") &&
+                   (guest_1_name_lower.empty() || label_lower.find(guest_1_name_lower) == std::string::npos) &&
+                   (guest_2_name_lower.empty() || label_lower.find(guest_2_name_lower) == std::string::npos) &&
+                   dist < host_seated_max_dist_) {
+          // Fallback jika Host belum dikenali oleh face recognition (athome_vision melabeli "guest"/"person")
+          is_match = true;
+          priority = (label_lower == "guest") ? 45.0 : 40.0;
         }
       } else if (target_role == "guest_1") {
         if (!guest_1_name_lower.empty() && label_lower.find(guest_1_name_lower) != std::string::npos) {
@@ -1073,6 +1089,58 @@ public:
     res->success = true;
     res->message = "Cleared temporary living room position locks";
     RCLCPP_INFO(get_logger(), "\033[1;36m[LIVING ROOM]\033[0m %s", res->message.c_str());
+  }
+
+  void handleResetLivingRoomYaw(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_navigating_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy with navigation task";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_searching_chair_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy searching for a chair";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_facing_person_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is already busy rotating/facing";
+      publishStatus(res->message);
+      return;
+    }
+
+    const double target_yaw = has_living_room_arrival_yaw_
+      ? living_room_arrival_yaw_
+      : normalize_angle(getWaypoint("living_room").yaw * M_PI / 180.0);
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[LIVING ROOM]\033[0m Resetting yaw in-place to %.2f rad (%.1f deg, source=%s)...",
+      target_yaw, target_yaw * 180.0 / M_PI,
+      has_living_room_arrival_yaw_ ? "arrival_yaw" : "waypoint_yaw");
+
+    const bool aligned = rotateToAbsYaw(
+      target_yaw, is_facing_person_,
+      face_person_tolerance_rad_, face_person_p_gain_,
+      face_person_min_speed_, face_person_max_speed_, 6.0, "RESET_LIVING_ROOM_YAW");
+
+    is_facing_person_ = false;
+    res->success = aligned;
+    res->message = aligned
+      ? "Robot rotated back to living_room yaw"
+      : "Reset living_room yaw timed out";
+    publishStatus(res->message);
   }
 
   void handleScanLivingRoom(
@@ -2437,13 +2505,14 @@ private:
   double turn_90_min_speed_{0.14};
   double turn_90_max_speed_{0.35};
   double turn_90_tolerance_rad_{0.04};
-  double turn_90_timeout_sec_{8.0};
+  double turn_90_timeout_sec_{15.0};
   double turn_90_p_gain_{1.5};
 
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_left_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_right_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_scan_living_room_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_clear_locks_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_reset_living_room_yaw_;
 };
 
 }  // namespace receptionist
