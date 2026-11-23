@@ -2307,18 +2307,20 @@ private:
         speakAsync("We've already arrived in Beverage Area, please stand on my left side.", [this](){
           // Freeze table drink detections BEFORE rotating left toward the guest
           const size_t drink_count = snapshotBeveragesOnTable();
-          std::string prompt;
+          std::string table_status;
 
           if (!drinks_detected_on_arrival_ || drink_count == 0) {
-            prompt = "There are no drinks on this table; please tell me, what is your favorite drink?";
+            table_status = "There are no drinks on this table.";
           } else {
-            prompt = "There are " + std::to_string(drink_count) + " drinks on the table. What is your favorite drinks?";
+            table_status = "There are " + std::to_string(drink_count) + " drinks on the table.";
           }
 
-          // Ask favorite drink, then rotate left to face the standing guest before listening
-          speakAsync(prompt, [this]() {
+          // Announce table drinks, rotate left to face the standing guest, then ask favorite drink
+          speakAsync(table_status, [this]() {
             rotateLeft([this](bool /*ok*/, const std::string & /*msg*/) {
-              transitionTo(ReceptionistState::WAIT_DRINK, "Asked for favorite drink and rotated left");
+              speakAsync("please tell me, what is your favorite drink?", [this]() {
+                transitionTo(ReceptionistState::WAIT_DRINK, "Rotated left and asked for favorite drink");
+              });
             });
           });
         });
@@ -2370,7 +2372,7 @@ private:
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
-          speakAsync("What is your favorite drink?");
+          speakAsync("I am sorry, What is your favorite drink?");
         }
         break;
 
