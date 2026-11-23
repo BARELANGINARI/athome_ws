@@ -2115,7 +2115,7 @@ private:
       case ReceptionistState::ALIGN_GUEST:
         adjustGuestDistance([this](bool /*success*/, const std::string & /*msg*/) {
           speakAsync(
-            "Hello!. I am Barelang Inari from Batam State Polytechnic; I am your robot receptionist.",
+            "Hello!. I am Barelang Inari from Politeknik Negeri Batam; I am your robot receptionist.",
             [this]() {
               transitionTo(ReceptionistState::ASK_NAME, "Guest greeted at entrance after alignment & distance adjustment");
             });
