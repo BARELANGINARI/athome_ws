@@ -19,11 +19,14 @@
     # -------------------------------------------------------------------------
     # 2. Voice Activity Detection / VAD (Penyaring awal suara vs hening di CPU)
     # -------------------------------------------------------------------------
-    threshold_dbfs: -30.0                # Batas volume minimum agar suara dianggap ucapan (semakin kecil mis. -40 = lebih peka suara pelan)
+    threshold_dbfs: -30.0                # Batas volume minimum (atau floor) agar suara dianggap ucapan
     threshold_flatness: 0.40             # Batas kerataan spektrum (0-1); lebih kecil = lebih ketat menolak noise datar (kipas/AC)
+    adaptive_vad_enabled: true           # true = threshold dBFS otomatis mengikuti noise floor ruangan + adaptive_snr_margin_db
+    adaptive_snr_margin_db: 10.0         # Margin SNR (dB) di atas noise floor ruangan saat adaptive_vad_enabled=true
     pre_roll_frames: 10                  # Jumlah frame (x30 ms = 300 ms) yang ikut direkam SEBELUM suara terdeteksi agar awal kata tidak terpotong
     hangover_frames: 16                  # Lama jeda hening (x30 ms = 480 ms) sebelum sistem yakin kalimat selesai diucapkan
-    min_speech_frames: 9                # Durasi minimal ucapan (x30 ms = 270 ms) agar dianggap valid (abaikan suara klik/batuk singkat)
+    min_speech_frames: 9                 # Durasi minimal ucapan (x30 ms = 270 ms) agar dianggap valid (abaikan suara klik/batuk singkat)
+    max_speech_frames: 250               # Durasi maksimal 1 segmen ucapan (x30 ms = 7.5 detik) agar VAD tidak macet saat bising konstan
 
     # -------------------------------------------------------------------------
     # 3. Speech-to-Text / Faster-Whisper (Pengubah audio ucapan menjadi teks)
@@ -43,6 +46,9 @@
     stt_repetition_penalty: 1.15         # Penalti pengulangan token pada decoder Whisper (>1.0 untuk mencegah loop)
     stt_no_repeat_ngram_size: 3          # Larang pengulangan n-gram identik sepanjang N token pada decoder Whisper
     stt_temperature: 0.0                 # Temperatur decoding Whisper (0.0 = deterministik/greedy, hindari halusinasi acak)
+    stt_denoiser_backend: "auto"         # Frontend denoiser CPU: "auto" (deepfilternet2 -> rnnoise -> spectral), "deepfilternet2", "rnnoise", "spectral", "none"
+    stt_highpass_hz: 120.0               # Frekuensi cutoff High-Pass Filter (Hz) untuk buang rumble motor & proximity effect directional mic
+    stt_dedup_max_ngram: 6               # Panjang maksimal n-gram untuk post-processing deduplikasi frasa berulang berturut-turut
     # Dikosongkan untuk mencegah prompt leakage/pengulangan saat SNR rendah (andalkan stt_hotwords)
     stt_initial_prompt: ""
     # Daftar kata prioritas (dipisah spasi) yang bobot pengenalannya diperkuat oleh Whisper

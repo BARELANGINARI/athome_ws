@@ -400,6 +400,9 @@ class LocalMicListener:
         pre_roll_frames: int = 10,
         hangover_frames: int = 25,
         min_speech_frames: int = 15,
+        max_speech_frames: int = 250,
+        adaptive_vad_enabled: bool = True,
+        adaptive_snr_margin_db: float = 10.0,
         sample_rate: int = SAMPLE_RATE,
         block_duration: float = BLOCK_DURATION,
     ) -> None:
@@ -413,6 +416,10 @@ class LocalMicListener:
         self.pre_roll_frames = pre_roll_frames
         self.hangover_frames = hangover_frames
         self.min_speech_frames = min_speech_frames
+        self.max_speech_frames = max(30, int(max_speech_frames))
+        self.adaptive_vad_enabled = bool(adaptive_vad_enabled)
+        self.adaptive_snr_margin_db = float(adaptive_snr_margin_db)
+        self._noise_floor_dbfs: float = -50.0
         self.sample_rate = sample_rate
         self.block_duration = block_duration
         self.block_size = int(sample_rate * block_duration)
@@ -438,6 +445,9 @@ class LocalMicListener:
         pre_roll_frames: Optional[int] = None,
         hangover_frames: Optional[int] = None,
         min_speech_frames: Optional[int] = None,
+        max_speech_frames: Optional[int] = None,
+        adaptive_vad_enabled: Optional[bool] = None,
+        adaptive_snr_margin_db: Optional[float] = None,
     ) -> None:
         """Perbarui parameter VAD secara aman tanpa mengulang stream audio."""
         if threshold_dbfs is not None:
@@ -450,6 +460,12 @@ class LocalMicListener:
             self.hangover_frames = max(1, int(hangover_frames))
         if min_speech_frames is not None:
             self.min_speech_frames = max(1, int(min_speech_frames))
+        if max_speech_frames is not None:
+            self.max_speech_frames = max(30, int(max_speech_frames))
+        if adaptive_vad_enabled is not None:
+            self.adaptive_vad_enabled = bool(adaptive_vad_enabled)
+        if adaptive_snr_margin_db is not None:
+            self.adaptive_snr_margin_db = float(adaptive_snr_margin_db)
 
     def _compute_features(
         self, signal: np.ndarray
@@ -828,10 +844,27 @@ class LocalMicListener:
             self._zero_signal_frames = 0
             self._zero_signal_warned = False
 
-        # Logika Keputusan VAD (Kombinasi Energy Speech-Band & Spectral Flatness)
-        frame_is_voice = (dbfs_speech > self.threshold_dbfs) and (
+        # Logika Keputusan VAD (Adaptive Noise Floor + Energy Speech-Band & Spectral Flatness)
+        effective_threshold_dbfs = self.threshold_dbfs
+        if self.adaptive_vad_enabled:
+            effective_threshold_dbfs = max(
+                self.threshold_dbfs,
+                min(-12.0, self._noise_floor_dbfs + self.adaptive_snr_margin_db),
+            )
+
+        frame_is_voice = (dbfs_speech > effective_threshold_dbfs) and (
             flatness < self.threshold_flatness
         )
+
+        # Update adaptive noise floor perlahan saat non-speech (atau jika lebih sunyi)
+        if self.adaptive_vad_enabled and dbfs_speech > -95.0:
+            if not self._is_speaking and not frame_is_voice:
+                alpha = 0.05 if dbfs_speech > self._noise_floor_dbfs else 0.15
+                self._noise_floor_dbfs = (
+                    (1.0 - alpha) * self._noise_floor_dbfs + alpha * dbfs_speech
+                )
+            elif dbfs_speech < self._noise_floor_dbfs:
+                self._noise_floor_dbfs = 0.90 * self._noise_floor_dbfs + 0.10 * dbfs_speech
 
         if frame_is_voice:
             if not self._is_speaking:
@@ -840,6 +873,16 @@ class LocalMicListener:
                 self._speech_buffer.extend(list(self._pre_roll_buffer))
             self._speech_buffer.append(sig)
             self._silence_counter = 0
+            # Batas durasi maksimum agar VAD tidak macet saat bising berkepanjangan
+            if len(self._speech_buffer) >= self.max_speech_frames:
+                full_audio = np.concatenate(self._speech_buffer).astype(np.float32)
+                if self.on_audio_captured:
+                    asyncio.run_coroutine_threadsafe(
+                        self.on_audio_captured(full_audio), self.loop
+                    )
+                self._is_speaking = False
+                self._speech_buffer = []
+                self._silence_counter = 0
         else:
             if self._is_speaking:
                 self._speech_buffer.append(sig)

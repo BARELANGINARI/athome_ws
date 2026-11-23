@@ -35,9 +35,12 @@ class SttEngineNode(Node):
         "enable_live_meter",
         "threshold_dbfs",
         "threshold_flatness",
+        "adaptive_vad_enabled",
+        "adaptive_snr_margin_db",
         "pre_roll_frames",
         "hangover_frames",
         "min_speech_frames",
+        "max_speech_frames",
         "whisper_model",
         "stt_fallback_model",
         "stt_language",
@@ -53,6 +56,9 @@ class SttEngineNode(Node):
         "stt_repetition_penalty",
         "stt_no_repeat_ngram_size",
         "stt_temperature",
+        "stt_denoiser_backend",
+        "stt_highpass_hz",
+        "stt_dedup_max_ngram",
         "stt_initial_prompt",
         "stt_hotwords",
         "stt_hallucination_blacklist",
@@ -118,6 +124,9 @@ class SttEngineNode(Node):
             repetition_penalty=float(params["stt_repetition_penalty"]),
             no_repeat_ngram_size=int(params["stt_no_repeat_ngram_size"]),
             temperature=float(params["stt_temperature"]),
+            denoiser_backend=str(params["stt_denoiser_backend"]),
+            highpass_hz=float(params["stt_highpass_hz"]),
+            dedup_max_ngram=int(params["stt_dedup_max_ngram"]),
             initial_prompt=str(params["stt_initial_prompt"]),
             hotwords=str(params["stt_hotwords"]),
             hallucination_blacklist=params["stt_hallucination_blacklist"],
@@ -145,6 +154,9 @@ class SttEngineNode(Node):
             pre_roll_frames=int(params["pre_roll_frames"]),
             hangover_frames=int(params["hangover_frames"]),
             min_speech_frames=int(params["min_speech_frames"]),
+            max_speech_frames=int(params["max_speech_frames"]),
+            adaptive_vad_enabled=bool(params["adaptive_vad_enabled"]),
+            adaptive_snr_margin_db=float(params["adaptive_snr_margin_db"]),
         )
         self._visualizer = VadVisualizer(self._listener)
         self._stt.on_asr_result = self._visualizer.update_asr_status
@@ -197,8 +209,17 @@ class SttEngineNode(Node):
             "min_speech_frames": lambda v: self._listener.update_vad_params(
                 min_speech_frames=int(v)
             ),
+            "max_speech_frames": lambda v: self._listener.update_vad_params(
+                max_speech_frames=int(v)
+            ),
+            "adaptive_vad_enabled": lambda v: self._listener.update_vad_params(
+                adaptive_vad_enabled=bool(v)
+            ),
+            "adaptive_snr_margin_db": lambda v: self._listener.update_vad_params(
+                adaptive_snr_margin_db=float(v)
+            ),
             "stt_language": lambda v: setattr(self._stt, "language", str(v)),
-            "stt_sample_rate": lambda v: setattr(self._stt, "sample_rate", int(v)),
+            "stt_sample_rate": lambda v: self._stt.update_enhancer(sample_rate=int(v)),
             "stt_beam_size": lambda v: setattr(self._stt, "beam_size", int(v)),
             "stt_no_speech_threshold": lambda v: setattr(self._stt, "no_speech_threshold", float(v)),
             "stt_log_prob_threshold": lambda v: setattr(self._stt, "log_prob_threshold", float(v)),
@@ -210,6 +231,9 @@ class SttEngineNode(Node):
             "stt_repetition_penalty": lambda v: setattr(self._stt, "repetition_penalty", float(v)),
             "stt_no_repeat_ngram_size": lambda v: setattr(self._stt, "no_repeat_ngram_size", int(v)),
             "stt_temperature": lambda v: setattr(self._stt, "temperature", float(v)),
+            "stt_denoiser_backend": lambda v: self._stt.update_enhancer(backend=str(v)),
+            "stt_highpass_hz": lambda v: self._stt.update_enhancer(highpass_hz=float(v)),
+            "stt_dedup_max_ngram": lambda v: setattr(self._stt, "dedup_max_ngram", max(1, int(v))),
             "stt_initial_prompt": lambda v: setattr(self._stt, "initial_prompt", str(v)),
             "stt_hotwords": lambda v: setattr(self._stt, "hotwords", str(v)),
             "stt_hallucination_blacklist": lambda v: self._stt.set_hallucination_blacklist(v),
