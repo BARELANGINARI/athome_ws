@@ -1909,6 +1909,28 @@ private:
           "\033[1;32m[CUSTOMER %d POSE SAVED]\033[0m x=%.2f, y=%.2f, yaw=%.2f",
           customer_idx_, cx, cy, cyaw);
 
+        // Capture image person upon arriving at waving customer location
+        std::string def_name = "customer_" + std::to_string(customer_idx_);
+        if (person_name_pub_) {
+          std_msgs::msg::String msg;
+          msg.data = def_name;
+          person_name_pub_->publish(msg);
+        }
+        if (vision_capture_face_client_ && vision_capture_face_client_->service_is_ready()) {
+          callTrigger(
+            vision_capture_face_client_, "/vision/camera_capture_face",
+            [this](bool ok, const std::string & msg) {
+              RCLCPP_INFO(
+                get_logger(),
+                "[VISION] /vision/camera_capture_face on arrival (ok=%s, msg='%s')",
+                ok ? "true" : "false", msg.c_str());
+            },
+            3.0);
+        }
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;32m[RESTAURANT]\033[0m Arrived at waving customer location. Capturing customer image...");
+
         speakAsync(
           "Hello, Welcome to the bar!! Can you please tell your name?",
           [this]() {

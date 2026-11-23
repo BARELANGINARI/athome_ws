@@ -17,6 +17,8 @@ vision:
     yolo_size: 640
     yolo_min_area: 250.0
     bag_labels: ["bag", "paper_bag", "backpack", "handbag", "suitcase"]
+    face_detect_model: "models/face_detection_yunet.onnx"
+    face_detect_conf: 0.55
     gender_model: "models/genderage.onnx"
     color_model: "models/color_model.onnx"
     color_labels: "models/color_names.txt"
@@ -32,6 +34,7 @@ vision:
     milk_model: "models/milk.onnx"
     drink_min_area: 180.0
     drink_conf: 0.48
+    water_conf: 0.25
     drink_max_dist: 2.5
     enable_drinks: true
     chair_model: ""
