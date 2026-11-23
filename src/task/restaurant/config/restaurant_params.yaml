@@ -17,9 +17,9 @@ restaurant_node:
     # -------------------------------------------------------------------------
     order_topic: "/vision/order"           # Topik input posisi orang / pelanggan dari kamera
     order_frame: "base_link"             # Frame acuan koordinat: "base_link" (relatif kamera) atau "map" (global)
-    standoff_distance: 1.20              # Jarak henti ideal di depan pelanggan (meter)
+    standoff_distance: 1.0              # Jarak henti ideal di depan pelanggan (meter)
     adaptive_standoff_enabled: true      # Aktifkan penyesuaian jarak henti adaptif jika titik goal mepet dinding/rintangan
-    adaptive_standoff_min: 1.20          # Jarak henti minimal (meter) - saat area terbuka
+    adaptive_standoff_min: 1.0          # Jarak henti minimal (meter) - saat area terbuka
     adaptive_standoff_max: 1.60          # Jarak henti maksimal (meter) - saat orang mepet dinding
     adaptive_standoff_step: 0.05         # Resolusi langkah mundur saat mencari ruang bebas (meter)
     costmap_obstacle_threshold: 60       # Nilai batas cost costmap (0-100) aman dari dinding/rintangan
@@ -49,7 +49,7 @@ restaurant_node:
     align_max_speed: 0.35                # Kecepatan rotasi maksimum (rad/s)
     camera_image_width: 672.0            # Lebar resolusi kamera dalam piksel (ZED VGA: 672 px)
     align_invert_direction: false        # Inversi arah putar (true jika kamera terpasang terbalik)
-    barman_max_distance: 1.5             # Jarak maksimal deteksi barman (meter)
+    barman_max_distance: 0.75             # Jarak maksimal deteksi barman (meter)
     barman_search_angular_speed: 0.25    # Kecepatan putar saat mencari barman (rad/s)
     barman_align_timeout_sec: 15.0       # Batas waktu mencari & meluruskan ke barman (detik)
 
@@ -65,10 +65,10 @@ restaurant_manager:
     global_frame: "map"                  # Frame peta navigasi
     base_frame: "base_link"              # Frame acuan robot
     order_frame: "base_link"             # Frame acuan koordinat pesanan pelanggan
-    customer_standoff_distance: 1.20     # Jarak henti aman di depan pelanggan (meter)
+    customer_standoff_distance: 1.0     # Jarak henti aman di depan pelanggan (meter)
     object_standoff_distance: 0.45       # Jarak henti di depan meja objek (meter)
     adaptive_standoff_enabled: true      # Aktifkan penyesuaian jarak henti adaptif jika titik goal mepet dinding/rintangan
-    adaptive_standoff_min: 1.20          # Jarak henti minimal (meter) - saat area terbuka
+    adaptive_standoff_min: 1.0          # Jarak henti minimal (meter) - saat area terbuka
     adaptive_standoff_max: 1.60          # Jarak henti maksimal (meter) - saat orang mepet dinding
     adaptive_standoff_step: 0.05         # Resolusi langkah mundur saat mencari ruang bebas (meter)
     costmap_obstacle_threshold: 60       # Nilai batas cost costmap (0-100) aman dari dinding/rintangan

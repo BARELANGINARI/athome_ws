@@ -12,7 +12,7 @@ amcl:
     base_frame_id: "base_link"           # Robot base frame
     global_frame_id: "map"               # Global map frame
     odom_frame_id: "odom"                # Odometry frame
-    scan_topic: "/scan_filtered"         # 2D LiDAR scan input topic (Speckle filtered)
+    scan_topic: "scan"                   # 2D LiDAR scan input topic
     robot_model_type: "nav2_amcl::OmniMotionModel" # 3-wheel omni motion model
     laser_model_type: "likelihood_field" # Laser matching model
     laser_likelihood_max_dist: 3.0       # Max laser matching distance (m)
@@ -163,7 +163,7 @@ local_costmap:
         enabled: True                    # Enable obstacle layer
         observation_sources: scan        # Sensor observation source
         scan:
-          topic: /scan_filtered          # 2D LiDAR topic (Speckle filtered)
+          topic: /scan                   # 2D LiDAR topic
           max_obstacle_height: 2.0       # Max obstacle height (m)
           clearing: True                 # Clear free space along laser rays
           marking: True                  # Mark obstacle cells on laser hit
@@ -205,7 +205,7 @@ global_costmap:
         enabled: True
         observation_sources: scan
         scan:
-          topic: /scan_filtered          # 2D LiDAR topic (Speckle filtered)
+          topic: /scan                   # 2D LiDAR topic
           max_obstacle_height: 2.0
           clearing: True                 # Clear free space along laser rays
           marking: True                  # Mark obstacle cells on laser hit
@@ -339,7 +339,7 @@ collision_monitor:
     observation_sources: ["scan"]        # Observation source
     scan:
       type: "scan"                       # 2D scan type
-      topic: "scan_filtered"             # LiDAR scan topic (Speckle filtered)
+      topic: "scan"                      # LiDAR scan topic
       min_height: 0.05                   # Min height (m)
       max_height: 2.0                    # Max height (m)
       enabled: False                     # Disabled scan monitoring
@@ -421,7 +421,7 @@ slam_toolbox:
     odom_frame: odom                     # Odometry frame
     map_frame: map                       # Global map frame
     base_frame: base_link                # Robot base frame
-    scan_topic: /scan_filtered           # 2D LiDAR topic (Speckle filtered: partikel/kaki 1-2 titik tidak masuk map)
+    scan_topic: /scan                    # 2D LiDAR topic
     mode: mapping                        # Real-time online mapping mode
 
     transform_publish_period: 0.02       # Map->odom TF publish period (s, 50 Hz)
