@@ -307,7 +307,7 @@ public:
       "/receptionist/host",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
-        handleFacePerson("host", req, res);
+        handleFacePerson("guest", req, res);
       },
       rclcpp::ServicesQoS(),
       srv_cb_group_);
