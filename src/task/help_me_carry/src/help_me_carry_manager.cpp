@@ -8,7 +8,7 @@
 //            dan autonomous homing.
 //
 // Alur State FSM:
-//   INIT -> WAIT_WAKEWORD -> CHECK_OPERATOR_PRESENCE -> WAIT_START_COMMAND
+//   INIT -> CHECK_OPERATOR_PRESENCE -> WAIT_START_COMMAND
 //     -> FOLLOW_OPERATOR (atau RECOVER_OPERATOR jika operator hilang)
 //     -> ARRIVED -> WAIT_BAG_POINTING -> GRASP_BAG -> RETURN_TO_START
 //     -> PUT_DOWN_BAG -> COMPLETED
@@ -42,7 +42,6 @@ using namespace std::chrono_literals;
 // ==============================================================================
 enum class TaskState {
   INIT,                     // Inisialisasi node & menunggu TTS engine siap
-  WAIT_WAKEWORD,            // Menunggu perintah sapaan/wakeword ("hello robot")
   CHECK_OPERATOR_PRESENCE,  // Memastikan operator berdiri tepat di depan kamera
   WAIT_START_COMMAND,       // Menunggu perintah suara "follow me"
   FOLLOW_OPERATOR,          // Mengikuti operator berjalan ke lokasi tujuan
@@ -61,7 +60,6 @@ static std::string stateToString(TaskState state)
 {
   switch (state) {
     case TaskState::INIT:                    return "INIT";
-    case TaskState::WAIT_WAKEWORD:           return "WAIT_WAKEWORD";
     case TaskState::CHECK_OPERATOR_PRESENCE: return "CHECK_OPERATOR_PRESENCE";
     case TaskState::WAIT_START_COMMAND:      return "WAIT_START_COMMAND";
     case TaskState::FOLLOW_OPERATOR:         return "FOLLOW_OPERATOR";
@@ -206,7 +204,6 @@ private:
   std::atomic<TaskState> state_{TaskState::INIT};
   std::atomic<bool> busy_{false};
   std::atomic<bool> speaking_{false};
-  std::atomic<bool> wakeword_requested_{false};
   std::atomic<bool> follow_requested_{false};
   std::atomic<bool> arrived_requested_{false};
   std::atomic<bool> emergency_stop_requested_{false};
@@ -289,7 +286,6 @@ private:
   {
     switch (state) {
       case TaskState::INIT:                    return "IDLE";
-      case TaskState::WAIT_WAKEWORD:           return "LISTENING";
       case TaskState::CHECK_OPERATOR_PRESENCE: return "SEARCHING";
       case TaskState::WAIT_START_COMMAND:      return "LISTENING";
       case TaskState::FOLLOW_OPERATOR:         return "FOLLOWING";
@@ -545,15 +541,6 @@ private:
   }
 
   // Daftar kamus frasa suara (Corpus) lengkap dengan variasi fonetik
-  static const std::vector<std::string> & getWakewordCorpus()
-  {
-    static const std::vector<std::string> corpus = {
-      "hello robot", "halo robot", "hey robot", "hello barelang", "hi robot",
-      "robot", "hallo", "hai", "hello", "helo", "helo robot", "hai robot", "hey barelang", "halo barelang"
-    };
-    return corpus;
-  }
-
   static const std::vector<std::string> & getFollowCorpus()
   {
     static const std::vector<std::string> corpus = {
@@ -616,18 +603,7 @@ private:
       "\033[1;33m[STT]\033[0m \"%s\"",
       message->data.c_str());
 
-    // 1. Sapaan di state WAIT_WAKEWORD
-    if (current_state == TaskState::WAIT_WAKEWORD &&
-        matchIntent(command, "WAKEWORD", getWakewordCorpus()))
-    {
-      if (!operator_seen_.load()) {
-        RCLCPP_WARN(get_logger(), "Wakeword terdeteksi, tapi operator belum terlihat di kamera.");
-      }
-      wakeword_requested_ = true;
-      return;
-    }
-
-    // 2. Perintah Follow di state WAIT_START_COMMAND
+    // 1. Perintah Follow di state WAIT_START_COMMAND
     if (current_state == TaskState::WAIT_START_COMMAND &&
         matchIntent(command, "FOLLOW_ME", getFollowCorpus()))
     {
@@ -635,7 +611,7 @@ private:
       return;
     }
 
-    // 3. Perintah Arrived & Emergency Stop di state FOLLOW_OPERATOR
+    // 2. Perintah Arrived & Emergency Stop di state FOLLOW_OPERATOR
     if (current_state == TaskState::FOLLOW_OPERATOR) {
       if (matchIntent(command, "ARRIVED", getArrivedCorpus())) {
         // Abaikan perintah arrived jika masih dalam masa jeda awal follow
@@ -826,24 +802,11 @@ private:
         if (this->count_publishers("/hri/tts_done") == 0 || tts_pub_->get_subscription_count() == 0) {
           return;
         }
-        transitionTo(TaskState::CHECK_OPERATOR_PRESENCE, "TTS ready, skipping wakeword and checking operator");
+        transitionTo(TaskState::CHECK_OPERATOR_PRESENCE, "TTS ready, checking operator");
         break;
 
       // ------------------------------------------------------------------------
-      // State 1: WAIT_WAKEWORD - Menunggu sapaan awal
-      // ------------------------------------------------------------------------
-      case TaskState::WAIT_WAKEWORD:
-        if (wakeword_requested_.exchange(false)) {
-          speakAsync(
-            "Hello, I am Barelang Inari from Batam State Polytechnic! I want to help you to carry the luggage!",
-            [this]() {
-              transitionTo(TaskState::CHECK_OPERATOR_PRESENCE, "Greeting completed, checking operator");
-            });
-        }
-        break;
-
-      // ------------------------------------------------------------------------
-      // State 2: CHECK_OPERATOR_PRESENCE - Memastikan operator terlihat di depan
+      // State 1: CHECK_OPERATOR_PRESENCE - Memastikan operator terlihat di depan
       // ------------------------------------------------------------------------
       case TaskState::CHECK_OPERATOR_PRESENCE:
         if (isOperatorInFront()) {
@@ -863,7 +826,7 @@ private:
         break;
 
       // ------------------------------------------------------------------------
-      // State 3: WAIT_START_COMMAND - Menunggu instruksi "follow me"
+      // State 2: WAIT_START_COMMAND - Menunggu instruksi "follow me"
       // ------------------------------------------------------------------------
       case TaskState::WAIT_START_COMMAND:
         if (follow_requested_.exchange(false)) {
@@ -889,7 +852,7 @@ private:
         break;
 
       // ------------------------------------------------------------------------
-      // State 4: FOLLOW_OPERATOR - Mengikuti operator sambil mengingatkan perintah tiba
+      // State 3: FOLLOW_OPERATOR - Mengikuti operator sambil mengingatkan perintah tiba
       // (Grace period: abaikan perintah tiba di awal agar tidak salah transisi)
       // ------------------------------------------------------------------------
       case TaskState::FOLLOW_OPERATOR:
@@ -926,7 +889,7 @@ private:
         break;
 
       // ------------------------------------------------------------------------
-      // State 5: ARRIVED - Langsung panggil /task/step_back setelah tiba
+      // State 4: ARRIVED - Langsung panggil /task/step_back setelah tiba
       // ------------------------------------------------------------------------
       case TaskState::ARRIVED: {
         RCLCPP_INFO(
