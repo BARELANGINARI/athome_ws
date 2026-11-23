@@ -369,6 +369,7 @@ private:
   int nearest_person_bbox_x_{0};
   int nearest_person_bbox_w_{0};
   int nearest_person_bbox_y_{0};
+  int nearest_person_bbox_h_{0};
 
   // Data STT / Dialog
   std::mutex stt_mutex_;
@@ -1427,8 +1428,8 @@ private:
 
     if (slot == "person_name") {
       static const std::vector<std::string> kKnownNames = {
-        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan",
-        "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma"
+        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal"
+        "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma",
       };
       for (const auto & name : kKnownNames) {
         if (containsWholePhrase(norm, name)) {
