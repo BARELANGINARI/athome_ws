@@ -100,6 +100,7 @@ public:
     // Publisher & Subscriber HRI / Vision
     // --------------------------------------------------------------------------
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
+    face_expression_pub_ = create_publisher<std_msgs::msg::String>("/robot/expression", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -180,6 +181,7 @@ public:
 
     task_start_time_ = now();
     state_enter_time_ = now();
+    publishExpression(expressionForState(TaskState::INIT));
 
     RCLCPP_INFO(get_logger(),
       "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Status: Orchestrator started (Mic: LISTENING)");
@@ -241,6 +243,7 @@ private:
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::TimerBase::SharedPtr fsm_timer_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tts_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr face_expression_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr emergency_sub_;
@@ -268,6 +271,38 @@ private:
   bool isBagInFront() const
   {
     return bag_seen_.load() && (now() - last_bag_seen_time_).seconds() < 2.5;
+  }
+
+  // ----------------------------------------------------------------------------
+  // Helper: Ekspresi Wajah Robot (/robot/expression)
+  // ----------------------------------------------------------------------------
+  void publishExpression(const std::string & expr)
+  {
+    if (face_expression_pub_) {
+      std_msgs::msg::String msg;
+      msg.data = expr;
+      face_expression_pub_->publish(msg);
+    }
+  }
+
+  static std::string expressionForState(TaskState state)
+  {
+    switch (state) {
+      case TaskState::INIT:                    return "IDLE";
+      case TaskState::WAIT_WAKEWORD:           return "LISTENING";
+      case TaskState::CHECK_OPERATOR_PRESENCE: return "SEARCHING";
+      case TaskState::WAIT_START_COMMAND:      return "LISTENING";
+      case TaskState::FOLLOW_OPERATOR:         return "FOLLOWING";
+      case TaskState::RECOVER_OPERATOR:        return "LOST";
+      case TaskState::ARRIVED:                 return "HAPPY";
+      case TaskState::WAIT_BAG_POINTING:       return "CURIOUS";
+      case TaskState::GRASP_BAG:               return "WORKING";
+      case TaskState::RETURN_TO_START:         return "WORKING";
+      case TaskState::PUT_DOWN_BAG:            return "WORKING";
+      case TaskState::COMPLETED:               return "SUCCESS";
+      case TaskState::ABORTED:                 return "LOST";
+      default:                                 return "IDLE";
+    }
   }
 
   // ----------------------------------------------------------------------------
@@ -305,6 +340,7 @@ private:
     }
 
     state_ = next_state;
+    publishExpression(expressionForState(next_state));
   }
 
   // ----------------------------------------------------------------------------
@@ -344,6 +380,7 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
+    publishExpression("SPEAKING");
     RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  TTS: \"%s\"", text.c_str());
   }
 
@@ -368,6 +405,8 @@ private:
       get_logger(),
       "[TTS] Done | State: %s",
       stateToString(state_.load()).c_str());
+
+    publishExpression(expressionForState(state_.load()));
 
     if (callback) {
       callback();
@@ -730,7 +769,7 @@ private:
       current_state != TaskState::COMPLETED && current_state != TaskState::ABORTED)
     {
       RCLCPP_ERROR(get_logger(), "Global task timeout reached.");
-      state_ = TaskState::ABORTED;
+      transitionTo(TaskState::ABORTED, "Global task timeout reached");
       stopFollowing([](bool) {});
       return;
     }
@@ -977,6 +1016,7 @@ private:
               "I already know which bag you are pointing to. You are pointing to the bag on your " + side + " side.",
               [this]() {
                 busy_ = true;
+                publishExpression("WORKING");
                 callTrigger(
                   align_bag_client_, "/task/align_bag",
                   [this](bool success, const std::string & message) {
@@ -987,6 +1027,7 @@ private:
                       bag_prompt_sent_ = false;
                       gesture_confirmed_ = false;
                       detected_gesture_ = "NONE";
+                      publishExpression(expressionForState(TaskState::WAIT_BAG_POINTING));
                     }
                     busy_ = false;  // Lepas kunci FSM setelah state baru siap
                   });
