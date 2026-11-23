@@ -19,6 +19,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
@@ -144,7 +145,7 @@ public:
     declare_parameter<double>("dialog_reprompt_sec", 12.0);
     declare_parameter<double>("wait_guest_prompt_sec", 8.0);
     declare_parameter<double>("vision_initial_settle_sec", 1.2);
-    declare_parameter<double>("min_sit_wait_sec", 4.0);
+    declare_parameter<double>("min_sit_wait_sec", 10.0);
     declare_parameter<double>("person_freshness_sec", 2.0);
     declare_parameter<double>("tts_min_timeout_sec", 4.0);
     declare_parameter<double>("tts_sec_per_word", 0.5);
@@ -326,9 +327,10 @@ private:
   std::vector<DetectedObject> table_drinks_snapshot_;
   bool drinks_detected_on_arrival_{false};
   bool beverage_snapshot_locked_{false};
-  std::vector<std::string> latest_attributes_{
-    "male", "casual attire", "dark hair"
-  };
+  std::vector<std::string> latest_attributes_;
+  std::unordered_map<std::string, int> attr_gender_counts_;
+  std::unordered_map<std::string, int> attr_shirt_counts_;
+  std::unordered_map<std::string, int> attr_hair_counts_;
   std::string empty_seat_position_{"center"};
   bool has_explicit_empty_seat_{false};
   int nearest_person_bbox_x_{0};
@@ -491,6 +493,9 @@ private:
       beverage_snapshot_locked_ = false;
       latest_drinks_.clear();
       latest_attributes_.clear();
+      attr_gender_counts_.clear();
+      attr_shirt_counts_.clear();
+      attr_hair_counts_.clear();
       has_explicit_empty_seat_ = false;
       nearest_person_bbox_w_ = 0;
     }
@@ -1056,39 +1061,100 @@ private:
     return "center";
   }
 
-  // Mengekstrak atribut visual dari ZED (/zed/person_attributes) secara thread-safe
+  // Mengekstrak atribut visual dari ZED (/vision/person_attributes) memakai modus frekuensi terbanyak
   void updateCurrentGuestVisualAttributes(int person_id)
   {
     std::vector<std::string> raw_attrs;
+    std::unordered_map<std::string, int> gender_counts;
+    std::unordered_map<std::string, int> shirt_counts;
+    std::unordered_map<std::string, int> hair_counts;
     {
       std::lock_guard<std::mutex> v_lock(vision_mutex_);
       raw_attrs = latest_attributes_;
+      gender_counts = attr_gender_counts_;
+      shirt_counts = attr_shirt_counts_;
+      hair_counts = attr_hair_counts_;
     }
+
+    auto pickMode = [](
+      const std::unordered_map<std::string, int> & counts,
+      const std::string & skip_if_other_exists = "") -> std::string
+    {
+      std::string best_val;
+      int best_cnt = 0;
+      for (const auto & kv : counts) {
+        if (!skip_if_other_exists.empty() && kv.first == skip_if_other_exists) {
+          continue;
+        }
+        if (kv.second > best_cnt) {
+          best_cnt = kv.second;
+          best_val = kv.first;
+        }
+      }
+      if (best_val.empty() && !skip_if_other_exists.empty()) {
+        auto it = counts.find(skip_if_other_exists);
+        if (it != counts.end() && it->second > 0) {
+          best_val = it->first;
+        }
+      }
+      return best_val;
+    };
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;32m[VISION]\033[0m Extracting visual attributes for person_id=%d",
+      "\033[1;32m[VISION]\033[0m Extracting visual attributes (mode voting) for person_id=%d",
       person_id);
+
+    const std::string mode_gender = pickMode(gender_counts);
+    const std::string mode_shirt = pickMode(shirt_counts, "casual attire");
+    const std::string mode_hair = pickMode(hair_counts);
 
     std::lock_guard<std::mutex> g_lock(guest_mutex_);
     std::vector<std::string> attrs;
-    for (const auto & a : raw_attrs) {
-      if (std::find(attrs.begin(), attrs.end(), a) == attrs.end()) {
-        attrs.push_back(a);
-      }
 
+    // Fallback ke snapshot terakhir jika histogram masih kosong untuk field tertentu
+    std::string snap_gender, snap_shirt, snap_hair;
+    for (const auto & a : raw_attrs) {
       std::string lower_a = a;
       std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
       if (lower_a == "male" || lower_a == "female") {
-        current_guest_.gender = lower_a;
+        snap_gender = lower_a;
       } else if (lower_a.find("shirt") != std::string::npos ||
                  lower_a.find("clothes") != std::string::npos ||
                  lower_a.find("attire") != std::string::npos)
       {
-        current_guest_.shirt_color = a;
+        snap_shirt = a;
       } else if (lower_a.find("hair") != std::string::npos) {
-        current_guest_.hair_color = a;
+        snap_hair = a;
       }
+    }
+
+    if (!mode_gender.empty()) {
+      current_guest_.gender = mode_gender;
+    } else if (!snap_gender.empty()) {
+      current_guest_.gender = snap_gender;
+    }
+
+    if (!mode_shirt.empty()) {
+      current_guest_.shirt_color = mode_shirt;
+    } else if (!snap_shirt.empty()) {
+      current_guest_.shirt_color = snap_shirt;
+    }
+
+    if (!mode_hair.empty()) {
+      current_guest_.hair_color = mode_hair;
+    } else if (!snap_hair.empty()) {
+      current_guest_.hair_color = snap_hair;
+    }
+
+    if (!current_guest_.gender.empty() && current_guest_.gender != "unknown") {
+      attrs.push_back(current_guest_.gender);
+    }
+    if (!current_guest_.shirt_color.empty()) {
+      attrs.push_back(current_guest_.shirt_color);
+    }
+    if (!current_guest_.hair_color.empty()) {
+      attrs.push_back(current_guest_.hair_color);
     }
     if (attrs.empty()) {
       attrs.push_back("casual attire");
@@ -1096,13 +1162,14 @@ private:
     current_guest_.attributes = attrs;
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;32m[VISION]\033[0m Guest %d Visual Profile: Gender='%s', Shirt='%s', Hair='%s'",
+      "\033[1;32m[VISION]\033[0m Guest %d Visual Profile (Mode): Gender='%s', Shirt='%s', Hair='%s'",
       guest_idx_, current_guest_.gender.c_str(), current_guest_.shirt_color.c_str(), current_guest_.hair_color.c_str());
   }
 
   static std::string formatPersonDescription(const PersonProfile & person)
   {
-    std::string gender = person.gender.empty() ? "person" : person.gender;
+    std::string gender = (person.gender.empty() || person.gender == "unknown")
+      ? "person" : person.gender;
     std::string shirt = person.shirt_color.empty() ? "casual attire" : person.shirt_color;
     std::string hair = person.hair_color.empty() ? "dark hair" : person.hair_color;
 
@@ -1444,6 +1511,7 @@ private:
         nearest_person_bbox_x_ = rect[0];
         nearest_person_bbox_y_ = rect[1];
         nearest_person_bbox_w_ = rect[2];
+        nearest_person_bbox_h_ = rect[3];
       }
     }
 
@@ -1562,7 +1630,8 @@ private:
         cur != ReceptionistState::WAIT_NAME &&
         cur != ReceptionistState::ASK_INTEREST &&
         cur != ReceptionistState::WAIT_INTEREST &&
-        cur != ReceptionistState::CONFIRM_GUEST_INFO)
+        cur != ReceptionistState::CONFIRM_GUEST_INFO &&
+        cur != ReceptionistState::WAIT_CONFIRM_GUEST_INFO)
     {
       return;
     }
@@ -1579,6 +1648,29 @@ private:
     }
     if (!parsed.empty()) {
       latest_attributes_ = parsed;
+      // Akumulasi frekuensi hanya saat fase dialog tamu di pintu berlangsung
+      if (cur == ReceptionistState::ASK_NAME ||
+          cur == ReceptionistState::WAIT_NAME ||
+          cur == ReceptionistState::ASK_INTEREST ||
+          cur == ReceptionistState::WAIT_INTEREST ||
+          cur == ReceptionistState::CONFIRM_GUEST_INFO ||
+          cur == ReceptionistState::WAIT_CONFIRM_GUEST_INFO)
+      {
+        for (const auto & a : parsed) {
+          std::string lower_a = a;
+          std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
+          if (lower_a == "male" || lower_a == "female") {
+            attr_gender_counts_[lower_a]++;
+          } else if (lower_a.find("shirt") != std::string::npos ||
+                     lower_a.find("clothes") != std::string::npos ||
+                     lower_a.find("attire") != std::string::npos)
+          {
+            attr_shirt_counts_[a]++;
+          } else if (lower_a.find("hair") != std::string::npos) {
+            attr_hair_counts_[a]++;
+          }
+        }
+      }
     }
   }
 
@@ -1966,6 +2058,13 @@ private:
           }
           const int ans = parseYesNoIntent(raw);
           if (ans == 1) {
+            updateCurrentGuestVisualAttributes(nearest_person_id_.load());
+            {
+              std::lock_guard<std::mutex> lock(guest_mutex_);
+              if (guest_idx_ >= 1 && guests_.size() >= static_cast<size_t>(guest_idx_)) {
+                guests_[static_cast<size_t>(guest_idx_ - 1)] = current_guest_;
+              }
+            }
             RCLCPP_INFO(
               get_logger(),
               "\033[1;32m[DIALOG CONFIRM]\033[0m Heard: \"%s\" | Decision: \033[1;32mYES\033[0m (proceeding to beverage area)",
