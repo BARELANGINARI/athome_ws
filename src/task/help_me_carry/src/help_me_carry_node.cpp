@@ -2584,6 +2584,41 @@ private:
         return;
       }
 
+      // Cek apakah ada orang yang menghalangi path homing di depan robot -> STOP menunggu jalur kosong
+      {
+        std::vector<Person> persons_copy;
+        bool fresh_persons = false;
+        {
+          std::lock_guard<std::mutex> lock(person_mutex_);
+          if ((now() - latest_person_time_).seconds() < 1.0) {
+            persons_copy = latest_persons_;
+            fresh_persons = true;
+          }
+        }
+        if (fresh_persons) {
+          const double block_max_dist = std::min(2.0, homing_queue_max_detect_dist_);
+          const double path_corridor = std::max(corridor_width_, 0.45);
+          for (const auto & p : persons_copy) {
+            const double px_b = p.x;
+            const double py_b = -p.y;
+            const double dist = std::hypot(px_b, py_b);
+            if (px_b <= 0.20 || dist >= block_max_dist) {
+              continue;
+            }
+            double dist_to_path = 0.0;
+            if (is_person_blocking_path(px_b, py_b, path_corridor, dist_to_path)) {
+              geometry_msgs::msg::Twist stop_twist;
+              cmd_vel_pub_->publish(stop_twist);
+              RCLCPP_INFO_THROTTLE(
+                get_logger(), *get_clock(), 1000,
+                "\033[1;33m[Homing]\033[0m Orang menghalangi path (dist=%.2fm, offset=%.2fm) -> STOP menunggu jalur kosong.",
+                dist, dist_to_path);
+              return;
+            }
+          }
+        }
+      }
+
       // Passthrough normal untuk Nav2 homing
       cmd_vel_pub_->publish(out);
       return;
