@@ -29,6 +29,7 @@ ros2 service call /receptionist/host std_srvs/srv/Trigger {}
 ros2 service call /receptionist/guest1 std_srvs/srv/Trigger {}
 ros2 service call /receptionist/guest2 std_srvs/srv/Trigger {}
 ros2 service call /receptionist/adjust_guest std_srvs/srv/Trigger {}
+ros2 service call /receptionist/approach_guest std_srvs/srv/Trigger {}
 
 # Service Rotasi 90 Derajat (Kiri dan Kanan) & Reset Yaw Living Room:
 ros2 service call /receptionist/left std_srvs/srv/Trigger {}

@@ -104,9 +104,12 @@ public:
     declare_parameter<std::string>("guest_1_name_topic", "/vision/guest_1_name");
     declare_parameter<std::string>("guest_2_name_topic", "/vision/guest_2_name");
     declare_parameter<double>("host_seated_max_dist", 3.0);
-    declare_parameter<double>("guest_door_distance", 1.0);
+    declare_parameter<double>("guest_door_distance", 1.5);
     declare_parameter<double>("guest_door_step_back_speed", 0.16);
     declare_parameter<double>("guest_door_timeout_sec", 15.0);
+    declare_parameter<double>("guest_approach_distance", 0.7);
+    declare_parameter<double>("guest_approach_speed", 0.16);
+    declare_parameter<double>("guest_approach_timeout_sec", 15.0);
     declare_parameter<double>("guest_door_align_tolerance", 0.07);
     declare_parameter<double>("face_person_angular_speed", 0.30);
     declare_parameter<double>("face_person_timeout_sec", 25.0);
@@ -153,6 +156,9 @@ public:
     guest_door_distance_ = get_parameter("guest_door_distance").as_double();
     guest_door_step_back_speed_ = get_parameter("guest_door_step_back_speed").as_double();
     guest_door_timeout_sec_ = get_parameter("guest_door_timeout_sec").as_double();
+    guest_approach_distance_ = get_parameter("guest_approach_distance").as_double();
+    guest_approach_speed_ = get_parameter("guest_approach_speed").as_double();
+    guest_approach_timeout_sec_ = get_parameter("guest_approach_timeout_sec").as_double();
     guest_door_align_tolerance_ = get_parameter("guest_door_align_tolerance").as_double();
     face_person_angular_speed_ = get_parameter("face_person_angular_speed").as_double();
     face_person_timeout_sec_ = get_parameter("face_person_timeout_sec").as_double();
@@ -363,6 +369,15 @@ public:
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
         handleAdjustGuest(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_approach_guest_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/approach_guest",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleApproachGuest(req, res);
       },
       rclcpp::ServicesQoS(),
       srv_cb_group_);
@@ -2125,6 +2140,160 @@ public:
     RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Align: %s", res->message.c_str());
   }
 
+  void handleApproachGuest(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_navigating_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy with navigation task";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_searching_chair_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy searching for a chair";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_facing_person_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is already busy adjusting facing or position";
+      publishStatus(res->message);
+      return;
+    }
+
+    publishStatus(
+      "Service /receptionist/approach_guest called: Aligning and approaching guest to " +
+      std::to_string(guest_approach_distance_) + "m...");
+
+    auto get_door_guest_target = [this]() -> PersonTarget {
+      std::lock_guard<std::mutex> lock(person_mutex_);
+      if (person_detected_ && (now() - last_person_time_).seconds() < 1.0) {
+        return parseTargetPerson(latest_persons_str_, "door_guest");
+      }
+      return PersonTarget();
+    };
+
+    rclcpp::Rate loop_rate(20.0);
+    bool guest_found = false;
+    PersonTarget current_target;
+
+    for (int i = 0; i < 20; ++i) {
+      PersonTarget t = get_door_guest_target();
+      if (t.valid) {
+        guest_found = true;
+        current_target = t;
+        break;
+      }
+      loop_rate.sleep();
+    }
+
+    if (!guest_found) {
+      stopRobot();
+      is_facing_person_ = false;
+      res->success = false;
+      res->message = "No guest detected in front to approach";
+      publishStatus(res->message);
+      RCLCPP_WARN(get_logger(), "\033[1;33m[APPROACH GUEST]\033[0m %s", res->message.c_str());
+      return;
+    }
+
+    // FASE 1: Align heading toward guest before moving forward
+    {
+      int centered_frames = 0;
+      auto align_start_time = now();
+      const double align_timeout = 5.0;
+
+      while (rclcpp::ok() && is_facing_person_.load()) {
+        if ((now() - align_start_time).seconds() > align_timeout) {
+          break;
+        }
+        PersonTarget t = get_door_guest_target();
+        if (t.valid) {
+          current_target = t;
+        }
+        const double err = current_target.angle_err;
+        if (std::abs(err) <= guest_door_align_tolerance_) {
+          centered_frames++;
+          if (centered_frames >= 3) {
+            break;
+          }
+        } else {
+          centered_frames = 0;
+        }
+
+        double w = face_person_p_gain_ * err;
+        double spd = std::clamp(std::abs(w), face_person_min_speed_, face_person_max_speed_);
+
+        geometry_msgs::msg::Twist twist;
+        twist.angular.z = (err >= 0.0) ? spd : -spd;
+        cmd_vel_pub_->publish(twist);
+        loop_rate.sleep();
+      }
+      stopRobot();
+    }
+
+    // FASE 2: Maju perlahan hingga jarak mencapai <= guest_approach_distance_ (0.7m)
+    auto approach_start = now();
+    auto last_valid_time = now();
+    int reached_dist_frames = 0;
+    bool target_lost = false;
+
+    while (rclcpp::ok() && is_facing_person_.load()) {
+      if ((now() - approach_start).seconds() > guest_approach_timeout_sec_) {
+        RCLCPP_WARN(get_logger(), "[APPROACH GUEST] Timeout reached (%.1fs)", guest_approach_timeout_sec_);
+        break;
+      }
+
+      PersonTarget t = get_door_guest_target();
+      if (t.valid) {
+        current_target = t;
+        last_valid_time = now();
+      } else if ((now() - last_valid_time).seconds() > 1.0) {
+        RCLCPP_WARN(get_logger(), "[APPROACH GUEST] Guest lost during approach; stopping safely.");
+        target_lost = true;
+        break;
+      }
+
+      if (current_target.dist <= guest_approach_distance_) {
+        reached_dist_frames++;
+        if (reached_dist_frames >= 2) {
+          break;
+        }
+      } else {
+        reached_dist_frames = 0;
+      }
+
+      geometry_msgs::msg::Twist twist;
+      twist.linear.x = std::abs(guest_approach_speed_);
+      if (std::abs(current_target.angle_err) > 0.10) {
+        twist.angular.z = (current_target.angle_err >= 0.0) ? 0.12 : -0.12;
+      } else {
+        twist.angular.z = 0.0;
+      }
+      cmd_vel_pub_->publish(twist);
+      loop_rate.sleep();
+    }
+
+    stopRobot();
+    is_facing_person_ = false;
+
+    res->success = !target_lost;
+    res->message = target_lost
+      ? "Stopped approach early: guest lost from view (dist=" + std::to_string(current_target.dist) + "m)"
+      : "Guest approach completed (dist=" + std::to_string(current_target.dist) +
+        "m, target=" + std::to_string(guest_approach_distance_) + "m)";
+    publishStatus(res->message);
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Approach: %s", res->message.c_str());
+  }
+
   static double normalize_angle(double angle)
   {
     while (angle > M_PI) angle -= 2.0 * M_PI;
@@ -2471,9 +2640,12 @@ private:
   std::string guest_1_name_topic_{"/vision/guest_1_name"};
   std::string guest_2_name_topic_{"/vision/guest_2_name"};
   double host_seated_max_dist_{3.0};
-  double guest_door_distance_{1.0};
+  double guest_door_distance_{1.5};
   double guest_door_step_back_speed_{0.16};
   double guest_door_timeout_sec_{15.0};
+  double guest_approach_distance_{0.7};
+  double guest_approach_speed_{0.16};
+  double guest_approach_timeout_sec_{15.0};
   double guest_door_align_tolerance_{0.07};
   double face_person_angular_speed_{0.30};
   double face_person_timeout_sec_{25.0};
@@ -2502,6 +2674,7 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_guest_2_alias_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_adjust_guest_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_adjust_guest_alias_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_approach_guest_;
 
   // 90-degree relative turn (/receptionist/left dan /receptionist/right)
   std::atomic<bool> is_turning_{false};
