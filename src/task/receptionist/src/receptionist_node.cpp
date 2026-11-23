@@ -120,7 +120,7 @@ public:
     declare_parameter<double>("turn_90_min_speed", 0.14);
     declare_parameter<double>("turn_90_max_speed", 0.35);
     declare_parameter<double>("turn_90_tolerance_rad", 0.04);
-    declare_parameter<double>("turn_90_timeout_sec", 8.0);
+    declare_parameter<double>("turn_90_timeout_sec", 15.0);
     declare_parameter<double>("turn_90_p_gain", 1.5);
 
     // Chair search & motion parameters
@@ -400,6 +400,15 @@ public:
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
         handleClearLivingRoomLocks(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_reset_living_room_yaw_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/reset_living_room_yaw",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleResetLivingRoomYaw(req, res);
       },
       rclcpp::ServicesQoS(),
       srv_cb_group_);
@@ -937,7 +946,7 @@ public:
         is_match = true;
         // Tamu di pintu: prioritaskan orang terdekat dan paling lurus di depan kamera
         priority = 100.0 - (dist * 10.0) - (std::abs(angle) * 5.0);
-      } else if (target_role == "host") {
+      } else if (target_role == "host" || target_role == "guest") {
         if (!host_name_lower.empty() && label_lower.find(host_name_lower) != std::string::npos) {
           is_match = true;
           priority = 100.0;
@@ -951,6 +960,13 @@ public:
           // Logic OR: orang yang sedang duduk (seated) jika jarak < 3.0m
           is_match = true;
           priority = 90.0;
+        } else if ((label_lower == "guest" || label_lower == "person" || label_lower == "unknown") &&
+                   (guest_1_name_lower.empty() || label_lower.find(guest_1_name_lower) == std::string::npos) &&
+                   (guest_2_name_lower.empty() || label_lower.find(guest_2_name_lower) == std::string::npos) &&
+                   dist < 5.0) {
+          // Fallback jika Host belum dikenali oleh face recognition (athome_vision melabeli "guest"/"person")
+          is_match = true;
+          priority = (label_lower == "guest") ? 90.0 - (dist * 5.0) : 80.0 - (dist * 5.0);
         }
       } else if (target_role == "guest_1") {
         if (!guest_1_name_lower.empty() && label_lower.find(guest_1_name_lower) != std::string::npos) {
@@ -1075,6 +1091,58 @@ public:
     RCLCPP_INFO(get_logger(), "\033[1;36m[LIVING ROOM]\033[0m %s", res->message.c_str());
   }
 
+  void handleResetLivingRoomYaw(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_navigating_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy with navigation task";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_searching_chair_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy searching for a chair";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_facing_person_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is already busy rotating/facing";
+      publishStatus(res->message);
+      return;
+    }
+
+    const double target_yaw = has_living_room_arrival_yaw_
+      ? living_room_arrival_yaw_
+      : normalize_angle(getWaypoint("living_room").yaw * M_PI / 180.0);
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[LIVING ROOM]\033[0m Resetting yaw in-place to %.2f rad (%.1f deg, source=%s)...",
+      target_yaw, target_yaw * 180.0 / M_PI,
+      has_living_room_arrival_yaw_ ? "arrival_yaw" : "waypoint_yaw");
+
+    const bool aligned = rotateToAbsYaw(
+      target_yaw, is_facing_person_,
+      face_person_tolerance_rad_, face_person_p_gain_,
+      face_person_min_speed_, face_person_max_speed_, 6.0, "RESET_LIVING_ROOM_YAW");
+
+    is_facing_person_ = false;
+    res->success = aligned;
+    res->message = aligned
+      ? "Robot rotated back to living_room yaw"
+      : "Reset living_room yaw timed out";
+    publishStatus(res->message);
+  }
+
   void handleScanLivingRoom(
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
@@ -1122,9 +1190,124 @@ public:
     };
     std::vector<SeatedSlot> seated_slots;
 
+    // Akumulasi vote per klaster sudut (abs_yaw +-0.30 rad) untuk menghitung modus label
+    struct YawClusterVote
+    {
+      double cos_sum{0.0};
+      double sin_sum{0.0};
+      double dist_sum{0.0};
+      int samples{0};
+      int host_votes{0};
+      int g1_votes{0};
+      int unnamed_guest_votes{0};
+      int seated_votes{0};
+
+      double meanYaw() const
+      {
+        return std::atan2(sin_sum, cos_sum);
+      }
+      double meanDist() const
+      {
+        return (samples > 0) ? (dist_sum / static_cast<double>(samples)) : 999.0;
+      }
+    };
+    std::vector<YawClusterVote> yaw_clusters;
+
+    enum class ClusterRoleVote { HOST_NAME, G1_NAME, UNNAMED_GUEST, SEATED };
+    auto record_cluster_vote = [&](double abs_yaw, double dist, ClusterRoleVote role) {
+      YawClusterVote * matched = nullptr;
+      for (auto & c : yaw_clusters) {
+        if (std::abs(normalize_angle(c.meanYaw() - abs_yaw)) < 0.15) {
+          matched = &c;
+          break;
+        }
+      }
+      if (!matched) {
+        yaw_clusters.push_back(YawClusterVote{});
+        matched = &yaw_clusters.back();
+      }
+      matched->cos_sum += std::cos(abs_yaw);
+      matched->sin_sum += std::sin(abs_yaw);
+      matched->dist_sum += dist;
+      matched->samples++;
+      switch (role) {
+        case ClusterRoleVote::HOST_NAME:     matched->host_votes++; break;
+        case ClusterRoleVote::G1_NAME:       matched->g1_votes++; break;
+        case ClusterRoleVote::UNNAMED_GUEST: matched->unnamed_guest_votes++; break;
+        case ClusterRoleVote::SEATED:        matched->seated_votes++; break;
+      }
+    };
+
+    auto resolve_clusters_to_targets = [&]() {
+      best_host = LockedObs{};
+      best_g1 = LockedObs{};
+
+      int host_cluster_idx = -1;
+      int best_host_votes = 0;
+      for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
+        if (yaw_clusters[idx].host_votes > best_host_votes) {
+          best_host_votes = yaw_clusters[idx].host_votes;
+          host_cluster_idx = static_cast<int>(idx);
+        }
+      }
+      if (host_cluster_idx >= 0) {
+        const auto & c = yaw_clusters[static_cast<size_t>(host_cluster_idx)];
+        best_host = {true, c.meanYaw(), c.meanDist(), 100};
+      }
+
+      int g1_cluster_idx = -1;
+      if (is_guest2_session) {
+        int best_g1_votes = 0;
+        for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
+          if (static_cast<int>(idx) == host_cluster_idx) continue;
+          if (yaw_clusters[idx].g1_votes > best_g1_votes) {
+            best_g1_votes = yaw_clusters[idx].g1_votes;
+            g1_cluster_idx = static_cast<int>(idx);
+          }
+        }
+        if (g1_cluster_idx >= 0) {
+          const auto & c = yaw_clusters[static_cast<size_t>(g1_cluster_idx)];
+          best_g1 = {true, c.meanYaw(), c.meanDist(), 100};
+        }
+      }
+
+      if (!best_host.valid) {
+        int unnamed_idx = -1;
+        int best_unnamed_votes = 0;
+        for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
+          if (static_cast<int>(idx) == g1_cluster_idx) continue;
+          if (yaw_clusters[idx].unnamed_guest_votes > best_unnamed_votes) {
+            best_unnamed_votes = yaw_clusters[idx].unnamed_guest_votes;
+            unnamed_idx = static_cast<int>(idx);
+          }
+        }
+        if (unnamed_idx >= 0) {
+          const auto & c = yaw_clusters[static_cast<size_t>(unnamed_idx)];
+          best_host = {true, c.meanYaw(), c.meanDist(), 90};
+          host_cluster_idx = unnamed_idx;
+        }
+      }
+
+      if (!best_host.valid) {
+        int seated_idx = -1;
+        int best_seated_votes = 0;
+        for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
+          if (static_cast<int>(idx) == g1_cluster_idx) continue;
+          if (yaw_clusters[idx].seated_votes > best_seated_votes) {
+            best_seated_votes = yaw_clusters[idx].seated_votes;
+            seated_idx = static_cast<int>(idx);
+          }
+        }
+        if (seated_idx >= 0) {
+          const auto & c = yaw_clusters[static_cast<size_t>(seated_idx)];
+          best_host = {true, c.meanYaw(), c.meanDist(), 70};
+        }
+      }
+    };
+
     auto record_seated_slot = [&](double abs_yaw, double dist) {
       for (auto & s : seated_slots) {
-        if (std::abs(normalize_angle(s.abs_yaw - abs_yaw)) < 0.25) {
+        if (std::abs(normalize_angle(s.abs_yaw - abs_yaw)) < 0.15) {
           if (dist < s.dist) {
             s.abs_yaw = abs_yaw;
             s.dist = dist;
@@ -1196,24 +1379,25 @@ public:
           const bool matches_g1 = (!g1_lower.empty() && lbl_lower.find(g1_lower) != std::string::npos) ||
                                   (lbl_lower.find("guest_1") != std::string::npos || lbl_lower.find("guest 1") != std::string::npos);
           const bool matches_g2 = (!g2_lower.empty() && lbl_lower.find(g2_lower) != std::string::npos);
+          const bool is_unnamed_guest =
+            (lbl_lower == "guest" || lbl_lower == "person" || lbl_lower == "unknown") &&
+            !matches_g1 && !matches_g2 && dist < 5.0;
 
           if (matches_host && !matches_g1 && !matches_g2) {
-            if (!best_host.valid || 100 >= best_host.priority) {
-              best_host = {true, abs_yaw, dist, 100};
-            }
+            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::HOST_NAME);
           } else if (is_guest2_session && matches_g1 && !matches_host && !matches_g2) {
-            if (!best_g1.valid || 100 >= best_g1.priority) {
-              best_g1 = {true, abs_yaw, dist, 100};
-            }
+            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::G1_NAME);
+          } else if (is_unnamed_guest) {
+            // Guest tanpa nama di living room dijadikan Host sementara
+            record_seated_slot(abs_yaw, dist);
+            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::UNNAMED_GUEST);
           }
 
           if (is_seated && dist < host_seated_max_dist_ && !matches_g2 &&
               (is_guest2_session || !matches_g1))
           {
             record_seated_slot(abs_yaw, dist);
-            if (!is_guest2_session && (!best_host.valid || 80 > best_host.priority)) {
-              best_host = {true, abs_yaw, dist, 80};
-            }
+            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::SEATED);
           }
         }
       }
@@ -1246,9 +1430,7 @@ public:
           if (dist < host_seated_max_dist_) {
             const double abs_yaw = normalize_angle(cur_yaw + rel_ang);
             record_seated_slot(abs_yaw, dist);
-            if (!is_guest2_session && (!best_host.valid || 60 > best_host.priority)) {
-              best_host = {true, abs_yaw, dist, 60};
-            }
+            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::SEATED);
           }
         }
       }
@@ -1265,42 +1447,67 @@ public:
       }
     };
 
-    // 1. Sample 15 frame (~0.75s) dari pandangan tiba di living_room
+    // 1. Scan diam terlebih dahulu (1.5 - 3.0 detik @ 20 Hz) untuk mencari Host, Guest 1, & kursi kosong
+    stopRobot();
     rclcpp::Rate scan_rate(20.0);
-    for (int i = 0; i < 15 && rclcpp::ok() && is_facing_person_.load(); ++i) {
+    for (int i = 0; i < 60 && rclcpp::ok() && is_facing_person_.load(); ++i) {
       sample_current_view();
+      resolve_clusters_to_targets();
+      if (i >= 30 && best_host.valid && (!is_guest2_session || best_g1.valid) && best_empty.valid) {
+        break;
+      }
       scan_rate.sleep();
     }
+    resolve_clusters_to_targets();
 
-    // 2. Jika target yang dibutuhkan belum terlihat di tengah, sweep ringan +-25 derajat lalu kembali
-    const bool need_sweep = !best_host.valid || (is_guest2_session && !best_g1.valid && seated_slots.size() < 2);
-    if (need_sweep && rclcpp::ok() && is_facing_person_.load()) {
+    // 2. Kunci posisi awal yang sudah terdeteksi saat scan diam
+    {
+      std::lock_guard<std::mutex> lock(living_room_lock_mutex_);
+      has_locked_host_yaw_ = best_host.valid;
+      locked_host_yaw_ = best_host.abs_yaw;
+      has_locked_guest1_yaw_ = best_g1.valid;
+      locked_guest1_yaw_ = best_g1.abs_yaw;
+      has_locked_empty_chair_yaw_ = best_empty.valid;
+      locked_empty_chair_yaw_ = best_empty.abs_yaw;
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[LIVING ROOM LOCK]\033[0m Stationary scan locked: Host=%s, Guest1=%s, EmptySeat=%s",
+      best_host.valid ? "OK" : "NO",
+      best_g1.valid ? "OK" : "NO",
+      best_empty.valid ? "OK" : "NO");
+
+    // 3. Rotasi untuk scan ulang HANYA jika masih ada target yang belum terkunci
+    const bool need_rescan =
+      !best_host.valid || (is_guest2_session && !best_g1.valid) || !best_empty.valid;
+    if (need_rescan && rclcpp::ok() && is_facing_person_.load()) {
       for (double offset : {0.42, -0.42}) {
         rotateToAbsYaw(normalize_angle(arrival_yaw + offset), is_facing_person_,
           0.08, face_person_p_gain_, face_person_min_speed_, face_person_max_speed_, 3.5, "SCAN");
-        for (int i = 0; i < 8 && rclcpp::ok() && is_facing_person_.load(); ++i) {
+        for (int i = 0; i < 10 && rclcpp::ok() && is_facing_person_.load(); ++i) {
           sample_current_view();
           scan_rate.sleep();
         }
       }
       rotateToAbsYaw(arrival_yaw, is_facing_person_,
         0.08, face_person_p_gain_, face_person_min_speed_, face_person_max_speed_, 3.5, "SCAN");
+      resolve_clusters_to_targets();
     }
 
-    // 3. Resolusi eliminasi pada kunjungan Person 2 bila salah satu wajah sedang menoleh
+    // 4. Resolusi eliminasi pada kunjungan Person 2 bila salah satu wajah sedang menoleh
     if (is_guest2_session) {
       std::sort(seated_slots.begin(), seated_slots.end(),
         [](const SeatedSlot & a, const SeatedSlot & b) { return a.dist < b.dist; });
       if (best_host.valid && !best_g1.valid) {
         for (const auto & s : seated_slots) {
-          if (std::abs(normalize_angle(s.abs_yaw - best_host.abs_yaw)) >= 0.25) {
+          if (std::abs(normalize_angle(s.abs_yaw - best_host.abs_yaw)) >= 0.15) {
             best_g1 = {true, s.abs_yaw, s.dist, 50};
             break;
           }
         }
       } else if (best_g1.valid && !best_host.valid) {
         for (const auto & s : seated_slots) {
-          if (std::abs(normalize_angle(s.abs_yaw - best_g1.abs_yaw)) >= 0.25) {
+          if (std::abs(normalize_angle(s.abs_yaw - best_g1.abs_yaw)) >= 0.15) {
             best_host = {true, s.abs_yaw, s.dist, 50};
             break;
           }
@@ -1308,7 +1515,7 @@ public:
       } else if (!best_host.valid && !best_g1.valid && seated_slots.size() >= 2) {
         best_host = {true, seated_slots[0].abs_yaw, seated_slots[0].dist, 40};
         for (size_t k = 1; k < seated_slots.size(); ++k) {
-          if (std::abs(normalize_angle(seated_slots[k].abs_yaw - best_host.abs_yaw)) >= 0.25) {
+          if (std::abs(normalize_angle(seated_slots[k].abs_yaw - best_host.abs_yaw)) >= 0.15) {
             best_g1 = {true, seated_slots[k].abs_yaw, seated_slots[k].dist, 40};
             break;
           }
@@ -1638,8 +1845,19 @@ public:
     auto get_current_person_target = [this, &target_role]() -> PersonTarget {
       PersonTarget target;
 
-      // Khusus saat mencari Host / orang di living room:
-      // PRIORITAS UTAMA: Orang yang sedang DUDUK di kursi (occupied_chair < 3.0m)
+      // PRIORITAS UTAMA: Cek deteksi orang dari vision person_label
+      // (mengenali Host bernama maupun "guest" tanpa nama, dan mengecualikan Guest 1/2)
+      {
+        std::lock_guard<std::mutex> lock(person_mutex_);
+        if (person_detected_ && (now() - last_person_time_).seconds() < 1.0) {
+          target = parseTargetPerson(latest_persons_str_, target_role);
+          if (target.valid) {
+            return target;
+          }
+        }
+      }
+
+      // PRIORITAS KEDUA (Fallback khusus Host): Orang yang sedang DUDUK di kursi (occupied_chair < 3.0m)
       if (target_role == "host") {
         std::lock_guard<std::mutex> lock(chair_mutex_);
         if (occupied_chair_detected_ && (now() - last_occupied_chair_time_).seconds() < 2.0) {
@@ -1651,14 +1869,6 @@ public:
             target.label = "Seated Guest (" + occ.side + ")";
             return target;
           }
-        }
-      }
-
-      // PRIORITAS KEDUA: Cek deteksi orang dari vision person_label
-      {
-        std::lock_guard<std::mutex> lock(person_mutex_);
-        if (person_detected_ && (now() - last_person_time_).seconds() < 1.0) {
-          target = parseTargetPerson(latest_persons_str_, target_role);
         }
       }
       return target;
@@ -2299,13 +2509,14 @@ private:
   double turn_90_min_speed_{0.14};
   double turn_90_max_speed_{0.35};
   double turn_90_tolerance_rad_{0.04};
-  double turn_90_timeout_sec_{8.0};
+  double turn_90_timeout_sec_{15.0};
   double turn_90_p_gain_{1.5};
 
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_left_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_right_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_scan_living_room_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_clear_locks_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_reset_living_room_yaw_;
 };
 
 }  // namespace receptionist

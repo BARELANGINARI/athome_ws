@@ -232,11 +232,11 @@ public:
     declare_parameter<std::string>("global_frame", "map");
     declare_parameter<std::string>("base_frame", "base_link");
     declare_parameter<std::string>("order_frame", "base_link");
-    declare_parameter<double>("customer_standoff_distance", 0.85);
+    declare_parameter<double>("customer_standoff_distance", 1.0);
     declare_parameter<double>("object_standoff_distance", 0.45);
     declare_parameter<bool>("adaptive_standoff_enabled", true);
-    declare_parameter<double>("adaptive_standoff_min", 0.85);
-    declare_parameter<double>("adaptive_standoff_max", 1.40);
+    declare_parameter<double>("adaptive_standoff_min", 1.0);
+    declare_parameter<double>("adaptive_standoff_max", 1.6);
     declare_parameter<double>("adaptive_standoff_step", 0.05);
     declare_parameter<int>("costmap_obstacle_threshold", 60);
     declare_parameter<std::string>("costmap_topic", "/global_costmap/costmap");
@@ -401,6 +401,7 @@ public:
     task_start_time_ = now();
     state_enter_time_ = now();
     initCurrentCustomer(1);
+    publishExpression(expressionForState(RestaurantState::INIT));
 
     RCLCPP_INFO(
       get_logger(),
@@ -522,8 +523,8 @@ private:
 
   // Adaptive Standoff Settings & State
   bool adaptive_standoff_enabled_{true};
-  double adaptive_standoff_min_{0.85};
-  double adaptive_standoff_max_{1.40};
+  double adaptive_standoff_min_{1.0};
+  double adaptive_standoff_max_{1.60};
   double adaptive_standoff_step_{0.05};
   int costmap_obstacle_threshold_{60};
   std::string costmap_topic_{"/global_costmap/costmap"};
@@ -624,6 +625,56 @@ private:
     }
   }
 
+  static std::string expressionForState(RestaurantState state)
+  {
+    switch (state) {
+      case RestaurantState::INIT:
+        return "IDLE";
+      case RestaurantState::DETECT_WAVE_HAND:
+      case RestaurantState::FIND_AND_ALIGN_BARMAN:
+      case RestaurantState::DETECT_AND_NAV_TO_ORDER1:
+        return "SEARCHING";
+      case RestaurantState::NAV_TO_WAVING_CUSTOMER:
+      case RestaurantState::NAV_TO_ORIGIN_BARMAN:
+      case RestaurantState::NAV_RETURN_ORIGIN_AFTER_SERVE:
+        return "FOLLOWING";
+      case RestaurantState::WAIT_CUSTOMER_NAME:
+      case RestaurantState::WAIT_CUSTOMER_ORDER:
+      case RestaurantState::WAIT_ORDER_CONFIRMATION:
+      case RestaurantState::WAIT_TRAY_CONFIRMATION:
+        return "LISTENING";
+      case RestaurantState::WAIT_TRAY_SILENT_5S:
+      case RestaurantState::WAIT_TRAY_RETRY_3S:
+        return "CURIOUS";
+      case RestaurantState::GRASP_ORDER1:
+      case RestaurantState::RELEASE_GRIPPER_AND_TORQUE_OFF:
+        return "WORKING";
+      case RestaurantState::ANNOUNCE_SERVER:
+      case RestaurantState::SAVE_CUSTOMER_POSE_ASK_NAME:
+      case RestaurantState::CAPTURE_CUSTOMER_FACE:
+      case RestaurantState::ASK_CUSTOMER_ORDER:
+      case RestaurantState::PRE_CONFIRM_ORDER:
+      case RestaurantState::WAIT_BEFORE_CONFIRM_SPEECH:
+      case RestaurantState::SPEAK_ORDER_CONFIRMATION:
+      case RestaurantState::ANNOUNCE_ORDER_TO_BARMAN:
+      case RestaurantState::ASK_TRAY_CONFIRMATION:
+      case RestaurantState::NAV_DELIVER_TO_CUSTOMER:
+      case RestaurantState::GREET_DELIVERY_CUSTOMER:
+      case RestaurantState::WAIT_1S_BEFORE_RELEASE_PROMPT:
+      case RestaurantState::PROMPT_RELEASE_ORDER1:
+      case RestaurantState::PROMPT_TAKE_ORDER2_TRAY:
+        return "HAPPY";
+      case RestaurantState::WAIT_5S_CUSTOMER_TAKE_TRAY:
+      case RestaurantState::FINISH_TASK:
+      case RestaurantState::COMPLETED:
+        return "SUCCESS";
+      case RestaurantState::ABORTED:
+        return "LOST";
+      default:
+        return "IDLE";
+    }
+  }
+
   void transitionTo(RestaurantState next_state, const std::string & reason)
   {
     RCLCPP_INFO(
@@ -643,64 +694,16 @@ private:
       std::lock_guard<std::mutex> lock(vision_mutex_);
       detected_items_.clear();
     }
+    if (next_state == RestaurantState::NAV_DELIVER_TO_CUSTOMER) {
+      publishCustomerHmi(false);
+    }
 
     state_enter_time_ = now();
     has_new_utterance_ = false;
     state_ = next_state;
 
     // Sinkronisasi ekspresi mata robot ke HMI (athome_face)
-    switch (next_state) {
-      case RestaurantState::INIT:
-      case RestaurantState::COMPLETED:
-        publishExpression("IDLE");
-        break;
-      case RestaurantState::ANNOUNCE_SERVER:
-      case RestaurantState::DETECT_WAVE_HAND:
-        publishExpression("SEARCHING");
-        break;
-      case RestaurantState::NAV_TO_WAVING_CUSTOMER:
-        publishExpression("FOLLOWING");
-        break;
-      case RestaurantState::SAVE_CUSTOMER_POSE_ASK_NAME:
-      case RestaurantState::CAPTURE_CUSTOMER_FACE:
-      case RestaurantState::ASK_CUSTOMER_ORDER:
-      case RestaurantState::SPEAK_ORDER_CONFIRMATION:
-      case RestaurantState::ANNOUNCE_ORDER_TO_BARMAN:
-      case RestaurantState::GREET_DELIVERY_CUSTOMER:
-        publishExpression("GREETING");
-        break;
-      case RestaurantState::WAIT_CUSTOMER_NAME:
-      case RestaurantState::WAIT_CUSTOMER_ORDER:
-      case RestaurantState::WAIT_ORDER_CONFIRMATION:
-      case RestaurantState::WAIT_TRAY_CONFIRMATION:
-        publishExpression("LISTENING");
-        break;
-      case RestaurantState::NAV_TO_ORIGIN_BARMAN:
-        publishExpression("GREETING");
-        break;
-      case RestaurantState::FIND_AND_ALIGN_BARMAN:
-      case RestaurantState::DETECT_AND_NAV_TO_ORDER1:
-        publishExpression("SEARCHING");
-        break;
-      case RestaurantState::GRASP_ORDER1:
-        publishExpression("GRABBING");
-        break;
-      case RestaurantState::NAV_DELIVER_TO_CUSTOMER:
-        publishCustomerHmi(false);
-        publishExpression("HAPPY");
-        break;
-      case RestaurantState::WAIT_5S_CUSTOMER_TAKE_TRAY:
-        publishExpression("SUCCESS");
-        break;
-      case RestaurantState::NAV_RETURN_ORIGIN_AFTER_SERVE:
-        publishExpression("FOLLOWING");
-        break;
-      case RestaurantState::FINISH_TASK:
-        publishExpression("SUCCESS");
-        break;
-      default:
-        break;
-    }
+    publishExpression(expressionForState(next_state));
   }
 
   // ============================================================================
@@ -1037,6 +1040,7 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
+    publishExpression("SPEAKING");
     RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  TTS: \"%s\"", text.c_str());
   }
 
@@ -1073,6 +1077,8 @@ private:
       "[TTS] Done | State: %s | PostDelay: %.2fs",
       stateToString(state_.load()).c_str(),
       deferred ? tts_post_delay_sec_ : 0.0);
+
+    publishExpression(expressionForState(state_.load()));
 
     if (deferred) {
       return;
@@ -1665,7 +1671,7 @@ private:
         current_state != RestaurantState::ABORTED)
     {
       RCLCPP_ERROR(get_logger(), "Global restaurant task timeout reached.");
-      state_ = RestaurantState::ABORTED;
+      transitionTo(RestaurantState::ABORTED, "Global restaurant task timeout reached");
       return;
     }
 
@@ -1902,6 +1908,28 @@ private:
           get_logger(),
           "\033[1;32m[CUSTOMER %d POSE SAVED]\033[0m x=%.2f, y=%.2f, yaw=%.2f",
           customer_idx_, cx, cy, cyaw);
+
+        // Capture image person upon arriving at waving customer location
+        std::string def_name = "customer_" + std::to_string(customer_idx_);
+        if (person_name_pub_) {
+          std_msgs::msg::String msg;
+          msg.data = def_name;
+          person_name_pub_->publish(msg);
+        }
+        if (vision_capture_face_client_ && vision_capture_face_client_->service_is_ready()) {
+          callTrigger(
+            vision_capture_face_client_, "/vision/camera_capture_face",
+            [this](bool ok, const std::string & msg) {
+              RCLCPP_INFO(
+                get_logger(),
+                "[VISION] /vision/camera_capture_face on arrival (ok=%s, msg='%s')",
+                ok ? "true" : "false", msg.c_str());
+            },
+            3.0);
+        }
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;32m[RESTAURANT]\033[0m Arrived at waving customer location. Capturing customer image...");
 
         speakAsync(
           "Hello, Welcome to the bar!! Can you please tell your name?",

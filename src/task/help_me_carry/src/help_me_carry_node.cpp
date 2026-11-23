@@ -5,7 +5,6 @@
 #include <cmath>
 #include <filesystem>
 #include <future>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -212,8 +211,7 @@ public:
     person_back_topic_ = declare_parameter<std::string>("person_back_topic", "/vision/person_back");
     gesture_topic_ = declare_parameter<std::string>("gesture_topic", "/vision/gesture");
     bag_topic_ = declare_parameter<std::string>("bag_topic", "/vision/bag_detections");
-    // yaw_topic_ = declare_parameter<std::string>("yaw_topic", "/vision/yaw_deg");
-    yaw_topic_ = declare_parameter<std::string>("yaw_topic", "/yaw");
+    yaw_topic_ = declare_parameter<std::string>("yaw_topic", "/vision/yaw_deg");
     cmd_vel_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
     nav_cmd_vel_topic_ = declare_parameter<std::string>("nav_cmd_vel_topic", "/nav_cmd_vel");
     path_topic_ = declare_parameter<std::string>("path_topic", "/following_path");
@@ -223,11 +221,6 @@ public:
     frame_map_ = declare_parameter<std::string>("frame_map", "map");
     frame_base_ = declare_parameter<std::string>("frame_base", "base_link");
     scan_topic_ = declare_parameter<std::string>("scan_topic", "/scan");
-    filtered_scan_topic_ = declare_parameter<std::string>("filtered_scan_topic", "/scan_filtered");
-    speckle_filter_enabled_ = declare_parameter<bool>("speckle_filter_enabled", true);
-    speckle_min_points_ = declare_parameter<int>("speckle_min_points", 3);
-    speckle_neighbor_dist_ = declare_parameter<double>("speckle_neighbor_dist", 0.15);
-    speckle_max_range_ = declare_parameter<double>("speckle_max_range", 12.0);
     target_index_ = declare_parameter<int>("target_index", 0);
     bt_xml_ = declare_parameter<std::string>("follow_bt_xml", "");
 
@@ -291,7 +284,7 @@ public:
     homing_queue_inter_dist_ = declare_parameter<double>("homing_queue_inter_dist", 2.00);
     homing_queue_crawl_speed_ = declare_parameter<double>("homing_queue_crawl_speed", 0.10);
     homing_queue_wait_duration_ = declare_parameter<double>("homing_queue_wait_duration", 60.0);
-    homing_queue_clear_hysteresis_ = declare_parameter<double>("homing_queue_clear_hysteresis", 3.0);
+    homing_queue_clear_hysteresis_ = declare_parameter<double>("homing_queue_clear_hysteresis", 1.0);
     homing_queue_start_delay_ = declare_parameter<double>("homing_queue_start_delay", 5.0);
     homing_timeout_ = declare_parameter<double>("homing_timeout", 300.0);
 
@@ -334,8 +327,6 @@ public:
       path_topic_, rclcpp::QoS(10));
     follow_status_pub_ = create_publisher<std_msgs::msg::String>(
       "/follow/status", rclcpp::QoS(10));
-    filtered_scan_pub_ = create_publisher<sensor_msgs::msg::LaserScan>(
-      filtered_scan_topic_, rclcpp::SensorDataQoS());
 
     clear_global_costmap_client_ = create_client<nav2_msgs::srv::ClearEntireCostmap>(
       "/global_costmap/clear_entirely_global_costmap");
@@ -424,7 +415,8 @@ public:
     scan_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(
       scan_topic_, rclcpp::SensorDataQoS(),
       [this](const sensor_msgs::msg::LaserScan::SharedPtr msg) {
-        on_scan_received(msg);
+        std::lock_guard<std::mutex> lock(scan_mutex_);
+        latest_scan_ = msg;
       },
       sub_options);
 
@@ -622,34 +614,56 @@ private:
     if (!candidates.empty()) {
       auto target_it = candidates.end();
 
-      // 1. If KF is active: Associate candidate nearest to Kalman Filter estimate (Spatial Association)
-      if (kf_.is_initialized()) {
-        double min_kf_dist = 999.0;
-        auto best_cand = candidates.end();
-        for (auto it = candidates.begin(); it != candidates.end(); ++it) {
-          const double d = kf_.distance_to(it->rel_x, it->rel_y);
-          if (d < min_kf_dist) {
-            min_kf_dist = d;
-            best_cand = it;
+      // 1. If KF is active and target ID is locked:
+      if (kf_.is_initialized() && locked_person_id_ >= 0) {
+        // Find candidate with matching ID
+        auto locked_it = std::find_if(candidates.begin(), candidates.end(), [this](const Candidate & c) {
+          return c.id == locked_person_id_;
+        });
+
+        if (locked_it != candidates.end()) {
+          // Validate spatial consistency via Kalman gate
+          const double dist_to_kf = kf_.distance_to(locked_it->rel_x, locked_it->rel_y);
+          const double gate_radius = kf_.get_gate_radius(1.2, 2.5);
+          if (dist_to_kf <= gate_radius) {
+            target_it = locked_it;
+          } else {
+            RCLCPP_WARN_THROTTLE(
+              get_logger(), *get_clock(), 1000,
+              "[FOLLOW] ID %d detected outside KF gate (dist=%.2f m > gate=%.2f m). Seeking re-lock...",
+              locked_person_id_, dist_to_kf, gate_radius);
           }
         }
 
-        // Validate spatial consistency via Kalman gate
-        const double gate_radius = kf_.get_gate_radius(1.2, 2.5);
-        if (best_cand != candidates.end() && min_kf_dist <= gate_radius) {
-          target_it = best_cand;
-          locked_person_id_ = target_it->id;
-        } else {
-          RCLCPP_WARN_THROTTLE(
-            get_logger(), *get_clock(), 1000,
-            "[FOLLOW] Nearest candidate outside KF gate (dist=%.2f m > gate=%.2f m). Seeking target...",
-            min_kf_dist, gate_radius);
+        // 2. If locked ID not found (occluded or changed by ZED):
+        // Find candidate nearest to Kalman Filter estimate (Spatial Association)
+        if (target_it == candidates.end()) {
+          double min_kf_dist = 999.0;
+          auto best_cand = candidates.end();
+          for (auto it = candidates.begin(); it != candidates.end(); ++it) {
+            const double d = kf_.distance_to(it->rel_x, it->rel_y);
+            if (d < min_kf_dist) {
+              min_kf_dist = d;
+              best_cand = it;
+            }
+          }
+
+          // Check if nearest candidate is within Kalman gate radius
+          const double re_gate_radius = kf_.get_gate_radius(0.85, 2.0);
+          if (best_cand != candidates.end() && min_kf_dist <= re_gate_radius) {
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[93m[FOLLOW] Re-lock target via Kalman Gate: old ID %d -> new ID %d (KF dist=%.2f m <= gate=%.2f m)\033[0m",
+              locked_person_id_, best_cand->id, min_kf_dist, re_gate_radius);
+            target_it = best_cand;
+            locked_person_id_ = target_it->id;
+          }
         }
       }
 
-      // 2. If no target locked or lost for too long (> max_lost_time_):
+      // 3. If no target locked or lost for too long (> max_lost_time_):
       const double time_since_seen = now().seconds() - last_seen_sec_;
-      if (target_it == candidates.end() && (!kf_.is_initialized() || time_since_seen > max_lost_time_)) {
+      if (target_it == candidates.end() && (!kf_.is_initialized() || locked_person_id_ < 0 || time_since_seen > max_lost_time_)) {
         target_it = std::find_if(candidates.begin(), candidates.end(), [](const Candidate & c) {
           return c.is_operator;
         });
@@ -665,8 +679,8 @@ private:
         if (target_it != candidates.end()) {
           RCLCPP_INFO(
             get_logger(),
-            "\033[92m[FOLLOW] Target lock initialized (Spatial): dist=%.2f m | bearing=%+.1f deg\033[0m",
-            target_it->dist, target_it->bearing * 180.0 / M_PI);
+            "\033[92m[FOLLOW] Target lock initialized: [ID %d] dist=%.2f m | bearing=%+.1f deg\033[0m",
+            target_it->id, target_it->dist, target_it->bearing * 180.0 / M_PI);
           locked_person_id_ = target_it->id;
           kf_.init(target_it->rel_x, target_it->rel_y);
         }
@@ -1190,12 +1204,12 @@ private:
     // Kirim langsung ke base driver (/cmd_vel)
     cmd_vel_pub_->publish(twist);
 
+    // Print status debug teratur di terminal (2 Hz)
     RCLCPP_INFO_THROTTLE(
-      get_logger(),
-      *get_clock(),
-      1000,
-      "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Follow: d=%.2fm, b=%+.1f°\n  Cmd: vx=%.2f, wz=%.2f",
-      direct_dist, direct_bearing * 180.0 / M_PI, twist.linear.x, twist.angular.z);
+      get_logger(), *get_clock(), 500,
+      "\033[94m[DEBUG] Operator [ID %d]: dist=%.2f m | bearing=%+.1f deg | Status: %s | vx=%.2f | vy=%.2f | wz=%.2f\033[0m",
+      locked_person_id_, direct_dist, direct_bearing * 180.0 / M_PI,
+      status_str.c_str(), twist.linear.x, twist.linear.y, twist.angular.z);
   }
 
   void send_nav2_goal(const geometry_msgs::msg::PoseStamped & target_pose)
@@ -1211,7 +1225,7 @@ private:
     if (!action_client_->wait_for_action_server(std::chrono::milliseconds(500))) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
-        "\033[1;33m[FOLLOW]\033[0m Nav2 action server '%s' not ready", action_name_.c_str());
+        "\033[91m[FOLLOW] Action server Nav2 ('%s') belum siap!\033[0m", action_name_.c_str());
       return;
     }
 
@@ -1222,13 +1236,13 @@ private:
     auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     send_opts.goal_response_callback = [this](const GoalHandle::SharedPtr & handle) {
       if (!handle) {
-        RCLCPP_WARN(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m [FOLLOW] Nav2 goal rejected");
+        RCLCPP_WARN(get_logger(), "\033[91m[FOLLOW] Goal following ditolak oleh Nav2!\033[0m");
         is_nav_active_ = false;
         last_nav_fail_time_ = now();
       } else {
         goal_handle_ = handle;
         is_nav_active_ = true;
-        RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Nav: Goal accepted");
+        RCLCPP_INFO(get_logger(), "\033[92m[FOLLOW] Goal following diterima Nav2 (Avoidance Costmap aktif).\033[0m");
       }
     };
     send_opts.result_callback = [this](const GoalHandle::WrappedResult & res) {
@@ -1237,14 +1251,14 @@ private:
       if (res.code == rclcpp_action::ResultCode::SUCCEEDED) {
         RCLCPP_INFO_THROTTLE(
           get_logger(), *get_clock(), 1500,
-          "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Follow: Near operator");
+          "\033[92m[FOLLOW] Arrived near operator. Waiting for operator to move...\033[0m");
       } else if (res.code == rclcpp_action::ResultCode::CANCELED) {
-        RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Nav: Goal canceled");
+        RCLCPP_INFO(get_logger(), "\033[93m[FOLLOW] Nav2 following goal canceled.\033[0m");
       } else if (res.code == rclcpp_action::ResultCode::ABORTED) {
         last_nav_fail_time_ = now();
         RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 2000,
-          "\033[1;32m[HELP_ME_CARRY]\033[0m [FOLLOW] Nav2 aborted");
+          "\033[91m[FOLLOW] Nav2 aborted (obstacle/unreachable). Retrying shortly...\033[0m");
       }
     };
 
@@ -1298,7 +1312,7 @@ private:
 
     resp->success = true;
     resp->message = "Person following active (Start distance: >0.7m, Stop distance: <0.5m).";
-    RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
+    RCLCPP_INFO(get_logger(), "%s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
   }
 
   void handle_stop_follow(std::shared_ptr<Trigger::Response> resp)
@@ -1338,7 +1352,7 @@ private:
 
     resp->success = true;
     resp->message = "Person following stopped.";
-    RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
+    RCLCPP_INFO(get_logger(), "%s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
   }
 
   void check_safety_watchdog()
@@ -1394,7 +1408,7 @@ private:
     }
 
     // 2. Wait until operator gives valid gesture (RIGHT or LEFT)
-    RCLCPP_INFO(get_logger(), "\033[1;36m[ALIGN BAG]\033[0m Waiting gesture...");
+    RCLCPP_INFO(get_logger(), "[Align Bag] Waiting for operator pointing gesture (LEFT / RIGHT)...");
     const auto wait_start = now();
     const double gesture_timeout = 20.0;
     std::string gest = "NONE";
@@ -1411,7 +1425,7 @@ private:
       is_left  = (gest.find("LEFT") != std::string::npos || gest.find("KIRI") != std::string::npos);
 
       if (is_right || is_left) {
-        RCLCPP_INFO(get_logger(), "\033[1;36m[ALIGN BAG]\033[0m Gesture: %s", gest.c_str());
+        RCLCPP_INFO(get_logger(), "[Align Bag] Gesture detected: %s", gest.c_str());
         break;
       }
       loop_rate.sleep();
@@ -1420,7 +1434,7 @@ private:
     if (!is_right && !is_left) {
       resp->success = false;
       resp->message = "Timeout waiting for operator gesture (latest: " + gest + ")";
-      RCLCPP_WARN(get_logger(), "\033[1;33m[ALIGN BAG]\033[0m Timeout waiting gesture (%s)", gest.c_str());
+      RCLCPP_WARN(get_logger(), "[Align Bag] %s", resp->message.c_str());
       return;
     }
 
@@ -1494,7 +1508,7 @@ private:
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     // 6. Approach bag
-    RCLCPP_INFO(get_logger(), "\033[1;36m[ALIGN BAG]\033[0m Approaching to %.2fm...", bag_stop_distance_);
+    RCLCPP_INFO(get_logger(), "[Align Bag] Aligned with bag. Approaching to distance %.2f m...", bag_stop_distance_);
     const auto t_approach = now();
     const double max_approach_sec = 10.0;
     double last_known_dist = target_bag.x;
@@ -1525,7 +1539,7 @@ private:
       if (found_front_bag) {
         last_known_dist = min_d;
         if (chosen_bag.x <= bag_stop_distance_ || min_d <= bag_stop_distance_) {
-          RCLCPP_INFO(get_logger(), "\033[1;32m[ALIGN BAG]\033[0m Bag reached: %.2fm", min_d);
+          RCLCPP_INFO(get_logger(), "[Align Bag] In front of bag! Distance: %.2f m (target: %.2f m).", min_d, bag_stop_distance_);
           break;
         }
 
@@ -1538,16 +1552,9 @@ private:
         twist.linear.y = 0.0;
         twist.angular.z = wz;
         cmd_vel_pub_->publish(twist);
-
-        RCLCPP_INFO_THROTTLE(
-          get_logger(),
-          *get_clock(),
-          500,
-          "\033[1;36m[ALIGN BAG]\033[0m d=%.2fm | v=%.2f, w=%.2f",
-          min_d, twist.linear.x, twist.angular.z);
       } else {
         if (last_known_dist <= bag_stop_distance_ + 0.15) {
-          RCLCPP_INFO(get_logger(), "\033[1;32m[ALIGN BAG]\033[0m Bag close (%.2fm), done approach", last_known_dist);
+          RCLCPP_INFO(get_logger(), "[Align Bag] Bag close (%.2f m) near ZED FOV limit. Finished approach.", last_known_dist);
           break;
         }
         twist.linear.x = 0.05;
@@ -1567,7 +1574,7 @@ private:
     resp->success = true;
     resp->message = std::string("Robot aligned and approached ") +
                     (is_right ? "right" : "left") + " bag, then stopped.";
-    RCLCPP_INFO(get_logger(), "%s", resp->message.c_str());
+    RCLCPP_INFO(get_logger(), "%s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
   }
 
   void handle_step_back(
@@ -1590,13 +1597,6 @@ private:
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    // Refresh parameter terkini
-    get_parameter("step_back_person_distance", step_back_person_distance_);
-    get_parameter("step_back_speed", step_back_speed_);
-    get_parameter("step_back_timeout", step_back_timeout_);
-    get_parameter("step_back_target_bags", step_back_target_bags_);
-    get_parameter("step_back_bag_keep_sec", step_back_bag_keep_sec_);
-
     const auto t_start = now();
     bool two_bags_detected = false;
     rclcpp::Time two_bags_detected_time{0, 0, RCL_ROS_TIME};
@@ -1607,12 +1607,15 @@ private:
     double last_bag_dist = 0.0;
     int detected_bag_count = 0;
 
-    RCLCPP_INFO(get_logger(), "\033[1;36m[STEPBACK]\033[0m Moving back (target: %.2fm, timeout: %.1fs)", step_back_person_distance_, step_back_timeout_);
+    RCLCPP_INFO(
+      get_logger(),
+      "[Step Back] Robot mulai bergerak mundur (speed: -%.2f m/s, target operator dist: %.2f m, target bags: %d, keep: %.1fs, timeout: %.1f s)",
+      std::abs(step_back_speed_), step_back_person_distance_, step_back_target_bags_, step_back_bag_keep_sec_, step_back_timeout_);
 
     while (rclcpp::ok()) {
       const double elapsed = (now() - t_start).seconds();
       if (elapsed > step_back_timeout_) {
-        RCLCPP_WARN(get_logger(), "\033[1;33m[STEPBACK]\033[0m Timeout (%.1fs)", step_back_timeout_);
+        RCLCPP_WARN(get_logger(), "[Step Back] Timeout (%.1f s) tercapai.", step_back_timeout_);
         break;
       }
 
@@ -1635,8 +1638,8 @@ private:
             last_bag_dist = sum_dist / count;
             RCLCPP_INFO(
               get_logger(),
-              "\033[1;32m[STEPBACK]\033[0m %d bags found (%.2fm)",
-              count, last_bag_dist);
+              "\033[1;32m[Step Back]\033[0m %d tas terdeteksi (rata-rata jarak %.2f m)! Mempertahankan perintah mundur selama %.1f detik...",
+              count, last_bag_dist, step_back_bag_keep_sec_);
           }
         }
       }
@@ -1648,8 +1651,8 @@ private:
           two_bags_completed = true;
           RCLCPP_INFO(
             get_logger(),
-            "\033[1;32m[STEPBACK]\033[0m Complete (found %d bags)",
-            detected_bag_count);
+            "\033[1;32m[Step Back]\033[0m Selesai mempertahankan mundur %.1f detik setelah mendeteksi %d tas. Berhenti mundur.",
+            step_back_bag_keep_sec_, detected_bag_count);
           break;
         }
       } else {
@@ -1693,8 +1696,8 @@ private:
         if (person_dist_reached) {
           RCLCPP_INFO(
             get_logger(),
-            "\033[1;32m[STEPBACK]\033[0m Target dist reached: %.2fm",
-            last_person_dist);
+            "\033[1;32m[Step Back]\033[0m 2 tas belum terdeteksi, jarak operator/orang terdekat mencapai %.2f m (>= %.2f m)! Berhenti mundur.",
+            last_person_dist, step_back_person_distance_);
           break;
         }
       }
@@ -1753,11 +1756,6 @@ private:
       twist.linear.y = 0.0;
       twist.angular.z = 0.0;
       cmd_vel_pub_->publish(twist);
-
-      RCLCPP_INFO(
-        get_logger(),
-        "[STEPBACK] vx=%.2f | operator_dist=%.2f m",
-        twist.linear.x, last_person_dist);
 
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -1837,156 +1835,6 @@ private:
       }
     }
     return false;
-  }
-
-  // ── LIDAR SPECKLE / OUTLIER FILTER ──────────────────────────────────────────
-  // Mendeteksi dan membuang titik laser terisolasi (< speckle_min_points_) seperti
-  // pantulan glancing kaki orang lewat, sepatu, atau debu di ruang kosong.
-  // Titik yang difilter diubah menjadi quiet_NaN() sehingga tidak dianggap rintangan
-  // oleh SLAM Toolbox dan Costmap (mencegah jejak kaki statis memblokir jalur homing).
-  sensor_msgs::msg::LaserScan::SharedPtr filter_speckles(
-    const sensor_msgs::msg::LaserScan::SharedPtr & raw_scan)
-  {
-    if (!raw_scan || raw_scan->ranges.empty()) {
-      return raw_scan;
-    }
-
-    if (!speckle_filter_enabled_) {
-      return raw_scan;
-    }
-
-    auto filtered_scan = std::make_shared<sensor_msgs::msg::LaserScan>(*raw_scan);
-    const int n = static_cast<int>(filtered_scan->ranges.size());
-    if (n < 3) {
-      return filtered_scan;
-    }
-
-    struct LaserPt {
-      double x{0.0};
-      double y{0.0};
-      bool valid{false};
-    };
-
-    std::vector<LaserPt> pts(n);
-    const double angle_min = filtered_scan->angle_min;
-    const double angle_inc = filtered_scan->angle_increment;
-    const float range_min = filtered_scan->range_min;
-    const float range_max = filtered_scan->range_max;
-    const double max_check_range = speckle_max_range_;
-
-    for (int i = 0; i < n; ++i) {
-      const float r = filtered_scan->ranges[i];
-      if (std::isfinite(r) && r >= range_min && r <= range_max && r <= max_check_range) {
-        const double theta = angle_min + i * angle_inc;
-        pts[i].x = r * std::cos(theta);
-        pts[i].y = r * std::sin(theta);
-        pts[i].valid = true;
-      } else {
-        pts[i].valid = false;
-      }
-    }
-
-    std::vector<std::vector<int>> clusters;
-    std::vector<int> current_cluster;
-
-    for (int i = 0; i < n; ++i) {
-      if (!pts[i].valid) {
-        if (!current_cluster.empty()) {
-          clusters.push_back(std::move(current_cluster));
-          current_cluster.clear();
-        }
-        continue;
-      }
-
-      if (current_cluster.empty()) {
-        current_cluster.push_back(i);
-      } else {
-        const int prev_idx = current_cluster.back();
-        const double dx = pts[i].x - pts[prev_idx].x;
-        const double dy = pts[i].y - pts[prev_idx].y;
-        const double dist = std::hypot(dx, dy);
-
-        if (dist <= speckle_neighbor_dist_) {
-          current_cluster.push_back(i);
-        } else {
-          clusters.push_back(std::move(current_cluster));
-          current_cluster.clear();
-          current_cluster.push_back(i);
-        }
-      }
-    }
-
-    if (!current_cluster.empty()) {
-      clusters.push_back(std::move(current_cluster));
-    }
-
-    // Tangani wrap-around 360 derajat (sambungan antara beam awal index 0 dan akhir index n-1)
-    if (clusters.size() >= 2) {
-      if (!clusters.front().empty() && !clusters.back().empty()) {
-        if (clusters.front().front() == 0 && clusters.back().back() == n - 1) {
-          const double dx = pts[0].x - pts[n - 1].x;
-          const double dy = pts[0].y - pts[n - 1].y;
-          if (std::hypot(dx, dy) <= speckle_neighbor_dist_) {
-            std::vector<int> merged = std::move(clusters.back());
-            merged.insert(merged.end(), clusters.front().begin(), clusters.front().end());
-            clusters.front() = std::move(merged);
-            clusters.pop_back();
-          }
-        }
-      }
-    }
-
-    int removed_pts = 0;
-    for (const auto & cl : clusters) {
-      if (static_cast<int>(cl.size()) < speckle_min_points_) {
-        for (int idx : cl) {
-          filtered_scan->ranges[idx] = std::numeric_limits<float>::quiet_NaN();
-          if (idx < static_cast<int>(filtered_scan->intensities.size())) {
-            filtered_scan->intensities[idx] = 0.0f;
-          }
-          removed_pts++;
-        }
-      }
-    }
-
-    if (removed_pts > 0) {
-      RCLCPP_DEBUG_THROTTLE(
-        get_logger(), *get_clock(), 5000,
-        "\033[1;33m[SpeckleFilter]\033[0m %d titik speckle/noise terisolasi (< %d titik) dibersihkan dari scan.",
-        removed_pts, speckle_min_points_);
-    }
-
-    return filtered_scan;
-  }
-
-  void on_scan_received(const sensor_msgs::msg::LaserScan::SharedPtr & raw_scan)
-  {
-    if (!raw_scan) return;
-
-    static rclcpp::Time last_param_check{0, 0, RCL_ROS_TIME};
-    if ((now() - last_param_check).seconds() >= 1.0) {
-      last_param_check = now();
-      get_parameter("speckle_filter_enabled", speckle_filter_enabled_);
-      get_parameter("speckle_min_points", speckle_min_points_);
-      get_parameter("speckle_neighbor_dist", speckle_neighbor_dist_);
-      get_parameter("speckle_max_range", speckle_max_range_);
-    }
-
-    sensor_msgs::msg::LaserScan::SharedPtr clean_scan;
-    if (speckle_filter_enabled_) {
-      clean_scan = filter_speckles(raw_scan);
-    } else {
-      clean_scan = raw_scan;
-    }
-
-    if (filtered_scan_pub_) {
-      filtered_scan_pub_->publish(*clean_scan);
-    }
-
-    {
-      std::lock_guard<std::mutex> lock(scan_mutex_);
-      latest_scan_ = clean_scan;
-    }
   }
 
   struct LegCluster
@@ -2515,11 +2363,12 @@ private:
       cmd_vel_pub_->publish(twist);
 
       loop_count++;
-      if (loop_count % 5 == 0) { // ~250 ms
+      if (loop_count % 5 == 0) { // Print setiap ~250 ms
         RCLCPP_INFO(
           get_logger(),
-          "[HOMING 180 ROTATE] Terputar: %.1f deg / 180.0 deg | Target: %.1f deg | Sisa: %.1f deg | Wz: %.2f",
-          rotated_abs * 180.0 / M_PI, target_yaw * 180.0 / M_PI, remaining * 180.0 / M_PI, wz);
+          "[HOMING 180 ROTATE RUNNING] t=%.1fs | Terputar: %.1f° / 180.0° | Yaw: %.1f° -> Target: %.1f° | Sisa: %.1f° | Wz: %.2f rad/s",
+          elapsed, rotated_abs * 180.0 / M_PI, cur_yaw * 180.0 / M_PI, target_yaw * 180.0 / M_PI,
+          remaining * 180.0 / M_PI, wz);
       }
 
       rate.sleep();
@@ -2558,7 +2407,7 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;36m[HOMING DIAGNOSTIC]\033[0m Posisi: (x=%.2f, y=%.2f, yaw=%.1f deg) | Origin err: %.1f deg | Sensor: F=%.2fm, B=%.2fm, L=%.2fm, R=%.2fm",
+      "\033[1;36m[HOMING DIAGNOSTIC]\033[0m Posisi: (x=%.2f, y=%.2f, yaw=%.1f°) | Selisih Sudut ke Origin: %.1f° | Jarak Sensor: Depan=%.2fm, Belakang=%.2fm, Kiri=%.2fm, Kanan=%.2fm",
       cur_x, cur_y, cur_yaw * 180.0 / M_PI, rel_angle_origin * 180.0 / M_PI,
       clear.front, clear.back, clear.left, clear.right);
 
@@ -2603,7 +2452,7 @@ private:
                   safe_yaw * 180.0 / M_PI, clearance);
     resp->success = ok;
     resp->message = buf;
-    RCLCPP_INFO(get_logger(), "[Rotate Safe] %s", resp->message.c_str());
+    RCLCPP_INFO(get_logger(), "[Rotate Safe] %s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
   }
 
   // ===========================================================================
@@ -2611,14 +2460,9 @@ private:
   // Mengisi out_promise & out_future untuk tracking status Nav2.
   // Mengembalikan true jika goal berhasil dikirim dan diterima Nav2.
   // ===========================================================================
-  // ===========================================================================
-  // HELPER: Kirim goal Nav2 dengan pose tertentu (Origin atau Slot Antrian).
-  // ===========================================================================
-  bool send_homing_nav2_pose_goal(
-    double target_x, double target_y, double target_yaw,
+  bool send_homing_goal_to_nav2(
     std::shared_ptr<std::promise<rclcpp_action::ResultCode>> & out_promise,
-    std::shared_future<rclcpp_action::ResultCode> & out_future,
-    const std::string & desc = "Nav2")
+    std::shared_future<rclcpp_action::ResultCode> & out_future)
   {
     out_promise = std::make_shared<std::promise<rclcpp_action::ResultCode>>();
     out_future  = out_promise->get_future().share();
@@ -2629,21 +2473,24 @@ private:
       "navigate_to_pose_w_replanning_and_recovery.xml";
     goal.pose.header.frame_id    = frame_map_;
     goal.pose.header.stamp       = now();
-    goal.pose.pose.position.x    = target_x;
-    goal.pose.pose.position.y    = target_y;
+    goal.pose.pose.position.x    = origin_recorded_ ? origin_x_ : 0.0;
+    goal.pose.pose.position.y    = origin_recorded_ ? origin_y_ : 0.0;
     goal.pose.pose.position.z    = 0.0;
-    goal.pose.pose.orientation   = yaw_to_quat(target_yaw);
+    goal.pose.pose.orientation.x = 0.0;
+    goal.pose.pose.orientation.y = 0.0;
+    goal.pose.pose.orientation.z = origin_recorded_ ? origin_qz_ : 0.0;
+    goal.pose.pose.orientation.w = origin_recorded_ ? origin_qw_ : 1.0;
 
     auto shared_promise = out_promise;  // capture by value untuk lambda
 
     auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     send_opts.goal_response_callback =
-      [this, desc](const GoalHandle::SharedPtr & handle) {
+      [this](const GoalHandle::SharedPtr & handle) {
         if (!handle) {
-          RCLCPP_WARN(get_logger(), "\033[1;31m[HOMING]\033[0m Nav2 goal %s rejected", desc.c_str());
+          RCLCPP_WARN(get_logger(), "[Homing] Nav2 menolak goal homing.");
         } else {
           homing_goal_handle_ = handle;
-          RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Homing: Goal %s accepted", desc.c_str());
+          RCLCPP_INFO(get_logger(), "[Homing] Nav2 menerima goal homing -> navigasi ke origin...");
         }
       };
     send_opts.result_callback =
@@ -2655,27 +2502,12 @@ private:
     if (send_future.wait_for(std::chrono::seconds(4)) != std::future_status::ready ||
         !send_future.get())
     {
-      RCLCPP_ERROR(get_logger(), "[Homing] Gagal mengirim goal Nav2 (%s).", desc.c_str());
+      RCLCPP_ERROR(get_logger(), "[Homing] Gagal mengirim goal Nav2.");
       nav_goal_active_ = false;
       return false;
     }
     nav_goal_active_ = true;
     return true;
-  }
-
-  bool send_homing_goal_to_nav2(
-    std::shared_ptr<std::promise<rclcpp_action::ResultCode>> & out_promise,
-    std::shared_future<rclcpp_action::ResultCode> & out_future)
-  {
-    double ox = origin_recorded_ ? origin_x_ : 0.0;
-    double oy = origin_recorded_ ? origin_y_ : 0.0;
-    double oyaw = 0.0;
-    if (origin_recorded_) {
-      const double siny = 2.0 * (origin_qw_ * origin_qz_);
-      const double cosy = 1.0 - 2.0 * (origin_qz_ * origin_qz_);
-      oyaw = std::atan2(siny, cosy);
-    }
-    return send_homing_nav2_pose_goal(ox, oy, oyaw, out_promise, out_future, "Origin");
   }
 
   // ===========================================================================
@@ -2734,19 +2566,11 @@ private:
         return;
       }
 
-      // Jika robot sedang antri manual:
-      // tahan perintah Nav2 agar kecepatan antri manual yang memegang kendali
-      if (is_homing_queuing_) {
-        return;
-      }
-
-      // Jika robot sedang dalam posisi STANDBY di slot antrian:
-      // tahan perintah Nav2 agar robot 100% diam total di antrian
-      if (is_queue_slot_standby_) {
-        return;
-      }
-
       geometry_msgs::msg::Twist out = *msg;
+      // Jika antrian terdeteksi tapi TERHALANG OBSTACLE (is_queue_facing_active_):
+      // Sesuai permintaan: "saat sedang dalam fungsi antri, tetap utamakan avoidance obstacle dari nav2"
+      // Teruskan translasi (linear.x, linear.y) dari Nav2 agar avoidance obstacle Nav2 berjalan penuh,
+      // sambil mempertahankan orientasi haluan (angular.z) tertuju ke antrian!
       if (is_queue_facing_active_) {
         std::lock_guard<std::mutex> lock(queue_facing_mutex_);
         out.angular.z = queue_facing_wz_;
@@ -2754,13 +2578,19 @@ private:
         return;
       }
 
-      // Passthrough normal untuk Nav2 homing (baik menuju Origin maupun menuju QueueSlot)
+      // Jika jalur bersih dan sedang dalam mode antri manual atau sedang sweep search:
+      // tahan perintah Nav2 agar tidak berbenturan
+      if (is_homing_queuing_ || is_queue_search_active_.load()) {
+        return;
+      }
+
+      // Passthrough normal untuk Nav2 homing
       cmd_vel_pub_->publish(out);
       return;
     }
 
     // Default passthrough untuk navigasi umum selain homing
-    if (!is_homing_queuing_ && !is_queue_slot_standby_) {
+    if (!is_homing_queuing_) {
       cmd_vel_pub_->publish(*msg);
     }
   }
@@ -2962,7 +2792,7 @@ private:
     const std::shared_ptr<Trigger::Request> /*req*/,
     std::shared_ptr<Trigger::Response> resp)
   {
-    RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Homing: Starting homing navigation...");
+    RCLCPP_INFO(get_logger(), "[Homing] Service /homing dipanggil. Memulai navigasi pulang...");
 
     // 1. Hentikan person following jika sedang aktif
     if (is_following_) {
@@ -2974,12 +2804,12 @@ private:
     if (!action_client_->wait_for_action_server(std::chrono::seconds(3))) {
       resp->success = false;
       resp->message = "Nav2 'navigate_to_pose' action server not available.";
-      RCLCPP_ERROR(get_logger(), "\033[1;31m[HOMING]\033[0m Nav2 action server unavailable");
+      RCLCPP_ERROR(get_logger(), "%s", resp->message.c_str());
       return;
     }
 
     // 2b. Rotasi 180 derajat ke daerah yang lebih kosong dibanding satu sisinya sebelum memulai alur navigasi pulang
-    RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Homing: 180° rotation start");
+    RCLCPP_INFO(get_logger(), "\033[1;36m[Homing]\033[0m Memulai inisialisasi: rotasi 180° ke daerah yang lebih kosong...");
     rotate_180_towards_open_space(12.0);
 
     is_homing_active_  = true;
@@ -3012,25 +2842,19 @@ private:
     nav_goal_active_ = true;
     is_queue_facing_active_ = false;
     is_queue_search_active_ = false;
-    is_queue_slot_standby_ = false;
-
     rclcpp_action::ResultCode nav_result = rclcpp_action::ResultCode::UNKNOWN;
     rclcpp::Time   last_corridor_person_time{0, 0, RCL_ROS_TIME};
     double         last_queue_dist = 1e9;
     double         last_queue_x    = 0.0;
     double         last_queue_y    = 0.0;
     bool           queue_completed = false;
-    bool           queue_engaged = false;
     bool           has_reached_queue_stop = false;
-    (void)has_reached_queue_stop;
+    bool           queue_engaged = false;
+    int            locked_queue_id = -1;
     bool           has_locked_world = false;
     double         locked_queue_wx = 0.0;
     double         locked_queue_wy = 0.0;
-
-    // Kecepatan gerak antri yang di-smoothing (filter transisi mulus & anti tabrak)
-    double queue_cmd_vx_smooth = 0.0;
-    double queue_cmd_vy_smooth = 0.0;
-    double queue_cmd_wz_smooth = 0.0;
+    rclcpp::Time   queue_wait_start_time{0, 0, RCL_ROS_TIME};
 
     // ── Variabel State Machine Pencarian Antrian (Search 20 deg kiri/kanan) ────
     enum class QueueSearchState {
@@ -3049,6 +2873,22 @@ private:
     bool has_started_following_path = false;
     const double kSearchSweepAngle = 20.0 * M_PI / 180.0; // 20 derajat (0.349 rad)
     const double kSearchIntervalSec = 10.0; // loop setiap 5 detik sekali
+
+    // ── State Machine Escape / Anti-Stuck Avoidance Saat Antri ─────────────
+    enum class QueueAvoidState {
+      NORMAL,
+      BACKING_UP,
+      DIAGONAL_APPROACH
+    };
+    QueueAvoidState queue_avoid_state = QueueAvoidState::NORMAL;
+    rclcpp::Time queue_avoid_state_start{0, 0, RCL_ROS_TIME};
+    int queue_stuck_cycles = 0;
+    bool queue_escape_prefer_left = true;
+
+    // Kecepatan gerak antri yang di-smoothing (filter transisi mulus & anti tabrak)
+    double queue_cmd_vx_smooth = 0.0;
+    double queue_cmd_vy_smooth = 0.0;
+    double queue_cmd_wz_smooth = 0.0;
 
     // Baca ulang konfigurasi terkini dari ROS2 param / yaml saat homing dimulai
     get_parameter("homing_queue_enabled", homing_queue_enabled_);
@@ -3114,6 +2954,7 @@ private:
         if (is_homing_queuing_ || queue_engaged) {
           is_homing_queuing_ = false;
           queue_engaged      = false;
+          locked_queue_id    = -1;
           has_locked_world   = false;
           queue_completed    = true;
           is_queue_search_active_ = false;
@@ -3137,9 +2978,7 @@ private:
       double closest_y    = 0.0;
       double closest_dist = 1e9;
       bool   person_in_corridor = false;
-      bool   real_person_detected = false;
       bool   queue_has_back_facing = false;
-      (void)queue_has_back_facing;
       size_t detected_queue_size = 0;
 
       struct QueueCand {
@@ -3233,33 +3072,36 @@ private:
         }
 
         size_t best_back_idx = cands.size();
-        // Prioritas 1: kandidat is_back terdekat dengan posisi target terkunci sebelumnya (ref_bx, ref_by)
-        // ANTI-TARGET JUMP: Tolak kandidat yang posisinya melompat > 35cm lebih maju dari ekor terkunci (Person 2 / 3)!
-        double best_ref_err = has_locked_world ? 0.60 : 1.20;
-        for (size_t i = 0; i < cands.size(); ++i) {
-          if (!cands[i].is_back) continue;
-          if (has_locked_world && cands[i].px_b > ref_bx + 0.35) {
-            continue; // Tolak orang yang lebih maju di antrian
-          }
-          const double err = has_locked_world
-            ? std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by)
-            : cands[i].dist;
-          if (err < best_ref_err) {
-            best_ref_err = err;
-            best_back_idx = i;
+        // Prioritas 1: cocokkan ID yang sudah dikunci saat inisiasi
+        if (locked_queue_id != -1) {
+          for (size_t i = 0; i < cands.size(); ++i) {
+            if (cands[i].id == locked_queue_id &&
+                (cands[i].is_back || std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by) < 1.00))
+            {
+              best_back_idx = i;
+              break;
+            }
           }
         }
 
-        // Prioritas 2: toleransi jika flag is_back drop sesaat pada jarak dekat
+        // Prioritas 2: kandidat is_back terdekat dengan posisi target terkunci sebelumnya
         if (best_back_idx == cands.size()) {
-          best_ref_err = has_locked_world ? 0.50 : 1.00;
+          double best_ref_err = 0.90;
           for (size_t i = 0; i < cands.size(); ++i) {
-            if (has_locked_world && cands[i].px_b > ref_bx + 0.35) {
-              continue; // Tolak orang yang lebih maju
+            if (!cands[i].is_back) continue;
+            const double err = std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by);
+            if (err < best_ref_err) {
+              best_ref_err = err;
+              best_back_idx = i;
             }
-            const double err = has_locked_world
-              ? std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by)
-              : cands[i].dist;
+          }
+        }
+
+        // Prioritas 3: toleransi jika flag is_back drop sesaat pada jarak dekat
+        if (best_back_idx == cands.size()) {
+          double best_ref_err = 0.85;
+          for (size_t i = 0; i < cands.size(); ++i) {
+            const double err = std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by);
             if (err < best_ref_err) {
               best_ref_err = err;
               best_back_idx = i;
@@ -3271,46 +3113,33 @@ private:
           closest_dist = cands[best_back_idx].dist;
           closest_x = cands[best_back_idx].px_b;
           closest_y = cands[best_back_idx].py_b;
+          if (cands[best_back_idx].id != -1 &&
+              (locked_queue_id == -1 || std::hypot(closest_x - ref_bx, closest_y - ref_by) < 0.45))
+          {
+            locked_queue_id = cands[best_back_idx].id;
+          }
           if (has_pose_w) {
             locked_queue_wx = rx_w + closest_x * std::cos(ryaw_w) - closest_y * std::sin(ryaw_w);
             locked_queue_wy = ry_w + closest_x * std::sin(ryaw_w) + closest_y * std::cos(ryaw_w);
             has_locked_world = true;
           }
-          real_person_detected = true;
-          person_in_corridor = true;
-          detected_queue_size = 1;
-
-          RCLCPP_INFO_THROTTLE(
-            get_logger(), *get_clock(), 1000,
-            "\033[1;36m[Homing Queue]\033[0m Menyesuaikan posisi antrian (Spatial Lock): "
-            "Target orang antri di (%.2f, %.2f) jarak=%.2fm.",
-            closest_x, closest_y, closest_dist);
-        } else if (has_locked_world && has_pose_w && ref_bx > 0.15 && std::hypot(ref_bx, ref_by) < 3.0 &&
-                   (now() - last_corridor_person_time).seconds() < homing_queue_clear_hysteresis_) {
-          // KUNCI POSISI TERAKHIR TETAP DIGUNAKAN HANYA SEMENTARA (fallback saat kamera drop / orang terlalu dekat)
-          // Dibatasi oleh timeout homing_queue_clear_hysteresis_ agar tidak stuck saat orang sudah pergi!
-          closest_x = ref_bx;
-          closest_y = ref_by;
-          closest_dist = std::hypot(ref_bx, ref_by);
           person_in_corridor = true;
           queue_has_back_facing = true;
           detected_queue_size = 1;
 
           RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 1000,
-            "\033[1;33m[Homing Queue]\033[0m Menyesuaikan posisi ke KOORDINAT TERKUNCI (ZED drop sesaat: %.1fs / %.1fs): "
-            "Target terkunci di (%.2f, %.2f) jarak=%.2fm.",
-            (now() - last_corridor_person_time).seconds(), homing_queue_clear_hysteresis_,
-            closest_x, closest_y, closest_dist);
+            "\033[1;36m[Homing Queue]\033[0m Menyesuaikan posisi antrian (Single Lock ID=%d): "
+            "Target orang antri di (%.2f, %.2f) jarak=%.2fm.",
+            locked_queue_id, closest_x, closest_y, closest_dist);
         } else {
-          // Timeout tercapai atau posisi di luar jangkauan: orang sudah pergi!
           person_in_corridor = false;
-          has_locked_world = false;
         }
 
       } else {
-        // ── MODE INISIASI: DETEKSI ANTRIAN & KUNCI POSISI EKOR ANTRIAN (BACK TERDEKAT) ───
-        // Mengunci posisi terakhir dari back yang paling belakang agar robot bergerak ke sana & menyesuaikan posisi.
+        // ── MODE INISIASI: DETEKSI >= 2 PERSON BACK DALAM JARAK <= 2.5M ───
+        // Walau orang antri tidak berada pada path homing, tetap masuk ke fungsi antri
+        // jika sudah melihat 2 back atau lebih dalam jarak <= 2.5 meter.
         std::vector<size_t> raw_back_indices;
         for (size_t i = 0; i < cands.size(); ++i) {
           if (cands[i].is_back) {
@@ -3356,8 +3185,9 @@ private:
             raw_back_indices.size());
         }
 
-        if (!back_indices.empty() && back_indices.size() >= static_cast<size_t>(homing_queue_min_persons_)) {
-          // 1. Ambil orang 'back' yang memiliki nilai dist paling dekat ke robot
+        if (back_indices.size() >= static_cast<size_t>(homing_queue_min_persons_)) {
+          // Terdeteksi >= 2 orang facing back unik!
+          // Langsung masuk ke fungsi antrian dan lock single person terdekat!
           size_t best_cand_idx = back_indices[0];
           double best_back_dist = cands[best_cand_idx].dist;
 
@@ -3368,29 +3198,14 @@ private:
             }
           }
 
-          // 2. Cek apakah ada orang lain di cands yang berada lebih dekat di depan robot
-          // (Ekor antrian yang sebenarnya jika orang paling belakang sempat drop status back-nya)
-          for (size_t i = 0; i < cands.size(); ++i) {
-            if (cands[i].dist < best_back_dist && cands[i].px_b > 0.20) {
-              const double d_to_back = std::hypot(
-                cands[i].px_b - cands[best_cand_idx].px_b,
-                cands[i].py_b - cands[best_cand_idx].py_b);
-              if (d_to_back <= homing_queue_inter_dist_) {
-                best_back_dist = cands[i].dist;
-                best_cand_idx = i;
-              }
-            }
-          }
-
-          // 3. KUNCI POSISI TARGET EKOR ANTRIAN
           closest_dist = cands[best_cand_idx].dist;
           closest_x = cands[best_cand_idx].px_b;
           closest_y = cands[best_cand_idx].py_b;
-          real_person_detected = true;
           person_in_corridor = true;
           queue_has_back_facing = true;
-          detected_queue_size = std::max(back_indices.size(), cands.size());
-          queue_engaged = true; // Kunci antrian! Beralih permanen ke mode penyesuaian posisi (Spatial Lock)
+          detected_queue_size = back_indices.size();
+          queue_engaged = true; // Kunci antrian! Beralih permanen ke mode penyesuaian posisi (Single Lock)
+          locked_queue_id = cands[best_cand_idx].id;
           has_locked_world = false;
 
           double rx_w = 0.0, ry_w = 0.0, ryaw_w = 0.0;
@@ -3404,6 +3219,9 @@ private:
           if (search_state != QueueSearchState::INACTIVE || is_queue_search_active_.load()) {
             search_state = QueueSearchState::INACTIVE;
             is_queue_search_active_ = false;
+            queue_cmd_vx_smooth = 0.0;
+            queue_cmd_vy_smooth = 0.0;
+            queue_cmd_wz_smooth = 0.0;
             geometry_msgs::msg::Twist stop_twist;
             cmd_vel_pub_->publish(stop_twist);
             RCLCPP_INFO(
@@ -3413,14 +3231,17 @@ private:
               detected_queue_size);
           }
 
-          // 2. Transisi masuk ke mode antri via Nav2 Dynamic Slot
+          // 2. Langsung pause Nav2 seketika dan masuk ke mode antri
+          if (nav_goal_active_) {
+            cancel_homing_nav2_goal();
+            nav_goal_active_ = false;
+          }
           is_homing_queuing_ = true;
-          is_queue_slot_standby_ = false;
 
           RCLCPP_INFO(
             get_logger(),
             "\033[1;32m[Homing Queue]\033[0m VALID ANTRIAN TERDETEKSI (%zu orang facing back)! "
-            "Mengunci single person terdekat di (%.2f, %.2f) jarak=%.2fm untuk navigasi ke slot antrian via Nav2.",
+            "Langsung masuk fungsi antri dan mengunci single person terdekat di (%.2f, %.2f) jarak=%.2fm.",
             detected_queue_size, closest_x, closest_y, closest_dist);
         }
       }
@@ -3550,15 +3371,8 @@ private:
       }
 
       // Update timestamp dan posisi terakhir jika orang terdeteksi menghalangi path
-      // HANYA perbarui timestamp waktu melihat orang jika benar-benar terdeteksi kamera
-      // agar timer hysteresis dapat berjalan saat kamera drop / orang pergi
-      if (real_person_detected) {
+      if (person_in_corridor) {
         last_corridor_person_time = now();
-        last_queue_dist = closest_dist;
-        last_queue_x    = closest_x;
-        last_queue_y    = closest_y;
-      } else if (person_in_corridor) {
-        // Fallback koordinat terkunci saat kamera drop: update koordinat tanpa reset timer
         last_queue_dist = closest_dist;
         last_queue_x    = closest_x;
         last_queue_y    = closest_y;
@@ -3576,155 +3390,89 @@ private:
 
       // === C.2 Keputusan: antri atau lanjutkan navigasi ======================
       if (recent_person && target_dist < 1e8) {
-        // ── 1. HITUNG ORIENTASI SUMBU ANTRIAN (SEJAJAR DENGAN PATH / KORIDOR) ───
-        // Pendekatan seperti restaurant: robot menghadap lurus searah antrian,
-        // BUKAN miring/serong menatap orang secara diagonal!
-        double queue_desired_yaw = 0.0;
-        bool has_queue_yaw = false;
-        double rx_w = 0.0, ry_w = 0.0, ryaw_w = 0.0;
-        const bool has_tf_w = get_robot_pose_world(rx_w, ry_w, ryaw_w);
-
-        if (has_tf_w) {
-          nav_msgs::msg::Path::SharedPtr plan;
-          {
-            std::lock_guard<std::mutex> lock(homing_plan_mutex_);
-            plan = latest_homing_plan_;
-          }
-          if (plan && plan->poses.size() >= 2) {
-            size_t nearest_idx = 0;
-            double min_d = 1e9;
-            for (size_t i = 0; i < plan->poses.size(); ++i) {
-              const double d = std::hypot(
-                plan->poses[i].pose.position.x - rx_w,
-                plan->poses[i].pose.position.y - ry_w);
-              if (d < min_d) {
-                min_d = d;
-                nearest_idx = i;
-              }
-            }
-            size_t ahead_idx = std::min(nearest_idx + 3, plan->poses.size() - 1);
-            if (ahead_idx > nearest_idx) {
-              const double dx = plan->poses[ahead_idx].pose.position.x - plan->poses[nearest_idx].pose.position.x;
-              const double dy = plan->poses[ahead_idx].pose.position.y - plan->poses[nearest_idx].pose.position.y;
-              if (std::hypot(dx, dy) > 0.08) {
-                queue_desired_yaw = std::atan2(dy, dx);
-                has_queue_yaw = true;
-              }
-            }
-          }
-
-          if (!has_queue_yaw) {
-            const double ox = origin_recorded_ ? origin_x_ : 0.0;
-            const double oy = origin_recorded_ ? origin_y_ : 0.0;
-            const double dx = ox - rx_w;
-            const double dy = oy - ry_w;
-            if (std::hypot(dx, dy) > 0.30) {
-              queue_desired_yaw = std::atan2(dy, dx);
-              has_queue_yaw = true;
-            }
-          }
-        }
-
-        // Selisih sudut hadap robot terhadap orientasi antrian
-        double yaw_err = 0.0;
-        if (has_queue_yaw && has_tf_w) {
-          yaw_err = normalize_angle(queue_desired_yaw - ryaw_w);
-        } else {
-          // Fallback jika orientasi path/world belum tersedia: luruskan ke arah orang
-          yaw_err = std::atan2(target_y, target_x);
-        }
-
-        double wz_corr = 0.0;
-        if (std::abs(yaw_err) > 0.04) {
-          wz_corr = std::clamp(1.20 * yaw_err, -0.35, 0.35);
-          if (std::abs(wz_corr) < 0.10) {
-            wz_corr = (yaw_err > 0.0) ? 0.10 : -0.10;
-          }
-        }
-
         // ── LANGSUNG MASUK KE FUNGSI ANTRI (Pause Nav2 seketika) ──────────────
+        // Sesuai permintaan user: saat mendeteksi multi back, langsung masuk ke fungsi antri
         is_queue_facing_active_ = false;
         if (nav_goal_active_) {
           cancel_homing_nav2_goal();
           nav_goal_active_   = false;
           is_homing_queuing_ = true;
 
+          // Hentikan robot seketika dari navigasi Nav2
           geometry_msgs::msg::Twist stop_twist;
           cmd_vel_pub_->publish(stop_twist);
 
           RCLCPP_INFO(
             get_logger(),
             "\033[1;32m[Homing Queue]\033[0m LANGSUNG MASUK KE FUNGSI ANTRI: Nav2 di-pause! "
-            "Robot masuk/mengikuti antrian (%zu orang): target di (%.2f, %.2f) jarak=%.2fm.",
-            detected_queue_size, target_x, target_y, target_dist);
+            "Robot masuk/mengikuti antrian (%zu orang%s): target di (%.2f, %.2f) jarak=%.2fm.",
+            detected_queue_size,
+            queue_has_back_facing ? " [ORANG MENGHADAP BELAKANG]" : "",
+            target_x, target_y, target_dist);
         } else {
           is_homing_queuing_ = true;
         }
 
-        // ── 2. PENSEJAJARAN HOLONOMIK TEPAT DI BELAKANG ORANG (X & Y) ─────────
-        // target_y adalah offset lateral orang dari garis tengah robot (base_link)
-        // Robot menggeser menyamping (+vy / -vy) agar tepat di belakang punggung orang (target_y = 0)
-        double vy_corr = 0.0;
+        // =====================================================================
+        // DIRECT RELATIVE HOLONOMIC VISUAL SERVOING (3-DOF SIMULTAN)
+        // Menyelaraskan diri tepat di belakang punggung orang antrian (X = 1.0m, Y = 0.0m).
+        // Moncong robot selalu mengunci orang agar target tidak lepas dari FOV kamera ZED.
+        // =====================================================================
+        const double yaw_err = std::atan2(target_y, target_x);
         const double lateral_err = target_y;
-        if (std::abs(lateral_err) > 0.03) {
-          vy_corr = std::clamp(0.80 * lateral_err, -0.20, 0.20);
-          if (std::abs(vy_corr) < 0.06) {
-            vy_corr = (lateral_err > 0.0) ? 0.06 : -0.06;
-          }
-        }
-
-        // Penyesuaian jarak maju/mundur menuju jarak antri aman (homing_queue_distance_ = 1.0m)
         const double dist_err = target_x - homing_queue_distance_;
-        double vx_corr = 0.0;
-        if (target_x > homing_queue_distance_ + 0.05) {
-          vx_corr = std::clamp(0.45 * dist_err, homing_queue_crawl_speed_, 0.22);
-        } else if (target_x < 0.70) {
-          vx_corr = -0.06;
-        } else {
-          vx_corr = 0.0;
+
+        // 1. ANGULAR HEADING CONTROL (wz):
+        // Selalu mengarahkan moncong ke target orang (P-controller mulus tanpa lonjakan diskrit)
+        double cmd_wz = 0.0;
+        if (std::abs(yaw_err) > 0.03) {
+          cmd_wz = std::clamp(1.40 * yaw_err, -max_wz_, max_wz_);
         }
 
-        geometry_msgs::msg::Twist queue_cmd;
-        queue_cmd.linear.x  = vx_corr;
-        queue_cmd.linear.y  = vy_corr;
-        queue_cmd.angular.z = wz_corr;
+        // 2. LATERAL POSITION CONTROL (vy):
+        // Menggeser bodi secara lateral (Y) agar tepat berada di sumbu tengah tubuh orang (y = 0.0)
+        double cmd_vy = 0.0;
+        if (std::abs(lateral_err) > 0.03) {
+          cmd_vy = std::clamp(0.60 * lateral_err, -max_vy_, max_vy_);
+        }
 
-        const bool is_aligned_behind = (std::abs(lateral_err) <= 0.06 && std::abs(yaw_err) <= 0.08);
-        if (is_aligned_behind) {
+        // 3. LONGITUDINAL DISTANCE CONTROL (vx):
+        // Menjaga jarak tepat di homing_queue_distance_ (1.00m)
+        double cmd_vx = 0.0;
+        std::string queue_motion_status = "HOMING_QUEUING_STANDBY";
+
+        if (dist_err > 0.08) {
+          // Target berada lebih jauh dari 1.08m (orang maju / baru mendekat): meluncur maju dengan halus
+          cmd_vx = std::clamp(0.40 * dist_err, homing_queue_crawl_speed_, 0.22);
+          // Redam kecepatan maju jika moncong belum mengarah ke target (cos scaling)
+          cmd_vx *= std::max(0.20, std::cos(yaw_err));
+          queue_motion_status = "HOMING_QUEUING_FOLLOWING";
+          has_reached_queue_stop = true;
+        } else if (dist_err < -0.10) {
+          // Terlalu dekat (< 0.90m): mundur perlahan untuk menjaga jarak antri aman
+          cmd_vx = std::clamp(0.35 * dist_err, -0.12, -0.05);
+          queue_motion_status = "HOMING_QUEUING_BACKING_SAFE";
+        } else {
+          // Tepat pada rentang nyaman antrian 1.0m (0.90m s.d 1.08m): robot standby dalam antrian
+          cmd_vx = 0.0;
+          queue_motion_status = "HOMING_QUEUING_STANDBY";
           has_reached_queue_stop = true;
         }
 
-        if (std::abs(vx_corr) > 0.01) {
-          RCLCPP_INFO_THROTTLE(
-            get_logger(), *get_clock(), 800,
-            "\033[1;32m[Homing Queue]\033[0m MENGIKUTI ANTRIAN (Sejajar Belakang) | "
-            "X=%.2fm (target: %.2fm), Y=%+.2fm, yaw_err=%+.1f° | vx=%.2fm/s, vy=%+.2fm/s, wz=%.2f rad/s",
-            target_x, homing_queue_distance_, lateral_err, yaw_err * 180.0 / M_PI,
-            queue_cmd.linear.x, queue_cmd.linear.y, queue_cmd.angular.z);
+        std_msgs::msg::String st; st.data = queue_motion_status;
+        follow_status_pub_->publish(st);
 
-          std_msgs::msg::String st; st.data = "HOMING_QUEUING_FOLLOWING";
-          follow_status_pub_->publish(st);
-        } else {
-          RCLCPP_INFO_THROTTLE(
-            get_logger(), *get_clock(), 1000,
-            "\033[1;33m[Homing Queue]\033[0m STANDBY DALAM ANTRIAN (Persis di Belakang Orang) | "
-            "X=%.2fm / 1.0m, Y=%+.2fm, yaw_err=%+.1f°",
-            target_x, lateral_err, yaw_err * 180.0 / M_PI);
+        RCLCPP_INFO_THROTTLE(
+          get_logger(), *get_clock(), 800,
+          "\033[1;36m[Homing Queue Servoing]\033[0m Target=(%+.2f, %+.2f) dist=%.2fm | "
+          "err: dist=%+.2fm, lat=%+.2fm, yaw=%+.1f° | raw: vx=%+.2f, vy=%+.2f, wz=%+.2f | %s",
+          target_x, target_y, target_dist,
+          dist_err, lateral_err, yaw_err * 180.0 / M_PI,
+          cmd_vx, cmd_vy, cmd_wz, queue_motion_status.c_str());
 
-          std_msgs::msg::String st; st.data = "HOMING_QUEUING_STANDBY";
-          follow_status_pub_->publish(st);
-        }
-
-        // =====================================================================
-        // ROBUST LIDAR OBSTACLE & WALL AVOIDANCE (PRIORITAS UTAMA SELAMA ANTRI)
-        // Sesuai permintaan user:
-        // "saat menjalankan fungsi antri pastikan avoidance selalu didahulukan,
-        //  walau sedang mencoba antri jika ada obst yang dekat maka utamakan avoidance,
-        //  ini dia nabrak trus padahal pas follow person aman"
-        // =====================================================================
-        double target_vx = queue_cmd.linear.x;
-        double target_vy = queue_cmd.linear.y;
-        double target_wz = wz_corr;
+        double target_vx = cmd_vx;
+        double target_vy = cmd_vy;
+        double target_wz = cmd_wz;
         bool queue_obstacle_detected = false;
 
         if (enable_avoidance_) {
@@ -3759,8 +3507,7 @@ private:
             int right_count = 0;
             double min_flank_left = 999.0;
             double min_flank_right = 999.0;
-            bool narrow_center_obstacle = false;
-            double min_narrow_center_x = 999.0;
+            double min_rear_dist = 999.0;
 
             const int num_readings = static_cast<int>(scan->ranges.size());
             for (int i = 0; i < num_readings; ++i) {
@@ -3783,9 +3530,17 @@ private:
                 continue;
               }
 
-              // 2. Evaluasi jarak sisi samping (|obs_x| < footprint_radius_ + 0.20m)
+              // 2. Evaluasi jarak sektor belakang robot (obs_x < -0.12m)
+              if (obs_x < -0.12 && std::abs(obs_y) < (corridor_width_ + 0.10)) {
+                const double d_rear = std::hypot(obs_x, obs_y);
+                if (d_rear < min_rear_dist) {
+                  min_rear_dist = d_rear;
+                }
+              }
+
+              // 3. Evaluasi jarak sisi samping (|obs_x| < footprint_radius_ + 0.22m)
               // Mencegah robot menggeser lateral dan menyenggol dinding/meja di samping bodi
-              if (std::abs(obs_x) < (footprint_radius_ + 0.20)) {
+              if (std::abs(obs_x) < (footprint_radius_ + 0.22)) {
                 if (obs_y > 0.0 && obs_y < min_flank_left) {
                   min_flank_left = obs_y;
                 } else if (obs_y < 0.0 && -obs_y < min_flank_right) {
@@ -3793,7 +3548,7 @@ private:
                 }
               }
 
-              // 3. Evaluasi clearance sektor depan robot (-75 deg s.d. +75 deg)
+              // 4. Evaluasi clearance sektor depan robot (-75 deg s.d. +75 deg)
               if (angle_base < -1.30 || angle_base > 1.30) {
                 continue;
               }
@@ -3806,29 +3561,15 @@ private:
                 right_count++;
               }
 
-              // 4. FILTER ORANG TARGET ANTRIAN:
-              // Jangan perlakukan tubuh orang yang diantri sebagai rintangan asing (filter Euclidean di base_link)
-              const double d_to_target = std::hypot(obs_x - target_x, obs_y - target_y);
-              if (d_to_target < 0.45) {
-                continue;
-              }
+              // 4. SELURUH OBSTACLE TERMASUK DI AREA ANTRI DIPROTEKSI OLEH LIDAR
+              // (Filter tubuh orang antri dihapus agar tiang pembatas antrian, dinding, dan objek sekitar 100% terdeteksi)
 
-              // 5. KORIDOR BAHAYA DI DEPAN ROBOT:
+              // 6. KORIDOR BAHAYA DI DEPAN ROBOT:
               // Rintangan lain (orang lain di depan, dinding, tiang, meja) di koridor depan
               if (obs_x > footprint_radius_ && obs_x < obstacle_distance_ && std::abs(obs_y) < corridor_width_) {
                 queue_obstacle_detected = true;
                 if (obs_x < min_front_x) {
                   min_front_x = obs_x;
-                }
-              }
-
-              // 6. NARROW CENTER CORRIDOR (|obs_y| <= 0.22m):
-              // Hanya memeriksa rintangan asing yang sangat dekat di koridor tengah (< 0.70m),
-              // bukan orang di jarak antri normal (1.0m) ataupun pagar/dinding samping (|obs_y| >= 0.35m)
-              if (obs_x > footprint_radius_ && obs_x <= 0.70 && std::abs(obs_y) <= 0.22) {
-                narrow_center_obstacle = true;
-                if (obs_x < min_narrow_center_x) {
-                  min_narrow_center_x = obs_x;
                 }
               }
 
@@ -3839,61 +3580,240 @@ private:
               }
             }
 
-            // --- PROTEKSI MUTLAK JARAK DEPAN (TERMASUK TERHADAP ORANG DEPAN) ---
-            // Jika ada rintangan di depan <= min_stop_x_ (0.48m):
-            // STOP MAJU MUTLAK!
-            if (min_front_x <= min_stop_x_ || target_dist <= min_stop_x_) {
-              target_vx = 0.0;
-              if (min_front_x < (footprint_radius_ + 0.12) || target_dist < (footprint_radius_ + 0.15)) {
-                target_vx = -0.06; // Terlalu mepet: mundur perlahan demi keselamatan
+            // =====================================================================
+            // ESCAPE & DIAGONAL REPOSITIONING STATE MACHINE
+            // Sesuai permintaan user:
+            // "apakah saat ada obstacle dekat dia, dia stack saja,
+            //  buat dia dapat ke area yang lebih bebas seperti mundur lalu
+            //  bergerak serong ke arah orangnya biar tidak menabrak dinding"
+            // =====================================================================
+            const bool front_blocked = (min_front_x <= (min_stop_x_ + 0.06));
+            const bool flank_blocked_left = (min_flank_left < (footprint_radius_ + 0.08) && target_vy > 0.02);
+            const bool flank_blocked_right = (min_flank_right < (footprint_radius_ + 0.08) && target_vy < -0.02);
+            const bool rear_clear_for_escape = (min_rear_dist > (footprint_radius_ + 0.12));
+
+            // Deteksi stagnasi gerak: jika robot terhenti karena terhadang obstacle saat belum tiba di stop antrian
+            if ((front_blocked || flank_blocked_left || flank_blocked_right) && dist_err > 0.12) {
+              queue_stuck_cycles++;
+            } else if (queue_stuck_cycles > 0) {
+              queue_stuck_cycles--;
+            }
+
+            // Pemicu masuk ke state BACKING_UP jika ada obstacle/dinding dekat dan belum di posisi stop
+            if (queue_avoid_state == QueueAvoidState::NORMAL) {
+              if ((front_blocked || flank_blocked_left || flank_blocked_right || queue_stuck_cycles >= 6) &&
+                  rear_clear_for_escape && dist_err > 0.12 && !has_reached_queue_stop)
+              {
+                queue_avoid_state = QueueAvoidState::BACKING_UP;
+                queue_avoid_state_start = now();
+
+                // Tentukan arah area bebas (serong menjauhi dinding & mengarah ke target orang)
+                if (std::abs(target_y) > 0.04) {
+                  queue_escape_prefer_left = (target_y > 0.0);
+                  if (queue_escape_prefer_left && min_flank_left < (footprint_radius_ + 0.08)) {
+                    queue_escape_prefer_left = false;
+                  } else if (!queue_escape_prefer_left && min_flank_right < (footprint_radius_ + 0.08)) {
+                    queue_escape_prefer_left = true;
+                  }
+                } else {
+                  double avg_l = (left_count > 0) ? (left_clearance / left_count) : 0.0;
+                  double avg_r = (right_count > 0) ? (right_clearance / right_count) : 0.0;
+                  queue_escape_prefer_left = (avg_l >= avg_r) || (min_flank_left > min_flank_right);
+                }
+
+                RCLCPP_WARN(
+                  get_logger(),
+                  "\033[1;31m[Homing Queue Avoidance]\033[0m OBSTACLE DEKAT ROBOT (front=%.2fm, flank_l=%.2fm, flank_r=%.2fm)! "
+                  "MENGHINDARI STACK: Memulai manuver MUNDUR ke area lebih bebas (%s)...",
+                  min_front_x, min_flank_left, min_flank_right,
+                  queue_escape_prefer_left ? "bias KIRI" : "bias KANAN");
               }
             }
 
-            // --- PROTEKSI NARROW CENTER CORRIDOR DALAM ANTRIAN ---
-            // Jika ada objek asing yang sangat dekat (< 0.70m) di koridor tengah:
-            // Tahan maju agar tidak menabrak
-            if (narrow_center_obstacle && (is_homing_queuing_ || queue_engaged)) {
-              if (target_vx > 0.0) {
+            if (queue_avoid_state == QueueAvoidState::BACKING_UP) {
+              const double elapsed_backup = (now() - queue_avoid_state_start).seconds();
+
+              // Selesai mundur jika:
+              // 1. Sudah ada clearance aman di depan (>= 0.72m) dan durasi >= 0.5s, ATAU
+              // 2. Ruang belakang mulai mendekati batas (min_rear_dist <= footprint_radius_ + 0.10m), ATAU
+              // 3. Timeout mundur (1.5s)
+              if ((min_front_x >= 0.72 && elapsed_backup >= 0.5) ||
+                  (min_rear_dist <= (footprint_radius_ + 0.10) && elapsed_backup >= 0.25) ||
+                  elapsed_backup >= 1.5)
+              {
+                queue_avoid_state = QueueAvoidState::DIAGONAL_APPROACH;
+                queue_avoid_state_start = now();
+                RCLCPP_INFO(
+                  get_logger(),
+                  "\033[1;32m[Homing Queue Avoidance]\033[0m Ruang bebas tercapai (front=%.2fm)! "
+                  "Beralih ke GERAK SERONG ke arah orang antrian.",
+                  min_front_x);
+              } else {
+                // Eksekusi gerak MUNDUR:
+                target_vx = -0.12; // Mundur terkontrol untuk membuka clearance
+                target_vy = queue_escape_prefer_left ? 0.05 : -0.05; // Sedikit serong menjauhi dinding sempit
+                target_wz = std::clamp(0.80 * yaw_err, -0.22, 0.22); // Moncong tetap mengunci target orang
+
+                // Proteksi darurat bagian belakang
+                if (min_rear_dist <= (footprint_radius_ + 0.08)) {
+                  target_vx = 0.0;
+                }
+
+                std_msgs::msg::String st; st.data = "HOMING_QUEUING_ESCAPE_BACKUP";
+                follow_status_pub_->publish(st);
+
+                RCLCPP_INFO_THROTTLE(
+                  get_logger(), *get_clock(), 500,
+                  "\033[1;33m[Homing Queue Avoidance]\033[0m MUNDUR KE AREA BEBAS — vx=%.2f | vy=%+.2f | rear=%.2fm | front=%.2fm",
+                  target_vx, target_vy, min_rear_dist, min_front_x);
+              }
+
+            } else if (queue_avoid_state == QueueAvoidState::DIAGONAL_APPROACH) {
+              const double elapsed_diag = (now() - queue_avoid_state_start).seconds();
+
+              // Selesai gerak serong jika:
+              // 1. Sudah sejajar dengan orang (|lateral_err| <= 0.10m) dan depan aman, ATAU
+              // 2. Timeout manuver serong (2.2s)
+              if ((std::abs(lateral_err) <= 0.10 && min_front_x >= 0.65 && elapsed_diag >= 0.5) ||
+                  elapsed_diag >= 2.2)
+              {
+                queue_avoid_state = QueueAvoidState::NORMAL;
+                queue_stuck_cycles = 0;
+                RCLCPP_INFO(
+                  get_logger(),
+                  "\033[1;32m[Homing Queue Avoidance]\033[0m Manuver serong selesai. Kembali ke pengaturan antrian normal.");
+              } else {
+                // Eksekusi gerak SERONG KE ARAH ORANG:
+                // Maju (vx) sekaligus bergerak lateral (vy) menuju orang sambil menghindari dinding
+                double diag_vx = std::clamp(0.35 * dist_err, homing_queue_crawl_speed_, 0.18);
+                if (min_front_x < obstacle_distance_ && min_front_x > min_stop_x_) {
+                  double brake = (min_front_x - min_stop_x_) / (obstacle_distance_ - min_stop_x_);
+                  diag_vx *= std::clamp(brake, 0.3, 1.0);
+                }
+
+                // Arah lateral serong: utamakan ke arah orang yang di-single-lock
+                double diag_vy = 0.0;
+                if (target_y > 0.04 && min_flank_left >= (footprint_radius_ + 0.08)) {
+                  diag_vy = 0.16;
+                } else if (target_y < -0.04 && min_flank_right >= (footprint_radius_ + 0.08)) {
+                  diag_vy = -0.16;
+                } else {
+                  diag_vy = queue_escape_prefer_left ? 0.12 : -0.12;
+                }
+
+                // Proteksi dinding samping saat serong
+                if (diag_vy > 0.0 && min_flank_left < (footprint_radius_ + 0.08)) {
+                  diag_vy = 0.0;
+                } else if (diag_vy < 0.0 && min_flank_right < (footprint_radius_ + 0.08)) {
+                  diag_vy = 0.0;
+                }
+
+                target_vx = diag_vx;
+                target_vy = diag_vy;
+                target_wz = std::clamp(1.20 * yaw_err, -0.35, 0.35);
+
+                std_msgs::msg::String st; st.data = "HOMING_QUEUING_DIAGONAL_APPROACH";
+                follow_status_pub_->publish(st);
+
+                RCLCPP_INFO_THROTTLE(
+                  get_logger(), *get_clock(), 500,
+                  "\033[1;32m[Homing Queue Avoidance]\033[0m BERGERAK SERONG KE ARAH ORANG — vx=%.2fm/s | vy=%+.2fm/s | wz=%.2f | front=%.2fm",
+                  target_vx, target_vy, target_wz, min_front_x);
+              }
+
+            } else {
+              // --- NORMAL AVOIDANCE LOGIC ---
+              const double flank_safe_margin = footprint_radius_ + 0.08;
+              const bool left_safe = (min_flank_left >= flank_safe_margin);
+              const bool right_safe = (min_flank_right >= flank_safe_margin);
+
+              // Proteksi stop maju jika rintangan depan <= min_stop_x_ (0.48m)
+              if (min_front_x <= min_stop_x_ || target_dist <= min_stop_x_) {
                 target_vx = 0.0;
+                if (min_front_x < (footprint_radius_ + 0.12) || target_dist < (footprint_radius_ + 0.15)) {
+                  target_vx = -0.06; // Terlalu mepet: mundur perlahan demi keselamatan
+                }
               }
-              if (min_narrow_center_x < 0.55) {
-                target_vx = -0.06;
+
+              // Proteksi geser lateral ke dinding samping
+              if (!left_safe && target_vy > 0.0) {
+                target_vy = 0.0;
               }
-            }
-
-            // --- PROTEKSI GESER LATERAL KE DINDING / OBSTACLE SAMPING ---
-            // Gunakan flank limit ketat (~0.30m) agar robot leluasa strafe untuk alignment
-            const double flank_limit = footprint_radius_ + 0.06;
-            if (min_flank_left < flank_limit && target_vy > 0.0) {
-              target_vy = 0.0; // Dilarang geser kiri jika bodi mepet objek kiri
-            }
-            if (min_flank_right < flank_limit && target_vy < 0.0) {
-              target_vy = 0.0; // Dilarang geser kanan jika bodi mepet objek kanan
-            }
-
-            // --- EKSEKUSI AVOIDANCE UTAMA JIKA ADA OBSTACLE DEPAN ---
-            if (queue_obstacle_detected) {
-              // 1. Pengereman progresif jika mendekati obstacle asing di koridor depan
-              if (min_front_x <= min_stop_x_) {
-                target_vx = 0.0;
-              } else if (min_front_x < obstacle_distance_) {
-                double brake_ratio = (min_front_x - min_stop_x_) / (obstacle_distance_ - min_stop_x_);
-                target_vx *= std::clamp(brake_ratio, 0.0, 1.0);
+              if (!right_safe && target_vy < 0.0) {
+                target_vy = 0.0;
               }
-              // Catatan: Jika obstacle berada di jarak >= 0.85m (misal di ~1.5m),
-              // robot tetap melaju mendekat ke antrian, tidak berhenti/diam prematur!
 
-              RCLCPP_WARN_THROTTLE(
-                get_logger(), *get_clock(), 500,
-                "\033[1;33m[Homing Queue Avoidance]\033[0m OBSTACLE TERDETEKSI (min_front=%.2fm)! "
-                "Braking progresif: vx=%.2fm/s | vy=%+.2fm/s | wz=%.2f rad/s",
-                min_front_x, target_vx, target_vy, target_wz);
+              if (queue_obstacle_detected) {
+                // 1. Pengereman progresif jika mendekati obstacle
+                if (min_front_x <= min_stop_x_) {
+                  target_vx = 0.0;
+                } else if (min_front_x < obstacle_distance_) {
+                  double brake_ratio = (min_front_x - min_stop_x_) / (obstacle_distance_ - min_stop_x_);
+                  target_vx *= std::clamp(brake_ratio, 0.0, 1.0);
+                }
+
+                // 2. TANGENTIAL STRAFE VIA OMNI (Avoidance ke arah relevan dengan posisi orang yang di-single-lock):
+                // Sesuai instruksi: AVOIDANCE SELALU DIDAHULUKAN DAN UTAMAKAN MENGHINDAR KE ARAH
+                // YANG RELEVAN DIMANA ORANG YANG DI-SINGLE-LOCK BERADA (target_y)
+                double avoid_vy = 0.0;
+
+                if (target_y > 0.04) {
+                  // Orang berada di sebelah KIRI -> utamakan menghindar ke arah KIRI
+                  if (left_safe) {
+                    avoid_vy = std::clamp(0.18 + 0.25 * std::abs(target_y), 0.14, max_vy_);
+                  } else if (right_safe) {
+                    // Kiri terhalang dinding/obstacle mepet, terpaksa bypass kanan
+                    avoid_vy = -0.14;
+                  }
+                } else if (target_y < -0.04) {
+                  // Orang berada di sebelah KANAN -> utamakan menghindar ke arah KANAN
+                  if (right_safe) {
+                    avoid_vy = -std::clamp(0.18 + 0.25 * std::abs(target_y), 0.14, max_vy_);
+                  } else if (left_safe) {
+                    // Kanan terhalang dinding/obstacle mepet, terpaksa bypass kiri
+                    avoid_vy = 0.14;
+                  }
+                } else {
+                  // Orang berada tepat di tengah robot (|target_y| <= 0.04):
+                  // Tentukan celah lewat sisi obstacle: jika obstacle di kanan, hindar kiri; jika di kiri, hindar kanan
+                  if (rep_y > 0.2 && left_safe) {
+                    avoid_vy = 0.16;
+                  } else if (rep_y < -0.2 && right_safe) {
+                    avoid_vy = -0.16;
+                  } else {
+                    double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
+                    double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
+                    if (avg_left >= avg_right && left_safe) {
+                      avoid_vy = 0.16;
+                    } else if (right_safe) {
+                      avoid_vy = -0.16;
+                    } else if (left_safe) {
+                      avoid_vy = 0.16;
+                    }
+                  }
+                }
+
+                // Proteksi mutlak bodi samping dari rintangan mepet
+                if (avoid_vy > 0.0 && !left_safe) avoid_vy = 0.0;
+                if (avoid_vy < 0.0 && !right_safe) avoid_vy = 0.0;
+
+                target_vy = avoid_vy; // Prioritas mutlak avoidance di atas penyesuaian antrian normal
+
+                // Moncong robot tetap selalu mengunci arah orang yang di-single-lock
+                target_wz = std::clamp(1.20 * yaw_err, -max_wz_, max_wz_);
+
+                RCLCPP_WARN_THROTTLE(
+                  get_logger(), *get_clock(), 500,
+                  "\033[1;33m[Homing Queue Avoidance]\033[0m OBSTACLE TERDETEKSI (min_front=%.2fm)! "
+                  "MENGUTAMAKAN AVOIDANCE KE ARAH ORANG (target_y=%+.2fm): vx=%.2fm/s | vy=%+.2fm/s | wz=%.2f rad/s",
+                  min_front_x, target_y, target_vx, target_vy, target_wz);
+              }
             }
           }
         }
 
         // --- FILTER & SMOOTHING (Persis seperti follow_person agar gerak mulus tanpa sentakan) ---
-        target_vx = std::clamp(target_vx, -0.10, max_vx_);
+        target_vx = std::clamp(target_vx, -0.16, max_vx_);
         target_vy = std::clamp(target_vy, -max_vy_, max_vy_);
         target_wz = std::clamp(target_wz, -max_wz_, max_wz_);
 
@@ -3913,12 +3833,12 @@ private:
 
       } else {
         is_queue_facing_active_ = false;
-        is_queue_slot_standby_ = false;
 
-        // ── ANTRIAN SUDAH TIDAK ADA: KEMBALI / MENUJU POSISI HOMING (ORIGIN) ─
+        // ── ANTRIAN SUDAH TIDAK ADA: KEMBALI / MENUJU POSISI HOMING ───────────
         if (is_homing_queuing_ || queue_engaged) {
           is_homing_queuing_ = false;
           queue_engaged      = false;
+          locked_queue_id    = -1;
           has_locked_world   = false;
           queue_completed    = true;
           has_reached_queue_stop = false;
@@ -3926,6 +3846,8 @@ private:
           queue_cmd_vx_smooth = 0.0;
           queue_cmd_vy_smooth = 0.0;
           queue_cmd_wz_smooth = 0.0;
+          queue_avoid_state   = QueueAvoidState::NORMAL;
+          queue_stuck_cycles  = 0;
 
           // Hentikan gerak antrian seketika
           geometry_msgs::msg::Twist stop_twist;
@@ -3957,6 +3879,9 @@ private:
             break;
           } else {
             // KASUS B: Robot belum di posisi homing -> buat rute baru & update path ke titik homing
+            // Sesuai permintaan user:
+            // "buat path ulang ke titik homing, karena bisa saja setelah sampai akhir antrian,
+            //  robot dapat path yang lebih dekat, jadi update path homing setelah selesai antri"
             RCLCPP_INFO(
               get_logger(),
               "\033[1;32m[Homing Queue]\033[0m ANTRIAN SELESAI / SUDAH TIDAK ADA! "
@@ -3972,13 +3897,7 @@ private:
               latest_homing_plan_.reset();
             }
 
-            // 3. Batalkan goal sebelumnya jika ada
-            if (homing_goal_handle_) {
-              action_client_->async_cancel_goal(homing_goal_handle_);
-              homing_goal_handle_.reset();
-            }
-
-            // 4. Kirim goal baru ke Nav2 untuk mengkalkulasi rute terpendek ke Origin
+            // 3. Kirim goal baru ke Nav2 untuk mengkalkulasi rute terpendek dari posisi saat ini
             if (!send_homing_goal_to_nav2(nav_promise, nav_future)) {
               RCLCPP_ERROR(get_logger(), "[Homing] Gagal mengirim goal Nav2 baru ke posisi homing!");
               break;
@@ -4026,8 +3945,11 @@ private:
     } else {
       resp->success = false;
       resp->message = "Navigasi homing timeout.";
+      RCLCPP_WARN(get_logger(), "[Homing] %s", resp->message.c_str());
       cancel_homing_nav2_goal();
     }
+    RCLCPP_INFO(get_logger(), "[Homing] Selesai: success=%s, message=%s",
+      resp->success ? "true" : "false", resp->message.c_str());
   }
 
     std::string person_topic_;
@@ -4173,7 +4095,7 @@ private:
   double homing_queue_inter_dist_{2.00};
   double homing_queue_crawl_speed_{0.10};
   double homing_queue_wait_duration_{60.0};
-  double homing_queue_clear_hysteresis_{3.0};
+  double homing_queue_clear_hysteresis_{1.0};
   double homing_queue_start_delay_{5.0};
   double homing_timeout_{300.0};
   std::string person_back_topic_{"/vision/person_back"};
@@ -4184,18 +4106,11 @@ private:
   rclcpp::Time latest_back_time_{0, 0, RCL_ROS_TIME};
   bool has_back_person_{false};
   std::string scan_topic_{"/scan"};
-  std::string filtered_scan_topic_{"/scan_filtered"};
-  rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr filtered_scan_pub_;
-  bool speckle_filter_enabled_{true};
-  int speckle_min_points_{3};
-  double speckle_neighbor_dist_{0.15};
-  double speckle_max_range_{12.0};
   std::string nav_cmd_vel_topic_{"/nav_cmd_vel"};
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr nav_cmd_vel_sub_;
   std::atomic<bool> nav_goal_active_{false};
   std::atomic<bool> is_queue_facing_active_{false};
   std::atomic<bool> is_queue_search_active_{false};
-  std::atomic<bool> is_queue_slot_standby_{false};
   std::mutex queue_facing_mutex_;
   double queue_facing_wz_{0.0};
   rclcpp::TimerBase::SharedPtr watchdog_timer_;
@@ -4207,7 +4122,6 @@ private:
 
 int main(int argc, char ** argv)
 {
-  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   std::string node_name = "help_me_carry_node";
   if (argc > 0 && argv[0]) {

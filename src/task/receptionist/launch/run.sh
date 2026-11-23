@@ -19,7 +19,8 @@ if command -v terminator >/dev/null 2>&1; then
     echo "=========================================================="
     echo " Meluncurkan Receptionist dalam Layout Grid (Terminator)..."
     echo " [Kiri Atas   ] Hardware   (STM32 & RPLiDAR)"
-    echo " [Kanan Atas  ] Navigation (Nav2 & RViz)"
+    echo " [Tengah Atas ] Navigation (Nav2 & RViz)"
+    echo " [Kanan Atas  ] Face       (athome_face)"
     echo " [Kiri Bawah  ] Camera     (Vision & IMU)"
     echo " [Tengah Bawah] HRI        (Whisper & Piper)"
     echo " [Kanan Bawah ] Arm        (Dynamixel Arm Motion Server)"
@@ -44,4 +45,6 @@ else
     gnome-terminal --tab --working-directory="${WS_DIR}" --title="HRI" -- bash -c "${SETUP} && sleep 4 && ros2 launch receptionist hri.launch.py; exec bash"
     sleep 1
     gnome-terminal --tab --working-directory="${WS_DIR}" --title="Arm" -- bash -c "${SETUP} && sleep 5 && ros2 launch athome_arm arm.launch.py task:=receptionist; exec bash"
+    sleep 1
+    gnome-terminal --tab --working-directory="${WS_DIR}" --title="Face" -- bash -c "${SETUP} && sleep 6 && ros2 launch athome_face face.launch.py; exec bash"
 fi

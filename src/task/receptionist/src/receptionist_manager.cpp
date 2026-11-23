@@ -1,11 +1,34 @@
 // ==============================================================================
-// Barelang Inari - RoboCup@Home 2026
+// Barelang Inari - RoboCup@Home
 // Package  : receptionist
 // Node     : receptionist_manager (ReceptionistTaskNode)
-// Deskripsi: State Machine (FSM) utama untuk tugas Receptionist (Static Head).
-//            Subsystems: ASR/TTS (athome_hri), Vision (ZED Static RGB-D),
-//            Nav2 (receptionist_node / navigate_to_pose), Arm (athome_arm).
-// edit     : 5 november 2026 pukul 21.00 (Fixed Navigation Sync, Vision Settle, & Thread Safety)
+//
+// Overview:
+//   Main Finite State Machine (FSM) orchestrating the RoboCup@Home Receptionist
+//   task for two sequential guests (Guest 1 and Guest 2).
+//
+// High-Level Task Flow (per guest cycle):
+//   1. Entrance Door : Navigate to entrance_door, wait/align to guest, capture
+//                      name & interest via STT, confirm via Yes/No, and collect
+//                      visual attributes (gender, shirt color, hair color).
+//   2. Beverage Area : Navigate to beverage_area, snapshot visible drinks on
+//                      the table, ask guest's favorite drink (with left/right
+//                      rotation for HRI alignment), and report its table side.
+//   3. Living Room   : Escort guest to living_room (describing seated guests on
+//                      the way), scan/lock person & chair headings, introduce the
+//                      new guest to the Host (and Guest 1 <-> Guest 2 on cycle 2),
+//                      and announce shared interests.
+//   4. Seat Offering : Search for an empty chair, point to it with the robotic
+//                      arm, release arm torque (/arm/free), wait for the guest
+//                      to sit, clear living-room locks, then loop or finish.
+//
+// Concurrency & Safety Model:
+//   - Spun with MultiThreadedExecutor (2 threads): sensor/service callbacks use
+//     a Reentrant callback group while fsmTick() runs on a 10 Hz timer (100 ms).
+//   - Shared state is guarded by dedicated mutexes: guest_mutex_, vision_mutex_,
+//     stt_mutex_, tts_mutex_, and srv_mutex_.
+//   - Watchdogs in fsmTick() prevent hangs from missing /hri/tts_done events,
+//     unresponsive Trigger services, or global task timeouts.
 // ==============================================================================
 
 #include <algorithm>
@@ -29,10 +52,12 @@
 using namespace std::chrono_literals;
 
 // ==============================================================================
-// 1. DEFINISI STATE FINITE STATE MACHINE (FSM)
+// 1. FINITE STATE MACHINE (FSM) STATE DEFINITIONS
 // ==============================================================================
 enum class ReceptionistState {
+  // Startup: wait for required navigation & TTS endpoints, initialize Guest 1
   INIT,
+  // Phase 1 — Entrance Door: wait for guest, align, capture & confirm profile
   NAV_TO_DOOR,
   WAIT_GUEST,
   ALIGN_GUEST,
@@ -42,10 +67,12 @@ enum class ReceptionistState {
   WAIT_INTEREST,
   CONFIRM_GUEST_INFO,
   WAIT_CONFIRM_GUEST_INFO,
+  // Phase 2 — Beverage Area: snapshot drinks, ask favorite drink, locate side
   NAV_TO_BEVERAGE,
   ASK_DRINK,
   WAIT_DRINK,
   CHECK_BEVERAGE,
+  // Phase 3 & 4 — Living Room: scan room, introduce Host/Guests, check similarity
   NAV_TO_LIVING_ROOM,
   SCAN_LIVING_ROOM,
   FACE_AND_INTRODUCE_HOST,
@@ -53,13 +80,17 @@ enum class ReceptionistState {
   INTRODUCE_G2_TO_G1,
   EVALUATE_SIMILARITY,
   RETURN_TO_LIVING_ROOM,
+  // Phase 5 — Seat Offering: find empty seat, point with arm, confirm seated
   SEARCH_CHAIR,
   OFFER_SEAT,
   WAIT_GUEST_SIT,
+  // Phase 6 — Terminal States
   FINISH_TASK,
   COMPLETED,
   ABORTED
 };
+
+/// Convert a ReceptionistState enum value to a human-readable string for logs.
 
 static std::string stateToString(ReceptionistState state)
 {
@@ -96,33 +127,36 @@ static std::string stateToString(ReceptionistState state)
 }
 
 // ==============================================================================
-// 2. STRUKTUR DATA HOST, GUEST, DAN DETEKSI VISION
+// 2. DATA STRUCTURES (HOST / GUEST PROFILES & VISION DETECTIONS)
 // ==============================================================================
+/// Stores spoken preferences and fused visual appearance attributes for a person.
 struct PersonProfile {
-  std::string id;
-  std::string name;
-  std::string drink;
-  std::string interest;
-  std::string gender{"unknown"};
-  std::string shirt_color{"casual attire"};
-  std::string hair_color{"dark hair"};
-  std::vector<std::string> attributes;
+  std::string id;                              ///< Identifier ("host", "guest_1", "guest_2")
+  std::string name;                            ///< Recognized guest/host name
+  std::string drink;                           ///< Favorite beverage captured via STT
+  std::string interest;                        ///< Main hobby/interest captured via STT
+  std::string gender{"unknown"};               ///< "male", "female", or "unknown" (mode-voted)
+  std::string shirt_color{"casual attire"};    ///< Dominant upper-body clothing description
+  std::string hair_color{"dark hair"};         ///< Dominant hair color description
+  std::vector<std::string> attributes;         ///< Combined attribute tags for logging/display
 };
 
+/// Represents a detected object (drink or fallback object) from vision topics.
 struct DetectedObject {
-  std::string name;
-  int bbox_x{0};
-  int bbox_y{0};
-  int bbox_w{0};
-  int bbox_h{0};
-  double x{0.0};
-  double y{0.0};
-  double z{0.0};
+  std::string name;  ///< Raw class label from YOLO / vision detector
+  int bbox_x{0};     ///< 2D bounding box top-left X in image pixels
+  int bbox_y{0};     ///< 2D bounding box top-left Y in image pixels
+  int bbox_w{0};     ///< 2D bounding box width in image pixels
+  int bbox_h{0};     ///< 2D bounding box height in image pixels
+  double x{0.0};     ///< 3D X coordinate relative to vision frame (meters)
+  double y{0.0};     ///< 3D Y coordinate relative to vision frame (meters)
+  double z{0.0};     ///< 3D Z coordinate / depth (meters)
 };
 
 // ==============================================================================
-// 3. KELAS UTAMA: ReceptionistTaskNode
+// 3. MAIN ROS 2 NODE: ReceptionistTaskNode
 // ==============================================================================
+/// Coordinates Receptionist navigation, perception, HRI speech, and arm actions.
 class ReceptionistTaskNode : public rclcpp::Node {
 public:
   using Trigger = std_srvs::srv::Trigger;
@@ -132,50 +166,31 @@ public:
   ReceptionistTaskNode()
   : Node("receptionist_manager")
   {
-    // Parameter Host & Konfigurasi Task
-    declare_parameter<std::string>("host.name", "Alex");
-    declare_parameter<std::string>("host.drink", "Coke");
-    declare_parameter<std::string>("host.interest", "Robotics");
-    declare_parameter<std::string>("host.gender", "male");
-    declare_parameter<std::string>("host.shirt_color", "black");
-    declare_parameter<std::string>("host.hair_color", "black");
-    declare_parameter<int>("camera_width", 672);
-
-    declare_parameter<double>("global_timeout_sec", 600.0);
-    declare_parameter<double>("dialog_reprompt_sec", 12.0);
-    declare_parameter<double>("wait_guest_prompt_sec", 8.0);
-    declare_parameter<double>("vision_initial_settle_sec", 1.2);
-    declare_parameter<double>("min_sit_wait_sec", 10.0);
-    declare_parameter<double>("person_freshness_sec", 2.0);
-    declare_parameter<double>("tts_min_timeout_sec", 4.0);
-    declare_parameter<double>("tts_sec_per_word", 0.5);
-    declare_parameter<double>("tts_timeout_margin_sec", 2.0);
-    declare_parameter<double>("nav_retry_cooldown_sec", 2.0);
-
+    // Parameter Host & Konfigurasi Task (WAJIB dari file YAML receptionist_params.yaml, read-only)
     host_.id = "host";
-    host_.name = get_parameter("host.name").as_string();
-    host_.drink = get_parameter("host.drink").as_string();
-    host_.interest = get_parameter("host.interest").as_string();
-    host_.gender = get_parameter("host.gender").as_string();
-    host_.shirt_color = get_parameter("host.shirt_color").as_string();
-    host_.hair_color = get_parameter("host.hair_color").as_string();
+    host_.name = requireYamlParameter<std::string>("host.name");
+    host_.drink = requireYamlParameter<std::string>("host.drink");
+    host_.interest = requireYamlParameter<std::string>("host.interest");
+    host_.gender = requireYamlParameter<std::string>("host.gender");
+    host_.shirt_color = requireYamlParameter<std::string>("host.shirt_color");
+    host_.hair_color = requireYamlParameter<std::string>("host.hair_color");
     host_.attributes = {
       host_.gender,
       host_.shirt_color + " shirt",
       host_.hair_color + " hair"
     };
-    camera_width_ = get_parameter("camera_width").as_int();
+    camera_width_ = requireYamlParameter<int>("camera_width");
 
-    global_timeout_sec_ = get_parameter("global_timeout_sec").as_double();
-    dialog_reprompt_sec_ = get_parameter("dialog_reprompt_sec").as_double();
-    wait_guest_prompt_sec_ = get_parameter("wait_guest_prompt_sec").as_double();
-    vision_initial_settle_sec_ = get_parameter("vision_initial_settle_sec").as_double();
-    min_sit_wait_sec_ = get_parameter("min_sit_wait_sec").as_double();
-    person_freshness_sec_ = get_parameter("person_freshness_sec").as_double();
-    tts_min_timeout_sec_ = get_parameter("tts_min_timeout_sec").as_double();
-    tts_sec_per_word_ = get_parameter("tts_sec_per_word").as_double();
-    tts_timeout_margin_sec_ = get_parameter("tts_timeout_margin_sec").as_double();
-    nav_retry_cooldown_sec_ = get_parameter("nav_retry_cooldown_sec").as_double();
+    global_timeout_sec_ = requireYamlParameter<double>("global_timeout_sec");
+    dialog_reprompt_sec_ = requireYamlParameter<double>("dialog_reprompt_sec");
+    wait_guest_prompt_sec_ = requireYamlParameter<double>("wait_guest_prompt_sec");
+    vision_initial_settle_sec_ = requireYamlParameter<double>("vision_initial_settle_sec");
+    min_sit_wait_sec_ = requireYamlParameter<double>("min_sit_wait_sec");
+    person_freshness_sec_ = requireYamlParameter<double>("person_freshness_sec");
+    tts_min_timeout_sec_ = requireYamlParameter<double>("tts_min_timeout_sec");
+    tts_sec_per_word_ = requireYamlParameter<double>("tts_sec_per_word");
+    tts_timeout_margin_sec_ = requireYamlParameter<double>("tts_timeout_margin_sec");
+    nav_retry_cooldown_sec_ = requireYamlParameter<double>("nav_retry_cooldown_sec");
     tts_timeout_sec_ = tts_min_timeout_sec_;
 
     callback_group_ = create_callback_group(
@@ -192,6 +207,7 @@ public:
     person_name_pub_ = create_publisher<std_msgs::msg::String>("/vision/set_person_name", 10);
     guest_1_name_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/guest_1_name", 10);
     guest_2_name_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/guest_2_name", 10);
+    face_expression_pub_ = create_publisher<std_msgs::msg::String>("/robot/expression", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -258,6 +274,8 @@ public:
       "/receptionist/scan_living_room", rclcpp::ServicesQoS(), callback_group_);
     clear_locks_client_ = create_client<Trigger>(
       "/receptionist/clear_living_room_locks", rclcpp::ServicesQoS(), callback_group_);
+    reset_living_room_yaw_client_ = create_client<Trigger>(
+      "/receptionist/reset_living_room_yaw", rclcpp::ServicesQoS(), callback_group_);
 
     arm_ambil_tas_client_ = create_client<Trigger>(
       "/arm/ambil_tas", rclcpp::ServicesQoS(), callback_group_);
@@ -288,19 +306,37 @@ public:
   }
 
 private:
+  /// Declares a read-only parameter without a C++ default so its value must be
+  /// supplied exclusively via YAML (receptionist_params.yaml).
+  template<typename T>
+  T requireYamlParameter(const std::string & name)
+  {
+    try {
+      rcl_interfaces::msg::ParameterDescriptor desc;
+      desc.read_only = true;
+      return declare_parameter<T>(name, desc);
+    } catch (const std::exception & e) {
+      RCLCPP_FATAL(
+        get_logger(),
+        "Parameter '%s' wajib diatur di file YAML (receptionist_params.yaml)! Error: %s",
+        name.c_str(), e.what());
+      throw;
+    }
+  }
+
   // ----------------------------------------------------------------------------
-  // Parameter Waktu & Timeout (Dapat dikonfigurasi via YAML)
+  // Parameter Waktu & Timeout (Diisi penuh dari YAML saat startup)
   // ----------------------------------------------------------------------------
-  double global_timeout_sec_{600.0};
-  double dialog_reprompt_sec_{12.0};
-  double wait_guest_prompt_sec_{8.0};
-  double vision_initial_settle_sec_{1.2};
-  double min_sit_wait_sec_{4.0};
-  double person_freshness_sec_{2.0};
-  double tts_min_timeout_sec_{4.0};
-  double tts_sec_per_word_{0.5};
-  double tts_timeout_margin_sec_{2.0};
-  double nav_retry_cooldown_sec_{2.0};
+  double global_timeout_sec_{0.0};
+  double dialog_reprompt_sec_{0.0};
+  double wait_guest_prompt_sec_{0.0};
+  double vision_initial_settle_sec_{0.0};
+  double min_sit_wait_sec_{0.0};
+  double person_freshness_sec_{0.0};
+  double tts_min_timeout_sec_{0.0};
+  double tts_sec_per_word_{0.0};
+  double tts_timeout_margin_sec_{0.0};
+  double nav_retry_cooldown_sec_{0.0};
 
   // ----------------------------------------------------------------------------
   // Variabel State & Memory Store Host / Guests
@@ -318,7 +354,8 @@ private:
   PersonProfile current_guest_;
   int guest_idx_{1};
   ReceptionistState after_return_living_room_state_{ReceptionistState::SEARCH_CHAIR};
-  int camera_width_{672};
+  bool return_yaw_only_{false};
+  int camera_width_{0};
 
   // Data Persepsi Vision
   std::mutex vision_mutex_;
@@ -336,6 +373,7 @@ private:
   int nearest_person_bbox_x_{0};
   int nearest_person_bbox_w_{0};
   int nearest_person_bbox_y_{0};
+  int nearest_person_bbox_h_{0};
 
   // Data STT / Dialog
   std::mutex stt_mutex_;
@@ -372,6 +410,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr person_name_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_1_name_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_2_name_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr face_expression_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
@@ -392,6 +431,7 @@ private:
   TriggerClient::SharedPtr rotate_right_client_;
   TriggerClient::SharedPtr scan_living_room_client_;
   TriggerClient::SharedPtr clear_locks_client_;
+  TriggerClient::SharedPtr reset_living_room_yaw_client_;
 
   TriggerClient::SharedPtr arm_ambil_tas_client_;
   TriggerClient::SharedPtr arm_ambil_tas_simple_client_;
@@ -400,15 +440,17 @@ private:
   TriggerClient::SharedPtr arm_free_client_;
 
   // ============================================================================
-  // SUB-ROUTINES / HELPER FUNCTIONS
+  // SUB-ROUTINES & CONCURRENCY GATES
   // ============================================================================
+  /// Returns true while TTS, an async service call, or its completion callback
+  /// is active so fsmTick() does not re-trigger the current state prematurely.
   bool isBusy() const
   {
     return speaking_.load() || service_busy_.load() || in_callback_.load();
   }
 
-  // FIX: Vision dimatikan selama SEMUA state navigasi agar tidak menangkap
-  // objek/orang di tengah perjalanan.
+  /// Ignore vision updates during navigation and terminal states so objects or
+  /// bystanders passed in transit never pollute guest/table/seat caches.
   bool isVisionActive() const
   {
     const ReceptionistState current = state_.load();
@@ -431,6 +473,64 @@ private:
     RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Status: %s", status_text.c_str());
   }
 
+  /// Publishes a face expression command to /robot/expression (athome_face).
+  void publishExpression(const std::string & expr)
+  {
+    if (face_expression_pub_) {
+      std_msgs::msg::String msg;
+      msg.data = expr;
+      face_expression_pub_->publish(msg);
+      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Face: Expression -> %s", expr.c_str());
+    }
+  }
+
+  /// Maps each FSM state to its default /robot/expression state.
+  static std::string expressionForState(ReceptionistState state)
+  {
+    switch (state) {
+      case ReceptionistState::INIT:
+      case ReceptionistState::COMPLETED:
+        return "IDLE";
+      case ReceptionistState::NAV_TO_DOOR:
+      case ReceptionistState::NAV_TO_BEVERAGE:
+      case ReceptionistState::NAV_TO_LIVING_ROOM:
+      case ReceptionistState::RETURN_TO_LIVING_ROOM:
+        return "FOLLOWING";
+      case ReceptionistState::WAIT_GUEST:
+      case ReceptionistState::CHECK_BEVERAGE:
+      case ReceptionistState::SCAN_LIVING_ROOM:
+      case ReceptionistState::SEARCH_CHAIR:
+        return "SEARCHING";
+      case ReceptionistState::ALIGN_GUEST:
+      case ReceptionistState::ASK_NAME:
+      case ReceptionistState::ASK_INTEREST:
+      case ReceptionistState::CONFIRM_GUEST_INFO:
+      case ReceptionistState::ASK_DRINK:
+      case ReceptionistState::FACE_AND_INTRODUCE_HOST:
+      case ReceptionistState::INTRODUCE_G1_TO_G2:
+      case ReceptionistState::INTRODUCE_G2_TO_G1:
+        return "GREETING";
+      case ReceptionistState::WAIT_NAME:
+      case ReceptionistState::WAIT_INTEREST:
+      case ReceptionistState::WAIT_CONFIRM_GUEST_INFO:
+      case ReceptionistState::WAIT_DRINK:
+        return "LISTENING";
+      case ReceptionistState::EVALUATE_SIMILARITY:
+        return "HAPPY";
+      case ReceptionistState::OFFER_SEAT:
+        return "WORKING";
+      case ReceptionistState::WAIT_GUEST_SIT:
+        return "CURIOUS";
+      case ReceptionistState::FINISH_TASK:
+        return "SUCCESS";
+      case ReceptionistState::ABORTED:
+        return "LOST";
+      default:
+        return "IDLE";
+    }
+  }
+
+  /// Publishes registered guest names at 2 Hz for HMI/vision synchronization.
   void publishGuestNames()
   {
     std::string g1;
@@ -462,6 +562,7 @@ private:
     }
   }
 
+  /// Resets all profile fields to neutral defaults for guest slot `idx`.
   void resetGuestProfileFields(PersonProfile & profile, int idx)
   {
     profile = PersonProfile{};
@@ -471,6 +572,7 @@ private:
     profile.hair_color = "dark hair";
   }
 
+  /// Initializes state, vision caches, and attribute voting histograms for a new guest cycle (1 or 2).
   void initCurrentGuest(int idx)
   {
     {
@@ -501,6 +603,8 @@ private:
     }
   }
 
+  /// Transitions the FSM to `next_state`, clears stale STT flags, and resets
+  /// state-specific vision caches when entering observation states.
   void transitionTo(ReceptionistState next_state, const std::string & reason)
   {
     RCLCPP_INFO(
@@ -535,9 +639,11 @@ private:
     state_enter_time_ = now();
     has_new_utterance_ = false;
     state_ = next_state;
+    publishExpression(expressionForState(next_state));
   }
 
-  // Navigasi ke waypoint menggunakan service dari receptionist_node
+  /// Navigates to a named waypoint ("entrance_door", "beverage_area", or "living_room")
+  /// via the corresponding receptionist_node Trigger service and starts nav retry cooldown on failure.
   void navigateTo(
     const std::string & waypoint_name,
     std::function<void(bool)> on_finished)
@@ -590,7 +696,8 @@ private:
       120.0);
   }
 
-  // Menunjuk kursi kosong menggunakan service /arm/point_to_chair (fallback ke /arm/point_position)
+  /// Points toward the empty seat using /arm/point_to_chair, falling back to
+  /// /arm/point_position or /arm/ambil_tas_simple if the primary service is unavailable.
   void pointToSeatWithArm(std::function<void(bool)> on_finished)
   {
     TriggerClient::SharedPtr client = arm_point_to_chair_client_;
@@ -791,6 +898,36 @@ private:
       5.0);
   }
 
+  // Memutar robot di tempat kembali ke yaw living_room via /receptionist/reset_living_room_yaw
+  void resetLivingRoomYaw(std::function<void(bool, const std::string &)> on_finished)
+  {
+    const std::string srv_name = "/receptionist/reset_living_room_yaw";
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[LIVING ROOM]\033[0m Calling %s to reset robot yaw in-place...",
+      srv_name.c_str());
+
+    callTrigger(
+      reset_living_room_yaw_client_, srv_name,
+      [this, srv_name, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[LIVING ROOM]\033[0m Reset yaw (%s) succeeded: %s",
+            srv_name.c_str(), msg.c_str());
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[LIVING ROOM]\033[0m Reset yaw (%s) warning/failure: %s",
+            srv_name.c_str(), msg.c_str());
+        }
+        if (on_finished) {
+          on_finished(success, msg);
+        }
+      },
+      10.0);
+  }
+
   // Merotasi robot ke kiri via /receptionist/left
   void rotateLeft(std::function<void(bool, const std::string &)> on_finished)
   {
@@ -891,15 +1028,19 @@ private:
   std::string calculateHorizontalPosition(int bbox_x, int bbox_w) const
   {
     const double center_x = static_cast<double>(bbox_x) + static_cast<double>(bbox_w) * 0.5;
-    const double third = static_cast<double>(camera_width_) / 3.0;
-    if (center_x < third) {
+    const double w = (camera_width_ > 0) ? static_cast<double>(camera_width_) : 672.0;
+    const double mid = w * 0.5;
+    const double deadband = w * 0.12; // ±12% dari garis tengah kamera (~80 px pada 672px)
+    if (center_x < mid - deadband) {
       return "left";
-    } else if (center_x > 2.0 * third) {
+    } else if (center_x > mid + deadband) {
       return "right";
     }
     return "center";
   }
 
+  /// Maps brand names and synonyms (e.g., "coke", "pepsi", "mineral water") to
+  /// canonical YOLO detector labels ("soda", "water") for matching table drinks.
   static std::string canonicalDrinkName(const std::string & raw_name)
   {
     const std::string n = normalize(raw_name);
@@ -933,7 +1074,8 @@ private:
     }
   }
 
-  // Menyimpan snapshot minuman di meja saat tiba di beverage area
+  /// Locks and freezes the beverage table snapshot upon arriving at the beverage
+  /// area so turning left/right toward the guest does not overwrite table detections.
   size_t snapshotBeveragesOnTable()
   {
     std::lock_guard<std::mutex> lock(vision_mutex_);
@@ -943,7 +1085,9 @@ private:
     return table_drinks_snapshot_.size();
   }
 
-  // Menentukan sisi (left/center/right) dari minuman favorit berdasarkan deteksi vision
+  /// Computes which side ("left", "center", or "right") holds `favorite_drink`
+  /// by deduplicating canonical labels, sorting left-to-right by bbox X, and
+  /// falling back to the closest visible drink if no exact label match exists.
   std::string locateBeverageSide(const std::string & favorite_drink, bool & found_match)
   {
     std::lock_guard<std::mutex> lock(vision_mutex_);
@@ -981,24 +1125,52 @@ private:
         return centerX(a) < centerX(b);
       });
 
+    const double cam_w = (camera_width_ > 0) ? static_cast<double>(camera_width_) : 672.0;
+    const double cam_center = cam_w * 0.5;
+
     auto sideByIndex = [&](size_t idx) -> std::string {
+      // 1. Jika hanya ada 2 minuman: mutlak gunakan "left" dan "right"
+      if (drinks_list.size() == 2) {
+        return (idx == 0) ? "left" : "right";
+      }
+
+      // 2. Jika ada banyak (>= 3 minuman):
+      //    Jelaskan posisi tiap minuman, dan "center" hanya digunakan jika benar-benar di tengah!
       if (drinks_list.size() >= 3) {
         if (idx == 0) return "left";
         if (idx == drinks_list.size() - 1) return "right";
-        return "center";
-      }
-      if (drinks_list.size() == 2) {
-        const std::string s0 = calculateHorizontalPosition(drinks_list[0].bbox_x, drinks_list[0].bbox_w);
-        const std::string s1 = calculateHorizontalPosition(drinks_list[1].bbox_x, drinks_list[1].bbox_w);
-        if (s0 != s1) {
-          return (idx == 0) ? s0 : s1;
+
+        // Untuk item di antara indeks ujung:
+        const double cx = centerX(drinks_list[idx]);
+        const double cx_min = centerX(drinks_list.front());
+        const double cx_max = centerX(drinks_list.back());
+        const double span = cx_max - cx_min;
+        const double cluster_center = (cx_min + cx_max) * 0.5;
+
+        // "center" hanya digunakan jika benar-benar di tengah (posisi relatif di tengah deretan minuman
+        // atau berada dekat sumbu simetri kamera)
+        const double ratio = (span > 1.0) ? ((cx - cx_min) / span) : 0.5;
+        const bool is_centered_in_cluster = (ratio >= 0.28 && ratio <= 0.72) &&
+                                            (std::abs(cx - cluster_center) <= span * 0.22);
+        const bool is_centered_in_camera = (std::abs(cx - cam_center) <= cam_w * 0.12);
+
+        if (is_centered_in_cluster || is_centered_in_camera) {
+          return "center";
         }
-        if (centerX(drinks_list[1]) - centerX(drinks_list[0]) > static_cast<double>(camera_width_) * 0.08) {
-          return (idx == 0) ? "left" : "right";
-        }
-        return (idx == 0) ? s0 : s1;
+
+        // Jika tidak benar-benar di tengah, jelaskan apakah di sisi kiri atau kanan
+        return (cx < cluster_center) ? "left" : "right";
       }
-      return calculateHorizontalPosition(drinks_list[idx].bbox_x, drinks_list[idx].bbox_w);
+
+      // 3. Jika hanya ada 1 minuman: tentukan berdasarkan sumbu tengah kamera
+      const double cx = centerX(drinks_list[idx]);
+      const double deadband = cam_w * 0.10;
+      if (cx < cam_center - deadband) {
+        return "left";
+      } else if (cx > cam_center + deadband) {
+        return "right";
+      }
+      return "center";
     };
 
     for (size_t i = 0; i < drinks_list.size(); ++i) {
@@ -1061,7 +1233,9 @@ private:
     return "center";
   }
 
-  // Mengekstrak atribut visual dari ZED (/vision/person_attributes) memakai modus frekuensi terbanyak
+  /// Aggregates mode (most frequent) gender, shirt color, and hair color from
+  /// /vision/person_attributes frames accumulated during the door dialog, falling
+  /// back to the latest snapshot if any histogram is empty.
   void updateCurrentGuestVisualAttributes(int person_id)
   {
     std::vector<std::string> raw_attrs;
@@ -1166,6 +1340,8 @@ private:
       guest_idx_, current_guest_.gender.c_str(), current_guest_.shirt_color.c_str(), current_guest_.hair_color.c_str());
   }
 
+  /// Formats a grammatically consistent English appearance sentence for TTS
+  /// (defaults "unknown" gender to neutral "person" + "They are...").
   static std::string formatPersonDescription(const PersonProfile & person)
   {
     std::string gender = (person.gender.empty() || person.gender == "unknown")
@@ -1209,6 +1385,7 @@ private:
   // ============================================================================
   // HELPER TEXT-TO-SPEECH (TTS) & SPEECH-TO-TEXT (STT) SLOT PARSING
   // ============================================================================
+  /// Estimates a dynamic watchdog timeout for a TTS utterance based on word count.
   double estimateTtsTimeout(const std::string & text) const
   {
     size_t words = 0;
@@ -1226,6 +1403,8 @@ private:
       static_cast<double>(words) * tts_sec_per_word_ + tts_timeout_margin_sec_);
   }
 
+  /// Publishes text to /hri/tts_say asynchronously, locks speaking_ & STT cooldown,
+  /// and stores `on_done` to run when /hri/tts_done arrives (or TTS watchdog fires).
   void speakAsync(const std::string & text, std::function<void()> on_done = nullptr)
   {
     {
@@ -1240,9 +1419,12 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
+    publishExpression("SPEAKING");
     RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  TTS: \"%s\"", text.c_str());
   }
 
+  /// Callback invoked when /hri/tts_done is received (or by fsmTick TTS watchdog).
+  /// Releases speaking_, applies a short anti-echo cooldown, then runs pending callback.
   void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
   {
     std::function<void()> callback;
@@ -1263,17 +1445,21 @@ private:
       "[TTS] Done | State: %s",
       stateToString(state_.load()).c_str());
 
+    publishExpression(expressionForState(state_.load()));
+
     if (callback) {
       callback();
     }
     in_callback_ = false;
   }
 
+  /// Prevents STT echo capture while the robot is busy or within post-TTS cooldown.
   bool canListen() const
   {
     return !isBusy() && now() >= tts_cooldown_until_;
   }
 
+  /// Lowercases text and collapses non-alphanumeric punctuation into single spaces.
   static std::string normalize(const std::string & text)
   {
     std::string clean;
@@ -1317,7 +1503,10 @@ private:
     return padded_h.find(padded_p) != std::string::npos;
   }
 
-  // Ekstraksi slot dari kalimat STT ("person_name", "interest", "drink")
+  /// Extracts a slot value ("person_name", "interest", or "drink") from raw STT text:
+  /// 1) Filters common greeting/filler words.
+  /// 2) Matches known RoboCup vocabulary with word boundaries (longer phrases first).
+  /// 3) Falls back to stripping common carrier phrases (e.g. "my name is ...").
   static std::string parseSlotIntent(const std::string & raw_text, const std::string & slot)
   {
     const std::string norm = normalize(raw_text);
@@ -1366,8 +1555,9 @@ private:
 
     if (slot == "person_name") {
       static const std::vector<std::string> kKnownNames = {
-        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan",
-        "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma"
+        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal"
+        "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma", "maria", "muhammad",
+        "budi", "abdul", "jefrey", "jefri", "hezekiel"
       };
       for (const auto & name : kKnownNames) {
         if (containsWholePhrase(norm, name)) {
@@ -1375,7 +1565,7 @@ private:
         }
       }
       return stripPrefixes({
-        "my name is ", "i am ", "im ", "call me ", "this is ", "name is "
+        "my name is ", "i am ", "im ", "i m ", "iam ", "iyem ", "name s ", "may name is ", "mai name is ", "you can call me ", "my name s ", "mai name s ","call me ", "this is ", "name is "
       });
     }
 
@@ -1386,7 +1576,7 @@ private:
         "coke", "cola", "pepsi", "sprite", "fanta",
         "mineral water", "milk", "water", "coffee", "tea", "juice", "soda",
         "botol", "bottle", "cracker", "cracker box", "snack",
-        "pringles", "sugar", "sugar box", "cheezit", "cheez-it", "chips"
+        "pringles", "sugar", "sugar box", "cheezit", "cheez-it", "chips", "milk"
       };
       for (const auto & drink : kKnownDrinks) {
         if (containsWholePhrase(norm, drink) &&
@@ -1407,7 +1597,9 @@ private:
       static const std::vector<std::string> kKnownInterests = {
         "artificial intelligence", "robotics", "reading", "music", "sports",
         "cooking", "gaming", "traveling", "photography", "movies", "swimming",
-        "football", "basketball", "coding", "programming", "dancing", "painting"
+        "football", "basketball", "coding", "programming", "dancing", "painting",
+        "program", "dancing", "dance", "drawing", "playing football", "playing badminton",
+        "playing tennis", "playing golf", "playing", "boxing"
       };
       for (const auto & interest : kKnownInterests) {
         if (containsWholePhrase(norm, interest)) {
@@ -1720,6 +1912,8 @@ private:
   // ============================================================================
   // HELPER SERVICE CLIENT NON-BLOCKING (TANPA DETACHED THREAD / MEMORY SAFE)
   // ============================================================================
+  /// Sends an asynchronous std_srvs::srv::Trigger request guarded by srv_mutex_
+  /// and a software timeout watchdog in fsmTick() (no detached threads).
   void callTrigger(
     const TriggerClient::SharedPtr & client,
     const std::string & service_name,
@@ -1785,8 +1979,13 @@ private:
   }
 
   // ============================================================================
-  // MAIN FINITE STATE MACHINE (FSM TICK)
+  // MAIN FINITE STATE MACHINE (10 Hz FSM TICK & WATCHDOGS)
   // ============================================================================
+  /// Periodic 10 Hz FSM loop:
+  ///   1) Publishes guest names at 2 Hz.
+  ///   2) Enforces global, service-call, and TTS timeout watchdogs.
+  ///   3) Skips state execution while isBusy() is true.
+  ///   4) Dispatches the active state handler.
   void fsmTick()
   {
     const ReceptionistState current_state = state_.load();
@@ -1805,6 +2004,7 @@ private:
     {
       RCLCPP_ERROR(get_logger(), "Global receptionist task timeout reached.");
       state_ = ReceptionistState::ABORTED;
+      publishExpression("LOST");
       return;
     }
 
@@ -1915,7 +2115,7 @@ private:
       case ReceptionistState::ALIGN_GUEST:
         adjustGuestDistance([this](bool /*success*/, const std::string & /*msg*/) {
           speakAsync(
-            "Hello! Welcome to the party. I am Barelang Inari from Batam State Polytechnic; I am your robot receptionist.",
+            "Hello!. I am Barelang Inari from Batam State Polytechnic; I am your robot receptionist.",
             [this]() {
               transitionTo(ReceptionistState::ASK_NAME, "Guest greeted at entrance after alignment & distance adjustment");
             });
@@ -2041,7 +2241,7 @@ private:
         }
         const std::string confirm_text =
           "Hello " + g_name + ", you have an interest in " +
-          g_interest + ". Is that correct? Please say yes if it is, or no if it is not.";
+          g_interest + ". Is that correct? Please say yes or no";
 
         speakAsync(confirm_text, [this]() {
           transitionTo(ReceptionistState::WAIT_CONFIRM_GUEST_INFO, "Waiting for confirmation (yes/no)");
@@ -2129,25 +2329,28 @@ private:
         break;
 
       case ReceptionistState::ASK_DRINK: {
-        // FIX: Tunggu kamera ZED settle setelah robot berhenti di meja minuman
+        // Wait for ZED RGB-D camera to stabilize after navigation stops at the table
         if ((now() - state_enter_time_).seconds() < vision_initial_settle_sec_) {
           return;
         }
 
         speakAsync("We've already arrived in Beverage Area, please stand on my left side.", [this](){
+          // Freeze table drink detections BEFORE rotating left toward the guest
           const size_t drink_count = snapshotBeveragesOnTable();
-          std::string prompt;
+          std::string table_status;
 
           if (!drinks_detected_on_arrival_ || drink_count == 0) {
-            prompt = "There are no drinks on this table; please tell me, what is your favorite drink?";
+            table_status = "There are no drinks on this table.";
           } else {
-            prompt = "There are " + std::to_string(drink_count) + " drinks on the table. What is your favorite drinks?";
+            table_status = "There are " + std::to_string(drink_count) + " drinks on the table.";
           }
 
-          // tanyakan minuman favorit, lalu rotasi ke kiri sebelum menunggu jawaban
-          speakAsync(prompt, [this]() {
+          // Announce table drinks, rotate left to face the standing guest, then ask favorite drink
+          speakAsync(table_status, [this]() {
             rotateLeft([this](bool /*ok*/, const std::string & /*msg*/) {
-              transitionTo(ReceptionistState::WAIT_DRINK, "Asked for favorite drink and rotated left");
+              speakAsync("please tell me, what is your favorite drink?", [this]() {
+                transitionTo(ReceptionistState::WAIT_DRINK, "Rotated left and asked for favorite drink");
+              });
             });
           });
         });
@@ -2199,7 +2402,7 @@ private:
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
-          speakAsync("What is your favorite drink?");
+          speakAsync("I am sorry, What is your favorite drink?");
         }
         break;
 
@@ -2273,6 +2476,8 @@ private:
         if ((now() - state_enter_time_).seconds() < vision_initial_settle_sec_) {
           return;
         }
+        // Pre-scan the living room to lock yaw angles for Host, Guest 1, and empty seats
+        // so subsequent introductions and seat pointing can align quickly.
         scanLivingRoom([this](bool /*success*/, const std::string & /*msg*/) {
           transitionTo(
             ReceptionistState::FACE_AND_INTRODUCE_HOST,
@@ -2297,23 +2502,32 @@ private:
               "\033[1;33m[LIVING ROOM]\033[0m Face Host gagal/timeout, tetap melanjutkan perkenalan.");
           }
 
-          const std::string intro_msg =
+          const std::string intro_guest_to_host =
             "Hello, this is our guest, " + cg.name + ". " +
             formatPersonDescription(cg) + ". Their favorite drink is " +
             cg.drink + ", and their interest is " + cg.interest + ".";
 
-          speakAsync(intro_msg, [this, g_idx]() {
-            if (g_idx == 1) {
-              after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
-              transitionTo(
-                ReceptionistState::RETURN_TO_LIVING_ROOM,
-                "Guest introduced to seated person; returning to living_room before searching chair");
-            } else {
-              after_return_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_G2;
-              transitionTo(
-                ReceptionistState::RETURN_TO_LIVING_ROOM,
-                "Guest introduced to seated person; returning to living_room before guest introductions");
-            }
+          const std::string intro_host_to_guest =
+            cg.name + ", this is our host, " + host_.name + ". " +
+            formatPersonDescription(host_) + ". Their favorite drink is " +
+            host_.drink + ", and their interest is " + host_.interest + ".";
+
+          speakAsync(intro_guest_to_host, [this, g_idx, intro_host_to_guest]() {
+            speakAsync(intro_host_to_guest, [this, g_idx]() {
+              if (g_idx == 1) {
+                after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
+                return_yaw_only_ = false;
+                transitionTo(
+                  ReceptionistState::RETURN_TO_LIVING_ROOM,
+                  "Guest and Host introduced; returning to living_room before searching chair");
+              } else {
+                after_return_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_G2;
+                return_yaw_only_ = true;
+                transitionTo(
+                  ReceptionistState::RETURN_TO_LIVING_ROOM,
+                  "Guest and Host introduced; resetting yaw to living_room before guest introductions");
+              }
+            });
           });
         });
         break;
@@ -2444,20 +2658,39 @@ private:
       }
 
       // ------------------------------------------------------------------------
-      // STATE 4.5: KEMBALI KE LIVING_ROOM SETELAH PERKENALAN (HOST / GUEST)
+      // STATE 4.5: RETURN TO LIVING_ROOM CENTER REFERENCE AFTER INTRODUCTIONS
+      // Re-centers base pose at the living_room waypoint before rotating to the
+      // next person or searching for an empty chair (after_return_living_room_state_).
       // ------------------------------------------------------------------------
       case ReceptionistState::RETURN_TO_LIVING_ROOM: {
-        navigateTo("living_room", [this](bool success) {
-          if (!success) {
-            RCLCPP_WARN(
-              get_logger(),
-              "\033[1;33m[LIVING ROOM]\033[0m go_to_living_room setelah perkenalan gagal/timeout, tetap lanjut ke %s.",
-              stateToString(after_return_living_room_state_).c_str());
-          }
-          transitionTo(
-            after_return_living_room_state_,
-            "Returned to living_room after introduction");
-        });
+        const bool yaw_only = return_yaw_only_;
+        return_yaw_only_ = false;
+
+        if (yaw_only) {
+          resetLivingRoomYaw([this](bool success, const std::string & /*msg*/) {
+            if (!success) {
+              RCLCPP_WARN(
+                get_logger(),
+                "\033[1;33m[LIVING ROOM]\033[0m reset_living_room_yaw setelah perkenalan gagal/timeout, tetap lanjut ke %s.",
+                stateToString(after_return_living_room_state_).c_str());
+            }
+            transitionTo(
+              after_return_living_room_state_,
+              "Reset yaw to living_room after introduction");
+          });
+        } else {
+          navigateTo("living_room", [this](bool success) {
+            if (!success) {
+              RCLCPP_WARN(
+                get_logger(),
+                "\033[1;33m[LIVING ROOM]\033[0m go_to_living_room setelah perkenalan gagal/timeout, tetap lanjut ke %s.",
+                stateToString(after_return_living_room_state_).c_str());
+            }
+            transitionTo(
+              after_return_living_room_state_,
+              "Returned to living_room after introduction");
+          });
+        }
         break;
       }
 
@@ -2514,6 +2747,7 @@ private:
             "SUCCESS: Guest " + std::to_string(guest_idx_) + " (" +
             cg_name + ") occupied the indicated chair.");
 
+          // Release locked living-room yaw targets before starting Guest 2 or completing
           const int finished_guest_idx = guest_idx_;
           clearLivingRoomLocks([this, finished_guest_idx]() {
             if (finished_guest_idx == 1) {
@@ -2563,10 +2797,19 @@ int main(int argc, char ** argv)
 {
   setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<ReceptionistTaskNode>();
-  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2);
-  executor.add_node(node);
-  executor.spin();
+  try {
+    auto node = std::make_shared<ReceptionistTaskNode>();
+    rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2);
+    executor.add_node(node);
+    executor.spin();
+  } catch (const std::exception & e) {
+    RCLCPP_FATAL(
+      rclcpp::get_logger("receptionist_manager"),
+      "Gagal menjalankan receptionist_manager (pastikan file YAML parameter dimuat): %s",
+      e.what());
+    rclcpp::shutdown();
+    return 1;
+  }
   rclcpp::shutdown();
   return 0;
 }

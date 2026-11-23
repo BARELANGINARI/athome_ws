@@ -4,6 +4,7 @@ echo "Menghentikan semua proses Help Me Carry & Arm..."
 
 pkill -f "ros2 launch help_me_carry" 2>/dev/null || true
 pkill -f "ros2 launch athome_arm" 2>/dev/null || true
+pkill -f "ros2 launch athome_face" 2>/dev/null || true
 pkill -f "help_me_carry_node" 2>/dev/null || true
 pkill -f "help_me_carry_manager" 2>/dev/null || true
 pkill -f "tracking_controller" 2>/dev/null || true

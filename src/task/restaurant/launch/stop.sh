@@ -4,6 +4,7 @@ echo "Menghentikan semua proses Restaurant Task & Arm..."
 
 pkill -f "ros2 launch restaurant" 2>/dev/null || true
 pkill -f "ros2 launch athome_arm" 2>/dev/null || true
+pkill -f "ros2 launch athome_face" 2>/dev/null || true
 pkill -f "arm_motion_server" 2>/dev/null || true
 pkill -f "restaurant_node" 2>/dev/null || true
 pkill -f "restaurant_manager" 2>/dev/null || true

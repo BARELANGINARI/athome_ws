@@ -198,10 +198,10 @@ public:
     declare_parameter("base_frame", "base_link");
     declare_parameter("order_topic", "/vision/order");
     declare_parameter("order_frame", "base_link"); // "base_link" (relatif thd robot) atau "map" (global)
-    declare_parameter("standoff_distance", 0.85);   // Jarak henti aman di depan orang (meter) agar tidak menabrak / masuk obstacle
+    declare_parameter("standoff_distance", 1.0);   // Jarak henti aman di depan orang (meter) agar tidak menabrak / masuk obstacle
     declare_parameter("adaptive_standoff_enabled", true);
-    declare_parameter("adaptive_standoff_min", 0.85);
-    declare_parameter("adaptive_standoff_max", 1.40);
+    declare_parameter("adaptive_standoff_min", 1.0);
+    declare_parameter("adaptive_standoff_max", 1.6);
     declare_parameter("adaptive_standoff_step", 0.05);
     declare_parameter("costmap_obstacle_threshold", 60);
     declare_parameter("costmap_topic", "/global_costmap/costmap");
@@ -420,6 +420,10 @@ public:
       },
       rclcpp::ServicesQoS(),
       srv_cb_group_);
+
+    // Client untuk trigger capture face pada saat tiba di lokasi pelanggan
+    vision_capture_face_client_ = create_client<std_srvs::srv::Trigger>(
+      "/vision/camera_capture_face", rclcpp::ServicesQoS(), srv_cb_group_);
 
     // Publisher pose pelanggan tersimpan untuk visualisasi RViz
     rclcpp::QoS latched_qos(1);
@@ -680,6 +684,15 @@ private:
         get_logger(),
         "\033[1;36m[Order]\033[0m Reached customer position. Adjusting heading to face customer bbox...");
       alignHeadingToPersonInFront();
+
+      // Trigger capture image person pada saat sudah sampai lokasi orang yang memesan / angkat tangan
+      if (vision_capture_face_client_ && vision_capture_face_client_->service_is_ready()) {
+        auto req = std::make_shared<std_srvs::srv::Trigger::Request>();
+        vision_capture_face_client_->async_send_request(req);
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;32m[Order]\033[0m Triggered /vision/camera_capture_face upon arriving at customer location.");
+      }
     }
     is_navigating_ = false;
 
@@ -1470,6 +1483,7 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_search_alias_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_deliver_order_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_deliver_order_alias_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr vision_capture_face_client_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr saved_pose_pub_;
 
   // Saved Customer Order Pose (cached during /go_to_order for /deliver_order)
@@ -1481,8 +1495,8 @@ private:
 
   // Adaptive Standoff Settings & State
   bool adaptive_standoff_enabled_{true};
-  double adaptive_standoff_min_{0.85};
-  double adaptive_standoff_max_{1.40};
+  double adaptive_standoff_min_{1.0};
+  double adaptive_standoff_max_{1.6};
   double adaptive_standoff_step_{0.05};
   int costmap_obstacle_threshold_{60};
   std::string costmap_topic_{"/global_costmap/costmap"};

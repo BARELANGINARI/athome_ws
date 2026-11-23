@@ -23,7 +23,7 @@
     threshold_flatness: 0.40             # Batas kerataan spektrum (0-1); lebih kecil = lebih ketat menolak noise datar (kipas/AC)
     pre_roll_frames: 10                  # Jumlah frame (x30 ms = 300 ms) yang ikut direkam SEBELUM suara terdeteksi agar awal kata tidak terpotong
     hangover_frames: 25                  # Lama jeda hening (x30 ms = 750 ms) sebelum sistem yakin kalimat selesai diucapkan
-    min_speech_frames: 15                # Durasi minimal ucapan (x30 ms = 450 ms) agar dianggap valid (abaikan suara klik/batuk singkat)
+    min_speech_frames: 9                # Durasi minimal ucapan (x30 ms = 270 ms) agar dianggap valid (abaikan suara klik/batuk singkat)
 
     # -------------------------------------------------------------------------
     # 3. Speech-to-Text / Faster-Whisper (Pengubah audio ucapan menjadi teks)
