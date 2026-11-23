@@ -225,55 +225,25 @@ public:
     // --------------------------------------------------------------------------
     // Baca Seluruh Parameter Konfigurasi (Wajib dari restaurant_params.yaml)
     // --------------------------------------------------------------------------
-    declare_parameter<double>("origin_x", 0.0);
-    declare_parameter<double>("origin_y", 0.0);
-    declare_parameter<double>("origin_yaw", 0.0);
-    declare_parameter<bool>("capture_tf_origin_on_init", true);
-    declare_parameter<std::string>("global_frame", "map");
-    declare_parameter<std::string>("base_frame", "base_link");
-    declare_parameter<std::string>("order_frame", "base_link");
-    declare_parameter<double>("customer_standoff_distance", 1.0);
-    declare_parameter<double>("object_standoff_distance", 0.45);
-    declare_parameter<bool>("adaptive_standoff_enabled", true);
-    declare_parameter<double>("adaptive_standoff_min", 1.0);
-    declare_parameter<double>("adaptive_standoff_max", 1.6);
-    declare_parameter<double>("adaptive_standoff_step", 0.05);
-    declare_parameter<int>("costmap_obstacle_threshold", 60);
-    declare_parameter<std::string>("costmap_topic", "/global_costmap/costmap");
-    declare_parameter<double>("robot_radius", 0.24);
-    declare_parameter<double>("nav_timeout_sec", 120.0);
-    declare_parameter<double>("order1_detect_timeout_sec", 8.0);
-    declare_parameter<int>("max_customers", 2);
-
-    declare_parameter<double>("global_timeout_sec", 900.0);
-    declare_parameter<double>("dialog_reprompt_sec", 12.0);
-    declare_parameter<double>("wave_reprompt_sec", 10.0);
-    declare_parameter<double>("tts_min_timeout_sec", 4.0);
-    declare_parameter<double>("tts_sec_per_word", 0.5);
-    declare_parameter<double>("tts_timeout_margin_sec", 2.0);
-    declare_parameter<double>("nav_retry_cooldown_sec", 2.0);
-    declare_parameter<double>("tray_wait_sec", 10.0);
-    declare_parameter<double>("tts_post_delay_sec", 2.0);
-
-    origin_x_ = get_parameter("origin_x").as_double();
-    origin_y_ = get_parameter("origin_y").as_double();
-    origin_yaw_ = get_parameter("origin_yaw").as_double();
-    capture_tf_origin_on_init_ = get_parameter("capture_tf_origin_on_init").as_bool();
-    global_frame_ = get_parameter("global_frame").as_string();
-    base_frame_ = get_parameter("base_frame").as_string();
-    order_frame_ = get_parameter("order_frame").as_string();
-    customer_standoff_dist_ = get_parameter("customer_standoff_distance").as_double();
-    object_standoff_dist_ = get_parameter("object_standoff_distance").as_double();
-    adaptive_standoff_enabled_ = get_parameter("adaptive_standoff_enabled").as_bool();
-    adaptive_standoff_min_ = get_parameter("adaptive_standoff_min").as_double();
-    adaptive_standoff_max_ = get_parameter("adaptive_standoff_max").as_double();
-    adaptive_standoff_step_ = get_parameter("adaptive_standoff_step").as_double();
-    costmap_obstacle_threshold_ = get_parameter("costmap_obstacle_threshold").as_int();
-    costmap_topic_ = get_parameter("costmap_topic").as_string();
-    robot_radius_ = get_parameter("robot_radius").as_double();
-    nav_timeout_sec_ = get_parameter("nav_timeout_sec").as_double();
-    order1_detect_timeout_sec_ = get_parameter("order1_detect_timeout_sec").as_double();
-    max_customers_ = std::max(1, static_cast<int>(get_parameter("max_customers").as_int()));
+    origin_x_ = requireYamlParameter<double>("origin_x");
+    origin_y_ = requireYamlParameter<double>("origin_y");
+    origin_yaw_ = requireYamlParameter<double>("origin_yaw");
+    capture_tf_origin_on_init_ = requireYamlParameter<bool>("capture_tf_origin_on_init");
+    global_frame_ = requireYamlParameter<std::string>("global_frame");
+    base_frame_ = requireYamlParameter<std::string>("base_frame");
+    order_frame_ = requireYamlParameter<std::string>("order_frame");
+    customer_standoff_dist_ = requireYamlParameter<double>("customer_standoff_distance");
+    object_standoff_dist_ = requireYamlParameter<double>("object_standoff_distance");
+    adaptive_standoff_enabled_ = requireYamlParameter<bool>("adaptive_standoff_enabled");
+    adaptive_standoff_min_ = requireYamlParameter<double>("adaptive_standoff_min");
+    adaptive_standoff_max_ = requireYamlParameter<double>("adaptive_standoff_max");
+    adaptive_standoff_step_ = requireYamlParameter<double>("adaptive_standoff_step");
+    costmap_obstacle_threshold_ = requireYamlParameter<int>("costmap_obstacle_threshold");
+    costmap_topic_ = requireYamlParameter<std::string>("costmap_topic");
+    robot_radius_ = requireYamlParameter<double>("robot_radius");
+    nav_timeout_sec_ = requireYamlParameter<double>("nav_timeout_sec");
+    order1_detect_timeout_sec_ = requireYamlParameter<double>("order1_detect_timeout_sec");
+    max_customers_ = std::max(1, requireYamlParameter<int>("max_customers"));
 
     global_timeout_sec_ = requireYamlParameter<double>("global_timeout_sec");
     dialog_reprompt_sec_ = requireYamlParameter<double>("dialog_reprompt_sec");
