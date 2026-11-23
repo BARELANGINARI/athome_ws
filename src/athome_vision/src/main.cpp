@@ -12,15 +12,19 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -632,12 +636,14 @@ public:
     session_.reset();
     try {
       Ort::SessionOptions opts;
-      opts.SetIntraOpNumThreads(2);
+      opts.SetIntraOpNumThreads(4);
       opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
       try {
         OrtCUDAProviderOptions cuda_opts{};
         cuda_opts.device_id = 0;
+        cuda_opts.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchHeuristic;
+        cuda_opts.do_copy_in_default_stream = 0;
         opts.AppendExecutionProvider_CUDA(cuda_opts);
         using_cuda_ = true;
       } catch (const std::exception & e) {
@@ -2053,6 +2059,22 @@ private:
   std::vector<PrevItem> preview_drinks_;
   std::vector<PrevChair> preview_chairs_;
 
+  std::mutex preview_mutex_;
+  std::vector<PrevPerson> disp_persons_;
+  std::vector<PrevBag> disp_bags_;
+  std::vector<PrevItem> disp_drinks_;
+  std::vector<PrevChair> disp_chairs_;
+
+  std::mutex frame_mutex_;
+  std::condition_variable worker_cv_;
+  std::atomic<bool> worker_running_{false};
+  bool has_new_frame_{false};
+  cv::Mat worker_bgr_;
+  sl::Mat worker_cloud_;
+  sl::Bodies worker_bodies_;
+  std::thread worker_thread_;
+  void inferenceWorkerLoop();
+
   YoloDetector yolo_;
   YoloDetector coco_bag_yolo_;
   YoloDetector botol_yolo_;
@@ -2071,10 +2093,11 @@ private:
   std::vector<std::string> chair_labels_;
   double yolo_min_area_{500.0};
   double drink_min_area_{180.0};
-  int yolo_stride_{2};
+  int yolo_stride_{3};
   int yolo_frame_{0};
   int drink_frame_{0};
   int chair_frame_{0};
+  int person_attr_frame_{0};
   std::vector<YoloDetection> last_bag_dets_;
   std::vector<YoloDetection> last_drink_dets_;
   std::vector<YoloDetection> last_chair_dets_;
@@ -2096,7 +2119,8 @@ private:
   double drink_max_dist_{2.5};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_name_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr capture_face_srv_;
-  bool capture_face_requested_{false};
+  std::atomic<bool> capture_face_requested_{false};
+  std::mutex state_mutex_;
 
   // State log ringkasan per frame
   bool latest_operator_found_{false};
@@ -2121,6 +2145,7 @@ ZedNode::ZedNode()
 {
   declare_parameter("task", "all");
   declare_parameter("camera_fps", 30.0);
+  declare_parameter("depth_mode", std::string("performance"));
   declare_parameter("publish_yaw", true);
   declare_parameter("yaw_360", true);
   declare_parameter("enable_body_tracking", true);
@@ -2136,7 +2161,7 @@ ZedNode::ZedNode()
   declare_parameter("bag_conf", 0.35);
   declare_parameter("yolo_nms", 0.45);
   declare_parameter("yolo_size", 640);
-  declare_parameter("yolo_stride", 2);
+  declare_parameter("yolo_stride", 3);
   declare_parameter("bag_labels", std::vector<std::string>{"bag", "paper_bag", "backpack", "handbag", "suitcase"});
   declare_parameter("yolo_min_area", 250.0);
   declare_parameter("drink_min_area", 180.0);
@@ -2239,6 +2264,7 @@ ZedNode::ZedNode()
         name.pop_back();
       }
       while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) name.erase(name.begin());
+      std::lock_guard<std::mutex> state_lk(state_mutex_);
       pending_register_name_ = name;
       active_guest_name_ = name;
       capture_face_requested_ = true;
@@ -2250,12 +2276,20 @@ ZedNode::ZedNode()
           guest_2_name_ = name;
         }
 
+        int first_person_id = -1;
+        {
+          std::lock_guard<std::mutex> p_lk(preview_mutex_);
+          if (!disp_persons_.empty()) {
+            first_person_id = disp_persons_[0].id;
+          }
+        }
+
         // Reset lock agar registrasi baru dapat mengumpulkan multi-sample wajah & atribut terbaru
-        if (!preview_persons_.empty()) {
+        if (first_person_id >= 0) {
           bool exists = false;
           for (auto & rp : registered_persons_) {
             if (rp.name == name) {
-              rp.last_tracking_id = preview_persons_[0].id;
+              rp.last_tracking_id = first_person_id;
               rp.last_seen = register_start_time_;
               rp.feature_samples = 0;
               rp.feature.clear();
@@ -2272,7 +2306,7 @@ ZedNode::ZedNode()
           if (!exists) {
             RegisteredPerson rp;
             rp.name = name;
-            rp.last_tracking_id = preview_persons_[0].id;
+            rp.last_tracking_id = first_person_id;
             rp.last_seen = register_start_time_;
             rp.locked = false;
             registered_persons_.push_back(rp);
@@ -2289,7 +2323,19 @@ ZedNode::ZedNode()
     });
 
   sl::InitParameters init;
-  init.depth_mode = sl::DEPTH_MODE::ULTRA;
+  std::string dm = get_parameter("depth_mode").as_string();
+  std::transform(dm.begin(), dm.end(), dm.begin(), ::tolower);
+  if (dm == "ultra") {
+    init.depth_mode = sl::DEPTH_MODE::ULTRA;
+  } else if (dm == "quality") {
+    init.depth_mode = sl::DEPTH_MODE::QUALITY;
+  } else if (dm == "neural") {
+    init.depth_mode = sl::DEPTH_MODE::NEURAL;
+  } else if (dm == "neural_light") {
+    init.depth_mode = sl::DEPTH_MODE::NEURAL_LIGHT;
+  } else {
+    init.depth_mode = sl::DEPTH_MODE::PERFORMANCE;
+  }
   init.coordinate_units = sl::UNIT::CENTIMETER;
   init.camera_resolution = sl::RESOLUTION::VGA;
   init.camera_fps = static_cast<int>(camera_fps_);
@@ -2368,12 +2414,21 @@ ZedNode::ZedNode()
 
   loadModels();
 
+  worker_running_ = true;
+  worker_thread_ = std::thread(&ZedNode::inferenceWorkerLoop, this);
+
+  // Poll faster than camera_fps_ so zed_.grab() paces the loop cleanly at camera_fps_ without timer-boundary skips
   timer_ = create_wall_timer(
-    std::chrono::duration<double>(1.0 / camera_fps_), std::bind(&ZedNode::loop, this));
+    std::chrono::milliseconds(5), std::bind(&ZedNode::loop, this));
 }
 
 ZedNode::~ZedNode()
 {
+  worker_running_ = false;
+  worker_cv_.notify_all();
+  if (worker_thread_.joinable()) {
+    worker_thread_.join();
+  }
   zed_.close();
 }
 
@@ -2811,7 +2866,7 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
   if (bgr.empty()) return;
 
   std::vector<YoloDetection> dets = last_drink_dets_;
-  if (enable_drinks_ && drink_frame_++ % yolo_stride_ == 0) {
+  if (enable_drinks_ && (drink_frame_++ % yolo_stride_) == (1 % yolo_stride_)) {
     dets.clear();
     std::vector<YoloDetector *> active_detectors;
     if (is_receptionist_) {
@@ -2824,37 +2879,46 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
       active_detectors = {&soda_yolo_, &pringles_yolo_, &sugarbox_yolo_, &cracker_yolo_, &milk_yolo_, &botol_yolo_};
     }
 
-    std::vector<YoloDetection> raw_dets;
+    // Jalankan seluruh model minuman secara paralel di GPU menggunakan std::async
+    std::vector<std::future<std::vector<YoloDetection>>> futures;
+    futures.reserve(active_detectors.size());
     for (YoloDetector * detector : active_detectors) {
       if (!detector || !detector->ready()) continue;
-      std::vector<YoloDetection> found;
-      detector->detect(bgr, {}, found);
-      for (auto & item : found) {
-        // Normalisasi label target
-        if (item.label == "cracker_box" || item.label == "crackerbox") item.label = "cracker";
-        if (item.label == "sugar_box" || item.label == "sugarbox") item.label = "sugar";
-        if (item.label == "bottle" || item.label == "botol" ||
-            item.label == "mineral_water" || item.label == "mineral water")
-        {
-          item.label = "water";
+      futures.push_back(std::async(std::launch::async, [this, detector, &bgr]() {
+        std::vector<YoloDetection> found;
+        detector->detect(bgr, {}, found);
+        std::vector<YoloDetection> filtered;
+        filtered.reserve(found.size());
+        for (auto & item : found) {
+          if (item.label == "cracker_box" || item.label == "crackerbox") item.label = "cracker";
+          if (item.label == "sugar_box" || item.label == "sugarbox") item.label = "sugar";
+          if (item.label == "bottle" || item.label == "botol" ||
+              item.label == "mineral_water" || item.label == "mineral water")
+          {
+            item.label = "water";
+          }
+
+          const int area = item.rect.width * item.rect.height;
+          if (area < drink_min_area_ || area > static_cast<int>(bgr.cols * bgr.rows * 0.35)) continue;
+          if (item.rect.width < 10 || item.rect.height < 12) continue;
+
+          const float ar = static_cast<float>(item.rect.height) / static_cast<float>(std::max(1, item.rect.width));
+          if (item.label == "soda" && (ar < 0.9f || ar > 3.2f)) continue;
+          if (item.label == "water" && (ar < 0.50f || ar > 5.5f)) continue;
+          if (item.label == "pringles" && (ar < 1.1f || ar > 3.8f)) continue;
+          if ((item.label == "cracker" || item.label == "sugar") && (ar < 0.5f || ar > 2.6f)) continue;
+          if (item.label == "milk" && (ar < 0.8f || ar > 3.5f)) continue;
+
+          filtered.push_back(item);
         }
+        return filtered;
+      }));
+    }
 
-        // 1. Filter dimensi piksel 2D (minimum area dan maksimum proporsi layar)
-        const int area = item.rect.width * item.rect.height;
-        if (area < drink_min_area_ || area > static_cast<int>(bgr.cols * bgr.rows * 0.35)) continue;
-        if (item.rect.width < 10 || item.rect.height < 12) continue;
-
-        // 2. Filter rasio aspek (height / width) spesifik bentuk fisik objek
-        //    (Mencegah deteksi palsu pada tiang kursi, kaki meja, garis lantai, atau dinding)
-        const float ar = static_cast<float>(item.rect.height) / static_cast<float>(std::max(1, item.rect.width));
-        if (item.label == "soda" && (ar < 0.9f || ar > 3.2f)) continue;
-        if (item.label == "water" && (ar < 0.50f || ar > 5.5f)) continue;
-        if (item.label == "pringles" && (ar < 1.1f || ar > 3.8f)) continue;
-        if ((item.label == "cracker" || item.label == "sugar") && (ar < 0.5f || ar > 2.6f)) continue;
-        if (item.label == "milk" && (ar < 0.8f || ar > 3.5f)) continue;
-
-        raw_dets.push_back(item);
-      }
+    std::vector<YoloDetection> raw_dets;
+    for (auto & fut : futures) {
+      auto res = fut.get();
+      raw_dets.insert(raw_dets.end(), res.begin(), res.end());
     }
 
     // 3. Cross-Model Non-Maximum Suppression (Inter-Class NMS):
@@ -3017,6 +3081,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   std::vector<std::string> entry_genders(entries.size());
   std::vector<bool> entry_facing_back(entries.size(), false);
   if (is_receptionist_) {
+    const bool run_attr_infer = (person_attr_frame_++ % 3 == 0);
     for (size_t i = 0; i < entries.size(); ++i) {
       const auto & e = entries[i];
       const auto & kpt2d = e.body->keypoint_2d;
@@ -3025,7 +3090,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
       entry_shirt_rois[i] = AttributeAnalyzer::computeShirtRoi(bgr, e.bbox, kpt2d);
       std::string raw_cloth;
-      if (entry_shirt_rois[i].width > 5 && entry_shirt_rois[i].height > 5) {
+      if (run_attr_infer && entry_shirt_rois[i].width > 5 && entry_shirt_rois[i].height > 5) {
         raw_cloth = analyzer_.clothingColor(bgr, entry_shirt_rois[i], &cloud, wb_gain);
       }
       if (!raw_cloth.empty() && raw_cloth != "casual attire") {
@@ -3037,7 +3102,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
 
       if (i == 0 || !pending_register_name_.empty() || !registered_persons_.empty()) {
-        entry_hairs[i] = analyzer_.hairColor(bgr, e.bbox, kpt2d);
+        if (run_attr_infer) {
+          entry_hairs[i] = analyzer_.hairColor(bgr, e.bbox, kpt2d);
+        }
         auto git = gender_memory_.find(e.id);
         auto currentGenderVote = [&]() -> std::string {
           if (git == gender_memory_.end() || git->second.history.empty()) return "unknown";
@@ -3054,7 +3121,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           return best_g;
         };
 
-        if (!entry_facing_back[i]) {
+        if (run_attr_infer && !entry_facing_back[i]) {
           const std::string raw_gender = analyzer_.gender(kpt2d, bgr, e.bbox);
           if (!raw_gender.empty() && raw_gender != "unknown") {
             entry_genders[i] = updateAttributeVote(gender_memory_, e.id, raw_gender, current_time);
@@ -4157,7 +4224,7 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
   }
 
   std::vector<YoloDetection> dets = last_chair_dets_;
-  if (chair_frame_++ % yolo_stride_ == 0) {
+  if ((chair_frame_++ % yolo_stride_) == (2 % yolo_stride_)) {
     dets.clear();
     if (chair_yolo_.ready()) {
       chair_yolo_.detect(bgr, {}, dets);
@@ -4435,8 +4502,20 @@ void ZedNode::showPreview(const cv::Mat & bgr)
           cv::FONT_HERSHEY_SIMPLEX, scale, fg, thickness, cv::LINE_AA);
       };
 
-    for (size_t i = 0; i < std::min<size_t>(4, preview_persons_.size()); ++i) {
-      const auto & p = preview_persons_[i];
+    std::vector<PrevPerson> snap_persons;
+    std::vector<PrevBag> snap_bags;
+    std::vector<PrevItem> snap_drinks;
+    std::vector<PrevChair> snap_chairs;
+    {
+      std::lock_guard<std::mutex> p_lk(preview_mutex_);
+      snap_persons = disp_persons_;
+      snap_bags = disp_bags_;
+      snap_drinks = disp_drinks_;
+      snap_chairs = disp_chairs_;
+    }
+
+    for (size_t i = 0; i < std::min<size_t>(4, snap_persons.size()); ++i) {
+      const auto & p = snap_persons[i];
       if (p.has_pos && p.range_m > (p.is_sitting ? 3.5 : person_max_dist_)) continue;
       cv::Rect r = flipRect(p.bbox);
       r &= cv::Rect(0, 0, W, H);
@@ -4483,8 +4562,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     }
 
     if (enable_bag_) {
-      for (size_t i = 0; i < std::min<size_t>(2, preview_bags_.size()); ++i) {
-        const auto & b = preview_bags_[i];
+      for (size_t i = 0; i < std::min<size_t>(2, snap_bags.size()); ++i) {
+        const auto & b = snap_bags[i];
         cv::Rect r = flipRect(b.bbox);
         r &= cv::Rect(0, 0, W, H);
         if (r.width <= 0 || r.height <= 0) continue;
@@ -4496,8 +4575,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       }
     }
 
-    for (size_t i = 0; i < std::min<size_t>(6, preview_drinks_.size()); ++i) {
-      const auto & d = preview_drinks_[i];
+    for (size_t i = 0; i < std::min<size_t>(6, snap_drinks.size()); ++i) {
+      const auto & d = snap_drinks[i];
       cv::Rect r = flipRect(d.bbox);
       r &= cv::Rect(0, 0, W, H);
       if (r.width <= 0 || r.height <= 0) continue;
@@ -4530,8 +4609,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       }
     }
 
-    for (size_t i = 0; i < std::min<size_t>(4, preview_chairs_.size()); ++i) {
-      const auto & c = preview_chairs_[i];
+    for (size_t i = 0; i < std::min<size_t>(4, snap_chairs.size()); ++i) {
+      const auto & c = snap_chairs[i];
       cv::Rect r = flipRect(c.bbox);
       r &= cv::Rect(0, 0, W, H);
       if (r.width <= 0 || r.height <= 0) continue;
@@ -4540,6 +4619,7 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       const int cx = r.x + r.width / 2;
       const int cy = r.y + r.height / 2;
       cv::circle(canvas, cv::Point(cx, cy), 4, color, -1);
+      cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), color, 2);
     }
 
     int hud_y = 36;
@@ -4561,8 +4641,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         hud_y += valid ? 40 : 25;
       };
 
-    const PrevPerson p0 = (!preview_persons_.empty() && preview_persons_[0].has_pos)
-      ? preview_persons_[0] : PrevPerson{};
+    const PrevPerson p0 = (!snap_persons.empty() && snap_persons[0].has_pos)
+      ? snap_persons[0] : PrevPerson{};
     std::string person_title;
     if (is_receptionist_) {
       if (!p0.name.empty()) {
@@ -4579,16 +4659,16 @@ void ZedNode::showPreview(const cv::Mat & bgr)
 
     if (enable_bag_) {
       // Selalu tampilkan status Bag 1 dan Bag 2 (kedeteksi maupun belum)
-      const bool b1_ok = (preview_bags_.size() >= 1 && preview_bags_[0].has_pos);
-      const double b1_x = b1_ok ? preview_bags_[0].x_m : 0.0;
-      const double b1_y = b1_ok ? preview_bags_[0].y_m : 0.0;
-      const double b1_d = b1_ok ? preview_bags_[0].range_m : 0.0;
+      const bool b1_ok = (snap_bags.size() >= 1 && snap_bags[0].has_pos);
+      const double b1_x = b1_ok ? snap_bags[0].x_m : 0.0;
+      const double b1_y = b1_ok ? snap_bags[0].y_m : 0.0;
+      const double b1_d = b1_ok ? snap_bags[0].range_m : 0.0;
       hud_item("Bag 1", b1_x, b1_y, b1_d, b1_ok, cv::Scalar(0, 69, 255));
 
-      const bool b2_ok = (preview_bags_.size() >= 2 && preview_bags_[1].has_pos);
-      const double b2_x = b2_ok ? preview_bags_[1].x_m : 0.0;
-      const double b2_y = b2_ok ? preview_bags_[1].y_m : 0.0;
-      const double b2_d = b2_ok ? preview_bags_[1].range_m : 0.0;
+      const bool b2_ok = (snap_bags.size() >= 2 && snap_bags[1].has_pos);
+      const double b2_x = b2_ok ? snap_bags[1].x_m : 0.0;
+      const double b2_y = b2_ok ? snap_bags[1].y_m : 0.0;
+      const double b2_d = b2_ok ? snap_bags[1].range_m : 0.0;
       hud_item("Bag 2", b2_x, b2_y, b2_d, b2_ok, cv::Scalar(0, 69, 255));
     }
 
@@ -4630,30 +4710,78 @@ void ZedNode::loop()
       return;
     }
 
+    sl::Bodies cap_bodies;
     if (enable_body_tracking_) {
-      if (zed_.retrieveBodies(bodies_, body_runtime_parameters_) != sl::ERROR_CODE::SUCCESS) {
+      if (zed_.retrieveBodies(cap_bodies, body_runtime_parameters_) != sl::ERROR_CODE::SUCCESS) {
         return;
       }
-    } else {
-      bodies_.body_list.clear();
     }
 
-    latest_operator_found_ = false;
-    latest_back_found_ = false;
-    latest_gesture_.clear();
-    latest_guest_found_ = false;
-    latest_customer_found_ = false;
-    latest_wave_found_ = false;
+    {
+      std::lock_guard<std::mutex> lk(frame_mutex_);
+      bgr.copyTo(worker_bgr_);
+      zed_point_cloud_.copyTo(worker_cloud_, sl::COPY_TYPE::CPU_CPU);
+      worker_bodies_ = std::move(cap_bodies);
+      has_new_frame_ = true;
+    }
+    worker_cv_.notify_one();
 
-    processBags(bgr, zed_point_cloud_);
-    processDrinks(bgr, zed_point_cloud_);
-    processPersons(bgr, zed_point_cloud_);
-    processChairs(bgr, zed_point_cloud_);
-    printSummaryLog();
+    // Tampilkan preview langsung di 30 FPS tanpa menunggu inferensi YOLO/atribut
     showPreview(bgr);
   } catch (const std::exception & e) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
       "Vision loop exception: %s", e.what());
+  }
+}
+
+void ZedNode::inferenceWorkerLoop()
+{
+  cv::Mat bgr;
+  sl::Mat cloud;
+  while (worker_running_.load() && rclcpp::ok()) {
+    {
+      std::unique_lock<std::mutex> lk(frame_mutex_);
+      worker_cv_.wait(lk, [this]() {
+        return has_new_frame_ || !worker_running_.load() || !rclcpp::ok();
+      });
+      if (!worker_running_.load() || !rclcpp::ok()) break;
+      if (!has_new_frame_) continue;
+      worker_bgr_.copyTo(bgr);
+      worker_cloud_.copyTo(cloud, sl::COPY_TYPE::CPU_CPU);
+      bodies_ = std::move(worker_bodies_);
+      has_new_frame_ = false;
+    }
+
+    if (bgr.empty()) continue;
+
+    try {
+      latest_operator_found_ = false;
+      latest_back_found_ = false;
+      latest_gesture_.clear();
+      latest_guest_found_ = false;
+      latest_customer_found_ = false;
+      latest_wave_found_ = false;
+
+      processBags(bgr, cloud);
+      processDrinks(bgr, cloud);
+      {
+        std::lock_guard<std::mutex> state_lk(state_mutex_);
+        processPersons(bgr, cloud);
+      }
+      processChairs(bgr, cloud);
+      printSummaryLog();
+
+      {
+        std::lock_guard<std::mutex> p_lk(preview_mutex_);
+        disp_persons_ = preview_persons_;
+        disp_bags_ = preview_bags_;
+        disp_drinks_ = preview_drinks_;
+        disp_chairs_ = preview_chairs_;
+      }
+    } catch (const std::exception & e) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
+        "Inference worker exception: %s", e.what());
+    }
   }
 }
 

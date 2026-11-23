@@ -2,7 +2,7 @@ receptionist_node:
   ros__parameters:
     # Waypoints
     door:
-      x: 0.5
+      x: 1.2
       y: 0.0
       yaw: 180.0
       # x : 5.0
@@ -33,26 +33,26 @@ receptionist_node:
     empty_seat_topic: "/vision/empty_seat"
     odom_topic: "/odom"
     search_chair_ref_yaw: -1.57
-    search_chair_angular_speed: 0.30
+    search_chair_angular_speed: 0.55
     search_chair_timeout_sec: 40.0
     search_chair_confirm_frames: 2
     search_chair_sweep_angle_deg: 30.0
     chair_max_dist: 3.0
     align_chair_p_gain: 1.2
-    align_chair_min_speed: 0.14
-    align_chair_max_speed: 0.28
+    align_chair_min_speed: 0.30
+    align_chair_max_speed: 0.55
     align_chair_tolerance_rad: 0.07
     camera_width: 672
 
     guest_door_distance: 1.5
-    guest_door_step_back_speed: 0.16
+    guest_door_step_back_speed: 0.30
     guest_door_timeout_sec: 15.0
     guest_approach_distance: 0.7
-    guest_approach_speed: 0.16
+    guest_approach_speed: 0.55
     guest_approach_timeout_sec: 15.0
 
     # Face person settings
-    host_name: "Alex"
+    host_name: "Revaldo"
     person_label_topic: "/vision/person_label"
     guest_1_name_topic: "/vision/guest_1_name"
     guest_2_name_topic: "/vision/guest_2_name"
@@ -60,8 +60,8 @@ receptionist_node:
     face_person_angular_speed: 0.30
     face_person_timeout_sec: 25.0
     face_person_p_gain: 1.2
-    face_person_min_speed: 0.14
-    face_person_max_speed: 0.30
+    face_person_min_speed: 0.30
+    face_person_max_speed: 0.55
     face_person_tolerance_rad: 0.07
 
     # Relative 90-degree turn settings (/receptionist/left dan /receptionist/right)
@@ -76,7 +76,7 @@ receptionist_manager:
   ros__parameters:
     # Parameter Host & Konfigurasi Task (WAJIB ada di file YAML ini; tidak ada default di C++)
     host:
-      name: "Alex"                       # Nama Host yang duduk di living room
+      name: "Revaldo"                       # Nama Host yang duduk di living room
       drink: "Coke"                      # Minuman favorit Host
       interest: "Robotics"               # Hobi/minat utama Host
       gender: "male"                     # Gender Host ("male" / "female")

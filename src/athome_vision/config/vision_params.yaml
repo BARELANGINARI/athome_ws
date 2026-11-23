@@ -2,6 +2,7 @@ vision:
   ros__parameters:
     task: "all"
     camera_fps: 30.0
+    depth_mode: "performance"
     publish_yaw: true
     yaw_360: true
     depth_minimum_distance: 30.0
@@ -15,6 +16,7 @@ vision:
     bag_conf: 0.35
     yolo_nms: 0.45
     yolo_size: 640
+    yolo_stride: 3
     yolo_min_area: 250.0
     bag_labels: ["bag", "paper_bag", "backpack", "handbag", "suitcase"]
     face_detect_model: "models/face_detection_yunet.onnx"
