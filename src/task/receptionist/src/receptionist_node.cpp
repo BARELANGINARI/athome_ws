@@ -1845,8 +1845,19 @@ public:
     auto get_current_person_target = [this, &target_role]() -> PersonTarget {
       PersonTarget target;
 
-      // Khusus saat mencari Host / orang di living room:
-      // PRIORITAS UTAMA: Orang yang sedang DUDUK di kursi (occupied_chair < 3.0m)
+      // PRIORITAS UTAMA: Cek deteksi orang dari vision person_label
+      // (mengenali Host bernama maupun "guest" tanpa nama, dan mengecualikan Guest 1/2)
+      {
+        std::lock_guard<std::mutex> lock(person_mutex_);
+        if (person_detected_ && (now() - last_person_time_).seconds() < 1.0) {
+          target = parseTargetPerson(latest_persons_str_, target_role);
+          if (target.valid) {
+            return target;
+          }
+        }
+      }
+
+      // PRIORITAS KEDUA (Fallback khusus Host): Orang yang sedang DUDUK di kursi (occupied_chair < 3.0m)
       if (target_role == "host") {
         std::lock_guard<std::mutex> lock(chair_mutex_);
         if (occupied_chair_detected_ && (now() - last_occupied_chair_time_).seconds() < 2.0) {
@@ -1858,14 +1869,6 @@ public:
             target.label = "Seated Guest (" + occ.side + ")";
             return target;
           }
-        }
-      }
-
-      // PRIORITAS KEDUA: Cek deteksi orang dari vision person_label
-      {
-        std::lock_guard<std::mutex> lock(person_mutex_);
-        if (person_detected_ && (now() - last_person_time_).seconds() < 1.0) {
-          target = parseTargetPerson(latest_persons_str_, target_role);
         }
       }
       return target;
