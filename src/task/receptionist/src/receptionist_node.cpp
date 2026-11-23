@@ -960,13 +960,13 @@ public:
           // Logic OR: orang yang sedang duduk (seated) jika jarak < 3.0m
           is_match = true;
           priority = 90.0;
-        } else if ((label_lower == "guest" || label_lower == "person") &&
+        } else if ((label_lower == "guest" || label_lower == "person" || label_lower == "unknown") &&
                    (guest_1_name_lower.empty() || label_lower.find(guest_1_name_lower) == std::string::npos) &&
                    (guest_2_name_lower.empty() || label_lower.find(guest_2_name_lower) == std::string::npos) &&
-                   dist < host_seated_max_dist_) {
+                   dist < 5.0) {
           // Fallback jika Host belum dikenali oleh face recognition (athome_vision melabeli "guest"/"person")
           is_match = true;
-          priority = (label_lower == "guest") ? 45.0 : 40.0;
+          priority = (label_lower == "guest") ? 90.0 - (dist * 5.0) : 80.0 - (dist * 5.0);
         }
       } else if (target_role == "guest_1") {
         if (!guest_1_name_lower.empty() && label_lower.find(guest_1_name_lower) != std::string::npos) {
@@ -1217,7 +1217,7 @@ public:
     auto record_cluster_vote = [&](double abs_yaw, double dist, ClusterRoleVote role) {
       YawClusterVote * matched = nullptr;
       for (auto & c : yaw_clusters) {
-        if (std::abs(normalize_angle(c.meanYaw() - abs_yaw)) < 0.30) {
+        if (std::abs(normalize_angle(c.meanYaw() - abs_yaw)) < 0.15) {
           matched = &c;
           break;
         }
@@ -1288,10 +1288,11 @@ public:
         }
       }
 
-      if (!best_host.valid && !is_guest2_session) {
+      if (!best_host.valid) {
         int seated_idx = -1;
         int best_seated_votes = 0;
         for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
+          if (static_cast<int>(idx) == g1_cluster_idx) continue;
           if (yaw_clusters[idx].seated_votes > best_seated_votes) {
             best_seated_votes = yaw_clusters[idx].seated_votes;
             seated_idx = static_cast<int>(idx);
@@ -1306,7 +1307,7 @@ public:
 
     auto record_seated_slot = [&](double abs_yaw, double dist) {
       for (auto & s : seated_slots) {
-        if (std::abs(normalize_angle(s.abs_yaw - abs_yaw)) < 0.25) {
+        if (std::abs(normalize_angle(s.abs_yaw - abs_yaw)) < 0.15) {
           if (dist < s.dist) {
             s.abs_yaw = abs_yaw;
             s.dist = dist;
@@ -1380,7 +1381,7 @@ public:
           const bool matches_g2 = (!g2_lower.empty() && lbl_lower.find(g2_lower) != std::string::npos);
           const bool is_unnamed_guest =
             (lbl_lower == "guest" || lbl_lower == "person" || lbl_lower == "unknown") &&
-            !matches_g1 && !matches_g2 && dist < host_seated_max_dist_;
+            !matches_g1 && !matches_g2 && dist < 5.0;
 
           if (matches_host && !matches_g1 && !matches_g2) {
             record_cluster_vote(abs_yaw, dist, ClusterRoleVote::HOST_NAME);
@@ -1499,14 +1500,14 @@ public:
         [](const SeatedSlot & a, const SeatedSlot & b) { return a.dist < b.dist; });
       if (best_host.valid && !best_g1.valid) {
         for (const auto & s : seated_slots) {
-          if (std::abs(normalize_angle(s.abs_yaw - best_host.abs_yaw)) >= 0.25) {
+          if (std::abs(normalize_angle(s.abs_yaw - best_host.abs_yaw)) >= 0.15) {
             best_g1 = {true, s.abs_yaw, s.dist, 50};
             break;
           }
         }
       } else if (best_g1.valid && !best_host.valid) {
         for (const auto & s : seated_slots) {
-          if (std::abs(normalize_angle(s.abs_yaw - best_g1.abs_yaw)) >= 0.25) {
+          if (std::abs(normalize_angle(s.abs_yaw - best_g1.abs_yaw)) >= 0.15) {
             best_host = {true, s.abs_yaw, s.dist, 50};
             break;
           }
@@ -1514,7 +1515,7 @@ public:
       } else if (!best_host.valid && !best_g1.valid && seated_slots.size() >= 2) {
         best_host = {true, seated_slots[0].abs_yaw, seated_slots[0].dist, 40};
         for (size_t k = 1; k < seated_slots.size(); ++k) {
-          if (std::abs(normalize_angle(seated_slots[k].abs_yaw - best_host.abs_yaw)) >= 0.25) {
+          if (std::abs(normalize_angle(seated_slots[k].abs_yaw - best_host.abs_yaw)) >= 0.15) {
             best_g1 = {true, seated_slots[k].abs_yaw, seated_slots[k].dist, 40};
             break;
           }
