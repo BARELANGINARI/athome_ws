@@ -2470,25 +2470,32 @@ private:
               "\033[1;33m[LIVING ROOM]\033[0m Face Host gagal/timeout, tetap melanjutkan perkenalan.");
           }
 
-          const std::string intro_msg =
+          const std::string intro_guest_to_host =
             "Hello, this is our guest, " + cg.name + ". " +
             formatPersonDescription(cg) + ". Their favorite drink is " +
             cg.drink + ", and their interest is " + cg.interest + ".";
 
-          speakAsync(intro_msg, [this, g_idx]() {
-            if (g_idx == 1) {
-              after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
-              return_yaw_only_ = false;
-              transitionTo(
-                ReceptionistState::RETURN_TO_LIVING_ROOM,
-                "Guest introduced to seated person; returning to living_room before searching chair");
-            } else {
-              after_return_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_G2;
-              return_yaw_only_ = true;
-              transitionTo(
-                ReceptionistState::RETURN_TO_LIVING_ROOM,
-                "Guest introduced to seated person; resetting yaw to living_room before guest introductions");
-            }
+          const std::string intro_host_to_guest =
+            cg.name + ", this is our host, " + host_.name + ". " +
+            formatPersonDescription(host_) + ". Their favorite drink is " +
+            host_.drink + ", and their interest is " + host_.interest + ".";
+
+          speakAsync(intro_guest_to_host, [this, g_idx, intro_host_to_guest]() {
+            speakAsync(intro_host_to_guest, [this, g_idx]() {
+              if (g_idx == 1) {
+                after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
+                return_yaw_only_ = false;
+                transitionTo(
+                  ReceptionistState::RETURN_TO_LIVING_ROOM,
+                  "Guest and Host introduced; returning to living_room before searching chair");
+              } else {
+                after_return_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_G2;
+                return_yaw_only_ = true;
+                transitionTo(
+                  ReceptionistState::RETURN_TO_LIVING_ROOM,
+                  "Guest and Host introduced; resetting yaw to living_room before guest introductions");
+              }
+            });
           });
         });
         break;
