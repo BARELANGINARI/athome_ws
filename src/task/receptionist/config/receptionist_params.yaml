@@ -64,7 +64,7 @@ receptionist_node:
     # Relative 90-degree turn settings (/receptionist/left dan /receptionist/right)
     turn_90_angular_speed: 0.30
     turn_90_min_speed: 0.14
-    turn_90_max_speed: 0.35
+    turn_90_max_speed: 0.55
     turn_90_tolerance_rad: 0.04
     turn_90_timeout_sec: 15.0
     turn_90_p_gain: 1.5
