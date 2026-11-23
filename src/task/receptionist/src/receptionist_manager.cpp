@@ -1436,7 +1436,7 @@ private:
         }
       }
       return stripPrefixes({
-        "my name is ", "i am ", "im ", "call me ", "this is ", "name is "
+        "my name is ", "i am ", "im ", "i m", "iam", "iyem", "name s", "may name is", "mai name is", " you can call me", "my name s", "mai name s","call me ", "this is ", "name is "
       });
     }
 
@@ -1983,7 +1983,7 @@ private:
       case ReceptionistState::ALIGN_GUEST:
         adjustGuestDistance([this](bool /*success*/, const std::string & /*msg*/) {
           speakAsync(
-            "Hello! Welcome to the party. I am Barelang Inari from Batam State Polytechnic; I am your robot receptionist.",
+            "Hello!. I am Barelang Inari from Batam State Polytechnic; I am your robot receptionist.",
             [this]() {
               transitionTo(ReceptionistState::ASK_NAME, "Guest greeted at entrance after alignment & distance adjustment");
             });
