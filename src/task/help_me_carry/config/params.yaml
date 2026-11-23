@@ -120,6 +120,7 @@ help_me_carry_manager:
     tts_sec_per_word: 0.5                     # Estimasi durasi ucapan per kata untuk TTS (detik/kata)
     tts_timeout_margin_sec: 2.0               # Margin tambahan latensi sintesis & pemutaran suara (detik)
     follow_prompt_interval_sec: 3.0           # Interval pengingat pada state follow (detik)
+    lifter_move_wait_sec: 3.0                 # Lama tunggu gerakan lifter turun/naik sebelum aksi berikutnya (detik)
 
 help_me_carry_orchestrator:
   ros__parameters:
@@ -131,3 +132,4 @@ help_me_carry_orchestrator:
     tts_sec_per_word: 0.5
     tts_timeout_margin_sec: 2.0
     follow_prompt_interval_sec: 3.0
+    lifter_move_wait_sec: 3.0
