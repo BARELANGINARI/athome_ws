@@ -63,7 +63,7 @@ enum class RestaurantState {
   FIND_AND_ALIGN_BARMAN,          // 7b. Cari & arahkan kamera ke barman (< 1.5 m, tengah frame)
   ANNOUNCE_ORDER_TO_BARMAN,       // 8a. "The first/second customer order..." -> "please place {order_1}..."
   DETECT_AND_NAV_TO_ORDER1,       // 8b. Deteksi posisi {order_1} & navigasi ke posisi tersebut
-  GRASP_ORDER1,                   // 8c. Panggil srv /arm/ambil_tas_simple -> instruksi taruh {order_2} di tray
+  GRASP_ORDER1,                   // 8c. Panggil srv /arm/ambil_order -> instruksi taruh {order_2} di tray
   WAIT_TRAY_SILENT_5S,            // 8d. Diam selama 5 detik menunggu {order_2} ditaruh di tray
   ASK_TRAY_CONFIRMATION,          // 8e. "is the order had take in the tray, please answer with yes robot or no robot"
   WAIT_TRAY_CONFIRMATION,         // 8f. Menunggu jawaban yes robot / no robot
@@ -354,7 +354,7 @@ public:
 
     // Arm Services
     arm_grab_simple_client_ = create_client<Trigger>(
-      "/arm/ambil_tas_simple", rclcpp::ServicesQoS(), callback_group_);
+      "/arm/ambil_order", rclcpp::ServicesQoS(), callback_group_);
     arm_release_client_ = create_client<Trigger>(
       "/arm/release_gripper", rclcpp::ServicesQoS(), callback_group_);
     arm_letakkan_client_ = create_client<Trigger>(
@@ -2240,12 +2240,12 @@ private:
             [this](bool /*nav_ok*/) {
               transitionTo(
                 RestaurantState::GRASP_ORDER1,
-                "Reached order_1 position, calling /arm/ambil_tas_simple");
+                "Reached order_1 position, calling /arm/ambil_order");
             });
         } else if ((now() - state_enter_time_).seconds() >= order1_detect_timeout_sec_) {
           RCLCPP_WARN(
             get_logger(),
-            "[ORDER_1] Timeout %.1fs menunggu deteksi 3D '%s', langsung memanggil /arm/ambil_tas_simple di posisi saat ini.",
+            "[ORDER_1] Timeout %.1fs menunggu deteksi 3D '%s', langsung memanggil /arm/ambil_order di posisi saat ini.",
             order1_detect_timeout_sec_, o1.c_str());
           transitionTo(
             RestaurantState::GRASP_ORDER1,
@@ -2284,11 +2284,11 @@ private:
         }
 
         callTrigger(
-          arm_grab_simple_client_, "/arm/ambil_tas_simple",
+          arm_grab_simple_client_, "/arm/ambil_order",
           [this](bool ok, const std::string & msg) {
             RCLCPP_INFO(
               get_logger(),
-              "[ARM] /arm/ambil_tas_simple finished (ok=%s, msg='%s')",
+              "[ARM] /arm/ambil_order finished (ok=%s, msg='%s')",
               ok ? "true" : "false", msg.c_str());
 
             std::string o2;

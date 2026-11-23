@@ -177,6 +177,11 @@ public:
             std::bind(&ArmMotionServer::handleAmbilTasSimple, this, std::placeholders::_1, std::placeholders::_2)
         );
 
+        ambil_order_srv_ = this->create_service<std_srvs::srv::Trigger>(
+            "/arm/ambil_order",
+            std::bind(&ArmMotionServer::handleAmbilOrder, this, std::placeholders::_1, std::placeholders::_2)
+        );
+
         release_gripper_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "/arm/release_gripper",
             std::bind(&ArmMotionServer::handleReleaseGripper, this, std::placeholders::_1, std::placeholders::_2)
@@ -310,6 +315,7 @@ private:
 
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_tas_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_tas_simple_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_order_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr release_gripper_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr letakkan_tas_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr play_motion_srv_;
@@ -1026,6 +1032,25 @@ private:
             response->success = true;
             response->message = "Fallback motion executed successfully.";
             RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Motion done", getTaskTag().c_str());
+        } else {
+            response->success = false;
+            response->message = err;
+            RCLCPP_ERROR(this->get_logger(), "%s\033[1;31m[ARM]\033[0m %s", getTaskTag().c_str(), err.c_str());
+        }
+    }
+
+    void handleAmbilOrder(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        std::lock_guard<std::mutex> lock(hardware_mutex_);
+
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Ambil order start...", getTaskTag().c_str());
+        std::string err;
+        if (runMotionByName("ambil_order", err)) {
+            response->success = true;
+            response->message = "Motion ambil_order executed successfully.";
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Ambil order done", getTaskTag().c_str());
         } else {
             response->success = false;
             response->message = err;
