@@ -71,21 +71,22 @@ receptionist_node:
 
 receptionist_manager:
   ros__parameters:
+    # Parameter Host & Konfigurasi Task (WAJIB ada di file YAML ini; tidak ada default di C++)
     host:
-      name: "Alex"
-      drink: "Coke"
-      interest: "Robotics"
-      gender: "male"
-      shirt_color: "black"
-      hair_color: "black"
-    camera_width: 672
-    global_timeout_sec: 600.0
-    dialog_reprompt_sec: 12.0
-    wait_guest_prompt_sec: 8.0
-    vision_initial_settle_sec: 1.2
-    min_sit_wait_sec: 4.0
-    person_freshness_sec: 2.0
-    tts_min_timeout_sec: 4.0
-    tts_sec_per_word: 0.5
-    tts_timeout_margin_sec: 2.0
-    nav_retry_cooldown_sec: 2.0
+      name: "Alex"                       # Nama Host yang duduk di living room
+      drink: "Coke"                      # Minuman favorit Host
+      interest: "Robotics"               # Hobi/minat utama Host
+      gender: "male"                     # Gender Host ("male" / "female")
+      shirt_color: "black"               # Warna pakaian Host
+      hair_color: "black"                # Warna rambut Host
+    camera_width: 672                    # Lebar resolusi horizontal frame kamera (px)
+    global_timeout_sec: 600.0            # Batas waktu maksimal seluruh task Receptionist (detik)
+    dialog_reprompt_sec: 12.0            # Jeda tunggu sebelum mengulang pertanyaan dialog STT (detik)
+    wait_guest_prompt_sec: 8.0           # Interval sapaan saat menunggu tamu berdiri di depan pintu (detik)
+    vision_initial_settle_sec: 1.2       # Waktu stabilisasi kamera setelah robot berhenti navigasi (detik)
+    min_sit_wait_sec: 4.0                # Waktu tunggu minimal sebelum mengecek tamu duduk di kursi (detik)
+    person_freshness_sec: 2.0            # Batas umur deteksi orang terakhir dianggap masih valid (detik)
+    tts_min_timeout_sec: 4.0             # Watchdog minimal durasi ucapan TTS (detik)
+    tts_sec_per_word: 0.5                # Estimasi durasi ucapan TTS per kata (detik/kata)
+    tts_timeout_margin_sec: 2.0          # Margin tambahan untuk latensi audio TTS (detik)
+    nav_retry_cooldown_sec: 2.0          # Jeda sebelum mengulang navigasi yang gagal (detik)

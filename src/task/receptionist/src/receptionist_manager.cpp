@@ -166,50 +166,31 @@ public:
   ReceptionistTaskNode()
   : Node("receptionist_manager")
   {
-    // Parameter Host & Konfigurasi Task
-    declare_parameter<std::string>("host.name", "Alex");
-    declare_parameter<std::string>("host.drink", "Coke");
-    declare_parameter<std::string>("host.interest", "Robotics");
-    declare_parameter<std::string>("host.gender", "male");
-    declare_parameter<std::string>("host.shirt_color", "black");
-    declare_parameter<std::string>("host.hair_color", "black");
-    declare_parameter<int>("camera_width", 672);
-
-    declare_parameter<double>("global_timeout_sec", 600.0);
-    declare_parameter<double>("dialog_reprompt_sec", 12.0);
-    declare_parameter<double>("wait_guest_prompt_sec", 8.0);
-    declare_parameter<double>("vision_initial_settle_sec", 1.2);
-    declare_parameter<double>("min_sit_wait_sec", 10.0);
-    declare_parameter<double>("person_freshness_sec", 2.0);
-    declare_parameter<double>("tts_min_timeout_sec", 4.0);
-    declare_parameter<double>("tts_sec_per_word", 0.5);
-    declare_parameter<double>("tts_timeout_margin_sec", 2.0);
-    declare_parameter<double>("nav_retry_cooldown_sec", 2.0);
-
+    // Parameter Host & Konfigurasi Task (WAJIB dari file YAML receptionist_params.yaml, read-only)
     host_.id = "host";
-    host_.name = get_parameter("host.name").as_string();
-    host_.drink = get_parameter("host.drink").as_string();
-    host_.interest = get_parameter("host.interest").as_string();
-    host_.gender = get_parameter("host.gender").as_string();
-    host_.shirt_color = get_parameter("host.shirt_color").as_string();
-    host_.hair_color = get_parameter("host.hair_color").as_string();
+    host_.name = requireYamlParameter<std::string>("host.name");
+    host_.drink = requireYamlParameter<std::string>("host.drink");
+    host_.interest = requireYamlParameter<std::string>("host.interest");
+    host_.gender = requireYamlParameter<std::string>("host.gender");
+    host_.shirt_color = requireYamlParameter<std::string>("host.shirt_color");
+    host_.hair_color = requireYamlParameter<std::string>("host.hair_color");
     host_.attributes = {
       host_.gender,
       host_.shirt_color + " shirt",
       host_.hair_color + " hair"
     };
-    camera_width_ = get_parameter("camera_width").as_int();
+    camera_width_ = requireYamlParameter<int>("camera_width");
 
-    global_timeout_sec_ = get_parameter("global_timeout_sec").as_double();
-    dialog_reprompt_sec_ = get_parameter("dialog_reprompt_sec").as_double();
-    wait_guest_prompt_sec_ = get_parameter("wait_guest_prompt_sec").as_double();
-    vision_initial_settle_sec_ = get_parameter("vision_initial_settle_sec").as_double();
-    min_sit_wait_sec_ = get_parameter("min_sit_wait_sec").as_double();
-    person_freshness_sec_ = get_parameter("person_freshness_sec").as_double();
-    tts_min_timeout_sec_ = get_parameter("tts_min_timeout_sec").as_double();
-    tts_sec_per_word_ = get_parameter("tts_sec_per_word").as_double();
-    tts_timeout_margin_sec_ = get_parameter("tts_timeout_margin_sec").as_double();
-    nav_retry_cooldown_sec_ = get_parameter("nav_retry_cooldown_sec").as_double();
+    global_timeout_sec_ = requireYamlParameter<double>("global_timeout_sec");
+    dialog_reprompt_sec_ = requireYamlParameter<double>("dialog_reprompt_sec");
+    wait_guest_prompt_sec_ = requireYamlParameter<double>("wait_guest_prompt_sec");
+    vision_initial_settle_sec_ = requireYamlParameter<double>("vision_initial_settle_sec");
+    min_sit_wait_sec_ = requireYamlParameter<double>("min_sit_wait_sec");
+    person_freshness_sec_ = requireYamlParameter<double>("person_freshness_sec");
+    tts_min_timeout_sec_ = requireYamlParameter<double>("tts_min_timeout_sec");
+    tts_sec_per_word_ = requireYamlParameter<double>("tts_sec_per_word");
+    tts_timeout_margin_sec_ = requireYamlParameter<double>("tts_timeout_margin_sec");
+    nav_retry_cooldown_sec_ = requireYamlParameter<double>("nav_retry_cooldown_sec");
     tts_timeout_sec_ = tts_min_timeout_sec_;
 
     callback_group_ = create_callback_group(
@@ -322,19 +303,37 @@ public:
   }
 
 private:
+  /// Declares a read-only parameter without a C++ default so its value must be
+  /// supplied exclusively via YAML (receptionist_params.yaml).
+  template<typename T>
+  T requireYamlParameter(const std::string & name)
+  {
+    try {
+      rcl_interfaces::msg::ParameterDescriptor desc;
+      desc.read_only = true;
+      return declare_parameter<T>(name, desc);
+    } catch (const std::exception & e) {
+      RCLCPP_FATAL(
+        get_logger(),
+        "Parameter '%s' wajib diatur di file YAML (receptionist_params.yaml)! Error: %s",
+        name.c_str(), e.what());
+      throw;
+    }
+  }
+
   // ----------------------------------------------------------------------------
-  // Parameter Waktu & Timeout (Dapat dikonfigurasi via YAML)
+  // Parameter Waktu & Timeout (Diisi penuh dari YAML saat startup)
   // ----------------------------------------------------------------------------
-  double global_timeout_sec_{600.0};
-  double dialog_reprompt_sec_{12.0};
-  double wait_guest_prompt_sec_{8.0};
-  double vision_initial_settle_sec_{1.2};
-  double min_sit_wait_sec_{4.0};
-  double person_freshness_sec_{2.0};
-  double tts_min_timeout_sec_{4.0};
-  double tts_sec_per_word_{0.5};
-  double tts_timeout_margin_sec_{2.0};
-  double nav_retry_cooldown_sec_{2.0};
+  double global_timeout_sec_{0.0};
+  double dialog_reprompt_sec_{0.0};
+  double wait_guest_prompt_sec_{0.0};
+  double vision_initial_settle_sec_{0.0};
+  double min_sit_wait_sec_{0.0};
+  double person_freshness_sec_{0.0};
+  double tts_min_timeout_sec_{0.0};
+  double tts_sec_per_word_{0.0};
+  double tts_timeout_margin_sec_{0.0};
+  double nav_retry_cooldown_sec_{0.0};
 
   // ----------------------------------------------------------------------------
   // Variabel State & Memory Store Host / Guests
@@ -352,7 +351,7 @@ private:
   PersonProfile current_guest_;
   int guest_idx_{1};
   ReceptionistState after_return_living_room_state_{ReceptionistState::SEARCH_CHAIR};
-  int camera_width_{672};
+  int camera_width_{0};
 
   // Data Persepsi Vision
   std::mutex vision_mutex_;
@@ -2638,10 +2637,19 @@ int main(int argc, char ** argv)
 {
   setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<ReceptionistTaskNode>();
-  rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2);
-  executor.add_node(node);
-  executor.spin();
+  try {
+    auto node = std::make_shared<ReceptionistTaskNode>();
+    rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2);
+    executor.add_node(node);
+    executor.spin();
+  } catch (const std::exception & e) {
+    RCLCPP_FATAL(
+      rclcpp::get_logger("receptionist_manager"),
+      "Gagal menjalankan receptionist_manager (pastikan file YAML parameter dimuat): %s",
+      e.what());
+    rclcpp::shutdown();
+    return 1;
+  }
   rclcpp::shutdown();
   return 0;
 }
