@@ -207,6 +207,7 @@ public:
     person_name_pub_ = create_publisher<std_msgs::msg::String>("/vision/set_person_name", 10);
     guest_1_name_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/guest_1_name", 10);
     guest_2_name_pub_ = create_publisher<std_msgs::msg::String>("/receptionist/guest_2_name", 10);
+    face_expression_pub_ = create_publisher<std_msgs::msg::String>("/robot/expression", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -406,6 +407,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr person_name_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_1_name_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr guest_2_name_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr face_expression_pub_;
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
@@ -465,6 +467,63 @@ private:
       status_pub_->publish(msg);
     }
     RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Status: %s", status_text.c_str());
+  }
+
+  /// Publishes a face expression command to /robot/expression (athome_face).
+  void publishExpression(const std::string & expr)
+  {
+    if (face_expression_pub_) {
+      std_msgs::msg::String msg;
+      msg.data = expr;
+      face_expression_pub_->publish(msg);
+      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Face: Expression -> %s", expr.c_str());
+    }
+  }
+
+  /// Maps each FSM state to its default /robot/expression state.
+  static std::string expressionForState(ReceptionistState state)
+  {
+    switch (state) {
+      case ReceptionistState::INIT:
+      case ReceptionistState::COMPLETED:
+        return "IDLE";
+      case ReceptionistState::NAV_TO_DOOR:
+      case ReceptionistState::NAV_TO_BEVERAGE:
+      case ReceptionistState::NAV_TO_LIVING_ROOM:
+      case ReceptionistState::RETURN_TO_LIVING_ROOM:
+        return "FOLLOWING";
+      case ReceptionistState::WAIT_GUEST:
+      case ReceptionistState::CHECK_BEVERAGE:
+      case ReceptionistState::SCAN_LIVING_ROOM:
+      case ReceptionistState::SEARCH_CHAIR:
+        return "SEARCHING";
+      case ReceptionistState::ALIGN_GUEST:
+      case ReceptionistState::ASK_NAME:
+      case ReceptionistState::ASK_INTEREST:
+      case ReceptionistState::CONFIRM_GUEST_INFO:
+      case ReceptionistState::ASK_DRINK:
+      case ReceptionistState::FACE_AND_INTRODUCE_HOST:
+      case ReceptionistState::INTRODUCE_G1_TO_G2:
+      case ReceptionistState::INTRODUCE_G2_TO_G1:
+        return "GREETING";
+      case ReceptionistState::WAIT_NAME:
+      case ReceptionistState::WAIT_INTEREST:
+      case ReceptionistState::WAIT_CONFIRM_GUEST_INFO:
+      case ReceptionistState::WAIT_DRINK:
+        return "LISTENING";
+      case ReceptionistState::EVALUATE_SIMILARITY:
+        return "HAPPY";
+      case ReceptionistState::OFFER_SEAT:
+        return "WORKING";
+      case ReceptionistState::WAIT_GUEST_SIT:
+        return "CURIOUS";
+      case ReceptionistState::FINISH_TASK:
+        return "SUCCESS";
+      case ReceptionistState::ABORTED:
+        return "LOST";
+      default:
+        return "IDLE";
+    }
   }
 
   /// Publishes registered guest names at 2 Hz for HMI/vision synchronization.
@@ -576,6 +635,7 @@ private:
     state_enter_time_ = now();
     has_new_utterance_ = false;
     state_ = next_state;
+    publishExpression(expressionForState(next_state));
   }
 
   /// Navigates to a named waypoint ("entrance_door", "beverage_area", or "living_room")
@@ -1295,6 +1355,7 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
+    publishExpression("SPEAKING");
     RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  TTS: \"%s\"", text.c_str());
   }
 
@@ -1319,6 +1380,8 @@ private:
       get_logger(),
       "[TTS] Done | State: %s",
       stateToString(state_.load()).c_str());
+
+    publishExpression(expressionForState(state_.load()));
 
     if (callback) {
       callback();
@@ -1449,7 +1512,7 @@ private:
         "coke", "cola", "pepsi", "sprite", "fanta",
         "mineral water", "milk", "water", "coffee", "tea", "juice", "soda",
         "botol", "bottle", "cracker", "cracker box", "snack",
-        "pringles", "sugar", "sugar box", "cheezit", "cheez-it", "chips"
+        "pringles", "sugar", "sugar box", "cheezit", "cheez-it", "chips", "milk"
       };
       for (const auto & drink : kKnownDrinks) {
         if (containsWholePhrase(norm, drink) &&
@@ -1877,6 +1940,7 @@ private:
     {
       RCLCPP_ERROR(get_logger(), "Global receptionist task timeout reached.");
       state_ = ReceptionistState::ABORTED;
+      publishExpression("LOST");
       return;
     }
 
