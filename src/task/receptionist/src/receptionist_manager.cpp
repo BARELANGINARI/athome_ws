@@ -375,6 +375,7 @@ private:
   std::unordered_map<std::string, int> attr_shirt_counts_;
   std::unordered_map<std::string, int> attr_hair_counts_;
   bool attributes_locked_from_scan_{false};
+  std::string active_vision_reg_name_;
   std::string empty_seat_position_{"center"};
   bool has_explicit_empty_seat_{false};
   int nearest_person_bbox_x_{0};
@@ -609,6 +610,7 @@ private:
       attr_shirt_counts_.clear();
       attr_hair_counts_.clear();
       attributes_locked_from_scan_ = false;
+      active_vision_reg_name_.clear();
       has_explicit_empty_seat_ = false;
       nearest_person_bbox_w_ = 0;
     }
@@ -1322,17 +1324,13 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;32m[VISION]\033[0m Extracting visual attributes (mode voting) for person_id=%d",
+      "\033[1;32m[VISION]\033[0m Extracting visual attributes (direct snapshot) for person_id=%d",
       person_id);
-
-    const std::string mode_gender = pickMode(gender_counts);
-    const std::string mode_shirt = pickMode(shirt_counts, "casual attire");
-    const std::string mode_hair = pickMode(hair_counts);
 
     std::lock_guard<std::mutex> g_lock(guest_mutex_);
     std::vector<std::string> attrs;
 
-    // Fallback ke snapshot terakhir jika histogram masih kosong untuk field tertentu
+    // Ekstrak langsung dari snapshot atribut terbaru pada jarak 1.5m (tanpa voting)
     std::string snap_gender, snap_shirt, snap_hair;
     for (const auto & a : raw_attrs) {
       std::string lower_a = a;
@@ -1349,22 +1347,26 @@ private:
       }
     }
 
-    if (!mode_gender.empty()) {
-      current_guest_.gender = mode_gender;
-    } else if (!snap_gender.empty()) {
+    if (!snap_gender.empty()) {
       current_guest_.gender = snap_gender;
+    } else {
+      const std::string mode_gender = pickMode(gender_counts);
+      if (!mode_gender.empty()) current_guest_.gender = mode_gender;
     }
 
-    if (!mode_shirt.empty()) {
-      current_guest_.shirt_color = mode_shirt;
-    } else if (!snap_shirt.empty()) {
+    if (!snap_shirt.empty() && snap_shirt != "casual attire") {
       current_guest_.shirt_color = snap_shirt;
+    } else {
+      const std::string mode_shirt = pickMode(shirt_counts, "casual attire");
+      if (!mode_shirt.empty()) current_guest_.shirt_color = mode_shirt;
+      else if (!snap_shirt.empty()) current_guest_.shirt_color = snap_shirt;
     }
 
-    if (!mode_hair.empty()) {
-      current_guest_.hair_color = mode_hair;
-    } else if (!snap_hair.empty()) {
+    if (!snap_hair.empty()) {
       current_guest_.hair_color = snap_hair;
+    } else {
+      const std::string mode_hair = pickMode(hair_counts);
+      if (!mode_hair.empty()) current_guest_.hair_color = mode_hair;
     }
 
     if (!current_guest_.gender.empty() && current_guest_.gender != "unknown") {
@@ -1862,6 +1864,8 @@ private:
     const ReceptionistState cur = state_.load();
     if (cur != ReceptionistState::WAIT_GUEST &&
         cur != ReceptionistState::ALIGN_GUEST &&
+        cur != ReceptionistState::SCAN_GUEST_ATTRIBUTES &&
+        cur != ReceptionistState::APPROACH_GUEST &&
         cur != ReceptionistState::ASK_NAME &&
         cur != ReceptionistState::WAIT_NAME &&
         cur != ReceptionistState::ASK_INTEREST &&
@@ -1884,8 +1888,9 @@ private:
     }
     if (!parsed.empty()) {
       latest_attributes_ = parsed;
-      // Akumulasi frekuensi hanya saat fase dialog tamu di pintu berlangsung
-      if (cur == ReceptionistState::ASK_NAME ||
+      // Akumulasi frekuensi saat fase scan 1.5m (SCAN_GUEST_ATTRIBUTES) dan dialog tamu di pintu
+      if (cur == ReceptionistState::SCAN_GUEST_ATTRIBUTES ||
+          cur == ReceptionistState::ASK_NAME ||
           cur == ReceptionistState::WAIT_NAME ||
           cur == ReceptionistState::ASK_INTEREST ||
           cur == ReceptionistState::WAIT_INTEREST ||
@@ -2158,6 +2163,7 @@ private:
 
       case ReceptionistState::ALIGN_GUEST:
         adjustGuestDistance([this](bool /*success*/, const std::string & /*msg*/) {
+          std::string temp_name;
           {
             std::lock_guard<std::mutex> lock(vision_mutex_);
             latest_attributes_.clear();
@@ -2165,15 +2171,22 @@ private:
             attr_shirt_counts_.clear();
             attr_hair_counts_.clear();
             attributes_locked_from_scan_ = false;
+            temp_name = "__pending_guest_" + std::to_string(guest_idx_) + "__";
+            active_vision_reg_name_ = temp_name;
+          }
+          if (person_name_pub_) {
+            std_msgs::msg::String m;
+            m.data = temp_name;
+            person_name_pub_->publish(m);
           }
           transitionTo(
             ReceptionistState::SCAN_GUEST_ATTRIBUTES,
-            "Stepped back to 1.5m; scanning gender, shirt color, and hair color silently");
+            "Stepped back to 1.5m; scanning face, gender, shirt color, and hair color silently");
         });
         break;
 
       case ReceptionistState::SCAN_GUEST_ATTRIBUTES:
-        if ((now() - state_enter_time_).seconds() < 2.0) {
+        if ((now() - state_enter_time_).seconds() < 2.5) {
           return;
         }
         updateCurrentGuestVisualAttributes(nearest_person_id_.load());
@@ -2191,7 +2204,7 @@ private:
         }
         transitionTo(
           ReceptionistState::APPROACH_GUEST,
-          "Locked visual attributes at 1.5m; approaching guest to 0.7m for name & voice registration");
+          "Face & attributes locked at 1.5m; approaching guest to 0.7m for name");
         break;
 
       case ReceptionistState::APPROACH_GUEST:
@@ -2230,7 +2243,15 @@ private:
             }
             if (person_name_pub_) {
               std_msgs::msg::String m;
-              m.data = parsed_name;
+              std::string old_reg_name;
+              {
+                std::lock_guard<std::mutex> v_lock(vision_mutex_);
+                old_reg_name = active_vision_reg_name_;
+                active_vision_reg_name_ = parsed_name;
+              }
+              m.data = (!old_reg_name.empty() && old_reg_name != parsed_name)
+                ? ("rename:" + old_reg_name + ":" + parsed_name)
+                : parsed_name;
               person_name_pub_->publish(m);
             }
             publishGuestNames();
@@ -2375,7 +2396,7 @@ private:
                 guests_[static_cast<size_t>(guest_idx_ - 1)].name = "";
               }
             }
-            if (person_name_pub_) {
+            if (person_name_pub_ && !keep_locked_attrs) {
               std_msgs::msg::String m;
               m.data = "";
               person_name_pub_->publish(m);

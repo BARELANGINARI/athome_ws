@@ -2265,15 +2265,64 @@ ZedNode::ZedNode()
       }
       while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) name.erase(name.begin());
       std::lock_guard<std::mutex> state_lk(state_mutex_);
+
+      // Support "rename:<old_name>:<new_name>" so 1.5m pre-scanned profiles can be bound to the spoken name at 0.7m
+      if (name.rfind("rename:", 0) == 0) {
+        const auto sep = name.find(':', 7);
+        if (sep != std::string::npos) {
+          const std::string old_name = name.substr(7, sep - 7);
+          const std::string new_name = name.substr(sep + 1);
+          if (!new_name.empty()) {
+            bool renamed = false;
+            for (auto & rp : registered_persons_) {
+              if (rp.name == old_name) {
+                rp.name = new_name;
+                renamed = true;
+                RCLCPP_INFO(get_logger(),
+                  "\033[1;32m[RECEPTIONIST]\033[0m Renamed scanned profile '%s' -> '%s' (%s, %s, %s, face=%s)",
+                  old_name.c_str(), new_name.c_str(),
+                  rp.clothing_color.c_str(), rp.hair_color.c_str(), rp.gender.c_str(),
+                  rp.feature.empty() ? "NO" : "OK");
+                break;
+              }
+            }
+            for (auto & nm_kv : name_memory_) {
+              if (nm_kv.second.confirmed_name == old_name) {
+                nm_kv.second.confirmed_name = new_name;
+              }
+            }
+            if (pending_register_name_ == old_name) {
+              pending_register_name_ = new_name;
+            }
+            if (active_guest_name_ == old_name) {
+              active_guest_name_ = new_name;
+            }
+            if (guest_1_name_.empty() || guest_1_name_ == old_name) {
+              guest_1_name_ = new_name;
+            } else if ((guest_2_name_.empty() || guest_2_name_ == old_name) && new_name != guest_1_name_) {
+              guest_2_name_ = new_name;
+            }
+            if (renamed) {
+              return;
+            }
+            // Fallback: if old_name wasn't in registered_persons_, register new_name normally
+            name = new_name;
+          }
+        }
+      }
+
       pending_register_name_ = name;
       active_guest_name_ = name;
       capture_face_requested_ = true;
+      const bool is_temp_pending = (name.rfind("__pending_", 0) == 0);
       if (!name.empty()) {
         register_start_time_ = now();
-        if (guest_1_name_.empty()) {
-          guest_1_name_ = name;
-        } else if (guest_2_name_.empty() && name != guest_1_name_) {
-          guest_2_name_ = name;
+        if (!is_temp_pending) {
+          if (guest_1_name_.empty()) {
+            guest_1_name_ = name;
+          } else if (guest_2_name_.empty() && name != guest_1_name_) {
+            guest_2_name_ = name;
+          }
         }
 
         int first_person_id = -1;
@@ -3102,8 +3151,16 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
 
       if (i == 0 || !pending_register_name_.empty() || !registered_persons_.empty()) {
+        static std::unordered_map<int, std::string> hair_cache;
         if (run_attr_infer) {
-          entry_hairs[i] = analyzer_.hairColor(bgr, e.bbox, kpt2d);
+          const std::string h = analyzer_.hairColor(bgr, e.bbox, kpt2d);
+          if (!h.empty()) {
+            hair_cache[e.id] = h;
+          }
+        }
+        auto hit = hair_cache.find(e.id);
+        if (hit != hair_cache.end()) {
+          entry_hairs[i] = hit->second;
         }
         auto git = gender_memory_.find(e.id);
         auto currentGenderVote = [&]() -> std::string {
@@ -3504,18 +3561,19 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       const bool has_continuity = (same_tracker_id || near_anchor || is_sticky);
 
       // Hard Veto: tolak wajah ambigu, tolak klaim baru di bawah claim_th, dan jaga sticky identity
+      const float effective_claim_th = std::max(claim_th, 0.46f);
       bool veto = false;
       if (has_face) {
         if (!has_continuity) {
-          if (f_sim < claim_th) {
-            veto = true; // Klaim identitas baru butuh keyakinan wajah >= 0.44
-          } else if (other_best >= th && face_margin < 0.05f) {
+          if (f_sim < effective_claim_th) {
+            veto = true; // Klaim identitas baru butuh keyakinan wajah >= 0.46
+          } else if (other_best >= th && face_margin < 0.08f) {
             veto = true; // Wajah ambigu antara dua profil -> jangan tebak nama baru
           }
         } else {
           if (f_sim < break_th) {
             veto = true; // Konflik wajah memutus ID/anchor lama
-          } else if (other_best >= strong_th && (other_best - f_sim) >= 0.10f) {
+          } else if (other_best >= strong_th && (other_best - f_sim) >= 0.08f) {
             veto = true; // Profil lain menang telak -> lepas ID/anchor lama bila tracker ZED bertukar
           }
         }
@@ -3525,15 +3583,16 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       }
 
+      // Jangan biarkan tracking ID ZED atau sticky memory mem-bypass konflik warna baju
       if (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
           prof.clothing_color != entry_feats[i].shirt_color &&
-          (!has_face || f_sim < strong_th || face_margin < 0.07f) && !is_sticky && !same_tracker_id)
+          (!has_face || f_sim < strong_th || face_margin < 0.10f))
       {
         veto = true;
       }
       if (!prof.gender.empty() && !entry_feats[i].gender.empty() &&
           prof.gender != entry_feats[i].gender &&
-          (!has_face || f_sim < strong_th || face_margin < 0.07f))
+          (!has_face || f_sim < strong_th || face_margin < 0.10f))
       {
         veto = true;
       }
