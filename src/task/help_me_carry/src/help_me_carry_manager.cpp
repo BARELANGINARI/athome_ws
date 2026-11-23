@@ -822,16 +822,11 @@ private:
       // State 0: INIT - Menunggu TTS Engine siap (/hri/tts_done & /hri/tts_say aktif)
       // ------------------------------------------------------------------------
       case TaskState::INIT:
-        // Pastikan tts_engine_node sudah siap (mempublish /hri/tts_done) sebelum menyapa
+        // Pastikan tts_engine_node sudah siap (mempublish /hri/tts_done) sebelum mulai
         if (this->count_publishers("/hri/tts_done") == 0 || tts_pub_->get_subscription_count() == 0) {
           return;
         }
-        speakAsync(
-          "I am ready, please say Hello Robot to start the robot!",
-          [this]() {
-            transitionTo(TaskState::WAIT_WAKEWORD, "TTS, ready waiting for wakeword");
-          }
-        );
+        transitionTo(TaskState::CHECK_OPERATOR_PRESENCE, "TTS ready, skipping wakeword and checking operator");
         break;
 
       // ------------------------------------------------------------------------
