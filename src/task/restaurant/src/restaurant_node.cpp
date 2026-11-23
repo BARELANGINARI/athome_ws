@@ -198,10 +198,10 @@ public:
     declare_parameter("base_frame", "base_link");
     declare_parameter("order_topic", "/vision/order");
     declare_parameter("order_frame", "base_link"); // "base_link" (relatif thd robot) atau "map" (global)
-    declare_parameter("standoff_distance", 0.85);   // Jarak henti aman di depan orang (meter) agar tidak menabrak / masuk obstacle
+    declare_parameter("standoff_distance", 1.0);   // Jarak henti aman di depan orang (meter) agar tidak menabrak / masuk obstacle
     declare_parameter("adaptive_standoff_enabled", true);
-    declare_parameter("adaptive_standoff_min", 0.85);
-    declare_parameter("adaptive_standoff_max", 1.40);
+    declare_parameter("adaptive_standoff_min", 1.0);
+    declare_parameter("adaptive_standoff_max", 1.6);
     declare_parameter("adaptive_standoff_step", 0.05);
     declare_parameter("costmap_obstacle_threshold", 60);
     declare_parameter("costmap_topic", "/global_costmap/costmap");
@@ -1481,8 +1481,8 @@ private:
 
   // Adaptive Standoff Settings & State
   bool adaptive_standoff_enabled_{true};
-  double adaptive_standoff_min_{0.85};
-  double adaptive_standoff_max_{1.40};
+  double adaptive_standoff_min_{1.0};
+  double adaptive_standoff_max_{1.6};
   double adaptive_standoff_step_{0.05};
   int costmap_obstacle_threshold_{60};
   std::string costmap_topic_{"/global_costmap/costmap"};

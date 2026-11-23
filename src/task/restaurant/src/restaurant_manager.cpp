@@ -232,11 +232,11 @@ public:
     declare_parameter<std::string>("global_frame", "map");
     declare_parameter<std::string>("base_frame", "base_link");
     declare_parameter<std::string>("order_frame", "base_link");
-    declare_parameter<double>("customer_standoff_distance", 0.85);
+    declare_parameter<double>("customer_standoff_distance", 1.0);
     declare_parameter<double>("object_standoff_distance", 0.45);
     declare_parameter<bool>("adaptive_standoff_enabled", true);
-    declare_parameter<double>("adaptive_standoff_min", 0.85);
-    declare_parameter<double>("adaptive_standoff_max", 1.40);
+    declare_parameter<double>("adaptive_standoff_min", 1.0);
+    declare_parameter<double>("adaptive_standoff_max", 1.6);
     declare_parameter<double>("adaptive_standoff_step", 0.05);
     declare_parameter<int>("costmap_obstacle_threshold", 60);
     declare_parameter<std::string>("costmap_topic", "/global_costmap/costmap");
@@ -523,8 +523,8 @@ private:
 
   // Adaptive Standoff Settings & State
   bool adaptive_standoff_enabled_{true};
-  double adaptive_standoff_min_{0.85};
-  double adaptive_standoff_max_{1.40};
+  double adaptive_standoff_min_{1.0};
+  double adaptive_standoff_max_{1.60};
   double adaptive_standoff_step_{0.05};
   int costmap_obstacle_threshold_{60};
   std::string costmap_topic_{"/global_costmap/costmap"};
