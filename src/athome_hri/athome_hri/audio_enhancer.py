@@ -106,7 +106,32 @@ class AudioEnhancer:
 
     def _try_init_deepfilternet2(self) -> bool:
         try:
+            import dataclasses
+            import sys
+            import types
             import torch
+
+            # Compatibility shim for torchaudio >= 2.1 where torchaudio.backend was removed
+            if "torchaudio.backend" not in sys.modules:
+                try:
+                    import torchaudio.backend.common  # noqa: F401
+                except ImportError:
+                    _tb = types.ModuleType("torchaudio.backend")
+                    _tbc = types.ModuleType("torchaudio.backend.common")
+                    _tbc.AudioMetaData = dataclasses.make_dataclass(
+                        "AudioMetaData",
+                        [
+                            ("sample_rate", int, 0),
+                            ("num_frames", int, 0),
+                            ("num_channels", int, 0),
+                            ("bits_per_sample", int, 0),
+                            ("encoding", str, ""),
+                        ],
+                    )
+                    _tb.common = _tbc
+                    sys.modules["torchaudio.backend"] = _tb
+                    sys.modules["torchaudio.backend.common"] = _tbc
+
             from df.enhance import enhance, init_df
 
             torch.set_num_threads(1)
