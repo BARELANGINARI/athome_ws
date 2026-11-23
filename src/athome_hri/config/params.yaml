@@ -39,7 +39,7 @@
     stt_no_speech_threshold: 0.6         # Batas probabilitas hening (0-1); jika probabilitas hening >= nilai ini, teks ditolak sebagai noise
     stt_log_prob_threshold: -0.9         # Batas keyakinan model (log-prob); jika di bawah nilai ini (mis. -1.5), hasil dianggap tidak yakin & dibuang
     stt_compression_ratio_threshold: 1.8 # Batas pengulangan kata; menolak halusinasi Whisper yang mengulang-ulang kalimat yang sama
-    stt_vad_threshold: 0.65              # Silero VAD internal Whisper: ambang batas probabilitas suara (0-1)
+    stt_vad_threshold: 0.70              # Silero VAD internal Whisper: ambang batas probabilitas suara (0-1)
     stt_vad_min_speech_ms: 200           # Silero VAD internal Whisper: durasi minimal segmen ucapan (ms)
     stt_vad_silence_ms: 350              # Silero VAD internal Whisper: jeda hening (ms) untuk memotong segmen di dalam rekaman
     stt_vad_speech_pad_ms: 150           # Silero VAD internal Whisper: bantalan waktu (ms) di awal & akhir ucapan agar tidak terpotong

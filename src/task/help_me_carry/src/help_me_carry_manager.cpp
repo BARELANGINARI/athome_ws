@@ -152,29 +152,25 @@ public:
       "/arm/letakkan_tas", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
       "/homing", rclcpp::ServicesQoS(), callback_group_);
+    lifter_down_client_ = create_client<Trigger>(
+      "/lifter/turun", rclcpp::ServicesQoS(), callback_group_);
+    lifter_up_client_ = create_client<Trigger>(
+      "/lifter/naik", rclcpp::ServicesQoS(), callback_group_);
 
     // Timer siklus FSM (10 Hz / 100 ms)
     fsm_timer_ = create_wall_timer(
       100ms, std::bind(&HelpMeCarryOrchestrator::fsmTick, this), callback_group_);
 
-    // Parameter konfigurasi FSM & watchdog
-    declare_parameter<double>("global_timeout_sec", 600.0);
-    declare_parameter<double>("operator_timeout_sec", 5.0);
-    declare_parameter<double>("follow_grace_period_sec", 2.0);
-    declare_parameter<double>("arrived_grace_period_sec", 5.0);
-    declare_parameter<double>("tts_min_timeout_sec", 4.0);
-    declare_parameter<double>("tts_sec_per_word", 0.5);
-    declare_parameter<double>("tts_timeout_margin_sec", 2.0);
-    declare_parameter<double>("follow_prompt_interval_sec", 3.0);
-
-    global_timeout_sec_ = get_parameter("global_timeout_sec").as_double();
-    operator_timeout_sec_ = get_parameter("operator_timeout_sec").as_double();
-    follow_grace_period_sec_ = get_parameter("follow_grace_period_sec").as_double();
-    arrived_grace_period_sec_ = get_parameter("arrived_grace_period_sec").as_double();
-    tts_min_timeout_sec_ = get_parameter("tts_min_timeout_sec").as_double();
-    tts_sec_per_word_ = get_parameter("tts_sec_per_word").as_double();
-    tts_timeout_margin_sec_ = get_parameter("tts_timeout_margin_sec").as_double();
-    follow_prompt_interval_sec_ = get_parameter("follow_prompt_interval_sec").as_double();
+    // Parameter konfigurasi FSM & watchdog (Wajib dari params.yaml)
+    global_timeout_sec_ = requireYamlParameter<double>("global_timeout_sec");
+    operator_timeout_sec_ = requireYamlParameter<double>("operator_timeout_sec");
+    follow_grace_period_sec_ = requireYamlParameter<double>("follow_grace_period_sec");
+    arrived_grace_period_sec_ = requireYamlParameter<double>("arrived_grace_period_sec");
+    tts_min_timeout_sec_ = requireYamlParameter<double>("tts_min_timeout_sec");
+    tts_sec_per_word_ = requireYamlParameter<double>("tts_sec_per_word");
+    tts_timeout_margin_sec_ = requireYamlParameter<double>("tts_timeout_margin_sec");
+    follow_prompt_interval_sec_ = requireYamlParameter<double>("follow_prompt_interval_sec");
+    lifter_move_wait_sec_ = requireYamlParameter<double>("lifter_move_wait_sec");
     tts_timeout_sec_ = tts_min_timeout_sec_;
 
     task_start_time_ = now();
@@ -186,18 +182,35 @@ public:
   }
 
 private:
+  template<typename T>
+  T requireYamlParameter(const std::string & name)
+  {
+    try {
+      rcl_interfaces::msg::ParameterDescriptor desc;
+      desc.read_only = true;
+      return declare_parameter<T>(name, desc);
+    } catch (const std::exception & e) {
+      RCLCPP_FATAL(
+        get_logger(),
+        "Parameter '%s' wajib diatur di file YAML (task/help_me_carry/config/params.yaml)! Error: %s",
+        name.c_str(), e.what());
+      throw;
+    }
+  }
+
   // ----------------------------------------------------------------------------
-  // Parameter Timeout & Grace Period (Dapat dikonfigurasi via YAML)
+  // Parameter Timeout & Grace Period (Diisi penuh dari params.yaml)
   // STATUS FSM
   // ----------------------------------------------------------------------------
-  double global_timeout_sec_{600.0};
-  double operator_timeout_sec_{5.0};
-  double follow_grace_period_sec_{2.0};
-  double arrived_grace_period_sec_{5.0};
-  double tts_min_timeout_sec_{4.0};
-  double tts_sec_per_word_{0.5};
-  double tts_timeout_margin_sec_{2.0};
-  double follow_prompt_interval_sec_{3.0};
+  double global_timeout_sec_{0.0};
+  double operator_timeout_sec_{0.0};
+  double follow_grace_period_sec_{0.0};
+  double arrived_grace_period_sec_{0.0};
+  double tts_min_timeout_sec_{0.0};
+  double tts_sec_per_word_{0.0};
+  double tts_timeout_margin_sec_{0.0};
+  double follow_prompt_interval_sec_{0.0};
+  double lifter_move_wait_sec_{0.0};
   // ----------------------------------------------------------------------------
   // Status Variabel Atomic & Waktu
   // ----------------------------------------------------------------------------
@@ -256,6 +269,8 @@ private:
   TriggerClient::SharedPtr grab_bag_client_;
   TriggerClient::SharedPtr put_down_bag_client_;
   TriggerClient::SharedPtr homing_client_;
+  TriggerClient::SharedPtr lifter_down_client_;
+  TriggerClient::SharedPtr lifter_up_client_;
 
   // ----------------------------------------------------------------------------
   // Helper: Deteksi Operator & Tas di Depan Robot
@@ -1003,26 +1018,63 @@ private:
       // ------------------------------------------------------------------------
       case TaskState::GRASP_BAG:
         busy_ = true;
+        // Sequence: /lifter/turun -> /arm/motion_task_1 -> /lifter/naik -> speakAsync
         callTrigger(
-          grab_bag_client_, "/arm/motion_task_1",
-          [this](bool success, const std::string & message) {
-            // busy_ TIDAK dilepas di sini: speakAsync menjaga kunci sampai TTS selesai,
-            // lalu transisi state (dan aksi berikutnya) dieksekusi di callback on_done.
-            if (success) {
-              speakAsync("I have the bag. I am returning to the starting point.", [this]() {
-                transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
-              });
-            } else {
+          lifter_down_client_, "/lifter/turun",
+          [this](bool down_ok, const std::string & down_msg) {
+            if (!down_ok) {
               RCLCPP_WARN(
                 get_logger(),
-                "Grasp otonom gagal (%s). Mengaktifkan fallback bantuan operator...",
-                message.c_str());
-              speakAsync(
-                "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
-                [this]() {
-                  transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
-                });
+                "Lifter turun gagal/tidak tersedia (%s), tetap melanjutkan grasp...",
+                down_msg.c_str());
+            } else {
+              RCLCPP_INFO(get_logger(), "\033[1;36m[LIFTER]\033[0m %s", down_msg.c_str());
             }
+            std::thread([this, down_ok]() {
+              if (down_ok && lifter_move_wait_sec_ > 0.0) {
+                std::this_thread::sleep_for(
+                  std::chrono::duration<double>(lifter_move_wait_sec_));
+              }
+              callTrigger(
+                grab_bag_client_, "/arm/motion_task_1",
+                [this](bool grasp_ok, const std::string & grasp_msg) {
+                  callTrigger(
+                    lifter_up_client_, "/lifter/naik",
+                    [this, grasp_ok, grasp_msg](bool up_ok, const std::string & up_msg) {
+                      if (!up_ok) {
+                        RCLCPP_WARN(
+                          get_logger(),
+                          "Lifter naik gagal/tidak tersedia (%s), tetap melanjutkan...",
+                          up_msg.c_str());
+                      } else {
+                        RCLCPP_INFO(get_logger(), "\033[1;36m[LIFTER]\033[0m %s", up_msg.c_str());
+                      }
+                      std::thread([this, grasp_ok, grasp_msg, up_ok]() {
+                        if (up_ok && lifter_move_wait_sec_ > 0.0) {
+                          std::this_thread::sleep_for(
+                            std::chrono::duration<double>(lifter_move_wait_sec_));
+                        }
+                        // busy_ TIDAK dilepas di sini: speakAsync menjaga kunci sampai TTS selesai,
+                        // lalu transisi state (dan aksi berikutnya) dieksekusi di callback on_done.
+                        if (grasp_ok) {
+                          speakAsync("I have the bag. I am returning to the starting point.", [this]() {
+                            transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
+                          });
+                        } else {
+                          RCLCPP_WARN(
+                            get_logger(),
+                            "Grasp otonom gagal (%s). Mengaktifkan fallback bantuan operator...",
+                            grasp_msg.c_str());
+                          speakAsync(
+                            "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
+                            [this]() {
+                              transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
+                            });
+                        }
+                      }).detach();
+                    });
+                });
+            }).detach();
           });
         break;
 

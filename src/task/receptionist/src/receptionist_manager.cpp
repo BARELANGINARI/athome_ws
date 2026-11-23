@@ -1668,12 +1668,10 @@ private:
     if (norm.empty()) return 0;
 
     static const std::vector<std::string> kNoPhrases = {
-      "no", "nope", "nah", "not correct", "wrong", "false", "incorrect", "negative",
-      "not really", "it is not", "it isnt", "bukan", "tidak", "enggak", "ga"
+      "no", "no robot", "nope", "not correct", "wrong", "false",
     };
     static const std::vector<std::string> kYesPhrases = {
-      "yes", "yeah", "yep", "correct", "right", "sure", "true", "exactly", "of course",
-      "that is right", "it is", "ya", "benar", "betul"
+      "yes", "yes robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
     };
 
     for (const auto & phrase : kNoPhrases) {
@@ -2270,7 +2268,7 @@ private:
         }
         speakAsync(
           "Nice to meet you " + g_name +
-          ". What is your main interest or hobby?",
+          ". What is your interesting or hobby?",
           [this]() {
             transitionTo(ReceptionistState::WAIT_INTEREST, "Waiting for guest interest");
           });
@@ -2308,11 +2306,11 @@ private:
               "\033[1;33m[DIALOG INTEREST]\033[0m Unrecognized input \"%s\", asking again.",
               raw.c_str());
             state_enter_time_ = now();
-            speakAsync("I am sorry, I did not catch that. What is your main interest or hobby?");
+            speakAsync("I am sorry. What is your interesting or hobby?");
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
-          speakAsync("Could you please tell me your main interest or hobby?");
+          speakAsync("Could you please tell me your interesting or hobby?");
         }
         break;
 
@@ -2383,7 +2381,7 @@ private:
               person_name_pub_->publish(m);
             }
             publishGuestNames();
-            speakAsync("I am sorry. Let us start over. May I please have your name?", [this]() {
+            speakAsync("I am sorry. Let us start over. Can you tell me your name?", [this]() {
               transitionTo(ReceptionistState::WAIT_NAME, "Restarted name and interest capture");
             });
           } else {
