@@ -15,6 +15,7 @@ set(CMAKE_BUILD_TYPE Release)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(OpenCV REQUIRED)
 
@@ -59,7 +60,7 @@ target_include_directories(vision PRIVATE
   ${ONNXRUNTIME_INCLUDE}
 )
 ament_target_dependencies(vision
-  rclcpp std_msgs ament_index_cpp)
+  rclcpp std_msgs std_srvs ament_index_cpp)
 target_link_libraries(vision
   ${CUDA_cudart_LIBRARY}
   ${OpenCV_LIBS}

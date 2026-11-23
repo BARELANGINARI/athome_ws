@@ -1028,10 +1028,12 @@ private:
   std::string calculateHorizontalPosition(int bbox_x, int bbox_w) const
   {
     const double center_x = static_cast<double>(bbox_x) + static_cast<double>(bbox_w) * 0.5;
-    const double third = static_cast<double>(camera_width_) / 3.0;
-    if (center_x < third) {
+    const double w = (camera_width_ > 0) ? static_cast<double>(camera_width_) : 672.0;
+    const double mid = w * 0.5;
+    const double deadband = w * 0.12; // ±12% dari garis tengah kamera (~80 px pada 672px)
+    if (center_x < mid - deadband) {
       return "left";
-    } else if (center_x > 2.0 * third) {
+    } else if (center_x > mid + deadband) {
       return "right";
     }
     return "center";
@@ -1123,24 +1125,52 @@ private:
         return centerX(a) < centerX(b);
       });
 
+    const double cam_w = (camera_width_ > 0) ? static_cast<double>(camera_width_) : 672.0;
+    const double cam_center = cam_w * 0.5;
+
     auto sideByIndex = [&](size_t idx) -> std::string {
+      // 1. Jika hanya ada 2 minuman: mutlak gunakan "left" dan "right"
+      if (drinks_list.size() == 2) {
+        return (idx == 0) ? "left" : "right";
+      }
+
+      // 2. Jika ada banyak (>= 3 minuman):
+      //    Jelaskan posisi tiap minuman, dan "center" hanya digunakan jika benar-benar di tengah!
       if (drinks_list.size() >= 3) {
         if (idx == 0) return "left";
         if (idx == drinks_list.size() - 1) return "right";
-        return "center";
-      }
-      if (drinks_list.size() == 2) {
-        const std::string s0 = calculateHorizontalPosition(drinks_list[0].bbox_x, drinks_list[0].bbox_w);
-        const std::string s1 = calculateHorizontalPosition(drinks_list[1].bbox_x, drinks_list[1].bbox_w);
-        if (s0 != s1) {
-          return (idx == 0) ? s0 : s1;
+
+        // Untuk item di antara indeks ujung:
+        const double cx = centerX(drinks_list[idx]);
+        const double cx_min = centerX(drinks_list.front());
+        const double cx_max = centerX(drinks_list.back());
+        const double span = cx_max - cx_min;
+        const double cluster_center = (cx_min + cx_max) * 0.5;
+
+        // "center" hanya digunakan jika benar-benar di tengah (posisi relatif di tengah deretan minuman
+        // atau berada dekat sumbu simetri kamera)
+        const double ratio = (span > 1.0) ? ((cx - cx_min) / span) : 0.5;
+        const bool is_centered_in_cluster = (ratio >= 0.28 && ratio <= 0.72) &&
+                                            (std::abs(cx - cluster_center) <= span * 0.22);
+        const bool is_centered_in_camera = (std::abs(cx - cam_center) <= cam_w * 0.12);
+
+        if (is_centered_in_cluster || is_centered_in_camera) {
+          return "center";
         }
-        if (centerX(drinks_list[1]) - centerX(drinks_list[0]) > static_cast<double>(camera_width_) * 0.08) {
-          return (idx == 0) ? "left" : "right";
-        }
-        return (idx == 0) ? s0 : s1;
+
+        // Jika tidak benar-benar di tengah, jelaskan apakah di sisi kiri atau kanan
+        return (cx < cluster_center) ? "left" : "right";
       }
-      return calculateHorizontalPosition(drinks_list[idx].bbox_x, drinks_list[idx].bbox_w);
+
+      // 3. Jika hanya ada 1 minuman: tentukan berdasarkan sumbu tengah kamera
+      const double cx = centerX(drinks_list[idx]);
+      const double deadband = cam_w * 0.10;
+      if (cx < cam_center - deadband) {
+        return "left";
+      } else if (cx > cam_center + deadband) {
+        return "right";
+      }
+      return "center";
     };
 
     for (size_t i = 0; i < drinks_list.size(); ++i) {
