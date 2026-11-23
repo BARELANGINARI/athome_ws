@@ -1527,7 +1527,7 @@ private:
       static const std::vector<std::string> kKnownNames = {
         "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal"
         "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma", "maria", "muhammad",
-        "budi", "abdul", "jefrey", "jefri",
+        "budi", "abdul", "jefrey", "jefri", "hezekiel"
       };
       for (const auto & name : kKnownNames) {
         if (containsWholePhrase(norm, name)) {
@@ -1569,7 +1569,7 @@ private:
         "cooking", "gaming", "traveling", "photography", "movies", "swimming",
         "football", "basketball", "coding", "programming", "dancing", "painting",
         "program", "dancing", "dance", "drawing", "playing football", "playing badminton",
-        "playing tennis", "playing golf", "playing"
+        "playing tennis", "playing golf", "playing", "boxing"
       };
       for (const auto & interest : kKnownInterests) {
         if (containsWholePhrase(norm, interest)) {
