@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 import time
 from typing import Union
@@ -38,7 +39,17 @@ class SttEngineNode(Node):
         "hangover_frames",
         "min_speech_frames",
         "whisper_model",
+        "stt_fallback_model",
         "stt_language",
+        "stt_beam_size",
+        "stt_no_speech_threshold",
+        "stt_log_prob_threshold",
+        "stt_compression_ratio_threshold",
+        "stt_vad_silence_ms",
+        "stt_vad_speech_pad_ms",
+        "stt_initial_prompt",
+        "stt_hotwords",
+        "stt_hallucination_blacklist",
     )
     _LEGACY_ALIASES = {
         "device_index": "mic_device_index",
@@ -57,6 +68,9 @@ class SttEngineNode(Node):
         self._enable_local_mic: bool = bool(params["enable_local_mic"])
         self._enable_visualizer: bool = bool(params["enable_visualizer"])
         self._enable_live_meter: bool = bool(params["enable_live_meter"])
+
+        self.declare_parameter("task", os.environ.get("ATHOME_TASK", "all"))
+        self._task_mode = str(self.get_parameter("task").value).lower()
 
         self.transcript_pub = self.create_publisher(
             String, "/hri/stt_transcript", 10
@@ -85,6 +99,16 @@ class SttEngineNode(Node):
         self._stt = SpeechToText(
             model_size=str(params["whisper_model"]),
             language=str(params["stt_language"]),
+            fallback_model_size=str(params["stt_fallback_model"]),
+            beam_size=int(params["stt_beam_size"]),
+            no_speech_threshold=float(params["stt_no_speech_threshold"]),
+            log_prob_threshold=float(params["stt_log_prob_threshold"]),
+            compression_ratio_threshold=float(params["stt_compression_ratio_threshold"]),
+            vad_silence_ms=int(params["stt_vad_silence_ms"]),
+            vad_speech_pad_ms=int(params["stt_vad_speech_pad_ms"]),
+            initial_prompt=str(params["stt_initial_prompt"]),
+            hotwords=str(params["stt_hotwords"]),
+            hallucination_blacklist=params["stt_hallucination_blacklist"],
         )
         resolved_index, auto_detected = resolve_mic_device_index(
             params["mic_device_index"]
@@ -121,7 +145,17 @@ class SttEngineNode(Node):
         if self._enable_local_mic and self._enable_visualizer:
             self._visualizer.start()
         self._listener.start()
-        self.get_logger().info("\033[1;33m[STT]\033[0m Ready")
+        self.get_logger().info(f"{self.task_header}\n  STT: Ready")
+
+    @property
+    def task_header(self) -> str:
+        if self._task_mode in ("receptionist", "rec"):
+            return "\033[1;36m[RECEPTIONIST]\033[0m"
+        elif self._task_mode in ("help_me_carry", "hmc"):
+            return "\033[1;32m[HELP_ME_CARRY]\033[0m"
+        elif self._task_mode in ("restaurant", "resto", "waiter"):
+            return "\033[1;34m[RESTAURANT]\033[0m"
+        return "\033[1;33m[HRI]\033[0m"
 
     def _set_visualizer_enabled(self, enabled: bool) -> None:
         self._enable_visualizer = bool(enabled)
@@ -152,12 +186,21 @@ class SttEngineNode(Node):
                 min_speech_frames=int(v)
             ),
             "stt_language": lambda v: setattr(self._stt, "language", str(v)),
+            "stt_beam_size": lambda v: setattr(self._stt, "beam_size", int(v)),
+            "stt_no_speech_threshold": lambda v: setattr(self._stt, "no_speech_threshold", float(v)),
+            "stt_log_prob_threshold": lambda v: setattr(self._stt, "log_prob_threshold", float(v)),
+            "stt_compression_ratio_threshold": lambda v: setattr(self._stt, "compression_ratio_threshold", float(v)),
+            "stt_vad_silence_ms": lambda v: setattr(self._stt, "vad_silence_ms", int(v)),
+            "stt_vad_speech_pad_ms": lambda v: setattr(self._stt, "vad_speech_pad_ms", int(v)),
+            "stt_initial_prompt": lambda v: setattr(self._stt, "initial_prompt", str(v)),
+            "stt_hotwords": lambda v: setattr(self._stt, "hotwords", str(v)),
+            "stt_hallucination_blacklist": lambda v: self._stt.set_hallucination_blacklist(v),
         }
         return apply_param_updates(
             params,
             updaters,
             node_logger=self.get_logger(),
-            restart_required=("mic_device_index", "whisper_model", "pre_roll_frames"),
+            restart_required=("mic_device_index", "whisper_model", "stt_fallback_model", "pre_roll_frames"),
         )
 
     def _is_mic_paused(self) -> bool:
@@ -188,8 +231,9 @@ class SttEngineNode(Node):
                 m,
                 self._listener.threshold_dbfs,
                 self._listener.threshold_flatness,
+                task_header=self.task_header,
             ),
-            throttle_duration_sec=0.25,
+            throttle_duration_sec=1.0,
         )
 
     async def _transcribe(self, audio_input: Union[np.ndarray, bytes]) -> None:
@@ -199,7 +243,7 @@ class SttEngineNode(Node):
         message = String()
         message.data = transcript
         self.transcript_pub.publish(message)
-        self.get_logger().info("\033[1;33m[STT]\033[0m \"%s\"", transcript)
+        self.get_logger().info(f"{self.task_header}\n  STT: \"{transcript}\"")
 
     async def _on_audio(self, audio_input: Union[np.ndarray, bytes]) -> None:
         await self._transcribe(audio_input)

@@ -1,11 +1,12 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     return LaunchDescription([
+        SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
         DeclareLaunchArgument('task', default_value='all', description='Task filter for vision logging: help_me_carry, receptionist, restaurant, or all'),
         DeclareLaunchArgument('camera_fps', default_value='30.0', description='Camera frame rate (FPS)'),
         DeclareLaunchArgument('publish_yaw', default_value='true', description='Publish IMU yaw topic'),
@@ -22,7 +23,7 @@ def generate_launch_description():
         DeclareLaunchArgument('yolo_nms', default_value='0.45', description='YOLO NMS IoU threshold'),
         DeclareLaunchArgument('yolo_size', default_value='640', description='YOLO input image dimension'),
         DeclareLaunchArgument('yolo_min_area', default_value='250.0', description='Minimum bounding box area (pixels)'),
-        DeclareLaunchArgument('gender_model', default_value='models/gender_model_weights.onnx', description='Path to DeepFace gender ONNX model'),
+        DeclareLaunchArgument('gender_model', default_value='models/genderage.onnx', description='Path to gender ONNX model'),
         DeclareLaunchArgument('color_model', default_value='models/color_model.onnx', description='Path to clothing color ONNX model'),
         DeclareLaunchArgument('color_labels', default_value='models/color_names.txt', description='Path to clothing color labels file'),
         DeclareLaunchArgument('hair_model', default_value='models/hair_model.onnx', description='Path to hair color ONNX model'),
@@ -34,8 +35,10 @@ def generate_launch_description():
         DeclareLaunchArgument('cracker_model', default_value='models/crackerbox.onnx', description='Path to cheezit/cracker ONNX model'),
         DeclareLaunchArgument('pringles_model', default_value='models/pringles.onnx', description='Path to pringles ONNX model'),
         DeclareLaunchArgument('sugarbox_model', default_value='models/sugarbox.onnx', description='Path to sugarbox ONNX model'),
-        DeclareLaunchArgument('drink_min_area', default_value='100.0', description='Minimum bounding box area for drinks & crackers (pixels)'),
-        DeclareLaunchArgument('drink_conf', default_value='0.20', description='Confidence threshold for drinks & crackers'),
+        DeclareLaunchArgument('milk_model', default_value='models/milk.onnx', description='Path to milk ONNX model'),
+        DeclareLaunchArgument('drink_min_area', default_value='180.0', description='Minimum bounding box area for drinks & crackers (pixels)'),
+        DeclareLaunchArgument('drink_conf', default_value='0.48', description='Confidence threshold for drinks & crackers'),
+        DeclareLaunchArgument('drink_max_dist', default_value='2.5', description='Maximum distance (m) to detect drinks & crackers'),
         DeclareLaunchArgument('enable_drinks', default_value='true', description='Enable bottle & cracker detection for receptionist'),
         DeclareLaunchArgument('chair_model', default_value='', description='Optional path to custom chair ONNX model'),
         DeclareLaunchArgument('enable_chair', default_value='true', description='Enable chair detection and empty/occupied classification'),
@@ -44,7 +47,7 @@ def generate_launch_description():
         DeclareLaunchArgument('host_photo', default_value='models/host.jpg', description='Optional photo of the host to pre-register face'),
         DeclareLaunchArgument('enable_back_detection', default_value='true', description='Enable person facing back detection'),
         DeclareLaunchArgument('person_back_topic', default_value='/vision/person_back', description='Topic for person facing back coordinates'),
-        DeclareLaunchArgument('person_max_dist', default_value='2.8', description='Maximum distance (m) to detect and bbox person'),
+        DeclareLaunchArgument('person_max_dist', default_value='1.5', description='Maximum distance (m) to detect and bbox person'),
         DeclareLaunchArgument('bag_max_dist', default_value='2.5', description='Maximum distance (m) to detect and bbox bag'),
 
         Node(
@@ -83,8 +86,10 @@ def generate_launch_description():
                 'cracker_model': LaunchConfiguration('cracker_model'),
                 'pringles_model': LaunchConfiguration('pringles_model'),
                 'sugarbox_model': LaunchConfiguration('sugarbox_model'),
+                'milk_model': LaunchConfiguration('milk_model'),
                 'drink_min_area': LaunchConfiguration('drink_min_area'),
                 'drink_conf': LaunchConfiguration('drink_conf'),
+                'drink_max_dist': LaunchConfiguration('drink_max_dist'),
                 'enable_drinks': LaunchConfiguration('enable_drinks'),
                 'chair_model': LaunchConfiguration('chair_model'),
                 'enable_chair': LaunchConfiguration('enable_chair'),

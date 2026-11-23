@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+
+WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+case "$1" in
+  restaurant)
+    if [ "$2" == "stop" ]; then
+      "${WS_DIR}/src/task/restaurant/launch/stop.sh"
+    else
+      "${WS_DIR}/src/task/restaurant/launch/run.sh" "$2"
+    fi
+    ;;
+  help*|carry*)
+    shift
+    if [[ "$*" =~ "stop" ]]; then
+      "${WS_DIR}/src/task/help_me_carry/launch/stop.sh"
+    else
+      "${WS_DIR}/src/task/help_me_carry/launch/run.sh" "$@"
+    fi
+    ;;
+  receptionist)
+    if [ "$2" == "stop" ]; then
+      "${WS_DIR}/src/task/receptionist/launch/stop.sh"
+    else
+      "${WS_DIR}/src/task/receptionist/launch/run.sh" "$2"
+    fi
+    ;;
+  stop)
+    echo "Menghentikan semua task..."
+    "${WS_DIR}/src/task/restaurant/launch/stop.sh" 2>/dev/null || true
+    "${WS_DIR}/src/task/help_me_carry/launch/stop.sh" 2>/dev/null || true
+    "${WS_DIR}/src/task/receptionist/launch/stop.sh" 2>/dev/null || true
+    ;;
+  *)
+    echo "=========================================================="
+    echo " Runner Task Robot Barelang Inari"
+    echo "=========================================================="
+    echo "Penggunaan:"
+    echo "  ./run restaurant           # Menjalankan task restaurant (Terminator 5-Pane Grid)"
+    echo "  ./run restaurant stop      # Menghentikan task restaurant"
+    echo "  ./run help me carry        # Menjalankan task help me carry"
+    echo "  ./run help me carry stop   # Menghentikan task help me carry"
+    echo "  ./run receptionist         # Menjalankan task receptionist"
+    echo "  ./run receptionist stop    # Menghentikan task receptionist"
+    echo "  ./run stop                 # Menghentikan semua task"
+    echo "=========================================================="
+    exit 1
+    ;;
+esac

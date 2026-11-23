@@ -30,11 +30,18 @@ ros2 service call /receptionist/guest1 std_srvs/srv/Trigger {}
 ros2 service call /receptionist/guest2 std_srvs/srv/Trigger {}
 ros2 service call /receptionist/adjust_guest std_srvs/srv/Trigger {}
 
+# Service Rotasi 90 Derajat (Kiri dan Kanan):
+ros2 service call /receptionist/left std_srvs/srv/Trigger {}
+ros2 service call /receptionist/right std_srvs/srv/Trigger {}
+
 ### buat inisialisasi pose yaw robot dimap pakai rad
 0∘ ≈ 0.0 rad 
 90∘ ≈ 1.57 rad
 180∘ ≈ 3.14 rad
 270∘ / −90∘ ≈ −1.57 rad
+
+### ini cara cek yaw robot
+ros2 run tf2_ros tf2_echo map base_link
 ```
 
 ---

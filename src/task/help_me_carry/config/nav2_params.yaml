@@ -168,10 +168,11 @@ local_costmap:
           clearing: True                 # Clear free space along laser rays
           marking: True                  # Mark obstacle cells on laser hit
           data_type: "LaserScan"         # ROS 2 message type
-          raytrace_max_range: 5.0        # Max raytracing range (m, ditingkatkan agar pembersihan rintangan dinamis cepat)
+          raytrace_max_range: 8.0        # Max raytracing range (m, ditingkatkan agar pembersihan rintangan dinamis cepat)
           raytrace_min_range: 0.0        # Min raytracing range (m)
           obstacle_max_range: 4.0        # Max obstacle marking range (m, ditingkatkan dari 3.0 agar rintangan terdeteksi dari jauh)
           obstacle_min_range: 0.22       # Min obstacle marking range (m, diselaraskan dengan bodi 0.22m agar rintangan dekat tidak terhapus)
+          inf_is_valid: true             # KUNCI: Sinar tak-hingga (inf) saat rintangan hilang tetap dipakai untuk clearing raytrace
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Safety buffer layer around obstacles
         cost_scaling_factor: 10.0        # Diturunkan dari 25.0 ke 10.0 agar medan tolak rintangan menyebar lebih luas dan landai
@@ -184,7 +185,7 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      update_frequency: 2.0              # Update frequency dinaikkan ke 2.0 Hz agar rintangan dinamis di global costmap cepat ter-update
+      update_frequency: 3.0              # Update frequency dinaikkan ke 3.0 Hz agar pembersihan rintangan saat rotasi tidak melompati sel
       publish_frequency: 1.0             # Publish frequency (Hz)
       global_frame: map                  # Global map frame
       robot_base_frame: base_link        # Robot base frame
@@ -209,10 +210,11 @@ global_costmap:
           clearing: True                 # Clear free space along laser rays
           marking: True                  # Mark obstacle cells on laser hit
           data_type: "LaserScan"
-          raytrace_max_range: 5.0        # Max raytracing range (m, pembersihan rintangan cepat)
+          raytrace_max_range: 8.0        # Max raytracing range (m, pembersihan rintangan cepat)
           raytrace_min_range: 0.0
           obstacle_max_range: 4.0        # Max obstacle marking range (m)
           obstacle_min_range: 0.22       # Min obstacle marking range (m, diselaraskan dengan bodi robot)
+          inf_is_valid: true             # KUNCI: Sinar tak-hingga (inf) saat rintangan hilang tetap dipakai untuk clearing raytrace
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
         cost_scaling_factor: 12.0        # Diturunkan dari 25.0 ke 12.0 agar rute global berjarak dari dinding

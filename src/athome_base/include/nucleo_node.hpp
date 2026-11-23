@@ -56,6 +56,8 @@ private:
   struct PCtoSTM32 sendMotor(const MotionTarget & target);
   int16_t radToPwm(double rad_per_sec);
   void publishOdom(const rclcpp::Time & t_now);
+  std::string getTaskTag() const;
+  std::string task_mode_{"all"};
 
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_sub;
   // CMD_JOY ala NucleoServer: override bila fresh (<joy_timeout).
@@ -117,6 +119,8 @@ private:
 
   rclcpp::Time last_time;
   rclcpp::Time last_cmd_time;
+  rclcpp::Time last_vel_log_time_{0, 0, RCL_ROS_TIME};
+  double vel_log_interval_{1.0};
 };
 
 #endif  // NUCLEO_NUCLEO_NODE_HPP

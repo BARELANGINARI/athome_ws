@@ -115,6 +115,14 @@ public:
     declare_parameter<double>("face_person_max_speed", 0.30);
     declare_parameter<double>("face_person_tolerance_rad", 0.07);
 
+    // Relative 90-degree turn parameters (/receptionist/left & /receptionist/right)
+    declare_parameter<double>("turn_90_angular_speed", 0.30);
+    declare_parameter<double>("turn_90_min_speed", 0.14);
+    declare_parameter<double>("turn_90_max_speed", 0.35);
+    declare_parameter<double>("turn_90_tolerance_rad", 0.04);
+    declare_parameter<double>("turn_90_timeout_sec", 8.0);
+    declare_parameter<double>("turn_90_p_gain", 1.5);
+
     // Chair search & motion parameters
     declare_parameter<std::string>("cmd_vel_topic", "cmd_vel");
     declare_parameter<std::string>("chair_topic", "/vision/chair_detections");
@@ -152,6 +160,13 @@ public:
     face_person_min_speed_ = get_parameter("face_person_min_speed").as_double();
     face_person_max_speed_ = get_parameter("face_person_max_speed").as_double();
     face_person_tolerance_rad_ = get_parameter("face_person_tolerance_rad").as_double();
+
+    turn_90_angular_speed_ = get_parameter("turn_90_angular_speed").as_double();
+    turn_90_min_speed_ = get_parameter("turn_90_min_speed").as_double();
+    turn_90_max_speed_ = get_parameter("turn_90_max_speed").as_double();
+    turn_90_tolerance_rad_ = get_parameter("turn_90_tolerance_rad").as_double();
+    turn_90_timeout_sec_ = get_parameter("turn_90_timeout_sec").as_double();
+    turn_90_p_gain_ = get_parameter("turn_90_p_gain").as_double();
 
     cmd_vel_topic_ = get_parameter("cmd_vel_topic").as_string();
     chair_topic_ = get_parameter("chair_topic").as_string();
@@ -352,15 +367,44 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
-    RCLCPP_INFO(get_logger(), "Receptionist Navigation Node ready. Services available:");
-    RCLCPP_INFO(get_logger(), " - /receptionist/go_to_door");
-    RCLCPP_INFO(get_logger(), " - /receptionist/go_to_beverage_area");
-    RCLCPP_INFO(get_logger(), " - /receptionist/go_to_living_room");
-    RCLCPP_INFO(get_logger(), " - /search_chair (alias: /receptionist/search_chair)");
-    RCLCPP_INFO(get_logger(), " - /receptionist/host");
-    RCLCPP_INFO(get_logger(), " - /receptionist/guest1 (alias: /receptionist/guest_1)");
-    RCLCPP_INFO(get_logger(), " - /receptionist/guest2 (alias: /receptionist/guest_2)");
-    RCLCPP_INFO(get_logger(), " - /receptionist/adjust_guest (alias: /receptionist/align_guest)");
+    // Services for 90-degree relative rotation (/receptionist/left dan /receptionist/right)
+    srv_turn_left_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/left",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleTurnRelative(M_PI / 2.0, "left", req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_turn_right_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/right",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleTurnRelative(-M_PI / 2.0, "right", req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_scan_living_room_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/scan_living_room",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleScanLivingRoom(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_clear_locks_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/clear_living_room_locks",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleClearLivingRoomLocks(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Nav: Node ready");
     publishStatus("Receptionist navigation node ready");
   }
 
@@ -369,7 +413,7 @@ public:
     std_msgs::msg::String msg;
     msg.data = msg_str;
     status_pub_->publish(msg);
-    RCLCPP_INFO(get_logger(), "[STATUS] %s", msg_str.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Status: %s", msg_str.c_str());
   }
 
   Waypoint getWaypoint(const std::string & prefix)
@@ -542,7 +586,9 @@ public:
       last_occupied_chair_time_ = now();
       occupied_chair_detected_ = true;
     } else {
-      occupied_chair_detected_ = false;
+      if ((now() - last_occupied_chair_time_).seconds() > 2.0) {
+        occupied_chair_detected_ = false;
+      }
     }
   }
 
@@ -948,10 +994,371 @@ public:
     return target;
   }
 
+  bool rotateToAbsYaw(
+    double target_abs_yaw,
+    std::atomic<bool> & active_flag,
+    double tol_rad,
+    double p_gain,
+    double min_spd,
+    double max_spd,
+    double timeout_sec,
+    const std::string & tag)
+  {
+    auto start_time = now();
+    rclcpp::Rate loop_rate(25.0);
+    int centered_frames = 0;
+    bool aligned = false;
+
+    while (rclcpp::ok() && active_flag.load()) {
+      if ((now() - start_time).seconds() > timeout_sec) {
+        RCLCPP_WARN(get_logger(), "[%s] Rotate to locked yaw %.2f rad timed out", tag.c_str(), target_abs_yaw);
+        break;
+      }
+      double cur_yaw = 0.0;
+      if (!getRobotYaw(cur_yaw)) {
+        loop_rate.sleep();
+        continue;
+      }
+      const double err = normalize_angle(target_abs_yaw - cur_yaw);
+      if (std::abs(err) <= tol_rad) {
+        centered_frames++;
+        if (centered_frames >= 3) {
+          aligned = true;
+          break;
+        }
+      } else {
+        centered_frames = 0;
+      }
+
+      double w = p_gain * err;
+      double spd = std::clamp(std::abs(w), min_spd, max_spd);
+      geometry_msgs::msg::Twist twist;
+      twist.angular.z = (err >= 0.0) ? spd : -spd;
+      cmd_vel_pub_->publish(twist);
+      loop_rate.sleep();
+    }
+
+    stopRobot();
+    return aligned;
+  }
+
+  void clearLivingRoomLocks()
+  {
+    std::lock_guard<std::mutex> lock(living_room_lock_mutex_);
+    has_locked_host_yaw_ = false;
+    has_locked_guest1_yaw_ = false;
+    has_locked_empty_chair_yaw_ = false;
+    locked_host_yaw_ = 0.0;
+    locked_guest1_yaw_ = 0.0;
+    locked_empty_chair_yaw_ = 0.0;
+  }
+
+  bool isYawCollidingWithLockedPeople(double abs_yaw, double min_sep_rad = 0.25)
+  {
+    std::lock_guard<std::mutex> lock(living_room_lock_mutex_);
+    if (has_locked_host_yaw_ && std::abs(normalize_angle(abs_yaw - locked_host_yaw_)) < min_sep_rad) {
+      return true;
+    }
+    if (has_locked_guest1_yaw_ && std::abs(normalize_angle(abs_yaw - locked_guest1_yaw_)) < min_sep_rad) {
+      return true;
+    }
+    return false;
+  }
+
+  void handleClearLivingRoomLocks(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    clearLivingRoomLocks();
+    res->success = true;
+    res->message = "Cleared temporary living room position locks";
+    RCLCPP_INFO(get_logger(), "\033[1;36m[LIVING ROOM]\033[0m %s", res->message.c_str());
+  }
+
+  void handleScanLivingRoom(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_turning_.load() || is_navigating_.load() || is_searching_chair_.load()) {
+      res->success = false;
+      res->message = "Robot is busy";
+      return;
+    }
+    if (is_facing_person_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is already busy scanning/facing";
+      return;
+    }
+
+    clearLivingRoomLocks();
+
+    double arrival_yaw = 0.0;
+    for (int i = 0; i < 20 && !getRobotYaw(arrival_yaw); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    std::string host_lower = toLower(host_name_);
+    std::string g1_lower;
+    std::string g2_lower;
+    {
+      std::lock_guard<std::mutex> lk(guest_mutex_);
+      g1_lower = toLower(guest_1_name_);
+      g2_lower = toLower(guest_2_name_);
+    }
+    const bool is_guest2_session = !g2_lower.empty();
+
+    struct LockedObs
+    {
+      bool valid{false};
+      double abs_yaw{0.0};
+      double dist{999.0};
+      int priority{-1};
+    };
+    LockedObs best_host, best_g1, best_empty;
+    struct SeatedSlot
+    {
+      double abs_yaw;
+      double dist;
+    };
+    std::vector<SeatedSlot> seated_slots;
+
+    auto record_seated_slot = [&](double abs_yaw, double dist) {
+      for (auto & s : seated_slots) {
+        if (std::abs(normalize_angle(s.abs_yaw - abs_yaw)) < 0.25) {
+          if (dist < s.dist) {
+            s.abs_yaw = abs_yaw;
+            s.dist = dist;
+          }
+          return;
+        }
+      }
+      seated_slots.push_back({abs_yaw, dist});
+    };
+
+    auto parse_angle_3d_or_px = [&](const std::string & bbox_str, const std::string & coord_str,
+                                    double & out_angle, double & out_dist) {
+      int rx = 0, ry = 0, rw = 0, rh = 0;
+      std::sscanf(bbox_str.c_str(), "%d,%d,%d,%d", &rx, &ry, &rw, &rh);
+      double px = 0.0, py = 0.0, pz = 0.0;
+      if (coord_str.find("nan") == std::string::npos &&
+          std::sscanf(coord_str.c_str(), "%lf,%lf,%lf", &px, &py, &pz) == 3 &&
+          (px > 0.05 || std::abs(py) > 0.05))
+      {
+        const double corrected_y = -py;
+        out_dist = std::hypot(px, corrected_y);
+        out_angle = std::atan2(corrected_y, px);
+        return true;
+      }
+      if (rw > 0) {
+        int cx = rx + rw / 2;
+        double half_w = camera_width_ > 0 ? (camera_width_ / 2.0) : 336.0;
+        out_angle = -((cx - half_w) / half_w) * 0.75;
+        out_dist = 1.8;
+        return true;
+      }
+      return false;
+    };
+
+    auto sample_current_view = [&]() {
+      double cur_yaw = arrival_yaw;
+      getRobotYaw(cur_yaw);
+
+      std::string p_str;
+      bool p_ok = false;
+      {
+        std::lock_guard<std::mutex> lock(person_mutex_);
+        p_ok = person_detected_ && (now() - last_person_time_).seconds() < 1.0;
+        p_str = latest_persons_str_;
+      }
+
+      if (p_ok && !p_str.empty() && p_str != "NO_PERSON") {
+        std::stringstream ss(p_str);
+        std::string item;
+        while (std::getline(ss, item, ';')) {
+          const auto colon = item.find(':');
+          const auto bar1 = item.find('|');
+          if (colon == std::string::npos || bar1 == std::string::npos || bar1 <= colon) continue;
+          const std::string lbl_lower = toLower(item.substr(0, colon));
+          const auto bar2 = item.find('|', bar1 + 1);
+          const std::string bbox_str = item.substr(colon + 1, bar1 - colon - 1);
+          const std::string coord_str = (bar2 != std::string::npos)
+            ? item.substr(bar1 + 1, bar2 - bar1 - 1) : item.substr(bar1 + 1);
+
+          double rel_ang = 0.0, dist = 999.0;
+          if (!parse_angle_3d_or_px(bbox_str, coord_str, rel_ang, dist)) continue;
+          const double abs_yaw = normalize_angle(cur_yaw + rel_ang);
+          const bool is_seated = (lbl_lower.find("seated") != std::string::npos ||
+                                  lbl_lower.find("sitting") != std::string::npos ||
+                                  lbl_lower.find("duduk") != std::string::npos);
+
+          const bool matches_host = (!host_lower.empty() && lbl_lower.find(host_lower) != std::string::npos) ||
+                                    (lbl_lower.find("host") != std::string::npos);
+          const bool matches_g1 = (!g1_lower.empty() && lbl_lower.find(g1_lower) != std::string::npos) ||
+                                  (lbl_lower.find("guest_1") != std::string::npos || lbl_lower.find("guest 1") != std::string::npos);
+          const bool matches_g2 = (!g2_lower.empty() && lbl_lower.find(g2_lower) != std::string::npos);
+
+          if (matches_host && !matches_g1 && !matches_g2) {
+            if (!best_host.valid || 100 >= best_host.priority) {
+              best_host = {true, abs_yaw, dist, 100};
+            }
+          } else if (is_guest2_session && matches_g1 && !matches_host && !matches_g2) {
+            if (!best_g1.valid || 100 >= best_g1.priority) {
+              best_g1 = {true, abs_yaw, dist, 100};
+            }
+          }
+
+          if (is_seated && dist < host_seated_max_dist_ && !matches_g2 &&
+              (is_guest2_session || !matches_g1))
+          {
+            record_seated_slot(abs_yaw, dist);
+            if (!is_guest2_session && (!best_host.valid || 80 > best_host.priority)) {
+              best_host = {true, abs_yaw, dist, 80};
+            }
+          }
+        }
+      }
+
+      std::string empty_str, occ_str;
+      {
+        std::lock_guard<std::mutex> lock(chair_mutex_);
+        if ((now() - last_chair_time_).seconds() < 2.0) empty_str = latest_chair_info_;
+        if (occupied_chair_detected_ && (now() - last_occupied_chair_time_).seconds() < 2.0) {
+          occ_str = latest_occupied_chair_info_;
+        }
+      }
+      if (!occ_str.empty()) {
+        std::stringstream ss(occ_str);
+        std::string item;
+        while (std::getline(ss, item, ';')) {
+          if (item.find("occupied") == std::string::npos) continue;
+          const auto colon = item.find(':');
+          const auto bar1 = item.find('|');
+          if (colon == std::string::npos || bar1 == std::string::npos || bar1 <= colon) continue;
+          const auto bar2 = item.find('|', bar1 + 1);
+          double rel_ang = 0.0, dist = 999.0;
+          if (!parse_angle_3d_or_px(
+                item.substr(colon + 1, bar1 - colon - 1),
+                (bar2 != std::string::npos) ? item.substr(bar1 + 1, bar2 - bar1 - 1) : item.substr(bar1 + 1),
+                rel_ang, dist))
+          {
+            continue;
+          }
+          if (dist < host_seated_max_dist_) {
+            const double abs_yaw = normalize_angle(cur_yaw + rel_ang);
+            record_seated_slot(abs_yaw, dist);
+            if (!is_guest2_session && (!best_host.valid || 60 > best_host.priority)) {
+              best_host = {true, abs_yaw, dist, 60};
+            }
+          }
+        }
+      }
+      if (!empty_str.empty()) {
+        EmptyChairTarget ec = parseEmptyChair(empty_str);
+        if (ec.valid && ec.dist < chair_max_dist_) {
+          const double abs_yaw = normalize_angle(cur_yaw + ec.angle_err);
+          const bool hits_host = (best_host.valid && std::abs(normalize_angle(abs_yaw - best_host.abs_yaw)) < 0.25);
+          const bool hits_g1 = (best_g1.valid && std::abs(normalize_angle(abs_yaw - best_g1.abs_yaw)) < 0.25);
+          if (!hits_host && !hits_g1 && (!best_empty.valid || ec.dist < best_empty.dist)) {
+            best_empty = {true, abs_yaw, ec.dist, 50};
+          }
+        }
+      }
+    };
+
+    // 1. Sample 15 frame (~0.75s) dari pandangan tiba di living_room
+    rclcpp::Rate scan_rate(20.0);
+    for (int i = 0; i < 15 && rclcpp::ok() && is_facing_person_.load(); ++i) {
+      sample_current_view();
+      scan_rate.sleep();
+    }
+
+    // 2. Jika target yang dibutuhkan belum terlihat di tengah, sweep ringan +-25 derajat lalu kembali
+    const bool need_sweep = !best_host.valid || (is_guest2_session && !best_g1.valid && seated_slots.size() < 2);
+    if (need_sweep && rclcpp::ok() && is_facing_person_.load()) {
+      for (double offset : {0.42, -0.42}) {
+        rotateToAbsYaw(normalize_angle(arrival_yaw + offset), is_facing_person_,
+          0.08, face_person_p_gain_, face_person_min_speed_, face_person_max_speed_, 3.5, "SCAN");
+        for (int i = 0; i < 8 && rclcpp::ok() && is_facing_person_.load(); ++i) {
+          sample_current_view();
+          scan_rate.sleep();
+        }
+      }
+      rotateToAbsYaw(arrival_yaw, is_facing_person_,
+        0.08, face_person_p_gain_, face_person_min_speed_, face_person_max_speed_, 3.5, "SCAN");
+    }
+
+    // 3. Resolusi eliminasi pada kunjungan Person 2 bila salah satu wajah sedang menoleh
+    if (is_guest2_session) {
+      std::sort(seated_slots.begin(), seated_slots.end(),
+        [](const SeatedSlot & a, const SeatedSlot & b) { return a.dist < b.dist; });
+      if (best_host.valid && !best_g1.valid) {
+        for (const auto & s : seated_slots) {
+          if (std::abs(normalize_angle(s.abs_yaw - best_host.abs_yaw)) >= 0.25) {
+            best_g1 = {true, s.abs_yaw, s.dist, 50};
+            break;
+          }
+        }
+      } else if (best_g1.valid && !best_host.valid) {
+        for (const auto & s : seated_slots) {
+          if (std::abs(normalize_angle(s.abs_yaw - best_g1.abs_yaw)) >= 0.25) {
+            best_host = {true, s.abs_yaw, s.dist, 50};
+            break;
+          }
+        }
+      } else if (!best_host.valid && !best_g1.valid && seated_slots.size() >= 2) {
+        best_host = {true, seated_slots[0].abs_yaw, seated_slots[0].dist, 40};
+        for (size_t k = 1; k < seated_slots.size(); ++k) {
+          if (std::abs(normalize_angle(seated_slots[k].abs_yaw - best_host.abs_yaw)) >= 0.25) {
+            best_g1 = {true, seated_slots[k].abs_yaw, seated_slots[k].dist, 40};
+            break;
+          }
+        }
+      } else if (!best_host.valid && !best_g1.valid && seated_slots.size() == 1) {
+        best_host = {true, seated_slots[0].abs_yaw, seated_slots[0].dist, 40};
+      }
+    }
+
+    // Pastikan kursi kosong akhir tidak bertabrakan dengan sudut Host atau Guest 1
+    if (best_empty.valid) {
+      const bool hits_host = (best_host.valid && std::abs(normalize_angle(best_empty.abs_yaw - best_host.abs_yaw)) < 0.25);
+      const bool hits_g1 = (best_g1.valid && std::abs(normalize_angle(best_empty.abs_yaw - best_g1.abs_yaw)) < 0.25);
+      if (hits_host || hits_g1) best_empty.valid = false;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(living_room_lock_mutex_);
+      has_locked_host_yaw_ = best_host.valid;
+      locked_host_yaw_ = best_host.abs_yaw;
+      has_locked_guest1_yaw_ = best_g1.valid;
+      locked_guest1_yaw_ = best_g1.abs_yaw;
+      has_locked_empty_chair_yaw_ = best_empty.valid;
+      locked_empty_chair_yaw_ = best_empty.abs_yaw;
+    }
+
+    stopRobot();
+    is_facing_person_ = false;
+
+    std::ostringstream oss;
+    oss << "Living room locks: Host=" << (best_host.valid ? std::to_string(best_host.abs_yaw) : "none")
+        << ", Guest1=" << (best_g1.valid ? std::to_string(best_g1.abs_yaw) : "none")
+        << ", EmptySeat=" << (best_empty.valid ? std::to_string(best_empty.abs_yaw) : "none");
+    res->success = best_host.valid || best_g1.valid || best_empty.valid;
+    res->message = oss.str();
+    publishStatus(res->message);
+    RCLCPP_INFO(get_logger(), "\033[1;32m[LIVING ROOM LOCK]\033[0m %s", res->message.c_str());
+  }
+
   void handleSearchChair(
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
+
     if (is_navigating_.load()) {
       res->success = false;
       res->message = "Robot is currently busy with another navigation task";
@@ -975,13 +1382,41 @@ public:
 
     publishStatus("Service /search_chair called: Aligning to empty chair in view...");
 
-    // Helper untuk mengambil data kursi kosong terkini yang masih segar (< 2.5s)
+    // Helper untuk mengambil data kursi kosong terkini yang tidak bertabrakan dengan kursi Host/Guest 1
     auto get_current_empty_chair = [this]() -> EmptyChairTarget {
-      std::lock_guard<std::mutex> lock(chair_mutex_);
-      if (!latest_chair_info_.empty() && (now() - last_chair_time_).seconds() < 2.5) {
-        return parseEmptyChair(latest_chair_info_);
+      std::string raw;
+      {
+        std::lock_guard<std::mutex> lock(chair_mutex_);
+        if (!latest_chair_info_.empty() && (now() - last_chair_time_).seconds() < 2.5) {
+          raw = latest_chair_info_;
+        }
       }
-      return EmptyChairTarget();
+      if (raw.empty()) return EmptyChairTarget();
+
+      double cur_yaw = 0.0;
+      const bool have_yaw = getRobotYaw(cur_yaw);
+      if (raw.rfind("empty_seat:", 0) == 0 || !have_yaw) {
+        EmptyChairTarget ec = parseEmptyChair(raw);
+        if (ec.valid && have_yaw && isYawCollidingWithLockedPeople(normalize_angle(cur_yaw + ec.angle_err))) {
+          ec.valid = false;
+        }
+        return ec;
+      }
+
+      // Filter setiap kursi kosong di latest_chair_info_ terhadap posisi Host/Guest 1 yang terkunci
+      std::string filtered;
+      std::stringstream ss(raw);
+      std::string item;
+      while (std::getline(ss, item, ';')) {
+        if (item.empty()) continue;
+        EmptyChairTarget one = parseEmptyChair(item);
+        if (!one.valid) continue;
+        const double abs_yaw = normalize_angle(cur_yaw + one.angle_err);
+        if (isYawCollidingWithLockedPeople(abs_yaw)) continue;
+        if (!filtered.empty()) filtered += ";";
+        filtered += item;
+      }
+      return parseEmptyChair(filtered);
     };
 
     auto start_time = now();
@@ -1001,8 +1436,34 @@ public:
       loop_rate.sleep();
     }
 
+    // Jika pandangan tengah belum menemukan kursi kosong tetapi scan living room sudah mengunci sudutnya, putar ke sana
+    bool locked_empty_used = false;
+    double locked_empty_yaw = 0.0;
+    if (!chair_found) {
+      std::lock_guard<std::mutex> lock(living_room_lock_mutex_);
+      if (has_locked_empty_chair_yaw_) {
+        locked_empty_used = true;
+        locked_empty_yaw = locked_empty_chair_yaw_;
+      }
+    }
+
+    if (locked_empty_used) {
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[1;32m[CHAIR]\033[0m Rotating to locked empty chair yaw: %.2f rad",
+        locked_empty_yaw);
+      aligned = rotateToAbsYaw(locked_empty_yaw, is_searching_chair_,
+        align_chair_tolerance_rad_, align_chair_p_gain_,
+        align_chair_min_speed_, align_chair_max_speed_, 6.0, "CHAIR");
+      chair_found = true;
+      current_target.valid = true;
+      current_target.dist = 1.8;
+      current_target.side = "locked";
+      current_target.raw_info = "locked_empty_chair";
+    }
+
     // ALIGN: Langsung memutar hadap robot tepat ke arah kursi kosong terdekat
-    if (chair_found) {
+    if (chair_found && !locked_empty_used) {
       RCLCPP_INFO(
         get_logger(),
         "\033[1;32m[CHAIR]\033[0m Target: %s (%.2fm, %s), aligning...",
@@ -1092,6 +1553,12 @@ public:
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
     if (is_navigating_.load()) {
       res->success = false;
       res->message = "Robot is currently busy with navigation task";
@@ -1135,6 +1602,38 @@ public:
       srv_name = "/receptionist/" + target_role;
     }
     publishStatus("Service " + srv_name + " called: Aligning to " + display_name + " in view...");
+
+    // Gunakan sudut yaw terkunci dari hasil scan awal di living room jika tersedia
+    bool use_locked_yaw = false;
+    double target_locked_yaw = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(living_room_lock_mutex_);
+      if (target_role == "host" && has_locked_host_yaw_) {
+        use_locked_yaw = true;
+        target_locked_yaw = locked_host_yaw_;
+      } else if (target_role == "guest_1" && has_locked_guest1_yaw_) {
+        use_locked_yaw = true;
+        target_locked_yaw = locked_guest1_yaw_;
+      }
+    }
+
+    if (use_locked_yaw) {
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[1;32m[FACE PERSON]\033[0m Rotating to locked %s yaw: %.2f rad (%.1f deg)",
+        display_name.c_str(), target_locked_yaw, target_locked_yaw * 180.0 / M_PI);
+      const bool aligned_locked = rotateToAbsYaw(
+        target_locked_yaw, is_facing_person_,
+        face_person_tolerance_rad_, face_person_p_gain_,
+        face_person_min_speed_, face_person_max_speed_, 6.0, "FACE PERSON");
+      is_facing_person_ = false;
+      res->success = true;
+      res->message = "Robot aligned to locked " + display_name +
+                     (aligned_locked ? " (exact)" : " (approx)");
+      publishStatus(res->message);
+      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Face: %s", res->message.c_str());
+      return;
+    }
 
     auto get_current_person_target = [this, &target_role]() -> PersonTarget {
       PersonTarget target;
@@ -1254,12 +1753,12 @@ public:
       res->success = true;
       res->message = "Robot aligned facing " + display_name + " (detected: " + current_target.label + ")";
       publishStatus(res->message);
-      RCLCPP_INFO(get_logger(), "\033[1;32m[FACE PERSON SUCCESS]\033[0m %s", res->message.c_str());
+      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Face: %s", res->message.c_str());
     } else if (person_found && !aligned) {
       res->success = true;
       res->message = "Robot aligned approximately facing " + display_name + " (detected: " + current_target.label + ")";
       publishStatus(res->message);
-      RCLCPP_INFO(get_logger(), "\033[1;33m[FACE PERSON PARTIAL]\033[0m %s", res->message.c_str());
+      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Face: %s", res->message.c_str());
     } else {
       res->success = false;
       res->message = "No " + display_name + " detected in current view";
@@ -1272,6 +1771,12 @@ public:
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
     if (is_navigating_.load()) {
       res->success = false;
       res->message = "Robot is currently busy with navigation task";
@@ -1407,13 +1912,162 @@ public:
                    std::to_string(current_target.dist) + "m, target=" +
                    std::to_string(guest_door_distance_) + "m)";
     publishStatus(res->message);
-    RCLCPP_INFO(get_logger(), "\033[1;32m[ADJUST GUEST SUCCESS]\033[0m %s", res->message.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Align: %s", res->message.c_str());
+  }
+
+  static double normalize_angle(double angle)
+  {
+    while (angle > M_PI) angle -= 2.0 * M_PI;
+    while (angle < -M_PI) angle += 2.0 * M_PI;
+    return angle;
+  }
+
+  void handleTurnRelative(
+    double angle_rad,
+    const std::string & direction_name,
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_navigating_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy with navigation task";
+      publishStatus(res->message);
+      return;
+    }
+
+    if (is_facing_person_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy facing person";
+      publishStatus(res->message);
+      return;
+    }
+
+    if (is_searching_chair_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy searching for a chair";
+      publishStatus(res->message);
+      return;
+    }
+
+    if (is_turning_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is already executing a turn";
+      publishStatus(res->message);
+      return;
+    }
+
+    publishStatus("Service /receptionist/" + direction_name + " called: Turning 90 degrees " + direction_name + "...");
+
+    // Tunggu pembacaan yaw awal dari odometry (maksimal ~1 detik)
+    double start_yaw = 0.0;
+    bool got_yaw = false;
+    for (int i = 0; i < 20; ++i) {
+      if (getRobotYaw(start_yaw)) {
+        got_yaw = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    if (!got_yaw) {
+      is_turning_ = false;
+      res->success = false;
+      res->message = "Failed to turn: Odometry yaw not available";
+      publishStatus(res->message);
+      RCLCPP_ERROR(get_logger(), "\033[1;31m[TURN]\033[0m Odometry yaw not available");
+      return;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;32m[TURN]\033[0m Starting 90-degree turn %s (target delta: %.2f rad, start yaw: %.2f rad)",
+      direction_name.c_str(), angle_rad, start_yaw);
+
+    const double target_turn = angle_rad;
+    double last_yaw = start_yaw;
+    double accumulated_turn = 0.0;
+    auto start_time = now();
+    rclcpp::Rate loop_rate(30.0);
+    int centered_count = 0;
+    bool success = false;
+
+    while (rclcpp::ok() && is_turning_.load()) {
+      const double elapsed = (now() - start_time).seconds();
+      if (elapsed > turn_90_timeout_sec_) {
+        RCLCPP_WARN(get_logger(), "\033[1;33m[TURN]\033[0m Timeout reached (%.1fs)", turn_90_timeout_sec_);
+        break;
+      }
+
+      double cur_yaw = 0.0;
+      if (getRobotYaw(cur_yaw)) {
+        double dyaw = normalize_angle(cur_yaw - last_yaw);
+        accumulated_turn += dyaw;
+        last_yaw = cur_yaw;
+      }
+
+      const double remaining = target_turn - accumulated_turn;
+
+      if (std::abs(remaining) <= turn_90_tolerance_rad_) {
+        centered_count++;
+        if (centered_count >= 3) {
+          success = true;
+          break;
+        }
+      } else {
+        centered_count = 0;
+      }
+
+      // Hitung kecepatan sudut proporsional
+      double w = turn_90_p_gain_ * remaining;
+      double spd = std::abs(w);
+      if (spd < turn_90_min_speed_) spd = turn_90_min_speed_;
+      else if (spd > turn_90_max_speed_) spd = turn_90_max_speed_;
+
+      geometry_msgs::msg::Twist twist;
+      twist.linear.x = 0.0;
+      twist.linear.y = 0.0;
+      twist.angular.z = (remaining >= 0.0) ? spd : -spd;
+      cmd_vel_pub_->publish(twist);
+
+      loop_rate.sleep();
+    }
+
+    stopRobot();
+    is_turning_ = false;
+
+    const double turned_deg = accumulated_turn * 180.0 / M_PI;
+    if (success) {
+      res->success = true;
+      res->message = "Successfully turned 90 degrees " + direction_name +
+                     " (turned " + std::to_string(turned_deg) + " deg)";
+      publishStatus(res->message);
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[1;32m[TURN]\033[0m Complete: turned %.1f deg %s",
+        turned_deg, direction_name.c_str());
+    } else {
+      res->success = false;
+      res->message = "Turn 90 degrees " + direction_name + " timed out or incomplete" +
+                     " (turned " + std::to_string(turned_deg) + " deg)";
+      publishStatus(res->message);
+      RCLCPP_WARN(
+        get_logger(),
+        "\033[1;33m[TURN]\033[0m Incomplete: turned %.1f deg %s",
+        turned_deg, direction_name.c_str());
+    }
   }
 
   void handleGoTo(
     const std::string & target_name,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
   {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
+
     if (is_searching_chair_.load()) {
       res->success = false;
       res->message = "Robot is currently busy searching for a chair";
@@ -1433,6 +2087,10 @@ public:
       res->message = "Robot is currently busy with another navigation task";
       publishStatus(res->message);
       return;
+    }
+
+    if (target_name == "door") {
+      clearLivingRoomLocks();
     }
 
     Waypoint wp = getWaypoint(target_name);
@@ -1489,7 +2147,7 @@ public:
         RCLCPP_WARN(get_logger(), "\033[1;31m[NAV]\033[0m Goal rejected: %s", wp.name.c_str());
       } else {
         current_goal_handle_ = handle;
-        RCLCPP_INFO(get_logger(), "\033[1;36m[NAV]\033[0m Navigating to '%s'", wp.name.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Nav: Navigating to '%s'", wp.name.c_str());
       }
     };
     send_opts.result_callback = [promise](const GoalHandleNav::WrappedResult & res) {
@@ -1505,7 +2163,7 @@ public:
     if (future.wait_for(std::chrono::seconds(static_cast<int>(nav_timeout_sec_))) == std::future_status::ready) {
       const auto code = future.get();
       if (code == rclcpp_action::ResultCode::SUCCEEDED) {
-        RCLCPP_INFO(get_logger(), "\033[1;32m[NAV]\033[0m Arrived at '%s'", wp.name.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Nav: Arrived at '%s'", wp.name.c_str());
         return true;
       } else {
         RCLCPP_WARN(
@@ -1559,9 +2217,16 @@ private:
   double current_yaw_{0.0};
   rclcpp::Time last_odom_time_{0, 0, RCL_ROS_TIME};
 
-  // Living room arrival reference yaw
+  // Living room arrival reference yaw & temporary locked target yaws
   bool has_living_room_arrival_yaw_{false};
   double living_room_arrival_yaw_{0.0};
+  std::mutex living_room_lock_mutex_;
+  bool has_locked_host_yaw_{false};
+  double locked_host_yaw_{0.0};
+  bool has_locked_guest1_yaw_{false};
+  double locked_guest1_yaw_{0.0};
+  bool has_locked_empty_chair_yaw_{false};
+  double locked_empty_chair_yaw_{0.0};
 
   std::mutex chair_mutex_;
   bool chair_detected_{false};
@@ -1627,12 +2292,27 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_guest_2_alias_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_adjust_guest_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_adjust_guest_alias_;
+
+  // 90-degree relative turn (/receptionist/left dan /receptionist/right)
+  std::atomic<bool> is_turning_{false};
+  double turn_90_angular_speed_{0.30};
+  double turn_90_min_speed_{0.14};
+  double turn_90_max_speed_{0.35};
+  double turn_90_tolerance_rad_{0.04};
+  double turn_90_timeout_sec_{8.0};
+  double turn_90_p_gain_{1.5};
+
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_left_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_right_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_scan_living_room_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_clear_locks_;
 };
 
 }  // namespace receptionist
 
 int main(int argc, char ** argv)
 {
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   auto node = std::make_shared<receptionist::ReceptionistNode>();
 

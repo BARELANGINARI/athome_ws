@@ -17,7 +17,7 @@ vision:
     yolo_size: 640
     yolo_min_area: 250.0
     bag_labels: ["bag", "paper_bag", "backpack", "handbag", "suitcase"]
-    gender_model: "models/gender_model_weights.onnx"
+    gender_model: "models/genderage.onnx"
     color_model: "models/color_model.onnx"
     color_labels: "models/color_names.txt"
     hair_model: "models/hair_model.onnx"
@@ -29,8 +29,10 @@ vision:
     cracker_model: "models/crackerbox.onnx"
     pringles_model: "models/pringles.onnx"
     sugarbox_model: "models/sugarbox.onnx"
-    drink_min_area: 100.0
-    drink_conf: 0.20
+    milk_model: "models/milk.onnx"
+    drink_min_area: 180.0
+    drink_conf: 0.48
+    drink_max_dist: 2.5
     enable_drinks: true
     chair_model: ""
     enable_chair: true
@@ -39,5 +41,5 @@ vision:
     host_photo: "models/host.jpg"
     enable_back_detection: true
     person_back_topic: "/vision/person_back"
-    person_max_dist: 2.5
+    person_max_dist: 1.5
     bag_max_dist: 2.0

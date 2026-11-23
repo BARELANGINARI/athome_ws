@@ -1193,8 +1193,8 @@ private:
     RCLCPP_INFO_THROTTLE(
       get_logger(),
       *get_clock(),
-      500,
-      "\033[1;36m[FOLLOW]\033[0m d=%.2fm, b=%+.1f° | vx=%.2f, wz=%.2f",
+      1000,
+      "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Follow: d=%.2fm, b=%+.1f°\n  Cmd: vx=%.2f, wz=%.2f",
       direct_dist, direct_bearing * 180.0 / M_PI, twist.linear.x, twist.angular.z);
   }
 
@@ -1222,13 +1222,13 @@ private:
     auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     send_opts.goal_response_callback = [this](const GoalHandle::SharedPtr & handle) {
       if (!handle) {
-        RCLCPP_WARN(get_logger(), "\033[1;31m[FOLLOW]\033[0m Nav2 goal rejected");
+        RCLCPP_WARN(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m [FOLLOW] Nav2 goal rejected");
         is_nav_active_ = false;
         last_nav_fail_time_ = now();
       } else {
         goal_handle_ = handle;
         is_nav_active_ = true;
-        RCLCPP_INFO(get_logger(), "\033[1;32m[FOLLOW]\033[0m Nav2 goal accepted");
+        RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Nav: Goal accepted");
       }
     };
     send_opts.result_callback = [this](const GoalHandle::WrappedResult & res) {
@@ -1237,14 +1237,14 @@ private:
       if (res.code == rclcpp_action::ResultCode::SUCCEEDED) {
         RCLCPP_INFO_THROTTLE(
           get_logger(), *get_clock(), 1500,
-          "\033[1;32m[FOLLOW]\033[0m Near operator");
+          "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Follow: Near operator");
       } else if (res.code == rclcpp_action::ResultCode::CANCELED) {
-        RCLCPP_INFO(get_logger(), "\033[1;33m[FOLLOW]\033[0m Nav2 goal canceled");
+        RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Nav: Goal canceled");
       } else if (res.code == rclcpp_action::ResultCode::ABORTED) {
         last_nav_fail_time_ = now();
         RCLCPP_WARN_THROTTLE(
           get_logger(), *get_clock(), 2000,
-          "\033[1;31m[FOLLOW]\033[0m Nav2 aborted");
+          "\033[1;32m[HELP_ME_CARRY]\033[0m [FOLLOW] Nav2 aborted");
       }
     };
 
@@ -2643,7 +2643,7 @@ private:
           RCLCPP_WARN(get_logger(), "\033[1;31m[HOMING]\033[0m Nav2 goal %s rejected", desc.c_str());
         } else {
           homing_goal_handle_ = handle;
-          RCLCPP_INFO(get_logger(), "\033[1;32m[HOMING]\033[0m Nav2 goal %s accepted", desc.c_str());
+          RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Homing: Goal %s accepted", desc.c_str());
         }
       };
     send_opts.result_callback =
@@ -2962,7 +2962,7 @@ private:
     const std::shared_ptr<Trigger::Request> /*req*/,
     std::shared_ptr<Trigger::Response> resp)
   {
-    RCLCPP_INFO(get_logger(), "\033[1;36m[HOMING]\033[0m Starting homing navigation...");
+    RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Homing: Starting homing navigation...");
 
     // 1. Hentikan person following jika sedang aktif
     if (is_following_) {
@@ -2979,7 +2979,7 @@ private:
     }
 
     // 2b. Rotasi 180 derajat ke daerah yang lebih kosong dibanding satu sisinya sebelum memulai alur navigasi pulang
-    RCLCPP_INFO(get_logger(), "\033[1;36m[HOMING]\033[0m 180° rotation start");
+    RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Homing: 180° rotation start");
     rotate_180_towards_open_space(12.0);
 
     is_homing_active_  = true;
@@ -4207,6 +4207,7 @@ private:
 
 int main(int argc, char ** argv)
 {
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   std::string node_name = "help_me_carry_node";
   if (argc > 0 && argv[0]) {

@@ -1,11 +1,14 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     return LaunchDescription([
+        SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
+        SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
+        DeclareLaunchArgument('task', default_value='all', description='Task name (help_me_carry, receptionist, restaurant)'),
         DeclareLaunchArgument('stm_ip', default_value='192.168.0.4', description='STM32 Nucleo IP address'),
         DeclareLaunchArgument('stm_port', default_value='2002', description='STM32 UDP port'),
         DeclareLaunchArgument('local_port', default_value='2023', description='Local UDP bind port'),
@@ -39,12 +42,14 @@ def generate_launch_description():
         DeclareLaunchArgument('base_length_cm', default_value='20.8', description='Base distance between wheels (cm)'),
         DeclareLaunchArgument('publish_imu_yaw', default_value='true', description='Publish Razor IMU yaw to ROS topic'),
         DeclareLaunchArgument('pub_yaw_topic', default_value='/yaw', description='Topic name for published IMU yaw'),
+        DeclareLaunchArgument('vel_log_interval', default_value='1.0', description='Velocity log print interval (seconds)'),
 
         Node(
             package='athome_base',
             executable='nucleo',
             output='screen',
             parameters=[{
+                'task': LaunchConfiguration('task'),
                 'stm_ip': LaunchConfiguration('stm_ip'),
                 'stm_port': LaunchConfiguration('stm_port'),
                 'local_port': LaunchConfiguration('local_port'),
@@ -69,6 +74,7 @@ def generate_launch_description():
                 'angular_accel_limit': LaunchConfiguration('angular_accel_limit'),
                 'stop_decel_scale': LaunchConfiguration('stop_decel_scale'),
                 'pulses_per_rev': LaunchConfiguration('pulses_per_rev'),
+                'vel_log_interval': LaunchConfiguration('vel_log_interval'),
                 'wheel_radius_cm': LaunchConfiguration('wheel_radius_cm'),
                 'base_length_cm': LaunchConfiguration('base_length_cm'),
                 'publish_imu_yaw': LaunchConfiguration('publish_imu_yaw'),

@@ -252,6 +252,8 @@ public:
     declare_parameter<double>("tts_sec_per_word", 0.5);
     declare_parameter<double>("tts_timeout_margin_sec", 2.0);
     declare_parameter<double>("nav_retry_cooldown_sec", 2.0);
+    declare_parameter<double>("tray_wait_sec", 10.0);
+    declare_parameter<double>("tts_post_delay_sec", 2.0);
 
     origin_x_ = get_parameter("origin_x").as_double();
     origin_y_ = get_parameter("origin_y").as_double();
@@ -280,6 +282,8 @@ public:
     tts_sec_per_word_ = get_parameter("tts_sec_per_word").as_double();
     tts_timeout_margin_sec_ = get_parameter("tts_timeout_margin_sec").as_double();
     nav_retry_cooldown_sec_ = get_parameter("nav_retry_cooldown_sec").as_double();
+    tray_wait_sec_ = std::max(0.0, get_parameter("tray_wait_sec").as_double());
+    tts_post_delay_sec_ = std::max(0.0, get_parameter("tts_post_delay_sec").as_double());
     tts_timeout_sec_ = tts_min_timeout_sec_;
 
     // TF2 Buffer & Listener
@@ -400,11 +404,7 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "\n============================================================\n"
-      "  \033[1;32m[SYSTEM]\033[0m Restaurant Task Manager Started\n"
-      "  \033[1;36m[ORIGIN]\033[0m x=%.2f, y=%.2f, yaw=%.2f\n"
-      "  \033[1;33m[STATE]\033[0m  INIT\n"
-      "============================================================",
+      "\033[1;32m[RESTAURANT]\033[0m Task Manager started (Origin: %.2f, %.2f, %.2f)",
       origin_x_, origin_y_, origin_yaw_);
   }
 
@@ -419,6 +419,8 @@ private:
   double tts_sec_per_word_{0.5};
   double tts_timeout_margin_sec_{2.0};
   double nav_retry_cooldown_sec_{2.0};
+  double tray_wait_sec_{10.0};
+  double tts_post_delay_sec_{2.0};
 
   // ----------------------------------------------------------------------------
   // Parameter & State Variables
@@ -482,6 +484,9 @@ private:
   std::mutex tts_mutex_;
   double tts_timeout_sec_{4.0};
   std::function<void()> pending_tts_done_;
+  std::atomic<bool> tts_post_delay_active_{false};
+  rclcpp::Time tts_post_delay_until_{0, 0, RCL_ROS_TIME};
+  std::function<void()> pending_post_tts_cb_;
 
   std::mutex srv_mutex_;
   rclcpp::Time srv_started_time_{0, 0, RCL_ROS_TIME};
@@ -555,7 +560,7 @@ private:
       msg.data = text;
       status_pub_->publish(msg);
     }
-    RCLCPP_INFO(get_logger(), "\033[1;34m[STATUS]\033[0m %s", text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Status: %s", text.c_str());
   }
 
   void publishCustomerHmi(bool show)
@@ -584,7 +589,7 @@ private:
       msg.data = "{\"action\":\"hide\"}";
     }
     hmi_customer_pub_->publish(msg);
-    RCLCPP_INFO(get_logger(), "\033[1;36m[HMI]\033[0m Order Card -> %s", show ? "SHOW" : "HIDE");
+    RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  HMI: Order Card -> %s", show ? "SHOW" : "HIDE");
   }
 
   void publishExpression(const std::string & expr)
@@ -593,7 +598,7 @@ private:
       std_msgs::msg::String msg;
       msg.data = expr;
       face_expression_pub_->publish(msg);
-      RCLCPP_INFO(get_logger(), "\033[1;35m[FACE]\033[0m Expression -> %s", expr.c_str());
+      RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Face: Expression -> %s", expr.c_str());
     }
   }
 
@@ -765,7 +770,7 @@ private:
           if (on_finished) on_finished(false);
         } else {
           current_goal_handle_ = handle;
-          RCLCPP_INFO(get_logger(), "\033[1;32m[NAV]\033[0m Goal accepted, navigating...");
+          RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Nav: Goal accepted, navigating...");
         }
       };
 
@@ -775,7 +780,7 @@ private:
         nav_busy_ = false;
         const bool ok = (result.code == rclcpp_action::ResultCode::SUCCEEDED);
         if (ok) {
-          RCLCPP_INFO(get_logger(), "\033[1;32m[NAV]\033[0m Arrived safely at destination");
+          RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Nav: Arrived safely at destination");
         } else {
           RCLCPP_WARN(
             get_logger(), "\033[1;33m[NAV]\033[0m Navigation failed/aborted (code %d)",
@@ -1021,6 +1026,8 @@ private:
     {
       std::lock_guard<std::mutex> lock(tts_mutex_);
       speaking_ = true;
+      tts_post_delay_active_ = false;
+      pending_post_tts_cb_ = nullptr;
       tts_started_time_ = now();
       tts_timeout_sec_ = estimateTtsTimeout(text);
       tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.5);
@@ -1030,28 +1037,46 @@ private:
     std_msgs::msg::String message;
     message.data = text;
     tts_pub_->publish(message);
-    RCLCPP_INFO(get_logger(), "\033[1;32m[TTS]\033[0m \"%s\"", text.c_str());
+    RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  TTS: \"%s\"", text.c_str());
   }
 
   void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
   {
     std::function<void()> callback;
+    bool deferred = false;
     {
       std::lock_guard<std::mutex> lock(tts_mutex_);
       if (!speaking_.load()) {
         return;
       }
-      in_callback_ = true;
       speaking_ = false;
-      tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.4);
-      callback = std::move(pending_tts_done_);
-      pending_tts_done_ = nullptr;
+      const auto current_now = now();
+      const auto min_cooldown_until = current_now + rclcpp::Duration::from_seconds(0.4);
+      if (tts_post_delay_sec_ > 0.0) {
+        tts_post_delay_active_ = true;
+        tts_post_delay_until_ = current_now + rclcpp::Duration::from_seconds(tts_post_delay_sec_);
+        tts_cooldown_until_ =
+          (tts_post_delay_until_ > min_cooldown_until) ? tts_post_delay_until_ : min_cooldown_until;
+        pending_post_tts_cb_ = std::move(pending_tts_done_);
+        pending_tts_done_ = nullptr;
+        deferred = true;
+      } else {
+        in_callback_ = true;
+        tts_cooldown_until_ = min_cooldown_until;
+        callback = std::move(pending_tts_done_);
+        pending_tts_done_ = nullptr;
+      }
     }
 
     RCLCPP_DEBUG(
       get_logger(),
-      "[TTS] Done | State: %s",
-      stateToString(state_.load()).c_str());
+      "[TTS] Done | State: %s | PostDelay: %.2fs",
+      stateToString(state_.load()).c_str(),
+      deferred ? tts_post_delay_sec_ : 0.0);
+
+    if (deferred) {
+      return;
+    }
 
     if (callback) {
       callback();
@@ -1061,7 +1086,7 @@ private:
 
   bool canListen() const
   {
-    return !isBusy() && now() >= tts_cooldown_until_;
+    return !isBusy() && !tts_post_delay_active_.load() && now() >= tts_cooldown_until_;
   }
 
   static std::string normalize(const std::string & text)
@@ -1182,7 +1207,7 @@ private:
       "pringles", "sugar box", "sugarbox", "sugar",
       "cheezit", "cracker", "chips", "snack",
       "coke", "cola", "pepsi", "sprite", "fanta",
-      "water", "milk", "coffee", "tea", "juice", "soda", "bottle", "botol",
+      "water", "milk", "coffee", "tea", "juice", "soda",
       "burger", "sandwich", "pizza", "cake", "donut", "apple", "banana", "orange"
     };
 
@@ -1603,7 +1628,7 @@ private:
     callTrigger(
       release_client, release_srv_name,
       [this, on_done](bool /*rel_ok*/, const std::string & rel_msg) {
-        RCLCPP_INFO(get_logger(), "\033[1;35m[ARM]\033[0m Release gripper: %s", rel_msg.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Arm: Release gripper: %s", rel_msg.c_str());
 
         TriggerClient::SharedPtr free_client = arm_free_client_;
         std::string free_srv_name = "/arm/free";
@@ -1617,7 +1642,7 @@ private:
         callTrigger(
           free_client, free_srv_name,
           [this, on_done](bool /*free_ok*/, const std::string & free_msg) {
-            RCLCPP_INFO(get_logger(), "\033[1;35m[ARM]\033[0m Torque off: %s", free_msg.c_str());
+            RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Arm: Torque off: %s", free_msg.c_str());
             if (on_done) {
               on_done();
             }
@@ -1683,6 +1708,30 @@ private:
         tts_timeout);
       onTtsDone(nullptr);
       return;
+    }
+
+    // 4. Non-blocking post-TTS delay sebelum callback on_done / state berikutnya berjalan
+    if (tts_post_delay_active_.load()) {
+      std::function<void()> post_tts_cb;
+      {
+        std::lock_guard<std::mutex> lock(tts_mutex_);
+        if (tts_post_delay_active_.load()) {
+          if (now() < tts_post_delay_until_) {
+            return;
+          }
+          tts_post_delay_active_ = false;
+          post_tts_cb = std::move(pending_post_tts_cb_);
+          pending_post_tts_cb_ = nullptr;
+          if (post_tts_cb) {
+            in_callback_ = true;
+          }
+        }
+      }
+      if (post_tts_cb) {
+        post_tts_cb();
+        in_callback_ = false;
+        return;
+      }
     }
 
     if (isBusy()) {
@@ -1890,12 +1939,14 @@ private:
               RestaurantState::CAPTURE_CUSTOMER_FACE,
               "Customer name captured");
           } else {
-            state_enter_time_ = now();
-            speakAsync("Hello, Welcome to the bar!! Can you please tell your name?");
+            speakAsync(
+              "Hello, Welcome to the bar!! Can you please tell your name?",
+              [this]() { state_enter_time_ = now(); });
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
-          state_enter_time_ = now();
-          speakAsync("Hello, Welcome to the bar!! Can you please tell your name?");
+          speakAsync(
+            "Hello, Welcome to the bar!! Can you please tell your name?",
+            [this]() { state_enter_time_ = now(); });
         }
         break;
 
@@ -1981,15 +2032,18 @@ private:
               std::lock_guard<std::mutex> lock(customer_mutex_);
               current_customer_.order_1 = o1;
             }
-            state_enter_time_ = now();
-            speakAsync("What is your second order please?");
+            speakAsync(
+              "What is your second order please?",
+              [this]() { state_enter_time_ = now(); });
           } else {
-            state_enter_time_ = now();
-            speakAsync("May i take your order please?");
+            speakAsync(
+              "May i take your order please?",
+              [this]() { state_enter_time_ = now(); });
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
-          state_enter_time_ = now();
-          speakAsync("May i take your order please?");
+          speakAsync(
+            "May i take your order please?",
+            [this]() { state_enter_time_ = now(); });
         }
         break;
 
@@ -2059,18 +2113,20 @@ private:
                   "Order rejected (NO), returning to point 6");
               });
           } else {
-            state_enter_time_ = now();
-            speakAsync("Please answer with yes if the order has correct and answer with no, if the order is incorrect");
+            speakAsync(
+              "Please answer with yes if the order has correct and answer with no, if the order is incorrect",
+              [this]() { state_enter_time_ = now(); });
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
-          state_enter_time_ = now();
           std::string o1, o2;
           {
             std::lock_guard<std::mutex> lock(customer_mutex_);
             o1 = current_customer_.order_1;
             o2 = current_customer_.order_2;
           }
-          speakAsync("your order is " + o1 + " and " + o2 + " is it correct?");
+          speakAsync(
+            "your order is " + o1 + " and " + o2 + " is it correct?",
+            [this]() { state_enter_time_ = now(); });
         }
         break;
 
@@ -2138,8 +2194,8 @@ private:
               "please place " + o1 + " in front of my gripper",
               [this]() {
                 transitionTo(
-                  RestaurantState::DETECT_AND_NAV_TO_ORDER1,
-                  "Waiting to detect order_1 position");
+                  RestaurantState::GRASP_ORDER1,
+                  "Order_1 requested in front of gripper, proceeding directly to grasp");
               });
           });
         break;
@@ -2239,10 +2295,10 @@ private:
       }
 
       case RestaurantState::WAIT_TRAY_SILENT_5S:
-        if ((now() - state_enter_time_).seconds() >= 5.0) {
+        if ((now() - state_enter_time_).seconds() >= tray_wait_sec_) {
           transitionTo(
             RestaurantState::ASK_TRAY_CONFIRMATION,
-            "5 seconds silent wait elapsed");
+            "Silent tray wait elapsed");
         }
         break;
 
@@ -2279,12 +2335,14 @@ private:
               RestaurantState::WAIT_TRAY_RETRY_3S,
               "Tray order not ready (no robot), waiting 3 seconds before repeating callback");
           } else {
-            state_enter_time_ = now();
-            speakAsync("is the order had take in the tray, please answer with yes robot or no robot");
+            speakAsync(
+              "is the order had take in the tray, please answer with yes robot or no robot",
+              [this]() { state_enter_time_ = now(); });
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
-          state_enter_time_ = now();
-          speakAsync("is the order had take in the tray, please answer with yes robot or no robot");
+          speakAsync(
+            "is the order had take in the tray, please answer with yes robot or no robot",
+            [this]() { state_enter_time_ = now(); });
         }
         break;
 
@@ -2495,6 +2553,7 @@ private:
 // ==============================================================================
 int main(int argc, char ** argv)
 {
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   auto node = std::make_shared<restaurant::RestaurantTaskNode>();
 

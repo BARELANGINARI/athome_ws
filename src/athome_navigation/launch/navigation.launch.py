@@ -10,6 +10,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     OpaqueFunction,
+    SetEnvironmentVariable,
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -248,6 +249,8 @@ def generate_launch_description():
     default_params = os.path.join(help_me_carry_share, 'config', 'nav2_params.yaml')
 
     return LaunchDescription([
+        SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
+        SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
         DeclareLaunchArgument('slam', default_value='false', description='Enable real-time SLAM (slam_toolbox)'),
         DeclareLaunchArgument('map', default_value=default_map, description='Path to map YAML file'),
         DeclareLaunchArgument('params_file', default_value=default_params, description='Path to Nav2 params file'),

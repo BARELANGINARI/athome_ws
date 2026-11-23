@@ -106,6 +106,14 @@ struct MotionData {
 class ArmMotionServer : public rclcpp::Node {
 public:
     ArmMotionServer() : Node("arm_motion_server") {
+        this->declare_parameter<std::string>("task", "all");
+        task_mode_ = this->get_parameter("task").as_string();
+        if (task_mode_ == "all") {
+            const char * env_task = std::getenv("ATHOME_TASK");
+            if (env_task) task_mode_ = env_task;
+        }
+        std::transform(task_mode_.begin(), task_mode_.end(), task_mode_.begin(), ::tolower);
+
         this->declare_parameter<std::string>("port", "/dev/ttyUSB0");
         this->declare_parameter<int>("baudrate", 1000000);
         this->declare_parameter<std::string>("motions_dir", "");
@@ -224,7 +232,7 @@ public:
                 setTorqueAll(false);
                 res->success = true;
                 res->message = "Arm torque disabled (free mode).";
-                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Free mode (torque off)");
+                RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Free mode (torque off)", getTaskTag().c_str());
             }
         );
 
@@ -236,18 +244,29 @@ public:
                 setTorqueAll(false);
                 res->success = true;
                 res->message = "Arm torque disabled (free mode).";
-                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Relax (torque off)");
+                RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Relax (torque off)", getTaskTag().c_str());
             }
         );
 
-        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Ready (port: %s, baud: %d)", port_name_.c_str(), baudrate_);
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Ready (port: %s, baud: %d)", getTaskTag().c_str(), port_name_.c_str(), baudrate_);
 
         // Initialize hardware connection
         if (initHardware()) {
-            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Dynamixel connected");
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Dynamixel connected", getTaskTag().c_str());
         } else {
-            RCLCPP_WARN(this->get_logger(), "\033[1;31m[ARM]\033[0m Failed opening port %s", port_name_.c_str());
+            RCLCPP_WARN(this->get_logger(), "%s\033[1;31m[ARM]\033[0m Failed opening port %s", getTaskTag().c_str(), port_name_.c_str());
         }
+    }
+
+    std::string getTaskTag() const {
+        if (task_mode_ == "receptionist" || task_mode_ == "rec") {
+            return "\033[1;36m[RECEPTIONIST]\033[0m ";
+        } else if (task_mode_ == "help_me_carry" || task_mode_ == "hmc") {
+            return "\033[1;32m[HELP_ME_CARRY]\033[0m ";
+        } else if (task_mode_ == "restaurant" || task_mode_ == "resto" || task_mode_ == "waiter") {
+            return "\033[1;34m[RESTAURANT]\033[0m ";
+        }
+        return "";
     }
 
     ~ArmMotionServer() override {
@@ -255,6 +274,7 @@ public:
     }
 
 private:
+    std::string task_mode_{"all"};
     std::string port_name_;
     int baudrate_;
     std::string motions_dir_;
@@ -574,7 +594,7 @@ private:
 
                 cur_grip_deg = rawToRelAngle(GRIPPER_ID, static_cast<uint16_t>(hold_tick), false);
                 g_last_valid_raw[GRIPPER_ID] = static_cast<uint16_t>(hold_tick);
-                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Grasped: %.1f deg (load: %d)", cur_grip_deg, load_mag);
+                RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Grasped: %.1f deg (load: %d)", getTaskTag().c_str(), cur_grip_deg, load_mag);
                 return true;
             }
         }
@@ -582,7 +602,7 @@ private:
         packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_LED, 0, &err);
         cur_grip_deg = 0.0;
         g_last_valid_raw[GRIPPER_ID] = static_cast<uint16_t>(closed_tick);
-        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Gripper closed (no load)");
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Gripper closed (no load)", getTaskTag().c_str());
         return false;
     }
 
@@ -598,7 +618,7 @@ private:
             packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_LIMIT, DEFAULT_TORQUE_LIM, &err);
         }
         double target[3] = { cur[0], cur[1], open_deg };
-        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Open gripper: +%.1f deg", open_deg);
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Open gripper: +%.1f deg", getTaskTag().c_str(), open_deg);
         moveSmooth(gsw, cur, target, 0.5);
     }
 
@@ -637,7 +657,7 @@ private:
                 double start_target[3] = { first.j1, first.j2, first.grip };
                 moveSmooth(gsw, cur, start_target, 0.0);
 
-                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Replaying stream (%zu samples)", motion.frames.size());
+                RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Replaying stream (%zu samples)", getTaskTag().c_str(), motion.frames.size());
                 auto next = std::chrono::steady_clock::now();
                 const auto period = std::chrono::microseconds(1000000 / UPDATE_RATE_HZ);
 
@@ -667,7 +687,7 @@ private:
                 resetDeadzoneFilter();
             }
         }
-        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Motion completed");
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Motion completed", getTaskTag().c_str());
     }
 
     std::string resolveMotionPath(const std::string &name) {
@@ -870,7 +890,7 @@ private:
                 target_z_ = z;
                 target_stamp_ = this->now();
                 has_target_ = true;
-                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Target: %.2f, %.2f, %.2f", x, y, z);
+                RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Target: %.2f, %.2f, %.2f", getTaskTag().c_str(), x, y, z);
             }
         }
     }
@@ -990,26 +1010,26 @@ private:
 
         std::string err;
         if (use_dynamic_ik) {
-            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Dynamic IK grasp (x=%.2f, z=%.2f)...", tx, tz);
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Dynamic IK grasp (x=%.2f, z=%.2f)...", getTaskTag().c_str(), tx, tz);
             if (executeDynamicGrasp(tx, tz, err)) {
                 response->success = true;
                 response->message = "Dynamic IK grasp executed successfully.";
-                RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Dynamic IK grasp done");
+                RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Dynamic IK grasp done", getTaskTag().c_str());
                 return;
             }
-            RCLCPP_WARN(this->get_logger(), "\033[1;33m[ARM]\033[0m IK failed (%s), fallback to '%s'", err.c_str(), ik_fallback_motion_.c_str());
+            RCLCPP_WARN(this->get_logger(), "%s\033[1;33m[ARM]\033[0m IK failed (%s), fallback to '%s'", getTaskTag().c_str(), err.c_str(), ik_fallback_motion_.c_str());
         } else {
-            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Fallback motion '%s'...", ik_fallback_motion_.c_str());
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Fallback motion '%s'...", getTaskTag().c_str(), ik_fallback_motion_.c_str());
         }
 
         if (runMotionByName(ik_fallback_motion_, err) || runMotionByName("motion_task_1", err)) {
             response->success = true;
             response->message = "Fallback motion executed successfully.";
-            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Motion done");
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Motion done", getTaskTag().c_str());
         } else {
             response->success = false;
             response->message = err;
-            RCLCPP_ERROR(this->get_logger(), "\033[1;31m[ARM]\033[0m %s", err.c_str());
+            RCLCPP_ERROR(this->get_logger(), "%s\033[1;31m[ARM]\033[0m %s", getTaskTag().c_str(), err.c_str());
         }
     }
 
@@ -1018,25 +1038,17 @@ private:
         std::shared_ptr<std_srvs::srv::Trigger::Response> response)
     {
         std::lock_guard<std::mutex> lock(hardware_mutex_);
-        if (!initHardware()) {
-            response->success = false;
-            response->message = "Failed to connect to Dynamixel hardware on port " + port_name_;
-            RCLCPP_ERROR(this->get_logger(), "\033[1;31m[ARM]\033[0m %s", response->message.c_str());
-            return;
-        }
-        try {
-            double cur[3] = {0.0, 0.0, 0.0};
-            readCurrentPose(cur);
-            dynamixel::GroupSyncWrite gsw(portHandler, packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
-            lockCurrentPose(gsw, cur);
-            releaseGripper(gsw, cur, DEFAULT_RELEASE_DEG);
+
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Release gripper start...", getTaskTag().c_str());
+        std::string err;
+        if (runMotionByName("release_gripper", err)) {
             response->success = true;
-            response->message = "Gripper released successfully.";
-            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Gripper released");
-        } catch (const std::exception &e) {
+            response->message = "Motion release_gripper executed successfully.";
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Release gripper done", getTaskTag().c_str());
+        } else {
             response->success = false;
-            response->message = std::string("Release gripper error: ") + e.what();
-            RCLCPP_ERROR(this->get_logger(), "\033[1;31m[ARM]\033[0m %s", response->message.c_str());
+            response->message = err;
+            RCLCPP_ERROR(this->get_logger(), "%s\033[1;31m[ARM]\033[0m %s", getTaskTag().c_str(), err.c_str());
         }
     }
 
@@ -1046,16 +1058,16 @@ private:
     {
         std::lock_guard<std::mutex> lock(hardware_mutex_);
 
-        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Ambil tas start...");
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Ambil tas start...", getTaskTag().c_str());
         std::string err;
         if (runMotionByName("motion_task_1", err)) {
             response->success = true;
             response->message = "Motion ambil_tas executed successfully.";
-            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Ambil tas done");
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Ambil tas done", getTaskTag().c_str());
         } else {
             response->success = false;
             response->message = err;
-            RCLCPP_ERROR(this->get_logger(), "\033[1;31m[ARM]\033[0m %s", err.c_str());
+            RCLCPP_ERROR(this->get_logger(), "%s\033[1;31m[ARM]\033[0m %s", getTaskTag().c_str(), err.c_str());
         }
     }
 
@@ -1065,21 +1077,22 @@ private:
     {
         std::lock_guard<std::mutex> lock(hardware_mutex_);
 
-        RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Letakkan tas start...");
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Letakkan tas start...", getTaskTag().c_str());
         std::string err;
         if (runMotionByName("letakkan_tas", err)) {
             response->success = true;
             response->message = "Motion letakkan_tas executed successfully.";
-            RCLCPP_INFO(this->get_logger(), "\033[1;35m[ARM]\033[0m Letakkan tas done");
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Letakkan tas done", getTaskTag().c_str());
         } else {
             response->success = false;
             response->message = err;
-            RCLCPP_ERROR(this->get_logger(), "\033[1;31m[ARM]\033[0m %s", err.c_str());
+            RCLCPP_ERROR(this->get_logger(), "%s\033[1;31m[ARM]\033[0m %s", getTaskTag().c_str(), err.c_str());
         }
     }
 };
 
 int main(int argc, char **argv) {
+    setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
     rclcpp::init(argc, argv);
     auto node = std::make_shared<ArmMotionServer>();
     rclcpp::spin(node);

@@ -26,7 +26,7 @@ amcl:
     recovery_alpha_fast: 0.1             # Fast recovery rate (random particle injection)
     recovery_alpha_slow: 0.001           # Slow recovery rate
     update_min_d: 0.10                   # Min translation before update (m)
-    update_min_a: 0.10                   # Min angular change before update (rad)
+    update_min_a: 0.03                   # Min angular change before update (rad)
     resample_interval: 1                 # Resampling interval
     tf_broadcast: true                   # Broadcast map -> odom TF
     transform_tolerance: 1.0             # TF transform tolerance (s)
@@ -83,7 +83,7 @@ controller_server:
     general_goal_checker:
       stateful: True                     # Stateful goal checking
       plugin: "nav2_controller::SimpleGoalChecker" # Goal checker plugin
-      xy_goal_tolerance: 0.20            # Goal XY position tolerance (m)
+      xy_goal_tolerance: 0.30            # Goal XY position tolerance (m)
       yaw_goal_tolerance: 0.20           # Goal yaw orientation tolerance (rad, 0.38 rad ≈ 21.8 derajat)
 
     FollowPath:
@@ -138,7 +138,7 @@ controller_server:
       PathAlign.forward_point_distance: 0.30 # KUNCI: Dinaikkan ke 0.30m agar leverage torsi pelurusan haluan kuat saat menyusuri path
       RotateToGoal.scale: 36.0           # Bobot rotasi yaw tujuan akhir (dinaikkan dominan ke 36.0 agar robot tegas mengunci yaw target)
       RotateToGoal.slowing_factor: 5.0
-      RotateToGoal.lookahead_time: -1.0  # -1.0 = KUNCI: nonaktifkan orientasi tujuan selama di perjalanan, hanya aktif saat tiba di titik X,Y final
+      RotateToGoal.lookahead_time: 5.0  # -1.0 = KUNCI: nonaktifkan orientasi tujuan selama di perjalanan, hanya aktif saat tiba di titik X,Y final
 
 # ---------------------------------------------------------------------
 # 4. LOCAL COSTMAP (Sensor-based Dynamic Costmap)
@@ -168,14 +168,15 @@ local_costmap:
           clearing: True                 # Clear free space along laser rays
           marking: True                  # Mark obstacle cells on laser hit
           data_type: "LaserScan"         # ROS 2 message type
-          raytrace_max_range: 5.0        # Max raytracing range (m, ditingkatkan agar pembersihan rintangan dinamis cepat)
+          raytrace_max_range: 8.0        # Max raytracing range (m, ditingkatkan agar pembersihan rintangan dinamis cepat dan luas)
           raytrace_min_range: 0.0        # Min raytracing range (m)
           obstacle_max_range: 4.0        # Max obstacle marking range (m, ditingkatkan dari 3.0 agar rintangan terdeteksi dari jauh)
           obstacle_min_range: 0.22       # Min obstacle marking range (m, diselaraskan dengan bodi 0.22m agar rintangan dekat tidak terhapus)
+          inf_is_valid: true             # KUNCI: Gunakan sinar tak-hingga (inf) saat rintangan hilang untuk membersihkan sel bekas orang (clearing)
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Safety buffer layer around obstacles
         cost_scaling_factor: 10.0        # Diturunkan dari 25.0 ke 10.0 agar medan tolak rintangan menyebar lebih luas dan landai
-        inflation_radius: 0.32           # Dinaikkan dari 0.35m ke 0.48m agar jarak aman avoidance bertambah (+24cm di luar bodi robot)
+        inflation_radius: 0.30           # Dinaikkan dari 0.35m ke 0.48m agar jarak aman avoidance bertambah (+24cm di luar bodi robot)
       always_send_full_costmap: True     # Send full costmap on publish
 
 # ---------------------------------------------------------------------
@@ -184,7 +185,7 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      update_frequency: 2.0              # Update frequency dinaikkan ke 2.0 Hz agar rintangan dinamis di global costmap cepat ter-update
+      update_frequency: 3.0              # Update frequency dinaikkan ke 3.0 Hz agar pembersihan rintangan saat rotasi tidak melompati sel
       publish_frequency: 1.0             # Publish frequency (Hz)
       global_frame: map                  # Global map frame
       robot_base_frame: base_link        # Robot base frame
@@ -209,14 +210,15 @@ global_costmap:
           clearing: True
           marking: True
           data_type: "LaserScan"
-          raytrace_max_range: 5.0
+          raytrace_max_range: 8.0        # Max raytracing range (m, ditingkatkan agar jejak orang yang sudah pergi bersih)
           raytrace_min_range: 0.0
           obstacle_max_range: 4.0
           obstacle_min_range: 0.22
+          inf_is_valid: true             # KUNCI: Sinar tak-hingga (inf) saat rintangan hilang tetap dipakai untuk clearing raytrace
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
         cost_scaling_factor: 12.0        # Diturunkan dari 25.0 ke 12.0 agar rute global berjarak dari dinding
-        inflation_radius: 0.32           # Dinaikkan dari 0.35m ke 0.45m (+21cm dari bodi fisik)
+        inflation_radius: 0.30           # Dinaikkan dari 0.35m ke 0.48m (+24cm di luar bodi robot)
       always_send_full_costmap: True     # Send full costmap on publish
 
 # ---------------------------------------------------------------------

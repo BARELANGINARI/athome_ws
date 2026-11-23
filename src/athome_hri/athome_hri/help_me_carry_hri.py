@@ -99,7 +99,17 @@ class BarelangHriNode(Node):
         "hangover_frames",
         "min_speech_frames",
         "whisper_model",
+        "stt_fallback_model",
         "stt_language",
+        "stt_beam_size",
+        "stt_no_speech_threshold",
+        "stt_log_prob_threshold",
+        "stt_compression_ratio_threshold",
+        "stt_vad_silence_ms",
+        "stt_vad_speech_pad_ms",
+        "stt_initial_prompt",
+        "stt_hotwords",
+        "stt_hallucination_blacklist",
         "tts_model",
         "nlu_threshold",
         "http_port",
@@ -156,7 +166,17 @@ class BarelangHriNode(Node):
         self.hangover_frames: int = int(params["hangover_frames"])
         self.min_speech_frames: int = int(params["min_speech_frames"])
         self.whisper_model: str = str(params["whisper_model"])
+        self.stt_fallback_model: str = str(params["stt_fallback_model"])
         self.stt_language: str = str(params["stt_language"])
+        self.stt_beam_size: int = int(params["stt_beam_size"])
+        self.stt_no_speech_threshold: float = float(params["stt_no_speech_threshold"])
+        self.stt_log_prob_threshold: float = float(params["stt_log_prob_threshold"])
+        self.stt_compression_ratio_threshold: float = float(params["stt_compression_ratio_threshold"])
+        self.stt_vad_silence_ms: int = int(params["stt_vad_silence_ms"])
+        self.stt_vad_speech_pad_ms: int = int(params["stt_vad_speech_pad_ms"])
+        self.stt_initial_prompt: str = str(params["stt_initial_prompt"])
+        self.stt_hotwords: str = str(params["stt_hotwords"])
+        self.stt_hallucination_blacklist = list(params["stt_hallucination_blacklist"])
         self.tts_model: str = str(params["tts_model"])
         self.nlu_threshold: float = float(params["nlu_threshold"])
         self.http_port: int = int(params["http_port"])
@@ -409,6 +429,16 @@ class HriCoordinator:
             model_size=self.ros_node.whisper_model,
             language=self.ros_node.stt_language,
             on_asr_result=self.visualizer.update_asr_status,
+            fallback_model_size=self.ros_node.stt_fallback_model,
+            beam_size=self.ros_node.stt_beam_size,
+            no_speech_threshold=self.ros_node.stt_no_speech_threshold,
+            log_prob_threshold=self.ros_node.stt_log_prob_threshold,
+            compression_ratio_threshold=self.ros_node.stt_compression_ratio_threshold,
+            vad_silence_ms=self.ros_node.stt_vad_silence_ms,
+            vad_speech_pad_ms=self.ros_node.stt_vad_speech_pad_ms,
+            initial_prompt=self.ros_node.stt_initial_prompt,
+            hotwords=self.ros_node.stt_hotwords,
+            hallucination_blacklist=self.ros_node.stt_hallucination_blacklist,
         )
         self.tts = TextToSpeech(model_filename=self.ros_node.tts_model)
         self.nlu = IntentRecognizer(threshold=self.ros_node.nlu_threshold)
@@ -448,7 +478,16 @@ class HriCoordinator:
                 "min_speech_frames": lambda v: self.mic_listener.update_vad_params(
                     min_speech_frames=v
                 ),
-                "stt_language": lambda v: setattr(self.stt, "language", v),
+                "stt_language": lambda v: setattr(self.stt, "language", str(v)),
+                "stt_beam_size": lambda v: setattr(self.stt, "beam_size", int(v)),
+                "stt_no_speech_threshold": lambda v: setattr(self.stt, "no_speech_threshold", float(v)),
+                "stt_log_prob_threshold": lambda v: setattr(self.stt, "log_prob_threshold", float(v)),
+                "stt_compression_ratio_threshold": lambda v: setattr(self.stt, "compression_ratio_threshold", float(v)),
+                "stt_vad_silence_ms": lambda v: setattr(self.stt, "vad_silence_ms", int(v)),
+                "stt_vad_speech_pad_ms": lambda v: setattr(self.stt, "vad_speech_pad_ms", int(v)),
+                "stt_initial_prompt": lambda v: setattr(self.stt, "initial_prompt", str(v)),
+                "stt_hotwords": lambda v: setattr(self.stt, "hotwords", str(v)),
+                "stt_hallucination_blacklist": lambda v: self.stt.set_hallucination_blacklist(v),
                 "nlu_threshold": lambda v: setattr(self.nlu, "threshold", v),
             }
         )
@@ -467,8 +506,9 @@ class HriCoordinator:
                     metrics,
                     self.mic_listener.threshold_dbfs,
                     self.mic_listener.threshold_flatness,
+                    task_header="\033[1;32m[HELP_ME_CARRY]\033[0m",
                 ),
-                throttle_duration_sec=0.25,
+                throttle_duration_sec=1.0,
             )
 
     def shutdown(self) -> None:

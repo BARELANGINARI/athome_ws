@@ -5,14 +5,23 @@ receptionist_node:
       x: 0.5
       y: 0.0
       yaw: 180.0
+      # x : 5.0
+      # y : 4.0
+      # yaw : 1.4
     beverage_area:
       x: 1.9
-      y: 1.9
+      y: 2.1
       yaw: 270.0
+      # x: 2.28
+      # y: 0.5
+      # yaw: 2.1
     living_room:
       x: 2.0
       y: 0.0
       yaw: 270.0
+      # x: 1.7
+      # y: 0.0
+      # yaw: -1.5
 
     # Operational settings
     global_frame: "map"
@@ -35,7 +44,7 @@ receptionist_node:
     align_chair_tolerance_rad: 0.07
     camera_width: 672
 
-    guest_door_distance: 1.0
+    guest_door_distance: 1.2
     guest_door_step_back_speed: 0.16
     guest_door_timeout_sec: 15.0
 
@@ -51,6 +60,14 @@ receptionist_node:
     face_person_min_speed: 0.14
     face_person_max_speed: 0.30
     face_person_tolerance_rad: 0.07
+
+    # Relative 90-degree turn settings (/receptionist/left dan /receptionist/right)
+    turn_90_angular_speed: 0.30
+    turn_90_min_speed: 0.14
+    turn_90_max_speed: 0.35
+    turn_90_tolerance_rad: 0.04
+    turn_90_timeout_sec: 8.0
+    turn_90_p_gain: 1.5
 
 receptionist_manager:
   ros__parameters:

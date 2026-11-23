@@ -745,7 +745,7 @@ private:
         RCLCPP_WARN(get_logger(), "\033[1;31m[%s]\033[0m Goal rejected by Nav2", label.c_str());
       } else {
         current_goal_handle_ = handle;
-        RCLCPP_INFO(get_logger(), "\033[1;36m[%s]\033[0m Goal accepted, navigating...", label.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Nav: Navigating to destination '%s'", label.c_str());
       }
     };
     send_opts.result_callback = [promise](const GoalHandleNav::WrappedResult & res) {
@@ -761,7 +761,7 @@ private:
     if (future.wait_for(std::chrono::seconds(static_cast<int>(nav_timeout_sec_))) == std::future_status::ready) {
       const auto code = future.get();
       if (code == rclcpp_action::ResultCode::SUCCEEDED) {
-        RCLCPP_INFO(get_logger(), "\033[1;32m[%s]\033[0m Arrived safely at destination", label.c_str());
+        RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Nav: Arrived safely at '%s'", label.c_str());
         return true;
       } else {
         RCLCPP_WARN(get_logger(), "\033[1;33m[%s]\033[0m Canceled/aborted (code %d)", label.c_str(), static_cast<int>(code));
@@ -1292,7 +1292,7 @@ private:
           if ((now() - phase_start_time).seconds() >= 0.4) {
             phase = SearchPhase::SWEEP_LEFT;
             phase_start_time = now();
-            RCLCPP_INFO(get_logger(), "\033[1;36m[SEARCH]\033[0m Sweep left (+%.0f°)", search_sweep_angle_deg_);
+            RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Search: Sweep left (+%.0f°)", search_sweep_angle_deg_);
           }
           break;
         }
@@ -1303,7 +1303,7 @@ private:
             cmd_vel_pub_->publish(cmd); // Stop sejenak
             phase = SearchPhase::HOLD_LEFT;
             phase_start_time = now();
-            RCLCPP_INFO(get_logger(), "\033[1;36m[SEARCH]\033[0m Hold left");
+            RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Search: Hold left");
           } else {
             cmd.angular.z = computeAngularVel(cur_yaw, target_left);
             cmd_vel_pub_->publish(cmd);
@@ -1316,7 +1316,7 @@ private:
           if ((now() - phase_start_time).seconds() >= search_hold_time_sec_) {
             phase = SearchPhase::RETURN_FROM_LEFT;
             phase_start_time = now();
-            RCLCPP_INFO(get_logger(), "\033[1;36m[SEARCH]\033[0m Return center");
+            RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Search: Return center");
           }
           break;
         }
@@ -1327,7 +1327,7 @@ private:
             cmd_vel_pub_->publish(cmd); // Stop
             phase = SearchPhase::SWEEP_RIGHT;
             phase_start_time = now();
-            RCLCPP_INFO(get_logger(), "\033[1;36m[SEARCH]\033[0m Sweep right (-%.0f°)", search_sweep_angle_deg_);
+            RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Search: Sweep right (-%.0f°)", search_sweep_angle_deg_);
           } else {
             cmd.angular.z = computeAngularVel(cur_yaw, target_center);
             cmd_vel_pub_->publish(cmd);
@@ -1341,7 +1341,7 @@ private:
             cmd_vel_pub_->publish(cmd); // Stop
             phase = SearchPhase::HOLD_RIGHT;
             phase_start_time = now();
-            RCLCPP_INFO(get_logger(), "\033[1;36m[SEARCH]\033[0m Hold right");
+            RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Search: Hold right");
           } else {
             cmd.angular.z = computeAngularVel(cur_yaw, target_right);
             cmd_vel_pub_->publish(cmd);
@@ -1515,6 +1515,7 @@ private:
 
 int main(int argc, char ** argv)
 {
+  setenv("RCUTILS_CONSOLE_OUTPUT_FORMAT", "[{severity}] {message}", 1);
   rclcpp::init(argc, argv);
   auto node = std::make_shared<restaurant::RestaurantNode>();
   rclcpp::executors::MultiThreadedExecutor executor;
