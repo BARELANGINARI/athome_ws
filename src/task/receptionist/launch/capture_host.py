@@ -139,8 +139,13 @@ def process_image_file(file_path):
     else:
         print("[INFO] Wajah dipotong dengan metode center-crop.")
 
-    # Resize ke 112x112 standar model SFace
-    resized = cv2.resize(cropped, (112, 112), interpolation=cv2.INTER_AREA)
+    # Pertahankan resolusi crop (maks 640px) agar YuNet + warpAffine di vision lebih akurat
+    ch, cw = cropped.shape[:2]
+    if max(ch, cw) > 640:
+        scale = 640.0 / max(ch, cw)
+        resized = cv2.resize(cropped, (int(cw * scale), int(ch * scale)), interpolation=cv2.INTER_AREA)
+    else:
+        resized = cropped
     saved = save_host_image(resized)
 
     print("\n=======================================================")
@@ -155,18 +160,53 @@ def process_image_file(file_path):
     return True
 
 
+def open_camera(device_idx=0):
+    """Membuka kamera menggunakan backend V4L2, set resolusi HD720, dan verifikasi frame."""
+    indices = []
+    for idx in [device_idx, 0, 1, 2]:
+        if idx not in indices:
+            indices.append(idx)
+
+    for idx in indices:
+        for backend in (cv2.CAP_V4L2, cv2.CAP_ANY):
+            cap = cv2.VideoCapture(idx, backend)
+            if not cap.isOpened():
+                cap.release()
+                continue
+            ret, frame = cap.read()
+            if ret and frame is not None and frame.size > 0:
+                h, w = frame.shape[:2]
+                # Set resolusi HD720 (2560x720 untuk stereo ZED, 1280x720 untuk kamera biasa)
+                if w >= 2 * h and w >= 1280:
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 2560)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                else:
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                ret2, frame2 = cap.read()
+                if ret2 and frame2 is not None and frame2.size > 0:
+                    frame = frame2
+                    h, w = frame.shape[:2]
+                disp_w = w // 2 if (w >= 2 * h and w >= 1280) else w
+                return cap, idx, (disp_w, h)
+            cap.release()
+    return None, None, None
+
+
 def run_live_capture(device_idx=0):
     """Fitur 1: Mengambil foto Host secara live dari kamera"""
-    cap = cv2.VideoCapture(device_idx)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(1)
-        if not cap.isOpened():
-            print(f"[ERROR] Tidak dapat membuka kamera (/dev/video{device_idx} atau /dev/video1).")
-            print("Gunakan opsi Fitur 2 (Baca Foto File): ./capture_host.sh --photo /path/ke/foto.jpg")
-            return False
+    cap, opened_idx, res = open_camera(device_idx)
+    if cap is None:
+        print(f"\n[ERROR] Tidak dapat membuka atau membaca frame dari kamera (/dev/video{device_idx}).")
+        print("Kemungkinan penyebab:")
+        print("  1. Kamera sedang dipakai oleh node ROS 'vision' (camera.launch.py).")
+        print("     -> Hentikan camera.launch.py sementara, ATAU gunakan ./register_host.sh")
+        print("  2. Tidak ada kamera yang terhubung.")
+        print("Alternatif Fitur 2 (Baca Foto File):")
+        print("  ./capture_host.sh --photo /path/ke/foto.jpg")
+        return False
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    print(f"[INFO] Kamera /dev/video{opened_idx} berhasil dibuka (resolusi: {res[0]}x{res[1]}).")
 
     yunet_model = get_yunet_model_path()
     detector = None
@@ -190,10 +230,16 @@ def run_live_capture(device_idx=0):
     success = False
     while True:
         ret, frame = cap.read()
-        if not ret:
+        if not ret or frame is None:
+            print("[WARN] Gagal membaca frame dari kamera.")
             break
 
+        # Jika kamera stereo side-by-side (mis. ZED 2i), ambil lensa kiri saja
         h, w = frame.shape[:2]
+        if w >= 2 * h and w >= 1280:
+            frame = frame[:, : w // 2]
+            h, w = frame.shape[:2]
+
         display = frame.copy()
 
         # Deteksi wajah secara visual
@@ -223,7 +269,12 @@ def run_live_capture(device_idx=0):
         elif key == 32 or key == 13: # SPASI atau ENTER
             cropped, _ = crop_face(frame, detector)
             if cropped is not None and cropped.size > 0:
-                resized = cv2.resize(cropped, (112, 112), interpolation=cv2.INTER_AREA)
+                ch, cw = cropped.shape[:2]
+                if max(ch, cw) > 640:
+                    scale = 640.0 / max(ch, cw)
+                    resized = cv2.resize(cropped, (int(cw * scale), int(ch * scale)), interpolation=cv2.INTER_AREA)
+                else:
+                    resized = cropped
                 saved = save_host_image(resized)
 
                 # Efek flash hijau tanda sukses
