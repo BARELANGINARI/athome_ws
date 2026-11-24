@@ -21,7 +21,7 @@ def generate_launch_description():
         default_value=PathJoinSubstitution([
             FindPackageShare("help_me_carry"),
             "config",
-            "params.yaml",
+            "help_me_carry_params.yaml",
         ]),
         description="Path to Help Me Carry task parameters YAML file",
     )

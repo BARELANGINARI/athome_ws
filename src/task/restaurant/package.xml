@@ -8,7 +8,6 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>ament_index_cpp</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
@@ -27,7 +26,6 @@
   <exec_depend>athome_base</exec_depend>
   <exec_depend>rplidar_ros</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
-  <exec_depend>nav2_bringup</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

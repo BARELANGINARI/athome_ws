@@ -1253,30 +1253,6 @@ private:
     return "center";
   }
 
-  // Menentukan lokasi kursi kosong berdasarkan deteksi vision (/zed/empty_seat)
-  std::string detectEmptyChairSide()
-  {
-    std::lock_guard<std::mutex> lock(vision_mutex_);
-    if (has_explicit_empty_seat_ && !empty_seat_position_.empty()) {
-      return empty_seat_position_;
-    }
-
-    // Jika ada orang terdeteksi di satu sisi frame, arahkan ke sisi kursi yang kosong
-    if (nearest_person_bbox_w_ > 0) {
-      const std::string occupied_side = calculateHorizontalPosition(
-        nearest_person_bbox_x_, nearest_person_bbox_w_);
-      if (occupied_side == "left") {
-        return "right";
-      } else if (occupied_side == "right") {
-        return "left";
-      } else {
-        // Jika orang duduk di tengah, arahkan ke kanan agar tidak menunjuk orang tersebut
-        return "right";
-      }
-    }
-
-    return "center";
-  }
 
   /// Aggregates mode (most frequent) gender, shirt color, and hair color from
   /// /vision/person_attributes frames accumulated during the door dialog, falling

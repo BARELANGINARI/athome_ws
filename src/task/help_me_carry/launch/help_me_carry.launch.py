@@ -25,6 +25,15 @@ def generate_launch_description():
         DeclareLaunchArgument('camera_fps', default_value='30.0', description='Camera frame rate (FPS)'),
         DeclareLaunchArgument('enable_yolo', default_value='true', description='Enable YOLO bag detection'),
         DeclareLaunchArgument('slam', default_value='true', description='Enable real-time SLAM in navigation'),
+        DeclareLaunchArgument(
+            'task_params_file',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('help_me_carry'),
+                'config',
+                'help_me_carry_params.yaml',
+            ]),
+            description='Path to Help Me Carry task parameter configuration file',
+        ),
         DeclareLaunchArgument('enable_body_tracking', default_value='true', description='Enable ZED body tracking'),
         DeclareLaunchArgument('enable_person_detection', default_value=LaunchConfiguration('enable_body_tracking'), description='Alias for enable_body_tracking'),
         DeclareLaunchArgument('map', default_value=PathJoinSubstitution([FindPackageShare('athome_navigation'), 'maps', 'map.yaml']), description='Path to static map YAML file'),
@@ -73,12 +82,6 @@ def generate_launch_description():
             executable='help_me_carry_node',
             name='help_me_carry_node',
             output='screen',
-            parameters=[
-                PathJoinSubstitution([
-                    FindPackageShare('help_me_carry'),
-                    'config',
-                    'params.yaml',
-                ])
-            ],
+            parameters=[LaunchConfiguration('task_params_file')],
         ),
     ])

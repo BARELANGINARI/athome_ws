@@ -3,7 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
@@ -40,6 +40,11 @@ def generate_launch_description():
         'launch_hardware',
         default_value='true',
         description='Launch low-level base driver (nucleo) and RPLiDAR sensor',
+    )
+    use_sensors_arg = DeclareLaunchArgument(
+        'use_sensors',
+        default_value=LaunchConfiguration('launch_hardware'),
+        description='Alias for launch_hardware',
     )
     stm_ip_arg = DeclareLaunchArgument(
         'stm_ip',
@@ -96,7 +101,7 @@ def generate_launch_description():
             ])
         ),
         condition=IfCondition(
-            PythonExpression(["'", LaunchConfiguration('launch_hardware'), "' == 'true'"])
+            PythonExpression(["'", LaunchConfiguration('use_sensors'), "' == 'true'"])
         ),
         launch_arguments={
             'stm_ip': LaunchConfiguration('stm_ip'),
@@ -109,7 +114,7 @@ def generate_launch_description():
         name='rplidar_node',
         output='screen',
         condition=IfCondition(
-            PythonExpression(["'", LaunchConfiguration('launch_hardware'), "' == 'true'"])
+            PythonExpression(["'", LaunchConfiguration('use_sensors'), "' == 'true'"])
         ),
         parameters=[
             PathJoinSubstitution([
@@ -129,7 +134,7 @@ def generate_launch_description():
         name='footprint_to_base',
         output='screen',
         condition=IfCondition(
-            PythonExpression(["'", LaunchConfiguration('launch_hardware'), "' == 'true'"])
+            PythonExpression(["'", LaunchConfiguration('use_sensors'), "' == 'true'"])
         ),
         arguments=[
             '--frame-id', 'base_footprint',
@@ -143,7 +148,7 @@ def generate_launch_description():
         name='base_to_laser',
         output='screen',
         condition=IfCondition(
-            PythonExpression(["'", LaunchConfiguration('launch_hardware'), "' == 'true'"])
+            PythonExpression(["'", LaunchConfiguration('use_sensors'), "' == 'true'"])
         ),
         arguments=[
             '--x', LaunchConfiguration('lidar_x'),
@@ -202,7 +207,11 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
+        SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
+        SetEnvironmentVariable('ATHOME_TASK', 'mapping'),
         launch_hardware_arg,
+        use_sensors_arg,
         stm_ip_arg,
         lidar_port_arg,
         lidar_x_arg,
