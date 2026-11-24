@@ -19,36 +19,36 @@ stt_engine:
     vad_block_duration_sec: 0.03          # Durasi per frame VAD PortAudio (detik, default 0.03 = 30 ms)
     vad_speech_band_low_hz: 300.0         # Batas bawah frekuensi bandpass energi suara manusia (Hz)
     vad_speech_band_high_hz: 3400.0       # Batas atas frekuensi bandpass energi suara manusia (Hz)
-    threshold_dbfs: -30.0                 # Floor ambang volume minimum (dBFS)
-    threshold_flatness: 0.40              # Ambang batas spectral flatness (0-1); tolak noise datar kipas/AC
-    adaptive_vad_enabled: true            # true = threshold mengikuti noise floor ruangan + adaptive_snr_margin_db
-    adaptive_snr_margin_db: 10.0          # Margin SNR (dB) di atas noise floor saat adaptive_vad_enabled=true
-    adaptive_max_threshold_dbfs: -12.0    # Batas atas ambang adaptif agar tidak terlalu tinggi saat sangat bising (dBFS)
+    threshold_dbfs: -13.5               # Floor ambang volume minimum (dBFS)
+    threshold_flatness: 0.38                # Ambang batas spectral flatness (0-1); tolak noise datar kipas/AC
+    adaptive_vad_enabled: true                # true = threshold mengikuti noise floor ruangan + adaptive_snr_margin_db
+    adaptive_snr_margin_db: 7                   # Margin SNR (dB) di atas noise floor saat adaptive_vad_enabled=true
+    adaptive_max_threshold_dbfs: -24                 # Batas atas ambang adaptif agar tidak terlalu tinggi saat sangat bising (dBFS)
     adaptive_noise_alpha_up: 0.05         # Kecepatan adaptasi noise floor naik saat background makin ramai (0-1)
     adaptive_noise_alpha_down: 0.15       # Kecepatan adaptasi noise floor turun saat ruangan kembali tenang (0-1)
-    pre_roll_frames: 10                   # 10 x 30 ms = 300 ms pre-roll agar awal kata tidak terpotong
-    hangover_frames: 16                   # 16 x 30 ms = 480 ms jeda hening untuk menutup segmen ucapan
-    min_speech_frames: 9                  # 9 x 30 ms = 270 ms durasi minimal ucapan valid
-    max_speech_frames: 250                # 250 x 30 ms = 7.5 detik batas maks segmen (cegah macet saat bising)
+    pre_roll_frames: 10                  # 10 x 30 ms = 300 ms pre-roll agar awal kata tidak terpotong
+    hangover_frames: 12                  # 16 x 30 ms = 480 ms jeda hening untuk menutup segmen ucapan
+    min_speech_frames: 11                  # 9 x 30 ms = 270 ms durasi minimal ucapan valid
+    max_speech_frames: 250                 # 250 x 30 ms = 7.5 detik batas maks segmen (cegah macet saat bising)
 
     # -------------------------------------------------------------------------
     # 3. Denoising Frontend (CPU-Only — Zero GPU VRAM)
     # -------------------------------------------------------------------------
-    stt_denoiser_backend: "auto"          # "auto" (deepfilternet2 -> rnnoise -> spectral), "deepfilternet2", "rnnoise", "spectral", "none"
+    stt_denoiser_backend: "auto"              # "auto" (deepfilternet2 -> rnnoise -> spectral), "deepfilternet2", "rnnoise", "spectral", "none"
     stt_deepfilter_model_path: ""         # Opsional: path tar.gz model DeepFilterNet2 jika memakai libdf
-    stt_highpass_hz: 120.0                # Cutoff High-Pass Filter 4th-order Butterworth (buang rumble & proximity effect)
-    stt_spectral_alpha: 1.4               # Faktor pengurangan noise pada denoiser spectral/Wiener (makin besar makin agresif)
-    stt_spectral_floor: 0.08              # Lantai penguatan spektral minimum (0-1) untuk mencegah distorsi musical noise
-    stt_spectral_noise_percentile: 0.15   # Proporsi frame paling senyap (0-1) untuk estimasi spektrum noise ruangan
+    stt_highpass_hz: 120                 # Cutoff High-Pass Filter 4th-order Butterworth (buang rumble & proximity effect)
+    stt_spectral_alpha: 2                   # Faktor pengurangan noise pada denoiser spectral/Wiener (makin besar makin agresif)
+    stt_spectral_floor: 0.05                # Lantai penguatan spektral minimum (0-1) untuk mencegah distorsi musical noise
+    stt_spectral_noise_percentile: 0.15                # Proporsi frame paling senyap (0-1) untuk estimasi spektrum noise ruangan
 
     # -------------------------------------------------------------------------
     # 4. Neural VAD Gate (Silero VAD via ONNX Runtime CPU — 1 Thread)
     # -------------------------------------------------------------------------
     stt_silero_vad_model_path: "models/silero_vad.onnx"  # Path relatif terhadap share/athome_hri_cpp atau path absolut
-    stt_vad_threshold: 0.65               # Ambang probabilitas ucapan Silero VAD (0-1)
-    stt_vad_min_speech_ms: 250            # Durasi minimal segmen ucapan (ms)
-    stt_vad_silence_ms: 350               # Durasi jeda hening pemisah segmen (ms)
-    stt_vad_speech_pad_ms: 150            # Padding awal/akhir segmen ucapan (ms)
+    stt_vad_threshold: 0.78                # Ambang probabilitas ucapan Silero VAD (0-1)
+    stt_vad_min_speech_ms: 250                 # Durasi minimal segmen ucapan (ms)
+    stt_vad_silence_ms: 350                 # Durasi jeda hening pemisah segmen (ms)
+    stt_vad_speech_pad_ms: 150                 # Padding awal/akhir segmen ucapan (ms)
 
     # -------------------------------------------------------------------------
     # 5. Whisper.cpp ASR Engine (CUDA RTX 2060 / CPU Fallback)
@@ -57,17 +57,17 @@ stt_engine:
     whisper_use_gpu: true                 # true = pakai GPU CUDA RTX 2060; false = CPU
     whisper_n_threads: 2                  # Batasi thread CPU (2) agar Nav2 tidak mengalami starvation di NUC 4-core
     stt_language: "en"                    # Kode bahasa ("en", "id", dll)
-    stt_beam_size: 2                      # Beam width decoding (1-5)
+    stt_beam_size: 2                   # Beam width decoding (1-5)
     stt_temperature: 0.0                  # 0.0 = deterministik, matikan fallback temperatur tinggi
-    stt_no_speech_threshold: 0.5          # Tolak segmen jika no_speech_prob >= 0.5
-    stt_log_prob_threshold: -0.8          # Tolak segmen jika rata-rata log-prob < -0.8
+    stt_no_speech_threshold: 0.4                 # Tolak segmen jika no_speech_prob >= 0.5
+    stt_log_prob_threshold: -0.65               # Tolak segmen jika rata-rata log-prob < -0.8
     stt_entropy_threshold: 2.2            # Setara compression_ratio di whisper.cpp untuk tolak loop repetitif
     stt_initial_prompt: ""                # Kosongkan agar tidak terjadi prompt leakage saat ruangan bising
 
     # -------------------------------------------------------------------------
     # 6. Post-Processing Anti-Repetition & Hallucination Filter
     # -------------------------------------------------------------------------
-    stt_dedup_max_ngram: 6                # Panjang maksimal n-gram deduplikasi frasa berulang berturut-turut
+    stt_dedup_max_ngram: 6                   # Panjang maksimal n-gram deduplikasi frasa berulang berturut-turut
     stt_min_transcript_chars: 3           # Panjang karakter minimal transkrip valid setelah dibersihkan
     stt_max_utterance_queue: 4            # Kapasitas antrean maksimum segmen audio sebelum masuk worker ASR
     stt_hallucination_blacklist:
@@ -85,5 +85,5 @@ stt_engine:
     # 7. Sinkronisasi TTS Mute Watchdog
     # -------------------------------------------------------------------------
     tts_speaking_timeout_sec: 20.0        # Watchdog pembuka mute mic otomatis jika /hri/tts_done terlewat
-    tts_post_mute_sec: 0.6                # Lama mic tetap dimute setelah /hri/tts_done agar gema/ekor speaker tidak terekam
+    tts_post_mute_sec: 0.8                 # Lama mic tetap dimute setelah /hri/tts_done agar gema/ekor speaker tidak terekam
     task: "all"                           # Label log terminal: receptionist / help_me_carry / restaurant / all
