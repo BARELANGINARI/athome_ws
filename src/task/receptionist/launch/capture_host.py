@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Script Pengambil / Pemotong Foto Wajah Host (Revaldo) untuk Receptionist Task.
-Penggunaan:
-  1. Live Camera:   python3 capture_host.py
-  2. Dari File:     python3 capture_host.py /path/ke/foto.jpg
+Tool Registrasi Foto Wajah Host (Receptionist Task)
+Fitur 1: Live Capture Host dari Kamera (Webcam / Laptop / ZED)
+Fitur 2: Baca & Deteksi Wajah Host dari File Foto (Import Image File)
 """
 
 import sys
 import os
+import subprocess
 
 # Prioritaskan system OpenCV 4.6.0 agar FaceDetectorYN berjalan optimal
 if '/usr/lib/python3/dist-packages' in sys.path:
@@ -17,10 +17,11 @@ if '/usr/lib/python3/dist-packages' in sys.path:
 import cv2
 import numpy as np
 
+
 def get_output_paths():
     script_dir = os.path.dirname(os.path.realpath(__file__))
     ws_dir = os.path.abspath(os.path.join(script_dir, "../../../.."))
-    
+
     paths = [
         os.path.join(ws_dir, "src/athome_vision/models/host.jpg"),
         os.path.join(ws_dir, "models/host.jpg"),
@@ -30,18 +31,20 @@ def get_output_paths():
         paths.append(os.path.join(share_dir, "host.jpg"))
     return paths
 
+
 def get_yunet_model_path():
     script_dir = os.path.dirname(os.path.realpath(__file__))
     ws_dir = os.path.abspath(os.path.join(script_dir, "../../../.."))
     candidates = [
         os.path.join(ws_dir, "src/athome_vision/models/face_detection_yunet.onnx"),
         os.path.join(ws_dir, "models/face_detection_yunet.onnx"),
-        "/home/dell/Documents/athome_ws/src/athome_vision/models/face_detection_yunet.onnx"
+        "/home/dell/Documents/athome_ws/src/athome_vision/models/face_detection_yunet.onnx",
     ]
     for c in candidates:
         if os.path.exists(c):
             return c
     return None
+
 
 def crop_face(img, detector=None):
     h, w = img.shape[:2]
@@ -52,15 +55,15 @@ def crop_face(img, detector=None):
             if faces is not None and len(faces) > 0:
                 best_face = max(faces, key=lambda f: f[2] * f[3])
                 fx, fy, fw, fh = int(best_face[0]), int(best_face[1]), int(best_face[2]), int(best_face[3])
-                
-                # Beri padding 25% agar seluruh kepala/rambut masuk
+
+                # Beri margin padding 25% horizontal dan 35% vertikal agar seluruh kepala & rambut masuk
                 pad_x = int(fw * 0.25)
                 pad_y = int(fh * 0.35)
                 x1 = max(0, fx - pad_x)
                 y1 = max(0, fy - pad_y)
                 x2 = min(w, fx + fw + pad_x)
                 y2 = min(h, fy + fh + pad_y)
-                
+
                 face_img = img[y1:y2, x1:x2]
                 if face_img.size > 0:
                     return face_img, (fx, fy, fw, fh)
@@ -71,6 +74,23 @@ def crop_face(img, detector=None):
     side = min(w, h)
     cx, cy = w // 2, h // 2
     return img[cy - side // 2 : cy + side // 2, cx - side // 2 : cx + side // 2], None
+
+
+def notify_ros_vision(file_path):
+    try:
+        subprocess.run(
+            [
+                "ros2", "topic", "pub", "--once",
+                "/vision/load_host_photo", "std_msgs/msg/String",
+                f"{{data: '{file_path}'}}"
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2.0
+        )
+    except Exception:
+        pass
+
 
 def save_host_image(crop_img):
     out_paths = get_output_paths()
@@ -84,47 +104,66 @@ def save_host_image(crop_img):
             print(f"[WARN] Gagal menyimpan ke {p}: {e}")
     return saved
 
+
 def process_image_file(file_path):
+    """Fitur 2: Membaca foto Host dari file dan mendeteksi wajahnya"""
+    file_path = os.path.abspath(os.path.expanduser(file_path))
     if not os.path.exists(file_path):
         print(f"[ERROR] File tidak ditemukan: {file_path}")
         return False
-    
+
     img = cv2.imread(file_path)
     if img is None:
-        print(f"[ERROR] Gagal membaca gambar: {file_path}")
+        print(f"[ERROR] Gagal membaca file gambar: {file_path}")
         return False
+
+    h, w = img.shape[:2]
+    print(f"\n[INFO] Membaca foto Host: {file_path} ({w}x{h} px)")
 
     yunet_model = get_yunet_model_path()
     detector = None
     if yunet_model:
         try:
-            detector = cv2.FaceDetectorYN.create(yunet_model, "", (img.shape[1], img.shape[0]), 0.5)
+            detector = cv2.FaceDetectorYN.create(yunet_model, "", (w, h), 0.45)
         except Exception:
             pass
 
     cropped, bbox = crop_face(img, detector)
     if cropped is None or cropped.size == 0:
-        print("[ERROR] Gagal mendeteksi wajah pada foto.")
+        print("[ERROR] Wajah tidak terdeteksi pada foto.")
         return False
 
-    # Resize ke 112x112 standar model SFace / ArcFace
+    if bbox is not None:
+        fx, fy, fw, fh = bbox
+        print(f"[INFO] Wajah Host berhasil terdeteksi (area: x={fx}, y={fy}, w={fw}, h={fh})")
+    else:
+        print("[INFO] Wajah dipotong dengan metode center-crop.")
+
+    # Resize ke 112x112 standar model SFace
     resized = cv2.resize(cropped, (112, 112), interpolation=cv2.INTER_AREA)
     saved = save_host_image(resized)
+
     print("\n=======================================================")
-    print(" [SUKSES] Foto Host Berhasil Dipotong & Disimpan!")
+    print(" [SUKSES] FITUR 2: BACA FOTO HOST BERHASIL!")
+    print(" Foto wajah Host telah dipotong & disimpan ke:")
     for s in saved:
         print(f"  -> {s}")
     print("=======================================================")
+
+    if saved:
+        notify_ros_vision(saved[0])
     return True
 
+
 def run_live_capture(device_idx=0):
+    """Fitur 1: Mengambil foto Host secara live dari kamera"""
     cap = cv2.VideoCapture(device_idx)
     if not cap.isOpened():
         cap = cv2.VideoCapture(1)
         if not cap.isOpened():
-            print(f"[ERROR] Tidak dapat membuka kamera video /dev/video{device_idx} atau /dev/video1.")
-            print("Gunakan opsi file gambar yang ada: ./capture_host.sh /path/ke/foto.jpg")
-            return
+            print(f"[ERROR] Tidak dapat membuka kamera (/dev/video{device_idx} atau /dev/video1).")
+            print("Gunakan opsi Fitur 2 (Baca Foto File): ./capture_host.sh --photo /path/ke/foto.jpg")
+            return False
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -133,20 +172,22 @@ def run_live_capture(device_idx=0):
     detector = None
     if yunet_model:
         try:
-            detector = cv2.FaceDetectorYN.create(yunet_model, "", (640, 480), 0.5)
+            detector = cv2.FaceDetectorYN.create(yunet_model, "", (640, 480), 0.45)
         except Exception:
             pass
 
-    window_name = "Host Face Capture (Revaldo)"
+    window_name = "Host Capture (Live Camera)"
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
 
     print("\n=======================================================")
-    print(" [KAMERA LIVE] Pengambilan Foto Wajah Host (Revaldo)")
-    print("  1. Posisikan wajah Host tepat di tengah frame")
-    print("  2. Tekan [SPASI] atau [ENTER] untuk mengambil foto")
-    print("  3. Tekan [Q] atau [ESC] untuk keluar")
+    print(" [FITUR 1] PENGAMBILAN FOTO LIVE HOST DARI KAMERA")
+    print("  1. Arahkan wajah Host ke kamera")
+    print("  2. Kotak HIJAU menandakan wajah Host terdeteksi")
+    print("  3. Tekan [SPASI] atau [ENTER] untuk mengambil foto")
+    print("  4. Tekan [Q] atau [ESC] untuk keluar/batal")
     print("=======================================================\n")
 
+    success = False
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -171,8 +212,7 @@ def run_live_capture(device_idx=0):
             except Exception:
                 pass
 
-        # Petunjuk di layar
-        cv2.putText(display, "Tekan [SPASI] untuk Ambil Foto Host | [Q] Batal",
+        cv2.putText(display, "Tekan [SPASI] Ambil Foto | [Q] Batal",
                     (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
         cv2.imshow(window_name, display)
@@ -185,34 +225,92 @@ def run_live_capture(device_idx=0):
             if cropped is not None and cropped.size > 0:
                 resized = cv2.resize(cropped, (112, 112), interpolation=cv2.INTER_AREA)
                 saved = save_host_image(resized)
-                
-                # Feedback visual
+
+                # Efek flash hijau tanda sukses
                 flash = np.full_like(display, (0, 255, 0))
                 cv2.addWeighted(flash, 0.5, display, 0.5, 0, display)
-                cv2.putText(display, "FOTO BERHASIL DISIMPAN!", (w // 2 - 180, h // 2),
+                cv2.putText(display, "FOTO BERHASIL DIAMBIL!", (w // 2 - 180, h // 2),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                 cv2.imshow(window_name, display)
                 cv2.waitKey(1000)
 
                 print("\n=======================================================")
-                print(" [SUKSES] Foto Host Berhasil Disimpan!")
+                print(" [SUKSES] FITUR 1: CAPTURE FOTO HOST BERHASIL!")
                 for s in saved:
-                    print(f"  -> {s}")
+                    print(f"  -> Tersimpan ke: {s}")
                 print("=======================================================")
+                if saved:
+                    notify_ros_vision(saved[0])
+                success = True
                 break
 
     cap.release()
     cv2.destroyAllWindows()
+    return success
+
+
+def interactive_menu():
+    """Tampilan menu interaktif jika script dijalankan tanpa argumen"""
+    while True:
+        print("\n=======================================================")
+        print("          REGISTRASI FOTO HOST RECEPTIONIST            ")
+        print("=======================================================")
+        print("  Pilih fitur yang ingin digunakan:")
+        print("  [1] Capture Host dari Kamera (Live Camera)")
+        print("  [2] Baca Foto Host dari File Gambar (Read Photo File)")
+        print("  [3] Keluar")
+        print("=======================================================")
+        try:
+            choice = input("Pilihan Anda [1/2/3]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nKeluar.")
+            break
+
+        if choice == "1":
+            run_live_capture(0)
+            break
+        elif choice == "2":
+            try:
+                photo_path = input("Masukkan path file foto Host: ").strip().strip("'\"")
+            except (EOFError, KeyboardInterrupt):
+                break
+            if photo_path:
+                if process_image_file(photo_path):
+                    break
+            else:
+                print("[ERROR] Path file foto tidak boleh kosong.")
+        elif choice == "3" or choice.lower() == "q":
+            print("Selesai.")
+            break
+        else:
+            print("[WARN] Pilihan tidak valid. Silakan pilih 1, 2, atau 3.")
+
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and not sys.argv[1].startswith("--"):
-        process_image_file(sys.argv[1])
+    if len(sys.argv) > 1:
+        arg = sys.argv[1].lower()
+        if arg in ["--camera", "-c", "camera", "live"]:
+            cam_idx = 0
+            if len(sys.argv) > 2 and sys.argv[2].isdigit():
+                cam_idx = int(sys.argv[2])
+            run_live_capture(cam_idx)
+        elif arg in ["--photo", "-p", "photo", "file"]:
+            if len(sys.argv) > 2:
+                process_image_file(sys.argv[2])
+            else:
+                try:
+                    p = input("Masukkan path file foto Host: ").strip().strip("'\"")
+                    if p:
+                        process_image_file(p)
+                except (EOFError, KeyboardInterrupt):
+                    pass
+        elif not arg.startswith("-") and os.path.exists(sys.argv[1]):
+            # Penggunaan langsung: python3 capture_host.py /path/ke/foto.jpg
+            process_image_file(sys.argv[1])
+        else:
+            interactive_menu()
     else:
-        cam_idx = 0
-        if "--cam" in sys.argv:
-            try:
-                idx = sys.argv.index("--cam")
-                cam_idx = int(sys.argv[idx + 1])
-            except Exception:
-                pass
-        run_live_capture(cam_idx)
+        if sys.stdin.isatty():
+            interactive_menu()
+        else:
+            run_live_capture(0)
