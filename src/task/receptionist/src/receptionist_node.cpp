@@ -2352,7 +2352,12 @@ public:
       }
 
       geometry_msgs::msg::Twist twist;
-      twist.linear.x = std::abs(guest_approach_speed_);
+      const double max_vx = std::abs(guest_approach_speed_);
+      const double min_vx = std::min(0.10, max_vx);
+      const double slow_zone = 0.50;
+      const double dist_remaining = std::max(0.0, current_target.dist - guest_approach_distance_);
+      const double ratio = std::clamp(dist_remaining / slow_zone, 0.0, 1.0);
+      twist.linear.x = min_vx + (max_vx - min_vx) * ratio;
       if (std::abs(current_target.angle_err) > 0.10) {
         twist.angular.z = (current_target.angle_err >= 0.0) ? 0.12 : -0.12;
       } else {

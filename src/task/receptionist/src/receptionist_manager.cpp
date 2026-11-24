@@ -2821,11 +2821,16 @@ private:
           }
 
           if (g_idx == 1) {
-            // Host is pre-registered from host.jpg / launch params.
-            // Do not blindly send set_person_name here to avoid accidentally capturing Guest 1 who is standing nearby.
+            // Trigger living room self-learn capture for Host
+            // athome_vision otomatis memprioritaskan orang duduk pada jarak >= 1.3m dan mengecualikan Guest 1
+            if (person_name_pub_) {
+              std_msgs::msg::String m;
+              m.data = host_.name;
+              person_name_pub_->publish(m);
+            }
             RCLCPP_INFO(
               get_logger(),
-              "\033[1;32m[HOST]\033[0m Host '%s' verified from pre-registered profile.",
+              "\033[1;32m[HOST]\033[0m Triggered living room self-learn for Host '%s'.",
               host_.name.c_str());
           }
 

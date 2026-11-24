@@ -26,10 +26,10 @@ receptionist_node:
     odom_topic: "/odom"
     search_chair_ref_yaw: -1.57
     search_chair_angular_speed: 0.30
-    search_chair_timeout_sec: 40.0
+    search_chair_timeout_sec: 60.0
     search_chair_confirm_frames: 2
     search_chair_sweep_angle_deg: 30.0
-    chair_max_dist: 3.0
+    chair_max_dist: 2.0
     align_chair_p_gain: 1.5
     align_chair_min_speed: 0.12
     align_chair_max_speed: 0.28

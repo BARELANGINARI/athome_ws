@@ -2500,34 +2500,32 @@ ZedNode::ZedNode()
         }
 
         // Reset lock agar registrasi baru dapat mengumpulkan multi-sample wajah & atribut terbaru
-        if (first_person_id >= 0) {
-          bool exists = false;
-          for (auto & rp : registered_persons_) {
-            if (rp.name == name) {
-              rp.last_tracking_id = first_person_id;
-              rp.last_seen = register_start_time_;
-              rp.feature_samples = 0;
-              rp.feature.clear();
-              rp.face_gallery.clear();
-              if (name != host_param_name) {
-                rp.clothing_color.clear();
-                rp.hair_color.clear();
-                rp.gender.clear();
-              }
-              rp.locked = false;
-              rp.has_face_verified = false;
-              exists = true;
-              break;
-            }
-          }
-          if (!exists) {
-            RegisteredPerson rp;
-            rp.name = name;
+        bool exists = false;
+        for (auto & rp : registered_persons_) {
+          if (rp.name == name) {
             rp.last_tracking_id = first_person_id;
             rp.last_seen = register_start_time_;
+            rp.feature_samples = 0;
+            if (name != host_param_name) {
+              rp.feature.clear();
+              rp.face_gallery.clear();
+              rp.clothing_color.clear();
+              rp.hair_color.clear();
+              rp.gender.clear();
+            }
             rp.locked = false;
-            registered_persons_.push_back(rp);
+            rp.has_face_verified = false;
+            exists = true;
+            break;
           }
+        }
+        if (!exists && first_person_id >= 0) {
+          RegisteredPerson rp;
+          rp.name = name;
+          rp.last_tracking_id = first_person_id;
+          rp.last_seen = register_start_time_;
+          rp.locked = false;
+          registered_persons_.push_back(rp);
         }
       } else {
         pending_register_name_.clear();
@@ -2953,12 +2951,21 @@ void ZedNode::loadPreRegisteredHost(const std::string & custom_photo_path)
   if (!feat.empty()) {
     host_person.feature = feat;
     host_person.face_gallery.push_back(feat);
+    // Multi-scale augmentation untuk foto wajah Host agar cocok dengan wajah jarak jauh di living room (2.0-3.0m)
+    for (int sz : {64, 48}) {
+      cv::Mat img_scaled;
+      cv::resize(img, img_scaled, cv::Size(sz, sz), 0, 0, cv::INTER_AREA);
+      std::vector<float> feat_scaled = analyzer_.extractFaceFromImage(img_scaled);
+      if (!feat_scaled.empty()) {
+        host_person.face_gallery.push_back(feat_scaled);
+      }
+    }
     host_person.feature_samples = 30; // Pre-registered with maximum confidence
     host_person.locked = true;
     host_person.has_face_verified = true;
     RCLCPP_INFO(get_logger(),
-      "\033[1;32m[RECEPTIONIST]\033[0m Host '%s' registered from photo (%dx%d, shirt: %s, gender: %s)",
-      host_name.c_str(), img.cols, img.rows, raw_shirt.c_str(), host_person.gender.c_str());
+      "\033[1;32m[RECEPTIONIST]\033[0m Host '%s' registered from photo (%dx%d, shirt: %s, gender: %s, gallery: %zu templates)",
+      host_name.c_str(), img.cols, img.rows, raw_shirt.c_str(), host_person.gender.c_str(), host_person.face_gallery.size());
   } else {
     // Foto tidak ada: tetap daftarkan profil Host berbasis atribut pakaian & gender
     host_person.feature_samples = 0;
@@ -3501,18 +3508,25 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         if (!guest_1_name_.empty()) {
           for (const auto & rp : registered_persons_) {
             if (rp.name == guest_1_name_ && !rp.feature.empty()) {
-              if (AttributeAnalyzer::matchFace(cur_feat, rp.feature) > 0.60f) {
+              float g1_sim = AttributeAnalyzer::matchFace(cur_feat, rp.feature);
+              for (const auto & gf : rp.face_gallery) {
+                if (!gf.empty()) g1_sim = std::max(g1_sim, AttributeAnalyzer::matchFace(cur_feat, gf));
+              }
+              if (g1_sim > 0.40f) {
                 score -= 5000;
                 break;
               }
             }
           }
         }
-        // Host is at living room distance (>= 1.3m)
+        // Host is at living room distance (>= 1.3m), and typically seated
         if (entries[i].range_m >= 1.3) {
           score += 300;
         } else {
-          score -= 400; // Penalize person standing too close (< 1.3m)
+          score -= 600; // Penalize person standing too close (< 1.3m, e.g. Guest 1 standing near robot)
+        }
+        if (entries[i].range_m >= 1.2 && entries[i].range_m <= 3.5) {
+          score += 200;
         }
       } else {
         // Door guest / Restaurant: prefer closer person
@@ -3838,8 +3852,12 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
             RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
               "[FACE] '%s' similarity %.3f < %.3f (veto)",
               prof.name.c_str(), f_sim, req_claim_th);
-          } else if (other_best >= th && face_margin < 0.08f) {
-            veto = true; // Wajah ambigu antara dua profil -> jangan tebak nama baru
+          } else if (other_best >= th) {
+            // Longgarkan margin ambiguitas untuk orang yang duduk/jarak jauh agar tidak drop ke 'Guest'
+            const float req_margin = attr_matches ? 0.01f : (entries[i].range_m >= 1.4 ? 0.02f : 0.08f);
+            if (face_margin < req_margin) {
+              veto = true; // Wajah ambigu antara dua profil -> jangan tebak nama baru
+            }
           }
         } else {
           const float active_break_th = (registered_persons_.size() <= 1) ? 0.18f : break_th;
@@ -3851,12 +3869,13 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       } else {
         if (!prof.feature.empty() && !has_continuity) {
-          // Jangan veto jika atribut pakaian dan gender cocok dengan tamu terdaftar
-          const bool strong_attr_match =
-            (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
-             prof.clothing_color == entry_feats[i].shirt_color) &&
-            (prof.gender.empty() || entry_feats[i].gender.empty() ||
-             prof.gender == entry_feats[i].gender);
+          // Jangan veto jika atribut pakaian dan gender cocok dengan tamu terdaftar.
+          // Jika salah satu profil belum memiliki rekaman warna baju (misal host dari foto), jangan veto.
+          const bool cloth_ok = prof.clothing_color.empty() || entry_feats[i].shirt_color.empty() ||
+                                prof.clothing_color == entry_feats[i].shirt_color;
+          const bool gender_ok = prof.gender.empty() || entry_feats[i].gender.empty() ||
+                                 prof.gender == entry_feats[i].gender;
+          const bool strong_attr_match = cloth_ok && gender_ok;
 
           if (!strong_attr_match) {
             veto = true;
@@ -3882,8 +3901,15 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         score_matrix[i][j] = -100.0f;
       } else {
         if (has_face) {
-          score_matrix[i][j] = 0.80f * face_score + 0.08f * shirt_score +
-                               0.06f * gender_score + 0.06f * hair_score;
+          if (entries[i].range_m > 1.6) {
+            // Pada jarak jauh living room (> 1.6m), beri bobot warna baju lebih tinggi (32%)
+            // untuk membedakan orang yang duduk saat kursi ditukar
+            score_matrix[i][j] = 0.52f * face_score + 0.32f * shirt_score +
+                                 0.08f * gender_score + 0.08f * hair_score;
+          } else {
+            score_matrix[i][j] = 0.80f * face_score + 0.08f * shirt_score +
+                                 0.06f * gender_score + 0.06f * hair_score;
+          }
           if (f_sim >= strong_th && face_margin >= 0.07f) {
             score_matrix[i][j] += 0.25f; // Bonus hanya jika unggul mutlak atas kandidat lain
           }

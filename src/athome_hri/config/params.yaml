@@ -19,13 +19,13 @@
     # -------------------------------------------------------------------------
     # 2. Voice Activity Detection / VAD (Penyaring awal suara vs hening di CPU)
     # -------------------------------------------------------------------------
-    threshold_dbfs: -13.5               # Batas volume minimum (atau floor) agar suara dianggap ucapan
-    threshold_flatness: 0.38                # Batas kerataan spektrum (0-1); lebih kecil = lebih ketat menolak noise datar (kipas/AC)
+    threshold_dbfs: -26.0               # Batas volume minimum (atau floor) agar suara dianggap ucapan
+    threshold_flatness: 0.42                # Batas kerataan spektrum (0-1); lebih kecil = lebih ketat menolak noise datar (kipas/AC)
     adaptive_vad_enabled: true                # true = threshold dBFS otomatis mengikuti noise floor ruangan + adaptive_snr_margin_db
     adaptive_snr_margin_db: 7.0                 # Margin SNR (dB) di atas noise floor ruangan saat adaptive_vad_enabled=true
     pre_roll_frames: 10                  # Jumlah frame (x30 ms = 300 ms) yang ikut direkam SEBELUM suara terdeteksi agar awal kata tidak terpotong
-    hangover_frames: 12                  # Lama jeda hening (x30 ms = 480 ms) sebelum sistem yakin kalimat selesai diucapkan
-    min_speech_frames: 11                  # Durasi minimal ucapan (x30 ms = 270 ms) agar dianggap valid (abaikan suara klik/batuk singkat)
+    hangover_frames: 15                  # Lama jeda hening (x30 ms = 450 ms) sebelum sistem yakin kalimat selesai diucapkan
+    min_speech_frames: 8                   # Durasi minimal ucapan (x30 ms = 240 ms) agar dianggap valid (abaikan suara klik/batuk singkat)
     max_speech_frames: 250                 # Durasi maksimal 1 segmen ucapan (x30 ms = 7.5 detik) agar VAD tidak macet saat bising konstan
 
     # -------------------------------------------------------------------------
@@ -36,11 +36,11 @@
     stt_language: "en"                   # Kode bahasa yang dikenali STT ("en" = Inggris, "id" = Indonesia)
     stt_sample_rate: 16000               # Sample rate audio input untuk Whisper (Hz)
     stt_beam_size: 2                   # Lebar pencarian kata (1-5); makin besar makin akurat, tapi proses sedikit lebih lambat
-    stt_no_speech_threshold: 0.4                 # Batas probabilitas hening (0-1); jika probabilitas hening >= nilai ini, teks ditolak sebagai noise
-    stt_log_prob_threshold: -0.65               # Batas keyakinan model (log-prob); jika di bawah nilai ini (mis. -1.5), hasil dianggap tidak yakin & dibuang
+    stt_no_speech_threshold: 0.55                # Batas probabilitas hening (0-1); jika probabilitas hening >= nilai ini, teks ditolak sebagai noise
+    stt_log_prob_threshold: -0.85               # Batas keyakinan model (log-prob); jika di bawah nilai ini (mis. -1.5), hasil dianggap tidak yakin & dibuang
     stt_compression_ratio_threshold: 1.8 # Batas pengulangan kata; menolak halusinasi Whisper yang mengulang-ulang kalimat yang sama
-    stt_vad_threshold: 0.78                # Silero VAD internal Whisper: ambang batas probabilitas suara (0-1)
-    stt_vad_min_speech_ms: 250                 # Silero VAD internal Whisper: durasi minimal segmen ucapan (ms)
+    stt_vad_threshold: 0.55                # Silero VAD internal Whisper: ambang batas probabilitas suara (0-1)
+    stt_vad_min_speech_ms: 200                 # Silero VAD internal Whisper: durasi minimal segmen ucapan (ms)
     stt_vad_silence_ms: 350                 # Silero VAD internal Whisper: jeda hening (ms) untuk memotong segmen di dalam rekaman
     stt_vad_speech_pad_ms: 150                 # Silero VAD internal Whisper: bantalan waktu (ms) di awal & akhir ucapan agar tidak terpotong
     stt_repetition_penalty: 1.15         # Penalti pengulangan token pada decoder Whisper (>1.0 untuk mencegah loop)
