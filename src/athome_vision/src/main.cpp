@@ -2322,7 +2322,8 @@ ZedNode::ZedNode()
   declare_parameter("face_threshold", 0.363);
   declare_parameter("face_detect_model", std::string("models/face_detection_yunet.onnx"));
   declare_parameter("face_detect_conf", 0.55);
-  declare_parameter("host_name", std::string("Alex"));
+  declare_parameter("camera_resolution", std::string(""));
+  declare_parameter("host_name", std::string("Revaldo"));
   declare_parameter("host_photo", std::string("models/host.jpg"));
   declare_parameter("host_shirt_color", std::string("black shirt"));
   declare_parameter("host_gender", std::string("male"));
@@ -2521,7 +2522,22 @@ ZedNode::ZedNode()
     init.depth_mode = sl::DEPTH_MODE::PERFORMANCE;
   }
   init.coordinate_units = sl::UNIT::CENTIMETER;
-  init.camera_resolution = sl::RESOLUTION::VGA;
+  std::string res_str = get_parameter("camera_resolution").as_string();
+  std::transform(res_str.begin(), res_str.end(), res_str.begin(), ::tolower);
+  if (res_str == "hd720" || (res_str.empty() && is_receptionist_ && !is_help_me_carry_ && !is_restaurant_)) {
+    init.camera_resolution = sl::RESOLUTION::HD720;
+    RCLCPP_INFO(get_logger(), "\033[1;32m[CAMERA]\033[0m Resolution: HD720 (1280x720) optimized for Receptionist");
+  } else if (res_str == "hd1080") {
+    init.camera_resolution = sl::RESOLUTION::HD1080;
+    RCLCPP_INFO(get_logger(), "\033[1;32m[CAMERA]\033[0m Resolution: HD1080 (1920x1080)");
+  } else if (res_str == "hd2k") {
+    init.camera_resolution = sl::RESOLUTION::HD2K;
+    RCLCPP_INFO(get_logger(), "\033[1;32m[CAMERA]\033[0m Resolution: HD2K (2208x1242)");
+  } else {
+    init.camera_resolution = sl::RESOLUTION::VGA;
+    RCLCPP_INFO(get_logger(), "\033[1;32m[CAMERA]\033[0m Resolution: VGA (672x376) optimized for %s",
+      is_help_me_carry_ ? "Help Me Carry" : (is_restaurant_ ? "Restaurant" : "General Tracking"));
+  }
   init.camera_fps = static_cast<int>(camera_fps_);
   init.coordinate_system = sl::COORDINATE_SYSTEM::RIGHT_HANDED_Z_UP_X_FWD;
   init.depth_minimum_distance =
@@ -3485,6 +3501,26 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
             cv::imwrite(dir + "/customer_" + safe_name + ".jpg", crop_img);
           } catch (...) {}
         }
+        if (is_host_capture || pending_register_name_ == host_pname) {
+          std::vector<std::string> host_dirs = {
+            "src/athome_vision/models",
+            "/home/dell/Documents/athome_ws/src/athome_vision/models",
+            "models"
+          };
+          try {
+            const std::string vshare = ament_index_cpp::get_package_share_directory("athome_vision");
+            host_dirs.push_back(vshare + "/models");
+          } catch (...) {}
+          for (const auto & dir : host_dirs) {
+            try {
+              std::filesystem::create_directories(dir);
+              cv::imwrite(dir + "/host.jpg", crop_img);
+            } catch (...) {}
+          }
+          RCLCPP_INFO(get_logger(),
+            "\033[1;32m[HOST PHOTO]\033[0m Host photo automatically saved to models/host.jpg (%dx%d)",
+            crop_img.cols, crop_img.rows);
+        }
         RCLCPP_INFO(get_logger(),
           "\033[1;32m[%s]\033[0m Saved customer image to captures/customer_latest.jpg (%dx%d)",
           is_restaurant_ ? "RESTAURANT" : "RECEPTIONIST",
@@ -3740,8 +3776,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       bool veto = false;
       if (has_face) {
         if (!has_continuity) {
-          if (f_sim < effective_claim_th) {
-            veto = true; // Klaim identitas baru butuh keyakinan wajah >= 0.46
+          const bool attr_matches = (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
+                                     prof.clothing_color == entry_feats[i].shirt_color);
+          const float req_claim_th = attr_matches ? th : effective_claim_th;
+          if (f_sim < req_claim_th) {
+            veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
           } else if (other_best >= th && face_margin < 0.08f) {
             veto = true; // Wajah ambigu antara dua profil -> jangan tebak nama baru
           }
@@ -3754,7 +3793,16 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       } else {
         if (!prof.feature.empty() && !has_continuity) {
-          veto = true;
+          // Jangan veto jika atribut pakaian dan gender cocok dengan tamu terdaftar
+          const bool strong_attr_match =
+            (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
+             prof.clothing_color == entry_feats[i].shirt_color) &&
+            (prof.gender.empty() || entry_feats[i].gender.empty() ||
+             prof.gender == entry_feats[i].gender);
+
+          if (!strong_attr_match) {
+            veto = true;
+          }
         }
       }
 
@@ -4914,7 +4962,36 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     }
     cv::imshow("POV", canvas);
     const int key = cv::waitKey(1);
-    if (key == 'q' || key == 27) rclcpp::shutdown();
+    if (key == 'q' || key == 27) {
+      rclcpp::shutdown();
+    } else if (key == 'h' || key == 'H') {
+      if (!snap_persons.empty() && snap_persons[0].bbox.width > 20 && snap_persons[0].bbox.height > 20) {
+        cv::Rect r = snap_persons[0].bbox;
+        r &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+        if (r.width > 20 && r.height > 20) {
+          cv::Mat host_crop = bgr(r).clone();
+          cv::Rect face_roi = analyzer_.faceCropRegion(r, snap_persons[0].kpt, bgr.cols, bgr.rows, bgr);
+          if (face_roi.width > 20 && face_roi.height > 20) {
+            host_crop = bgr(face_roi).clone();
+          }
+          std::vector<std::string> host_dirs = {
+            "src/athome_vision/models",
+            "/home/dell/Documents/athome_ws/src/athome_vision/models",
+            "models"
+          };
+          for (const auto & dir : host_dirs) {
+            try {
+              std::filesystem::create_directories(dir);
+              cv::imwrite(dir + "/host.jpg", host_crop);
+            } catch (...) {}
+          }
+          RCLCPP_INFO(get_logger(),
+            "\033[1;32m[HOST PHOTO]\033[0m Host photo saved to models/host.jpg via 'h' key (%dx%d)",
+            host_crop.cols, host_crop.rows);
+          loadPreRegisteredHost();
+        }
+      }
+    }
   } catch (const std::exception &) {
     try {cv::destroyAllWindows();} catch (...) {}
     debug_window_ = false;
