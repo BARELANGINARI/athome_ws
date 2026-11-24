@@ -22,8 +22,8 @@ stt_engine:
     threshold_dbfs: -13.5               # Floor ambang volume minimum (dBFS)
     threshold_flatness: 0.38                # Ambang batas spectral flatness (0-1); tolak noise datar kipas/AC
     adaptive_vad_enabled: true                # true = threshold mengikuti noise floor ruangan + adaptive_snr_margin_db
-    adaptive_snr_margin_db: 7                   # Margin SNR (dB) di atas noise floor saat adaptive_vad_enabled=true
-    adaptive_max_threshold_dbfs: -24                 # Batas atas ambang adaptif agar tidak terlalu tinggi saat sangat bising (dBFS)
+    adaptive_snr_margin_db: 7.0                 # Margin SNR (dB) di atas noise floor saat adaptive_vad_enabled=true
+    adaptive_max_threshold_dbfs: -8.0                # Batas atas ambang adaptif agar tidak terlalu tinggi saat sangat bising (dBFS)
     adaptive_noise_alpha_up: 0.05         # Kecepatan adaptasi noise floor naik saat background makin ramai (0-1)
     adaptive_noise_alpha_down: 0.15       # Kecepatan adaptasi noise floor turun saat ruangan kembali tenang (0-1)
     pre_roll_frames: 10                  # 10 x 30 ms = 300 ms pre-roll agar awal kata tidak terpotong
@@ -36,8 +36,8 @@ stt_engine:
     # -------------------------------------------------------------------------
     stt_denoiser_backend: "auto"              # "auto" (deepfilternet2 -> rnnoise -> spectral), "deepfilternet2", "rnnoise", "spectral", "none"
     stt_deepfilter_model_path: ""         # Opsional: path tar.gz model DeepFilterNet2 jika memakai libdf
-    stt_highpass_hz: 120                 # Cutoff High-Pass Filter 4th-order Butterworth (buang rumble & proximity effect)
-    stt_spectral_alpha: 2                   # Faktor pengurangan noise pada denoiser spectral/Wiener (makin besar makin agresif)
+    stt_highpass_hz: 120.0               # Cutoff High-Pass Filter 4th-order Butterworth (buang rumble & proximity effect)
+    stt_spectral_alpha: 2.0                 # Faktor pengurangan noise pada denoiser spectral/Wiener (makin besar makin agresif)
     stt_spectral_floor: 0.05                # Lantai penguatan spektral minimum (0-1) untuk mencegah distorsi musical noise
     stt_spectral_noise_percentile: 0.15                # Proporsi frame paling senyap (0-1) untuk estimasi spektrum noise ruangan
 
