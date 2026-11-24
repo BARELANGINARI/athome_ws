@@ -1097,6 +1097,9 @@ private:
     {
       return "water";
     }
+    if (n == "cheezit" || n == "cheez it") {
+      return "cheez it";
+    }
     return n;
   }
 
@@ -1527,10 +1530,146 @@ private:
     return padded_h.find(padded_p) != std::string::npos;
   }
 
+  static std::vector<std::string> splitWords(const std::string & norm)
+  {
+    std::vector<std::string> words;
+    std::stringstream ss(norm);
+    std::string w;
+    while (ss >> w) {
+      words.push_back(w);
+    }
+    return words;
+  }
+
+  static size_t levenshteinDistance(const std::string & a, const std::string & b)
+  {
+    const size_t n = a.size();
+    const size_t m = b.size();
+    if (n == 0) return m;
+    if (m == 0) return n;
+
+    std::vector<size_t> prev(m + 1);
+    std::vector<size_t> curr(m + 1);
+    for (size_t j = 0; j <= m; ++j) {
+      prev[j] = j;
+    }
+    for (size_t i = 1; i <= n; ++i) {
+      curr[0] = i;
+      for (size_t j = 1; j <= m; ++j) {
+        const size_t cost = (a[i - 1] == b[j - 1]) ? 0 : 1;
+        curr[j] = std::min({prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost});
+      }
+      prev.swap(curr);
+    }
+    return prev[m];
+  }
+
+  static size_t maxFuzzyDistance(size_t candidate_len)
+  {
+    if (candidate_len < 5) {
+      return 0;
+    }
+    if (candidate_len <= 6) {
+      return 1;
+    }
+    return 2;
+  }
+
+  static bool isCarrierStopWord(const std::string & w)
+  {
+    static const std::vector<std::string> kStopWords = {
+      "my", "name", "is", "am", "im", "are", "you", "can", "call", "me",
+      "this", "that", "the", "favorite", "favourite", "drink", "would",
+      "like", "want", "prefer", "main", "interest", "interested", "hobby",
+      "love", "enjoy", "not", "dont", "don", "hello", "hi", "hey",
+      "please", "thanks", "thank"
+    };
+    return std::find(kStopWords.begin(), kStopWords.end(), w) != kStopWords.end();
+  }
+
+  static std::string findBestFuzzyMatch(
+    const std::vector<std::string> & tokens,
+    const std::vector<std::string> & candidates,
+    const std::function<bool(const std::string &)> & is_excluded = nullptr)
+  {
+    if (tokens.empty()) {
+      return "";
+    }
+
+    std::string best_candidate;
+    size_t best_dist = 999;
+
+    auto considerMatch = [&](const std::string & window, const std::string & target,
+                             const std::string & candidate, size_t max_d) {
+      if (max_d == 0) {
+        return;
+      }
+      if (is_excluded && is_excluded(window)) {
+        return;
+      }
+      const size_t len_diff = (window.size() > target.size())
+        ? (window.size() - target.size())
+        : (target.size() - window.size());
+      if (len_diff > max_d) {
+        return;
+      }
+      const size_t d = levenshteinDistance(window, target);
+      if (d <= max_d &&
+          (d < best_dist || (d == best_dist && candidate.size() > best_candidate.size())))
+      {
+        best_dist = d;
+        best_candidate = candidate;
+      }
+    };
+
+    for (const auto & candidate : candidates) {
+      const size_t max_d = maxFuzzyDistance(candidate.size());
+      const std::vector<std::string> c_words = splitWords(candidate);
+      const size_t k = c_words.size();
+      if (k == 0) {
+        continue;
+      }
+
+      if (max_d > 0 && tokens.size() >= k) {
+        for (size_t i = 0; i + k <= tokens.size(); ++i) {
+          if (k == 1 && isCarrierStopWord(tokens[i])) {
+            continue;
+          }
+          std::string window = tokens[i];
+          for (size_t j = 1; j < k; ++j) {
+            window.push_back(' ');
+            window += tokens[i + j];
+          }
+          considerMatch(window, candidate, candidate, max_d);
+        }
+      }
+
+      if (k >= 2) {
+        std::string compact;
+        compact.reserve(candidate.size());
+        for (const auto & cw : c_words) {
+          compact += cw;
+        }
+        const size_t compact_max_d = maxFuzzyDistance(compact.size());
+        if (compact_max_d > 0) {
+          for (const auto & tok : tokens) {
+            if (isCarrierStopWord(tok)) {
+              continue;
+            }
+            considerMatch(tok, compact, candidate, compact_max_d);
+          }
+        }
+      }
+    }
+
+    return best_candidate;
+  }
+
   /// Extracts a slot value ("person_name", "interest", or "drink") from raw STT text:
   /// 1) Filters common greeting/filler words.
-  /// 2) Matches known RoboCup vocabulary with word boundaries (longer phrases first).
-  /// 3) Falls back to stripping common carrier phrases (e.g. "my name is ...").
+  /// 2) Matches known RoboCup vocabulary with exact word boundaries (longer phrases first).
+  /// 3) Checks phonetic alias tables, then Levenshtein fuzzy matching.
+  /// 4) Falls back to stripping common carrier phrases (e.g. "my name is ...").
   static std::string parseSlotIntent(const std::string & raw_text, const std::string & slot)
   {
     const std::string norm = normalize(raw_text);
@@ -1547,6 +1686,21 @@ private:
         return "";
       }
     }
+
+    const std::vector<std::string> tokens = splitWords(norm);
+
+    struct PhoneticAlias
+    {
+      const char * alias;
+      const char * canonical;
+    };
+
+    auto isNegated = [&](const std::string & phrase) -> bool {
+      return containsWholePhrase(norm, "not " + phrase) ||
+             containsWholePhrase(norm, "dont like " + phrase) ||
+             containsWholePhrase(norm, "don t like " + phrase) ||
+             containsWholePhrase(norm, "do not like " + phrase);
+    };
 
     auto countWords = [](const std::string & s) -> size_t {
       std::stringstream ss(s);
@@ -1581,35 +1735,85 @@ private:
       static const std::vector<std::string> kKnownNames = {
         "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal",
         "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma", "maria", "muhammad",
-        "budi", "abdul", "jefrey", "jefri", "hezekiel"
+        "budi", "abdul", "jeffrey", "hezekiel"
+      };
+      static const std::vector<PhoneticAlias> kNameAliases = {
+        {"jefrey", "Jeffrey"}, {"jefri", "Jeffrey"}, {"geoffrey", "Jeffrey"},
+        {"jeffry", "Jeffrey"}, {"jefery", "Jeffrey"},
+        {"hezekial", "Hezekiel"}, {"ezekiel", "Hezekiel"},
+        {"charly", "Charlie"},
+        {"micheal", "Michael"}, {"mikael", "Michael"},
+        {"sara", "Sarah"},
+        {"mohammad", "Muhammad"}, {"muhamad", "Muhammad"},
+        {"ahmed", "Ahmad"},
+        {"robyn", "Robin"},
+        {"simona", "Simone"},
+        {"adele", "Adel"},
+        {"jule", "Jules"}
       };
       for (const auto & name : kKnownNames) {
         if (containsWholePhrase(norm, name)) {
           return capitalizeWords(name);
         }
       }
+      for (const auto & entry : kNameAliases) {
+        if (containsWholePhrase(norm, entry.alias)) {
+          return entry.canonical;
+        }
+      }
+      const std::string fuzzy = findBestFuzzyMatch(tokens, kKnownNames);
+      if (!fuzzy.empty()) {
+        return capitalizeWords(fuzzy);
+      }
       return stripPrefixes({
-        "my name is ", "i am ", "im ", "i m ", "iam ", "iyem ", "name s ", "may name is ", "mai name is ", "you can call me ", "my name s ", "mai name s ","call me ", "this is ", "name is "
+        "my name is ", "i am ", "im ", "i m ", "iam ", "iyem ", "name s ", "may name is ", "mai name is ", "you can call me ", "my name s ", "mai name s ", "call me ", "this is ", "name is "
       });
     }
 
     if (slot == "drink") {
-      // Frase spesifik (2 kata) diperiksa lebih dulu sebelum kata tunggal ("tea", "juice")
+      auto formatDrink = [](const std::string & norm_drink) -> std::string {
+        if (norm_drink == "cheez it" || norm_drink == "cheezit") {
+          return "Cheez-It";
+        }
+        return capitalizeWords(norm_drink);
+      };
+
+      // Frase spesifik (2 kata) diperiksa lebih dulu sebelum kata tunggal ("tea", "juice", "cracker", "sugar")
       static const std::vector<std::string> kKnownDrinks = {
         "orange juice", "apple juice", "iced tea", "green tea",
+        "mineral water", "cracker box", "sugar box", "cheez it",
         "coke", "cola", "pepsi", "sprite", "fanta",
-        "mineral water", "milk", "water", "coffee", "tea", "juice", "soda",
-        "botol", "bottle", "cracker", "cracker box", "snack",
-        "pringles", "sugar", "sugar box", "cheezit", "cheez-it", "chips", "milk"
+        "milk", "water", "coffee", "tea", "juice", "soda",
+        "pringles", "cracker", "sugar", "chips", "snack", "bottle", "botol"
+      };
+      static const std::vector<PhoneticAlias> kDrinkAliases = {
+        {"cheese it", "Cheez-It"}, {"cheezit", "Cheez-It"},
+        {"cheesit", "Cheez-It"}, {"cheese its", "Cheez-It"},
+        {"cook", "Coke"}, {"koke", "Coke"}, {"cock", "Coke"},
+        {"coca cola", "Coke"}, {"coca", "Coke"},
+        {"springles", "Pringles"}, {"pringle", "Pringles"}, {"bringles", "Pringles"},
+        {"ice tea", "Iced Tea"},
+        {"orange choose", "Orange Juice"}, {"apple choose", "Apple Juice"},
+        {"watter", "Water"},
+        {"kofi", "Coffee"}, {"copi", "Coffee"},
+        {"spread", "Sprite"},
+        {"fenta", "Fanta"},
+        {"pepsy", "Pepsi"},
+        {"crackers", "Cracker Box"}
       };
       for (const auto & drink : kKnownDrinks) {
-        if (containsWholePhrase(norm, drink) &&
-            !containsWholePhrase(norm, "not " + drink) &&
-            !containsWholePhrase(norm, "dont like " + drink) &&
-            !containsWholePhrase(norm, "do not like " + drink))
-        {
-          return capitalizeWords(drink);
+        if (containsWholePhrase(norm, drink) && !isNegated(drink)) {
+          return formatDrink(drink);
         }
+      }
+      for (const auto & entry : kDrinkAliases) {
+        if (containsWholePhrase(norm, entry.alias) && !isNegated(entry.alias)) {
+          return entry.canonical;
+        }
+      }
+      const std::string fuzzy = findBestFuzzyMatch(tokens, kKnownDrinks, isNegated);
+      if (!fuzzy.empty()) {
+        return formatDrink(fuzzy);
       }
       return stripPrefixes({
         "my favorite drink is ", "i would like ", "i like ", "i want ",
@@ -1619,16 +1823,46 @@ private:
 
     if (slot == "interest") {
       static const std::vector<std::string> kKnownInterests = {
-        "artificial intelligence", "robotics", "reading", "music", "sports",
-        "cooking", "gaming", "traveling", "photography", "movies", "swimming",
-        "football", "basketball", "coding", "programming", "dancing", "painting",
-        "program", "dancing", "dance", "drawing", "playing football", "playing badminton",
-        "playing tennis", "playing golf", "playing", "boxing"
+        "artificial intelligence", "playing football", "playing badminton",
+        "playing tennis", "playing golf",
+        "robotics", "reading", "music", "sports", "cooking", "gaming",
+        "traveling", "photography", "movies", "swimming", "football",
+        "basketball", "coding", "programming", "dancing", "painting",
+        "drawing", "boxing", "playing"
+      };
+      static const std::vector<PhoneticAlias> kInterestAliases = {
+        {"robotic", "Robotics"}, {"robot", "Robotics"},
+        {"programing", "Programming"}, {"program", "Programming"},
+        {"fotball", "Football"},
+        {"badminton", "Playing Badminton"},
+        {"tenis", "Playing Tennis"},
+        {"basket ball", "Basketball"},
+        {"photograph", "Photography"},
+        {"cook", "Cooking"},
+        {"game", "Gaming"}, {"games", "Gaming"},
+        {"swim", "Swimming"},
+        {"movie", "Movies"},
+        {"read", "Reading"},
+        {"travel", "Traveling"},
+        {"paint", "Painting"},
+        {"draw", "Drawing"},
+        {"dance", "Dancing"},
+        {"sport", "Sports"},
+        {"box", "Boxing"}
       };
       for (const auto & interest : kKnownInterests) {
         if (containsWholePhrase(norm, interest)) {
           return capitalizeWords(interest);
         }
+      }
+      for (const auto & entry : kInterestAliases) {
+        if (containsWholePhrase(norm, entry.alias)) {
+          return entry.canonical;
+        }
+      }
+      const std::string fuzzy = findBestFuzzyMatch(tokens, kKnownInterests);
+      if (!fuzzy.empty()) {
+        return capitalizeWords(fuzzy);
       }
       return stripPrefixes({
         "my main interest is ", "my interest is ", "my hobby is ",

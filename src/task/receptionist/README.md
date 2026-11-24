@@ -52,8 +52,34 @@ ros2 run tf2_ros tf2_echo map base_link
 
 Robot dapat mengenali Host sejak awal sebelum misi dimulai menggunakan foto wajah, sekaligus mendeskripsikan atribut Host (pakaian, minuman favorit, minat) ke tamu saat escort ke ruang tamu.
 
-### 1. Menyiapkan Foto Wajah Host
-Letakkan file foto wajah Host (format `.jpg` atau `.png`, wajah tampak depan jelas) di:
+### 1. Mengambil / Menyiapkan Foto Wajah Host
+
+Foto Host harus disimpan di `src/athome_vision/models/host.jpg`. Anda dapat menggunakan salah satu dari 3 cara berikut:
+
+#### Cara A: Ambil Foto Langsung via Webcam / Kamera Laptop (Rekomendasi)
+Gunakan script otomatis berikut sebelum menjalankan launch receptionist:
+```bash
+./src/task/receptionist/launch/capture_host.sh
+```
+- Jendela preview kamera akan terbuka dan mendeteksi wajah secara visual (kotak hijau).
+- Posisikan wajah Host di tengah frame.
+- Tekan **`[SPASI]`** atau **`[ENTER]`** untuk mengambil foto.
+- Script akan otomatis memotong (crop) area wajah dengan rasio ideal dan menyimpannya langsung ke:
+  - `src/athome_vision/models/host.jpg`
+  - `install/athome_vision/share/athome_vision/models/host.jpg`
+- Tekan **`[Q]`** atau **`[ESC]`** jika ingin membatalkan.
+
+*(Opsional: jika menggunakan kamera indeks lain, gunakan argumen `--cam`, misal: `python3 src/task/receptionist/launch/capture_host.py --cam 1`)*
+
+#### Cara B: Import dari File Foto yang Sudah Ada
+Jika Anda memiliki file foto Host (misalnya dari HP/flashdisk), gunakan script untuk auto-crop wajah:
+```bash
+./src/task/receptionist/launch/capture_host.sh /path/ke/foto_host.jpg
+```
+Script akan otomatis mencari wajah pada foto tersebut, melakukan crop, dan menyimpannya ke `src/athome_vision/models/host.jpg`.
+
+#### Cara C: Salin Manual File Foto
+Letakkan file foto wajah Host (format `.jpg` atau `.png`, wajah tampak depan jelas) secara manual di:
 ```bash
 src/athome_vision/models/host.jpg
 ```
