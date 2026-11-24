@@ -312,7 +312,9 @@ private:
       if (neural_vad_->isReady()) {
         clean_audio = neural_vad_->filterSpeech(clean_audio);
         if (clean_audio.empty()) {
-          RCLCPP_DEBUG(get_logger(), "[ASR] Rejected by Silero Neural VAD (non-speech/noise).");
+          RCLCPP_INFO(
+            get_logger(), "%s\n  STT Dropped (Silero VAD: non-speech/too short)",
+            task_header_.c_str());
           continue;
         }
       }

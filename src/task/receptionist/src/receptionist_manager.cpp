@@ -1712,21 +1712,42 @@ private:
       return count;
     };
 
+    auto stripLeadingFillers = [](std::string s) -> std::string {
+      static const std::vector<std::string> kLeadFillers = {
+        "is ", "a ", "an ", "the ", "uh ", "um ", "er ", "like "
+      };
+      bool stripped = true;
+      while (stripped) {
+        stripped = false;
+        while (!s.empty() && s.front() == ' ') {
+          s.erase(s.begin());
+        }
+        for (const auto & lf : kLeadFillers) {
+          if (s.rfind(lf, 0) == 0) {
+            s.erase(0, lf.size());
+            stripped = true;
+            break;
+          }
+        }
+      }
+      return s;
+    };
+
     auto stripPrefixes = [&](const std::vector<std::string> & prefixes) -> std::string {
       for (const auto & p : prefixes) {
         const auto pos = norm.find(p);
         if (pos != std::string::npos) {
-          std::string rem = norm.substr(pos + p.size());
-          while (!rem.empty() && rem.front() == ' ') {
-            rem.erase(rem.begin());
-          }
+          std::string rem = stripLeadingFillers(norm.substr(pos + p.size()));
           if (!rem.empty() && countWords(rem) <= 3) {
             return capitalizeWords(rem);
           }
         }
       }
       if (countWords(norm) <= 2) {
-        return capitalizeWords(norm);
+        std::string rem = stripLeadingFillers(norm);
+        if (!rem.empty()) {
+          return capitalizeWords(rem);
+        }
       }
       return "";
     };
