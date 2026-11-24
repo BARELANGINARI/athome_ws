@@ -63,7 +63,7 @@ enum class RestaurantState {
   FIND_AND_ALIGN_BARMAN,          // 7b. Cari & arahkan kamera ke barman (< 1.5 m, tengah frame)
   ANNOUNCE_ORDER_TO_BARMAN,       // 8a. "The first/second customer order..." -> "please place {order_1}..."
   DETECT_AND_NAV_TO_ORDER1,       // 8b. Deteksi posisi {order_1} & navigasi ke posisi tersebut
-  GRASP_ORDER1,                   // 8c. Panggil srv /arm/ambil_tas_simple -> instruksi taruh {order_2} di tray
+  GRASP_ORDER1,                   // 8c. Panggil srv /arm/ambil_order -> instruksi taruh {order_2} di tray
   WAIT_TRAY_SILENT_5S,            // 8d. Diam selama 5 detik menunggu {order_2} ditaruh di tray
   ASK_TRAY_CONFIRMATION,          // 8e. "is the order had take in the tray, please answer with yes robot or no robot"
   WAIT_TRAY_CONFIRMATION,         // 8f. Menunggu jawaban yes robot / no robot
@@ -223,67 +223,37 @@ public:
   : Node("restaurant_manager")
   {
     // --------------------------------------------------------------------------
-    // Deklarasi Parameter Konfigurasi
+    // Baca Seluruh Parameter Konfigurasi (Wajib dari restaurant_params.yaml)
     // --------------------------------------------------------------------------
-    declare_parameter<double>("origin_x", 0.0);
-    declare_parameter<double>("origin_y", 0.0);
-    declare_parameter<double>("origin_yaw", 0.0);
-    declare_parameter<bool>("capture_tf_origin_on_init", true);
-    declare_parameter<std::string>("global_frame", "map");
-    declare_parameter<std::string>("base_frame", "base_link");
-    declare_parameter<std::string>("order_frame", "base_link");
-    declare_parameter<double>("customer_standoff_distance", 1.0);
-    declare_parameter<double>("object_standoff_distance", 0.45);
-    declare_parameter<bool>("adaptive_standoff_enabled", true);
-    declare_parameter<double>("adaptive_standoff_min", 1.0);
-    declare_parameter<double>("adaptive_standoff_max", 1.6);
-    declare_parameter<double>("adaptive_standoff_step", 0.05);
-    declare_parameter<int>("costmap_obstacle_threshold", 60);
-    declare_parameter<std::string>("costmap_topic", "/global_costmap/costmap");
-    declare_parameter<double>("robot_radius", 0.24);
-    declare_parameter<double>("nav_timeout_sec", 120.0);
-    declare_parameter<double>("order1_detect_timeout_sec", 8.0);
-    declare_parameter<int>("max_customers", 2);
+    origin_x_ = requireYamlParameter<double>("origin_x");
+    origin_y_ = requireYamlParameter<double>("origin_y");
+    origin_yaw_ = requireYamlParameter<double>("origin_yaw");
+    capture_tf_origin_on_init_ = requireYamlParameter<bool>("capture_tf_origin_on_init");
+    global_frame_ = requireYamlParameter<std::string>("global_frame");
+    base_frame_ = requireYamlParameter<std::string>("base_frame");
+    order_frame_ = requireYamlParameter<std::string>("order_frame");
+    customer_standoff_dist_ = requireYamlParameter<double>("customer_standoff_distance");
+    object_standoff_dist_ = requireYamlParameter<double>("object_standoff_distance");
+    adaptive_standoff_enabled_ = requireYamlParameter<bool>("adaptive_standoff_enabled");
+    adaptive_standoff_min_ = requireYamlParameter<double>("adaptive_standoff_min");
+    adaptive_standoff_max_ = requireYamlParameter<double>("adaptive_standoff_max");
+    adaptive_standoff_step_ = requireYamlParameter<double>("adaptive_standoff_step");
+    costmap_obstacle_threshold_ = requireYamlParameter<int>("costmap_obstacle_threshold");
+    costmap_topic_ = requireYamlParameter<std::string>("costmap_topic");
+    robot_radius_ = requireYamlParameter<double>("robot_radius");
+    nav_timeout_sec_ = requireYamlParameter<double>("nav_timeout_sec");
+    order1_detect_timeout_sec_ = requireYamlParameter<double>("order1_detect_timeout_sec");
+    max_customers_ = std::max(1, requireYamlParameter<int>("max_customers"));
 
-    declare_parameter<double>("global_timeout_sec", 900.0);
-    declare_parameter<double>("dialog_reprompt_sec", 12.0);
-    declare_parameter<double>("wave_reprompt_sec", 10.0);
-    declare_parameter<double>("tts_min_timeout_sec", 4.0);
-    declare_parameter<double>("tts_sec_per_word", 0.5);
-    declare_parameter<double>("tts_timeout_margin_sec", 2.0);
-    declare_parameter<double>("nav_retry_cooldown_sec", 2.0);
-    declare_parameter<double>("tray_wait_sec", 10.0);
-    declare_parameter<double>("tts_post_delay_sec", 2.0);
-
-    origin_x_ = get_parameter("origin_x").as_double();
-    origin_y_ = get_parameter("origin_y").as_double();
-    origin_yaw_ = get_parameter("origin_yaw").as_double();
-    capture_tf_origin_on_init_ = get_parameter("capture_tf_origin_on_init").as_bool();
-    global_frame_ = get_parameter("global_frame").as_string();
-    base_frame_ = get_parameter("base_frame").as_string();
-    order_frame_ = get_parameter("order_frame").as_string();
-    customer_standoff_dist_ = get_parameter("customer_standoff_distance").as_double();
-    object_standoff_dist_ = get_parameter("object_standoff_distance").as_double();
-    adaptive_standoff_enabled_ = get_parameter("adaptive_standoff_enabled").as_bool();
-    adaptive_standoff_min_ = get_parameter("adaptive_standoff_min").as_double();
-    adaptive_standoff_max_ = get_parameter("adaptive_standoff_max").as_double();
-    adaptive_standoff_step_ = get_parameter("adaptive_standoff_step").as_double();
-    costmap_obstacle_threshold_ = get_parameter("costmap_obstacle_threshold").as_int();
-    costmap_topic_ = get_parameter("costmap_topic").as_string();
-    robot_radius_ = get_parameter("robot_radius").as_double();
-    nav_timeout_sec_ = get_parameter("nav_timeout_sec").as_double();
-    order1_detect_timeout_sec_ = get_parameter("order1_detect_timeout_sec").as_double();
-    max_customers_ = std::max(1, static_cast<int>(get_parameter("max_customers").as_int()));
-
-    global_timeout_sec_ = get_parameter("global_timeout_sec").as_double();
-    dialog_reprompt_sec_ = get_parameter("dialog_reprompt_sec").as_double();
-    wave_reprompt_sec_ = get_parameter("wave_reprompt_sec").as_double();
-    tts_min_timeout_sec_ = get_parameter("tts_min_timeout_sec").as_double();
-    tts_sec_per_word_ = get_parameter("tts_sec_per_word").as_double();
-    tts_timeout_margin_sec_ = get_parameter("tts_timeout_margin_sec").as_double();
-    nav_retry_cooldown_sec_ = get_parameter("nav_retry_cooldown_sec").as_double();
-    tray_wait_sec_ = std::max(0.0, get_parameter("tray_wait_sec").as_double());
-    tts_post_delay_sec_ = std::max(0.0, get_parameter("tts_post_delay_sec").as_double());
+    global_timeout_sec_ = requireYamlParameter<double>("global_timeout_sec");
+    dialog_reprompt_sec_ = requireYamlParameter<double>("dialog_reprompt_sec");
+    wave_reprompt_sec_ = requireYamlParameter<double>("wave_reprompt_sec");
+    tts_min_timeout_sec_ = requireYamlParameter<double>("tts_min_timeout_sec");
+    tts_sec_per_word_ = requireYamlParameter<double>("tts_sec_per_word");
+    tts_timeout_margin_sec_ = requireYamlParameter<double>("tts_timeout_margin_sec");
+    nav_retry_cooldown_sec_ = requireYamlParameter<double>("nav_retry_cooldown_sec");
+    tray_wait_sec_ = std::max(0.0, requireYamlParameter<double>("tray_wait_sec"));
+    tts_post_delay_sec_ = std::max(0.0, requireYamlParameter<double>("tts_post_delay_sec"));
     tts_timeout_sec_ = tts_min_timeout_sec_;
 
     // TF2 Buffer & Listener
@@ -384,7 +354,7 @@ public:
 
     // Arm Services
     arm_grab_simple_client_ = create_client<Trigger>(
-      "/arm/ambil_tas_simple", rclcpp::ServicesQoS(), callback_group_);
+      "/arm/ambil_order", rclcpp::ServicesQoS(), callback_group_);
     arm_release_client_ = create_client<Trigger>(
       "/arm/release_gripper", rclcpp::ServicesQoS(), callback_group_);
     arm_letakkan_client_ = create_client<Trigger>(
@@ -410,35 +380,51 @@ public:
   }
 
 private:
-  // ----------------------------------------------------------------------------
-  // Parameter Waktu & Timeout (Dapat dikonfigurasi via YAML)
-  // ----------------------------------------------------------------------------
-  double global_timeout_sec_{900.0};
-  double dialog_reprompt_sec_{12.0};
-  double wave_reprompt_sec_{10.0};
-  double tts_min_timeout_sec_{4.0};
-  double tts_sec_per_word_{0.5};
-  double tts_timeout_margin_sec_{2.0};
-  double nav_retry_cooldown_sec_{2.0};
-  double tray_wait_sec_{10.0};
-  double tts_post_delay_sec_{2.0};
+  template<typename T>
+  T requireYamlParameter(const std::string & name)
+  {
+    try {
+      rcl_interfaces::msg::ParameterDescriptor desc;
+      desc.read_only = true;
+      return declare_parameter<T>(name, desc);
+    } catch (const std::exception & e) {
+      RCLCPP_FATAL(
+        get_logger(),
+        "Parameter '%s' wajib diatur di file YAML (restaurant_params.yaml)! Error: %s",
+        name.c_str(), e.what());
+      throw;
+    }
+  }
 
   // ----------------------------------------------------------------------------
-  // Parameter & State Variables
+  // Parameter Waktu & Timeout (Diisi penuh dari restaurant_params.yaml)
+  // ----------------------------------------------------------------------------
+  double global_timeout_sec_{0.0};
+  double dialog_reprompt_sec_{0.0};
+  double wave_reprompt_sec_{0.0};
+  double tts_min_timeout_sec_{0.0};
+  double tts_sec_per_word_{0.0};
+  double tts_timeout_margin_sec_{0.0};
+  double nav_retry_cooldown_sec_{0.0};
+  double tray_wait_sec_{0.0};
+  double tts_post_delay_sec_{0.0};
+
+  // ----------------------------------------------------------------------------
+  // Parameter & State Variables (Diisi penuh dari restaurant_params.yaml)
   // ----------------------------------------------------------------------------
   double origin_x_{0.0};
   double origin_y_{0.0};
   double origin_yaw_{0.0};
-  bool capture_tf_origin_on_init_{true};
+  bool capture_tf_origin_on_init_{false};
   bool origin_initialized_{false};
-  std::string global_frame_{"map"};
-  std::string base_frame_{"base_link"};
-  std::string order_frame_{"base_link"};
-  double customer_standoff_dist_{0.85};
-  double object_standoff_dist_{0.45};
-  double nav_timeout_sec_{120.0};
-  double order1_detect_timeout_sec_{8.0};
-  int max_customers_{2};
+  std::string global_frame_;
+  std::string base_frame_;
+  std::string order_frame_;
+  double customer_standoff_dist_{0.0};
+  double object_standoff_dist_{0.0};
+  double nav_timeout_sec_{0.0};
+  double order1_detect_timeout_sec_{0.0};
+  int max_customers_{0};
 
   std::atomic<RestaurantState> state_{RestaurantState::INIT};
   std::atomic<bool> speaking_{false};
@@ -523,8 +509,8 @@ private:
 
   // Adaptive Standoff Settings & State
   bool adaptive_standoff_enabled_{true};
-  double adaptive_standoff_min_{1.0};
-  double adaptive_standoff_max_{1.60};
+  double adaptive_standoff_min_{0.85};
+  double adaptive_standoff_max_{1.40};
   double adaptive_standoff_step_{0.05};
   int costmap_obstacle_threshold_{60};
   std::string costmap_topic_{"/global_costmap/costmap"};
@@ -2254,12 +2240,12 @@ private:
             [this](bool /*nav_ok*/) {
               transitionTo(
                 RestaurantState::GRASP_ORDER1,
-                "Reached order_1 position, calling /arm/ambil_tas_simple");
+                "Reached order_1 position, calling /arm/ambil_order");
             });
         } else if ((now() - state_enter_time_).seconds() >= order1_detect_timeout_sec_) {
           RCLCPP_WARN(
             get_logger(),
-            "[ORDER_1] Timeout %.1fs menunggu deteksi 3D '%s', langsung memanggil /arm/ambil_tas_simple di posisi saat ini.",
+            "[ORDER_1] Timeout %.1fs menunggu deteksi 3D '%s', langsung memanggil /arm/ambil_order di posisi saat ini.",
             order1_detect_timeout_sec_, o1.c_str());
           transitionTo(
             RestaurantState::GRASP_ORDER1,
@@ -2298,11 +2284,11 @@ private:
         }
 
         callTrigger(
-          arm_grab_simple_client_, "/arm/ambil_tas_simple",
+          arm_grab_simple_client_, "/arm/ambil_order",
           [this](bool ok, const std::string & msg) {
             RCLCPP_INFO(
               get_logger(),
-              "[ARM] /arm/ambil_tas_simple finished (ok=%s, msg='%s')",
+              "[ARM] /arm/ambil_order finished (ok=%s, msg='%s')",
               ok ? "true" : "false", msg.c_str());
 
             std::string o2;

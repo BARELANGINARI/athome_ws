@@ -104,9 +104,12 @@ public:
     declare_parameter<std::string>("guest_1_name_topic", "/vision/guest_1_name");
     declare_parameter<std::string>("guest_2_name_topic", "/vision/guest_2_name");
     declare_parameter<double>("host_seated_max_dist", 3.0);
-    declare_parameter<double>("guest_door_distance", 1.0);
+    declare_parameter<double>("guest_door_distance", 1.5);
     declare_parameter<double>("guest_door_step_back_speed", 0.16);
     declare_parameter<double>("guest_door_timeout_sec", 15.0);
+    declare_parameter<double>("guest_approach_distance", 0.7);
+    declare_parameter<double>("guest_approach_speed", 0.16);
+    declare_parameter<double>("guest_approach_timeout_sec", 15.0);
     declare_parameter<double>("guest_door_align_tolerance", 0.07);
     declare_parameter<double>("face_person_angular_speed", 0.30);
     declare_parameter<double>("face_person_timeout_sec", 25.0);
@@ -134,10 +137,10 @@ public:
     declare_parameter<int>("search_chair_confirm_frames", 2);
     declare_parameter<double>("search_chair_sweep_angle_deg", 30.0);
     declare_parameter<double>("chair_max_dist", 3.0);
-    declare_parameter<double>("align_chair_p_gain", 1.2);
-    declare_parameter<double>("align_chair_min_speed", 0.14);
+    declare_parameter<double>("align_chair_p_gain", 1.5);
+    declare_parameter<double>("align_chair_min_speed", 0.12);
     declare_parameter<double>("align_chair_max_speed", 0.28);
-    declare_parameter<double>("align_chair_tolerance_rad", 0.07);
+    declare_parameter<double>("align_chair_tolerance_rad", 0.035);
     camera_width_ = 672;
     declare_parameter<int>("camera_width", 672);
 
@@ -153,6 +156,9 @@ public:
     guest_door_distance_ = get_parameter("guest_door_distance").as_double();
     guest_door_step_back_speed_ = get_parameter("guest_door_step_back_speed").as_double();
     guest_door_timeout_sec_ = get_parameter("guest_door_timeout_sec").as_double();
+    guest_approach_distance_ = get_parameter("guest_approach_distance").as_double();
+    guest_approach_speed_ = get_parameter("guest_approach_speed").as_double();
+    guest_approach_timeout_sec_ = get_parameter("guest_approach_timeout_sec").as_double();
     guest_door_align_tolerance_ = get_parameter("guest_door_align_tolerance").as_double();
     face_person_angular_speed_ = get_parameter("face_person_angular_speed").as_double();
     face_person_timeout_sec_ = get_parameter("face_person_timeout_sec").as_double();
@@ -242,6 +248,18 @@ public:
       },
       sub_opts);
 
+    // Fallback subscriber dari receptionist_manager jika topic berbeda
+    if (guest_1_name_topic_ != "/receptionist/guest_1_name") {
+      guest_1_name_fallback_sub_ = create_subscription<std_msgs::msg::String>(
+        "/receptionist/guest_1_name", 10,
+        [this](const std_msgs::msg::String::SharedPtr msg) {
+          if (!msg || msg->data.empty()) return;
+          std::lock_guard<std::mutex> lock(guest_mutex_);
+          guest_1_name_ = msg->data;
+        },
+        sub_opts);
+    }
+
     guest_2_name_sub_ = create_subscription<std_msgs::msg::String>(
       guest_2_name_topic_, 10,
       [this](const std_msgs::msg::String::SharedPtr msg) {
@@ -250,6 +268,17 @@ public:
         guest_2_name_ = msg->data;
       },
       sub_opts);
+
+    if (guest_2_name_topic_ != "/receptionist/guest_2_name") {
+      guest_2_name_fallback_sub_ = create_subscription<std_msgs::msg::String>(
+        "/receptionist/guest_2_name", 10,
+        [this](const std_msgs::msg::String::SharedPtr msg) {
+          if (!msg || msg->data.empty()) return;
+          std::lock_guard<std::mutex> lock(guest_mutex_);
+          guest_2_name_ = msg->data;
+        },
+        sub_opts);
+    }
 
     // Action client Nav2
     nav_client_ = rclcpp_action::create_client<NavigateToPose>(
@@ -363,6 +392,15 @@ public:
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
         handleAdjustGuest(req, res);
+      },
+      rclcpp::ServicesQoS(),
+      srv_cb_group_);
+
+    srv_approach_guest_ = create_service<std_srvs::srv::Trigger>(
+      "/receptionist/approach_guest",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+        handleApproachGuest(req, res);
       },
       rclcpp::ServicesQoS(),
       srv_cb_group_);
@@ -938,6 +976,11 @@ public:
         angle = -((cx - half_w) / half_w) * 0.75;
       }
 
+      const bool is_sitting = (label_lower.find("seated") != std::string::npos ||
+                               label_lower.find("sitting") != std::string::npos ||
+                               label_lower.find("duduk") != std::string::npos ||
+                               item.find("sitting=1") != std::string::npos);
+
       // Evaluasi apakah orang ini sesuai dengan target_role
       bool is_match = false;
       double priority = 0.0;
@@ -947,54 +990,93 @@ public:
         // Tamu di pintu: prioritaskan orang terdekat dan paling lurus di depan kamera
         priority = 100.0 - (dist * 10.0) - (std::abs(angle) * 5.0);
       } else if (target_role == "host" || target_role == "guest") {
+        // GATING POSTUR & JARAK: Tamu yang sedang dipandu berdiri dekat robot (< 1.4m)
+        // BUKAN Host di ruang tamu!
+        if (!is_sitting && dist < 1.4) {
+          continue;
+        }
+
         if (!host_name_lower.empty() && label_lower.find(host_name_lower) != std::string::npos) {
           is_match = true;
           priority = 100.0;
         } else if (label_lower.find("host") != std::string::npos) {
           is_match = true;
-          priority = 85.0;
-        } else if ((label_lower.find("seated") != std::string::npos ||
-                    label_lower.find("sitting") != std::string::npos ||
-                    label_lower.find("duduk") != std::string::npos) &&
-                   dist < host_seated_max_dist_) {
-          // Logic OR: orang yang sedang duduk (seated) jika jarak < 3.0m
-          is_match = true;
-          priority = 90.0;
+          priority = 95.0;
+        } else if (is_sitting && dist < host_seated_max_dist_) {
+          // Orang duduk di kursi yang bukan Guest 1 atau Guest 2
+          const bool is_g1 = !guest_1_name_lower.empty() && label_lower.find(guest_1_name_lower) != std::string::npos;
+          const bool is_g2 = !guest_2_name_lower.empty() && label_lower.find(guest_2_name_lower) != std::string::npos;
+          if (!is_g1 && !is_g2) {
+            is_match = true;
+            priority = 90.0;
+          }
         } else if ((label_lower == "guest" || label_lower == "person" || label_lower == "unknown") &&
                    (guest_1_name_lower.empty() || label_lower.find(guest_1_name_lower) == std::string::npos) &&
                    (guest_2_name_lower.empty() || label_lower.find(guest_2_name_lower) == std::string::npos) &&
                    dist < 5.0) {
-          // Fallback jika Host belum dikenali oleh face recognition (athome_vision melabeli "guest"/"person")
-          is_match = true;
-          priority = (label_lower == "guest") ? 90.0 - (dist * 5.0) : 80.0 - (dist * 5.0);
+          // Fallback jika belum dikenali wajah: hanya terima jika duduk atau berada di area duduk (>= 1.5m)
+          if (is_sitting || dist >= 1.5) {
+            is_match = true;
+            priority = is_sitting ? 85.0 : (70.0 - dist);
+          }
         }
       } else if (target_role == "guest_1") {
+        // GATING POSTUR & JARAK: Di Cycle 2 Guest 1 sudah duduk di ruang tamu.
+        // Tamu yang berdiri dekat robot (< 1.4m) adalah Guest 2, BUKAN Guest 1!
+        if (!is_sitting && dist < 1.4) {
+          continue;
+        }
+
         if (!guest_1_name_lower.empty() && label_lower.find(guest_1_name_lower) != std::string::npos) {
           is_match = true;
           priority = 100.0;
         } else if (label_lower.find("guest_1") != std::string::npos || label_lower.find("guest 1") != std::string::npos) {
           is_match = true;
-          priority = 70.0;
+          priority = 90.0;
+        } else if (is_sitting && dist < host_seated_max_dist_) {
+          const bool is_host = (!host_name_lower.empty() && label_lower.find(host_name_lower) != std::string::npos) ||
+                               label_lower.find("host") != std::string::npos;
+          const bool is_g2 = !guest_2_name_lower.empty() && label_lower.find(guest_2_name_lower) != std::string::npos;
+          if (!is_host && !is_g2) {
+            is_match = true;
+            priority = 80.0;
+          }
         } else if ((guest_2_name_lower.empty() || label_lower.find(guest_2_name_lower) == std::string::npos) &&
                    (host_name_lower.empty() || label_lower.find(host_name_lower) == std::string::npos) &&
                    label_lower.find("host") == std::string::npos) {
-          // Fallback kandidat: orang yang bukan host dan bukan guest 2
-          is_match = true;
-          priority = 20.0;
+          if (is_sitting || dist >= 1.5) {
+            is_match = true;
+            priority = is_sitting ? 75.0 : (60.0 - dist);
+          }
         }
       } else if (target_role == "guest_2") {
+        // GATING POSTUR & JARAK: Host dan Guest 1 sedang duduk di kursi (> 1.4m dan duduk).
+        // Jangan pilih orang duduk jauh sebagai Guest 2!
+        if (is_sitting && dist > 1.4) {
+          continue;
+        }
+
         if (!guest_2_name_lower.empty() && label_lower.find(guest_2_name_lower) != std::string::npos) {
           is_match = true;
           priority = 100.0;
         } else if (label_lower.find("guest_2") != std::string::npos || label_lower.find("guest 2") != std::string::npos) {
           is_match = true;
-          priority = 70.0;
+          priority = 90.0;
+        } else if (!is_sitting && dist < 1.8) {
+          const bool is_host = (!host_name_lower.empty() && label_lower.find(host_name_lower) != std::string::npos) ||
+                               label_lower.find("host") != std::string::npos;
+          const bool is_g1 = !guest_1_name_lower.empty() && label_lower.find(guest_1_name_lower) != std::string::npos;
+          if (!is_host && !is_g1) {
+            is_match = true;
+            priority = 85.0 - (dist * 5.0);
+          }
         } else if ((guest_1_name_lower.empty() || label_lower.find(guest_1_name_lower) == std::string::npos) &&
                    (host_name_lower.empty() || label_lower.find(host_name_lower) == std::string::npos) &&
                    label_lower.find("host") == std::string::npos) {
-          // Fallback kandidat: orang yang bukan host dan bukan guest 1
-          is_match = true;
-          priority = 20.0;
+          if (!is_sitting && dist < 2.2) {
+            is_match = true;
+            priority = 50.0 - (dist * 5.0);
+          }
         }
       }
 
@@ -1372,7 +1454,14 @@ public:
           const double abs_yaw = normalize_angle(cur_yaw + rel_ang);
           const bool is_seated = (lbl_lower.find("seated") != std::string::npos ||
                                   lbl_lower.find("sitting") != std::string::npos ||
-                                  lbl_lower.find("duduk") != std::string::npos);
+                                  lbl_lower.find("duduk") != std::string::npos ||
+                                  item.find("sitting=1") != std::string::npos);
+
+          // GATING: Abaikan tamu yang sedang berdiri dekat robot (< 1.4m)
+          // Di Cycle 2 ini adalah Guest 2 yang sedang dipandu; bukan orang di kursi living room!
+          if (!is_seated && dist < 1.4) {
+            continue;
+          }
 
           const bool matches_host = (!host_lower.empty() && lbl_lower.find(host_lower) != std::string::npos) ||
                                     (lbl_lower.find("host") != std::string::npos);
@@ -1387,9 +1476,11 @@ public:
             record_cluster_vote(abs_yaw, dist, ClusterRoleVote::HOST_NAME);
           } else if (is_guest2_session && matches_g1 && !matches_host && !matches_g2) {
             record_cluster_vote(abs_yaw, dist, ClusterRoleVote::G1_NAME);
-          } else if (is_unnamed_guest) {
-            // Guest tanpa nama di living room dijadikan Host sementara
-            record_seated_slot(abs_yaw, dist);
+          } else if (is_unnamed_guest && (is_seated || dist >= 1.5)) {
+            // Guest tanpa nama di area tempat duduk living room dijadikan Host sementara
+            if (is_seated) {
+              record_seated_slot(abs_yaw, dist);
+            }
             record_cluster_vote(abs_yaw, dist, ClusterRoleVote::UNNAMED_GUEST);
           }
 
@@ -1662,18 +1753,58 @@ public:
       aligned = rotateToAbsYaw(locked_empty_yaw, is_searching_chair_,
         align_chair_tolerance_rad_, align_chair_p_gain_,
         align_chair_min_speed_, align_chair_max_speed_, 6.0, "CHAIR");
-      chair_found = true;
-      current_target.valid = true;
-      current_target.dist = 1.8;
-      current_target.side = "locked";
-      current_target.raw_info = "locked_empty_chair";
+      stopRobot();
+
+      // Beri jeda sejenak untuk kamera stabil dan deteksi kursi langsung di hadapan
+      for (int i = 0; i < 20 && rclcpp::ok() && is_searching_chair_.load(); ++i) {
+        EmptyChairTarget t = get_current_empty_chair();
+        if (t.valid && t.dist < chair_max_dist_) {
+          current_target = t;
+          chair_found = true;
+          break;
+        }
+        loop_rate.sleep();
+      }
+
+      if (!chair_found) {
+        current_target.valid = true;
+        current_target.dist = 1.8;
+        current_target.side = "locked";
+        current_target.raw_info = "locked_empty_chair";
+        chair_found = true;
+      }
     }
 
-    // ALIGN: Langsung memutar hadap robot tepat ke arah kursi kosong terdekat
-    if (chair_found && !locked_empty_used) {
+    // Jika kursi belum terdeteksi (baik di FOV awal maupun via locked yaw), lakukan sweep scanning terbatas
+    if (!chair_found) {
+      const double sweep_rad = search_chair_sweep_angle_deg_ * M_PI / 180.0;
+      double cur_yaw = 0.0;
+      if (getRobotYaw(cur_yaw)) {
+        for (double offset : {sweep_rad, -sweep_rad}) {
+          if (!rclcpp::ok() || !is_searching_chair_.load()) break;
+          rotateToAbsYaw(normalize_angle(cur_yaw + offset), is_searching_chair_,
+            align_chair_tolerance_rad_, align_chair_p_gain_,
+            align_chair_min_speed_, align_chair_max_speed_, 3.5, "SWEEP_CHAIR");
+          stopRobot();
+          for (int i = 0; i < 15 && rclcpp::ok() && is_searching_chair_.load(); ++i) {
+            EmptyChairTarget t = get_current_empty_chair();
+            if (t.valid && t.dist < chair_max_dist_) {
+              chair_found = true;
+              current_target = t;
+              break;
+            }
+            loop_rate.sleep();
+          }
+          if (chair_found) break;
+        }
+      }
+    }
+
+    // ALIGN: Sempurnakan hadap robot agar tepat presisi di titik tengah kursi via visual feedback
+    if (chair_found && current_target.valid && current_target.side != "locked") {
       RCLCPP_INFO(
         get_logger(),
-        "\033[1;32m[CHAIR]\033[0m Target: %s (%.2fm, %s), aligning...",
+        "\033[1;32m[CHAIR]\033[0m Target: %s (%.2fm, %s), visual aligning...",
         current_target.raw_info.c_str(), current_target.dist, current_target.side.c_str());
       publishStatus("Empty chair in view! Aligning robot heading to face chair...");
 
@@ -1681,7 +1812,7 @@ public:
         aligned = true;
         RCLCPP_INFO(
           get_logger(),
-          "\033[1;32m[CHAIR]\033[0m Aligned: err=%.2frad",
+          "\033[1;32m[CHAIR]\033[0m Already aligned: err=%.2frad",
           current_target.angle_err);
       } else {
         auto align_start_time = now();
@@ -1704,7 +1835,7 @@ public:
 
           if (std::abs(err) <= align_chair_tolerance_rad_) {
             centered_frames++;
-            if (centered_frames >= 2) { // Terpusat stabil selama ~100 ms
+            if (centered_frames >= 5) { // Terpusat stabil selama ~250 ms
               aligned = true;
               break;
             }
@@ -1713,15 +1844,17 @@ public:
           }
 
           // P-controller untuk memutar hadap robot ke arah kursi
-          double w = align_chair_p_gain_ * err;
-          double spd = std::abs(w);
-          if (spd < align_chair_min_speed_) {
-            spd = align_chair_min_speed_;
-          } else if (spd > align_chair_max_speed_) {
-            spd = align_chair_max_speed_;
+          double angular_z = 0.0;
+          if (std::abs(err) > align_chair_tolerance_rad_) {
+            double w = align_chair_p_gain_ * err;
+            double spd = std::abs(w);
+            if (spd < align_chair_min_speed_) {
+              spd = align_chair_min_speed_;
+            } else if (spd > align_chair_max_speed_) {
+              spd = align_chair_max_speed_;
+            }
+            angular_z = (err >= 0.0) ? spd : -spd;
           }
-
-          double angular_z = (err >= 0.0) ? spd : -spd;
 
           geometry_msgs::msg::Twist twist;
           twist.linear.x = 0.0;
@@ -1824,22 +1957,20 @@ public:
       }
     }
 
+    bool aligned_locked = false;
     if (use_locked_yaw) {
       RCLCPP_INFO(
         get_logger(),
         "\033[1;32m[FACE PERSON]\033[0m Rotating to locked %s yaw: %.2f rad (%.1f deg)",
         display_name.c_str(), target_locked_yaw, target_locked_yaw * 180.0 / M_PI);
-      const bool aligned_locked = rotateToAbsYaw(
+      aligned_locked = rotateToAbsYaw(
         target_locked_yaw, is_facing_person_,
         face_person_tolerance_rad_, face_person_p_gain_,
         face_person_min_speed_, face_person_max_speed_, 6.0, "FACE PERSON");
-      is_facing_person_ = false;
-      res->success = true;
-      res->message = "Robot aligned to locked " + display_name +
-                     (aligned_locked ? " (exact)" : " (approx)");
-      publishStatus(res->message);
-      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Face: %s", res->message.c_str());
-      return;
+
+      // Berhenti sejenak untuk menstabilkan kamera dan mengecek fine-centering visual
+      stopRobot();
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
 
     auto get_current_person_target = [this, &target_role]() -> PersonTarget {
@@ -1967,6 +2098,11 @@ public:
     } else if (person_found && !aligned) {
       res->success = true;
       res->message = "Robot aligned approximately facing " + display_name + " (detected: " + current_target.label + ")";
+      publishStatus(res->message);
+      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Face: %s", res->message.c_str());
+    } else if (use_locked_yaw) {
+      res->success = true;
+      res->message = "Robot aligned to locked " + display_name + (aligned_locked ? " (exact)" : " (approx)");
       publishStatus(res->message);
       RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Face: %s", res->message.c_str());
     } else {
@@ -2123,6 +2259,160 @@ public:
                    std::to_string(guest_door_distance_) + "m)";
     publishStatus(res->message);
     RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Align: %s", res->message.c_str());
+  }
+
+  void handleApproachGuest(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_turning_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy turning";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_navigating_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy with navigation task";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_searching_chair_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy searching for a chair";
+      publishStatus(res->message);
+      return;
+    }
+    if (is_facing_person_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is already busy adjusting facing or position";
+      publishStatus(res->message);
+      return;
+    }
+
+    publishStatus(
+      "Service /receptionist/approach_guest called: Aligning and approaching guest to " +
+      std::to_string(guest_approach_distance_) + "m...");
+
+    auto get_door_guest_target = [this]() -> PersonTarget {
+      std::lock_guard<std::mutex> lock(person_mutex_);
+      if (person_detected_ && (now() - last_person_time_).seconds() < 1.0) {
+        return parseTargetPerson(latest_persons_str_, "door_guest");
+      }
+      return PersonTarget();
+    };
+
+    rclcpp::Rate loop_rate(20.0);
+    bool guest_found = false;
+    PersonTarget current_target;
+
+    for (int i = 0; i < 20; ++i) {
+      PersonTarget t = get_door_guest_target();
+      if (t.valid) {
+        guest_found = true;
+        current_target = t;
+        break;
+      }
+      loop_rate.sleep();
+    }
+
+    if (!guest_found) {
+      stopRobot();
+      is_facing_person_ = false;
+      res->success = false;
+      res->message = "No guest detected in front to approach";
+      publishStatus(res->message);
+      RCLCPP_WARN(get_logger(), "\033[1;33m[APPROACH GUEST]\033[0m %s", res->message.c_str());
+      return;
+    }
+
+    // FASE 1: Align heading toward guest before moving forward
+    {
+      int centered_frames = 0;
+      auto align_start_time = now();
+      const double align_timeout = 5.0;
+
+      while (rclcpp::ok() && is_facing_person_.load()) {
+        if ((now() - align_start_time).seconds() > align_timeout) {
+          break;
+        }
+        PersonTarget t = get_door_guest_target();
+        if (t.valid) {
+          current_target = t;
+        }
+        const double err = current_target.angle_err;
+        if (std::abs(err) <= guest_door_align_tolerance_) {
+          centered_frames++;
+          if (centered_frames >= 3) {
+            break;
+          }
+        } else {
+          centered_frames = 0;
+        }
+
+        double w = face_person_p_gain_ * err;
+        double spd = std::clamp(std::abs(w), face_person_min_speed_, face_person_max_speed_);
+
+        geometry_msgs::msg::Twist twist;
+        twist.angular.z = (err >= 0.0) ? spd : -spd;
+        cmd_vel_pub_->publish(twist);
+        loop_rate.sleep();
+      }
+      stopRobot();
+    }
+
+    // FASE 2: Maju perlahan hingga jarak mencapai <= guest_approach_distance_ (0.7m)
+    auto approach_start = now();
+    auto last_valid_time = now();
+    int reached_dist_frames = 0;
+    bool target_lost = false;
+
+    while (rclcpp::ok() && is_facing_person_.load()) {
+      if ((now() - approach_start).seconds() > guest_approach_timeout_sec_) {
+        RCLCPP_WARN(get_logger(), "[APPROACH GUEST] Timeout reached (%.1fs)", guest_approach_timeout_sec_);
+        break;
+      }
+
+      PersonTarget t = get_door_guest_target();
+      if (t.valid) {
+        current_target = t;
+        last_valid_time = now();
+      } else if ((now() - last_valid_time).seconds() > 1.0) {
+        RCLCPP_WARN(get_logger(), "[APPROACH GUEST] Guest lost during approach; stopping safely.");
+        target_lost = true;
+        break;
+      }
+
+      if (current_target.dist <= guest_approach_distance_) {
+        reached_dist_frames++;
+        if (reached_dist_frames >= 2) {
+          break;
+        }
+      } else {
+        reached_dist_frames = 0;
+      }
+
+      geometry_msgs::msg::Twist twist;
+      twist.linear.x = std::abs(guest_approach_speed_);
+      if (std::abs(current_target.angle_err) > 0.10) {
+        twist.angular.z = (current_target.angle_err >= 0.0) ? 0.12 : -0.12;
+      } else {
+        twist.angular.z = 0.0;
+      }
+      cmd_vel_pub_->publish(twist);
+      loop_rate.sleep();
+    }
+
+    stopRobot();
+    is_facing_person_ = false;
+
+    res->success = !target_lost;
+    res->message = target_lost
+      ? "Stopped approach early: guest lost from view (dist=" + std::to_string(current_target.dist) + "m)"
+      : "Guest approach completed (dist=" + std::to_string(current_target.dist) +
+        "m, target=" + std::to_string(guest_approach_distance_) + "m)";
+    publishStatus(res->message);
+    RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Approach: %s", res->message.c_str());
   }
 
   static double normalize_angle(double angle)
@@ -2471,9 +2761,12 @@ private:
   std::string guest_1_name_topic_{"/vision/guest_1_name"};
   std::string guest_2_name_topic_{"/vision/guest_2_name"};
   double host_seated_max_dist_{3.0};
-  double guest_door_distance_{1.0};
+  double guest_door_distance_{1.5};
   double guest_door_step_back_speed_{0.16};
   double guest_door_timeout_sec_{15.0};
+  double guest_approach_distance_{0.7};
+  double guest_approach_speed_{0.16};
+  double guest_approach_timeout_sec_{15.0};
   double guest_door_align_tolerance_{0.07};
   double face_person_angular_speed_{0.30};
   double face_person_timeout_sec_{25.0};
@@ -2493,7 +2786,9 @@ private:
 
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr guest_1_name_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr guest_1_name_fallback_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr guest_2_name_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr guest_2_name_fallback_sub_;
 
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_host_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_guest_1_;
@@ -2502,6 +2797,7 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_face_guest_2_alias_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_adjust_guest_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_adjust_guest_alias_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_approach_guest_;
 
   // 90-degree relative turn (/receptionist/left dan /receptionist/right)
   std::atomic<bool> is_turning_{false};

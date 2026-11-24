@@ -102,11 +102,11 @@ controller_server:
       # DWB Local Planner Parameters (3-wheel omni)
       debug_trajectory_details: False    # Disable heavy debug logging to prevent loop rate dropping from 20Hz to 3Hz
       min_vel_x: 0.0                     # KUNCI MUTLAK: 0.0 m/s (DILARANG MUNDUR! Robot hanya boleh maju ke depan menghadap path)
-      max_vel_x: 0.30                    # Max forward velocity (m/s)
+      max_vel_x: 0.50                    # Max forward velocity (m/s)
       min_vel_y: -0.12                   # Min lateral strafe velocity (-0.12 m/s) cukup lincah untuk sidestep rintangan tanpa membuat robot jalan kepiting
       max_vel_y: 0.12                    # Max lateral strafe velocity (+0.12 m/s)
       min_speed_xy: 0.05                 # Min translational speed (m/s, mencegah micro-speed di bawah deadband motor)
-      max_speed_xy: 0.30                 # Max translational speed (m/s)
+      max_speed_xy: 0.50                 # Max translational speed (m/s)
       max_vel_theta: 1.8                 # Max angular velocity dinaikkan ke 1.8 rad/s agar manuver hadap saat melaju juga gesit
       min_speed_theta: 0.15              # Min angular velocity (rad/s, dinaikkan ke 0.15 agar PWM motor di atas deadband motor dan tidak freeze di lantai)
       acc_lim_x: 1.2                     # Translation X acceleration limit (m/s^2)
@@ -194,27 +194,12 @@ global_costmap:
       resolution: 0.05                   # Grid resolution (m/cell)
       track_unknown_space: true          # Kunci: Tandai area unmapped/unknown sebagai NO_INFORMATION, jangan anggap free space
       transform_tolerance: 0.5           # TF transform tolerance (s)
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"] # Costmap layers (peta SLAM statis + obstacle dinamis LiDAR + buffer dinding agar path avoidance tercipta)
+      plugins: ["static_layer", "inflation_layer"] # Costmap layers (peta SLAM statis + buffer dinding; tanpa obstacle_layer dinamis)
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer" # Static map layer from map_server
         map_subscribe_transient_local: True # Transient local QoS for map
         subscribe_to_updates: True       # Subscribe to /map_updates during SLAM
         track_unknown_space: true        # Pertahankan status unknown dari peta SLAM (-1 tetap unknown)
-      obstacle_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer" # Dynamic LiDAR obstacle layer (membuat path avoidance tercipta)
-        enabled: True
-        observation_sources: scan
-        scan:
-          topic: /scan                   # 2D LiDAR topic
-          max_obstacle_height: 2.0
-          clearing: True                 # Clear free space along laser rays
-          marking: True                  # Mark obstacle cells on laser hit
-          data_type: "LaserScan"
-          raytrace_max_range: 8.0        # Max raytracing range (m, pembersihan rintangan cepat)
-          raytrace_min_range: 0.0
-          obstacle_max_range: 4.0        # Max obstacle marking range (m)
-          obstacle_min_range: 0.22       # Min obstacle marking range (m, diselaraskan dengan bodi robot)
-          inf_is_valid: true             # KUNCI: Sinar tak-hingga (inf) saat rintangan hilang tetap dipakai untuk clearing raytrace
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
         cost_scaling_factor: 12.0        # Diturunkan dari 25.0 ke 12.0 agar rute global berjarak dari dinding
@@ -304,7 +289,7 @@ velocity_smoother:
     smoothing_frequency: 20.0            # Output smoothing frequency (Hz)
     scale_velocities: True               # Scale velocities when limits hit
     feedback: "OPEN_LOOP"                # Open-loop velocity estimation
-    max_velocity: [0.30, 0.20, 1.4]      # Max velocity limits [vx, vy, vtheta]
+    max_velocity: [0.50, 0.20, 1.4]      # Max velocity limits [vx, vy, vtheta]
     min_velocity: [-0.08, -0.20, -1.4]   # Min velocity limits [vx, vy, vtheta]
     max_accel: [1.2, 1.0, 1.8]           # Max acceleration limits [ax, ay, atheta]
     max_decel: [-1.2, -1.0, -1.8]        # Max deceleration limits [dx, dy, dtheta]

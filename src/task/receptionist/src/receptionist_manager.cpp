@@ -57,10 +57,12 @@ using namespace std::chrono_literals;
 enum class ReceptionistState {
   // Startup: wait for required navigation & TTS endpoints, initialize Guest 1
   INIT,
-  // Phase 1 — Entrance Door: wait for guest, align, capture & confirm profile
+  // Phase 1 — Entrance Door: wait for guest, align, scan attributes at 1.5m, approach to 0.7m, capture & confirm profile
   NAV_TO_DOOR,
   WAIT_GUEST,
   ALIGN_GUEST,
+  SCAN_GUEST_ATTRIBUTES,
+  APPROACH_GUEST,
   ASK_NAME,
   WAIT_NAME,
   ASK_INTEREST,
@@ -99,6 +101,8 @@ static std::string stateToString(ReceptionistState state)
     case ReceptionistState::NAV_TO_DOOR:             return "NAV_TO_DOOR";
     case ReceptionistState::WAIT_GUEST:              return "WAIT_GUEST";
     case ReceptionistState::ALIGN_GUEST:             return "ALIGN_GUEST";
+    case ReceptionistState::SCAN_GUEST_ATTRIBUTES:   return "SCAN_GUEST_ATTRIBUTES";
+    case ReceptionistState::APPROACH_GUEST:          return "APPROACH_GUEST";
     case ReceptionistState::ASK_NAME:                return "ASK_NAME";
     case ReceptionistState::WAIT_NAME:               return "WAIT_NAME";
     case ReceptionistState::ASK_INTEREST:            return "ASK_INTEREST";
@@ -266,6 +270,8 @@ public:
       "/receptionist/guest1", rclcpp::ServicesQoS(), callback_group_);
     adjust_guest_client_ = create_client<Trigger>(
       "/receptionist/adjust_guest", rclcpp::ServicesQoS(), callback_group_);
+    approach_guest_client_ = create_client<Trigger>(
+      "/receptionist/approach_guest", rclcpp::ServicesQoS(), callback_group_);
     rotate_left_client_ = create_client<Trigger>(
       "/receptionist/left", rclcpp::ServicesQoS(), callback_group_);
     rotate_right_client_ = create_client<Trigger>(
@@ -368,6 +374,8 @@ private:
   std::unordered_map<std::string, int> attr_gender_counts_;
   std::unordered_map<std::string, int> attr_shirt_counts_;
   std::unordered_map<std::string, int> attr_hair_counts_;
+  bool attributes_locked_from_scan_{false};
+  std::string active_vision_reg_name_;
   std::string empty_seat_position_{"center"};
   bool has_explicit_empty_seat_{false};
   int nearest_person_bbox_x_{0};
@@ -427,6 +435,7 @@ private:
   TriggerClient::SharedPtr face_host_client_;
   TriggerClient::SharedPtr face_guest1_client_;
   TriggerClient::SharedPtr adjust_guest_client_;
+  TriggerClient::SharedPtr approach_guest_client_;
   TriggerClient::SharedPtr rotate_left_client_;
   TriggerClient::SharedPtr rotate_right_client_;
   TriggerClient::SharedPtr scan_living_room_client_;
@@ -497,11 +506,13 @@ private:
       case ReceptionistState::RETURN_TO_LIVING_ROOM:
         return "FOLLOWING";
       case ReceptionistState::WAIT_GUEST:
+      case ReceptionistState::SCAN_GUEST_ATTRIBUTES:
       case ReceptionistState::CHECK_BEVERAGE:
       case ReceptionistState::SCAN_LIVING_ROOM:
       case ReceptionistState::SEARCH_CHAIR:
         return "SEARCHING";
       case ReceptionistState::ALIGN_GUEST:
+      case ReceptionistState::APPROACH_GUEST:
       case ReceptionistState::ASK_NAME:
       case ReceptionistState::ASK_INTEREST:
       case ReceptionistState::CONFIRM_GUEST_INFO:
@@ -598,6 +609,8 @@ private:
       attr_gender_counts_.clear();
       attr_shirt_counts_.clear();
       attr_hair_counts_.clear();
+      attributes_locked_from_scan_ = false;
+      active_vision_reg_name_.clear();
       has_explicit_empty_seat_ = false;
       nearest_person_bbox_w_ = 0;
     }
@@ -1024,6 +1037,38 @@ private:
       25.0);
   }
 
+  // Mendekat kembali ke tamu hingga jarak 0.7m untuk dialog suara (STT) & face recognition
+  void approachGuest(std::function<void(bool, const std::string &)> on_finished)
+  {
+    TriggerClient::SharedPtr client = approach_guest_client_;
+    std::string srv_name = "/receptionist/approach_guest";
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[GUEST]\033[0m Calling %s to approach guest to 0.7m...",
+      srv_name.c_str());
+
+    callTrigger(
+      client, srv_name,
+      [this, srv_name, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[GUEST]\033[0m Approach guest succeeded: %s",
+            msg.c_str());
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[GUEST]\033[0m Approach guest finished with warning/failure: %s",
+            msg.c_str());
+        }
+        if (on_finished) {
+          on_finished(success, msg);
+        }
+      },
+      25.0);
+  }
+
   // Menentukan posisi horizontal (left, center, right) pada frame kamera statis
   std::string calculateHorizontalPosition(int bbox_x, int bbox_w) const
   {
@@ -1244,6 +1289,9 @@ private:
     std::unordered_map<std::string, int> hair_counts;
     {
       std::lock_guard<std::mutex> v_lock(vision_mutex_);
+      if (attributes_locked_from_scan_) {
+        return;
+      }
       raw_attrs = latest_attributes_;
       gender_counts = attr_gender_counts_;
       shirt_counts = attr_shirt_counts_;
@@ -1276,17 +1324,13 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;32m[VISION]\033[0m Extracting visual attributes (mode voting) for person_id=%d",
+      "\033[1;32m[VISION]\033[0m Extracting visual attributes (direct snapshot) for person_id=%d",
       person_id);
-
-    const std::string mode_gender = pickMode(gender_counts);
-    const std::string mode_shirt = pickMode(shirt_counts, "casual attire");
-    const std::string mode_hair = pickMode(hair_counts);
 
     std::lock_guard<std::mutex> g_lock(guest_mutex_);
     std::vector<std::string> attrs;
 
-    // Fallback ke snapshot terakhir jika histogram masih kosong untuk field tertentu
+    // Ekstrak langsung dari snapshot atribut terbaru pada jarak 1.5m (tanpa voting)
     std::string snap_gender, snap_shirt, snap_hair;
     for (const auto & a : raw_attrs) {
       std::string lower_a = a;
@@ -1303,22 +1347,26 @@ private:
       }
     }
 
-    if (!mode_gender.empty()) {
-      current_guest_.gender = mode_gender;
-    } else if (!snap_gender.empty()) {
+    if (!snap_gender.empty()) {
       current_guest_.gender = snap_gender;
+    } else {
+      const std::string mode_gender = pickMode(gender_counts);
+      if (!mode_gender.empty()) current_guest_.gender = mode_gender;
     }
 
-    if (!mode_shirt.empty()) {
-      current_guest_.shirt_color = mode_shirt;
-    } else if (!snap_shirt.empty()) {
+    if (!snap_shirt.empty() && snap_shirt != "casual attire") {
       current_guest_.shirt_color = snap_shirt;
+    } else {
+      const std::string mode_shirt = pickMode(shirt_counts, "casual attire");
+      if (!mode_shirt.empty()) current_guest_.shirt_color = mode_shirt;
+      else if (!snap_shirt.empty()) current_guest_.shirt_color = snap_shirt;
     }
 
-    if (!mode_hair.empty()) {
-      current_guest_.hair_color = mode_hair;
-    } else if (!snap_hair.empty()) {
+    if (!snap_hair.empty()) {
       current_guest_.hair_color = snap_hair;
+    } else {
+      const std::string mode_hair = pickMode(hair_counts);
+      if (!mode_hair.empty()) current_guest_.hair_color = mode_hair;
     }
 
     if (!current_guest_.gender.empty() && current_guest_.gender != "unknown") {
@@ -1622,12 +1670,10 @@ private:
     if (norm.empty()) return 0;
 
     static const std::vector<std::string> kNoPhrases = {
-      "no", "nope", "nah", "not correct", "wrong", "false", "incorrect", "negative",
-      "not really", "it is not", "it isnt", "bukan", "tidak", "enggak", "ga"
+      "no", "no robot", "nope", "not correct", "wrong", "false",
     };
     static const std::vector<std::string> kYesPhrases = {
-      "yes", "yeah", "yep", "correct", "right", "sure", "true", "exactly", "of course",
-      "that is right", "it is", "ya", "benar", "betul"
+      "yes", "yes robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
     };
 
     for (const auto & phrase : kNoPhrases) {
@@ -1818,6 +1864,8 @@ private:
     const ReceptionistState cur = state_.load();
     if (cur != ReceptionistState::WAIT_GUEST &&
         cur != ReceptionistState::ALIGN_GUEST &&
+        cur != ReceptionistState::SCAN_GUEST_ATTRIBUTES &&
+        cur != ReceptionistState::APPROACH_GUEST &&
         cur != ReceptionistState::ASK_NAME &&
         cur != ReceptionistState::WAIT_NAME &&
         cur != ReceptionistState::ASK_INTEREST &&
@@ -1840,8 +1888,9 @@ private:
     }
     if (!parsed.empty()) {
       latest_attributes_ = parsed;
-      // Akumulasi frekuensi hanya saat fase dialog tamu di pintu berlangsung
-      if (cur == ReceptionistState::ASK_NAME ||
+      // Akumulasi frekuensi saat fase scan 1.5m (SCAN_GUEST_ATTRIBUTES) dan dialog tamu di pintu
+      if (cur == ReceptionistState::SCAN_GUEST_ATTRIBUTES ||
+          cur == ReceptionistState::ASK_NAME ||
           cur == ReceptionistState::WAIT_NAME ||
           cur == ReceptionistState::ASK_INTEREST ||
           cur == ReceptionistState::WAIT_INTEREST ||
@@ -2114,10 +2163,56 @@ private:
 
       case ReceptionistState::ALIGN_GUEST:
         adjustGuestDistance([this](bool /*success*/, const std::string & /*msg*/) {
+          std::string temp_name;
+          {
+            std::lock_guard<std::mutex> lock(vision_mutex_);
+            latest_attributes_.clear();
+            attr_gender_counts_.clear();
+            attr_shirt_counts_.clear();
+            attr_hair_counts_.clear();
+            attributes_locked_from_scan_ = false;
+            temp_name = "__pending_guest_" + std::to_string(guest_idx_) + "__";
+            active_vision_reg_name_ = temp_name;
+          }
+          if (person_name_pub_) {
+            std_msgs::msg::String m;
+            m.data = temp_name;
+            person_name_pub_->publish(m);
+          }
+          transitionTo(
+            ReceptionistState::SCAN_GUEST_ATTRIBUTES,
+            "Stepped back to 1.5m; scanning face, gender, shirt color, and hair color silently");
+        });
+        break;
+
+      case ReceptionistState::SCAN_GUEST_ATTRIBUTES:
+        if ((now() - state_enter_time_).seconds() < 2.5) {
+          return;
+        }
+        updateCurrentGuestVisualAttributes(nearest_person_id_.load());
+        {
+          std::lock_guard<std::mutex> lock(vision_mutex_);
+          attributes_locked_from_scan_ = true;
+        }
+        {
+          std::lock_guard<std::mutex> lock(guest_mutex_);
+          if (guests_.size() < static_cast<size_t>(guest_idx_)) {
+            guests_.push_back(current_guest_);
+          } else if (guest_idx_ >= 1) {
+            guests_[static_cast<size_t>(guest_idx_ - 1)] = current_guest_;
+          }
+        }
+        transitionTo(
+          ReceptionistState::APPROACH_GUEST,
+          "Face & attributes locked at 1.5m; approaching guest to 0.7m for name");
+        break;
+
+      case ReceptionistState::APPROACH_GUEST:
+        approachGuest([this](bool /*success*/, const std::string & /*msg*/) {
           speakAsync(
-            "Hello!. I am Barelang Inari from Batam State Polytechnic; I am your robot receptionist.",
+            "Hello!. I am Barelang Inari from Politeknik Negeri Batam; I am your robot receptionist.",
             [this]() {
-              transitionTo(ReceptionistState::ASK_NAME, "Guest greeted at entrance after alignment & distance adjustment");
+              transitionTo(ReceptionistState::ASK_NAME, "Approached guest to 0.7m and greeted");
             });
         });
         break;
@@ -2148,7 +2243,15 @@ private:
             }
             if (person_name_pub_) {
               std_msgs::msg::String m;
-              m.data = parsed_name;
+              std::string old_reg_name;
+              {
+                std::lock_guard<std::mutex> v_lock(vision_mutex_);
+                old_reg_name = active_vision_reg_name_;
+                active_vision_reg_name_ = parsed_name;
+              }
+              m.data = (!old_reg_name.empty() && old_reg_name != parsed_name)
+                ? ("rename:" + old_reg_name + ":" + parsed_name)
+                : parsed_name;
               person_name_pub_->publish(m);
             }
             publishGuestNames();
@@ -2186,7 +2289,7 @@ private:
         }
         speakAsync(
           "Nice to meet you " + g_name +
-          ". What is your main interest or hobby?",
+          ". What is your interesting or hobby?",
           [this]() {
             transitionTo(ReceptionistState::WAIT_INTEREST, "Waiting for guest interest");
           });
@@ -2224,11 +2327,11 @@ private:
               "\033[1;33m[DIALOG INTEREST]\033[0m Unrecognized input \"%s\", asking again.",
               raw.c_str());
             state_enter_time_ = now();
-            speakAsync("I am sorry, I did not catch that. What is your main interest or hobby?");
+            speakAsync("I am sorry. What is your interesting or hobby?");
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
-          speakAsync("Could you please tell me your main interest or hobby?");
+          speakAsync("Could you please tell me your interesting or hobby?");
         }
         break;
 
@@ -2241,7 +2344,7 @@ private:
         }
         const std::string confirm_text =
           "Hello " + g_name + ", you have an interest in " +
-          g_interest + ". Is that correct? Please say yes or no";
+          g_interest + ". Is that correct? Please say yes robot or no robot";
 
         speakAsync(confirm_text, [this]() {
           transitionTo(ReceptionistState::WAIT_CONFIRM_GUEST_INFO, "Waiting for confirmation (yes/no)");
@@ -2275,20 +2378,31 @@ private:
               get_logger(),
               "\033[1;31m[DIALOG CONFIRM]\033[0m Heard: \"%s\" | Decision: \033[1;31mNO\033[0m (restarting name and interest)",
               raw.c_str());
+            bool keep_locked_attrs = false;
+            {
+              std::lock_guard<std::mutex> v_lock(vision_mutex_);
+              keep_locked_attrs = attributes_locked_from_scan_;
+            }
             {
               std::lock_guard<std::mutex> lock(guest_mutex_);
-              resetGuestProfileFields(current_guest_, guest_idx_);
+              if (keep_locked_attrs) {
+                current_guest_.name = "";
+                current_guest_.interest = "";
+                current_guest_.drink = "";
+              } else {
+                resetGuestProfileFields(current_guest_, guest_idx_);
+              }
               if (guests_.size() >= static_cast<size_t>(guest_idx_)) {
                 guests_[static_cast<size_t>(guest_idx_ - 1)].name = "";
               }
             }
-            if (person_name_pub_) {
+            if (person_name_pub_ && !keep_locked_attrs) {
               std_msgs::msg::String m;
               m.data = "";
               person_name_pub_->publish(m);
             }
             publishGuestNames();
-            speakAsync("I am sorry. Let us start over. May I please have your name?", [this]() {
+            speakAsync("I am sorry. Let us start over. Can you tell me your name?", [this]() {
               transitionTo(ReceptionistState::WAIT_NAME, "Restarted name and interest capture");
             });
           } else {
@@ -2297,7 +2411,7 @@ private:
               "\033[1;33m[DIALOG CONFIRM]\033[0m Heard: \"%s\" | Decision: \033[1;33mUNRECOGNIZED\033[0m (reprompting yes/no)",
               raw.c_str());
             state_enter_time_ = now();
-            speakAsync("Please say yes if it is, or no if it is not.");
+            speakAsync("Please say yes robot if it is, or no robot if it is not.");
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           RCLCPP_INFO(
@@ -2305,7 +2419,7 @@ private:
             "\033[1;33m[DIALOG CONFIRM]\033[0m Confirmation timeout (%.1fs without speech), reprompting.",
             dialog_reprompt_sec_);
           state_enter_time_ = now();
-          speakAsync("Please say yes if it is, or no if it is not.");
+          speakAsync("Please say yes robot, or no robot.");
         }
         break;
 
@@ -2494,6 +2608,19 @@ private:
             std::lock_guard<std::mutex> lock(guest_mutex_);
             cg = current_guest_;
             g_idx = guest_idx_;
+          }
+
+          if (g_idx == 1) {
+            // Self-learn Host's face during Cycle 1 when robot is facing Host
+            if (person_name_pub_) {
+              std_msgs::msg::String hname_msg;
+              hname_msg.data = host_.name;
+              person_name_pub_->publish(hname_msg);
+              RCLCPP_INFO(
+                get_logger(),
+                "\033[1;32m[SELF-LEARN HOST]\033[0m Sent Host name '%s' to /vision/set_person_name to capture face embedding",
+                host_.name.c_str());
+            }
           }
 
           if (!success) {

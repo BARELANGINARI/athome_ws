@@ -95,18 +95,30 @@ class BarelangHriNode(Node):
         "enable_local_speaker",
         "threshold_dbfs",
         "threshold_flatness",
+        "adaptive_vad_enabled",
+        "adaptive_snr_margin_db",
         "pre_roll_frames",
         "hangover_frames",
         "min_speech_frames",
+        "max_speech_frames",
         "whisper_model",
         "stt_fallback_model",
         "stt_language",
+        "stt_sample_rate",
         "stt_beam_size",
         "stt_no_speech_threshold",
         "stt_log_prob_threshold",
         "stt_compression_ratio_threshold",
+        "stt_vad_threshold",
+        "stt_vad_min_speech_ms",
         "stt_vad_silence_ms",
         "stt_vad_speech_pad_ms",
+        "stt_repetition_penalty",
+        "stt_no_repeat_ngram_size",
+        "stt_temperature",
+        "stt_denoiser_backend",
+        "stt_highpass_hz",
+        "stt_dedup_max_ngram",
         "stt_initial_prompt",
         "stt_hotwords",
         "stt_hallucination_blacklist",
@@ -162,18 +174,30 @@ class BarelangHriNode(Node):
         )
         self.threshold_dbfs: float = float(params["threshold_dbfs"])
         self.threshold_flatness: float = float(params["threshold_flatness"])
+        self.adaptive_vad_enabled: bool = bool(params["adaptive_vad_enabled"])
+        self.adaptive_snr_margin_db: float = float(params["adaptive_snr_margin_db"])
         self.pre_roll_frames: int = int(params["pre_roll_frames"])
         self.hangover_frames: int = int(params["hangover_frames"])
         self.min_speech_frames: int = int(params["min_speech_frames"])
+        self.max_speech_frames: int = int(params["max_speech_frames"])
         self.whisper_model: str = str(params["whisper_model"])
         self.stt_fallback_model: str = str(params["stt_fallback_model"])
         self.stt_language: str = str(params["stt_language"])
+        self.stt_sample_rate: int = int(params["stt_sample_rate"])
         self.stt_beam_size: int = int(params["stt_beam_size"])
         self.stt_no_speech_threshold: float = float(params["stt_no_speech_threshold"])
         self.stt_log_prob_threshold: float = float(params["stt_log_prob_threshold"])
         self.stt_compression_ratio_threshold: float = float(params["stt_compression_ratio_threshold"])
+        self.stt_vad_threshold: float = float(params["stt_vad_threshold"])
+        self.stt_vad_min_speech_ms: int = int(params["stt_vad_min_speech_ms"])
         self.stt_vad_silence_ms: int = int(params["stt_vad_silence_ms"])
         self.stt_vad_speech_pad_ms: int = int(params["stt_vad_speech_pad_ms"])
+        self.stt_repetition_penalty: float = float(params["stt_repetition_penalty"])
+        self.stt_no_repeat_ngram_size: int = int(params["stt_no_repeat_ngram_size"])
+        self.stt_temperature: float = float(params["stt_temperature"])
+        self.stt_denoiser_backend: str = str(params["stt_denoiser_backend"])
+        self.stt_highpass_hz: float = float(params["stt_highpass_hz"])
+        self.stt_dedup_max_ngram: int = int(params["stt_dedup_max_ngram"])
         self.stt_initial_prompt: str = str(params["stt_initial_prompt"])
         self.stt_hotwords: str = str(params["stt_hotwords"])
         self.stt_hallucination_blacklist = list(params["stt_hallucination_blacklist"])
@@ -420,6 +444,9 @@ class HriCoordinator:
             pre_roll_frames=self.ros_node.pre_roll_frames,
             hangover_frames=self.ros_node.hangover_frames,
             min_speech_frames=self.ros_node.min_speech_frames,
+            max_speech_frames=self.ros_node.max_speech_frames,
+            adaptive_vad_enabled=self.ros_node.adaptive_vad_enabled,
+            adaptive_snr_margin_db=self.ros_node.adaptive_snr_margin_db,
         )
 
         self.visualizer = VadVisualizer(self.mic_listener)
@@ -430,12 +457,21 @@ class HriCoordinator:
             language=self.ros_node.stt_language,
             on_asr_result=self.visualizer.update_asr_status,
             fallback_model_size=self.ros_node.stt_fallback_model,
+            sample_rate=self.ros_node.stt_sample_rate,
             beam_size=self.ros_node.stt_beam_size,
             no_speech_threshold=self.ros_node.stt_no_speech_threshold,
             log_prob_threshold=self.ros_node.stt_log_prob_threshold,
             compression_ratio_threshold=self.ros_node.stt_compression_ratio_threshold,
+            vad_threshold=self.ros_node.stt_vad_threshold,
+            vad_min_speech_ms=self.ros_node.stt_vad_min_speech_ms,
             vad_silence_ms=self.ros_node.stt_vad_silence_ms,
             vad_speech_pad_ms=self.ros_node.stt_vad_speech_pad_ms,
+            repetition_penalty=self.ros_node.stt_repetition_penalty,
+            no_repeat_ngram_size=self.ros_node.stt_no_repeat_ngram_size,
+            temperature=self.ros_node.stt_temperature,
+            denoiser_backend=self.ros_node.stt_denoiser_backend,
+            highpass_hz=self.ros_node.stt_highpass_hz,
+            dedup_max_ngram=self.ros_node.stt_dedup_max_ngram,
             initial_prompt=self.ros_node.stt_initial_prompt,
             hotwords=self.ros_node.stt_hotwords,
             hallucination_blacklist=self.ros_node.stt_hallucination_blacklist,

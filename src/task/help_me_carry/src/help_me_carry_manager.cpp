@@ -8,7 +8,7 @@
 //            dan autonomous homing.
 //
 // Alur State FSM:
-//   INIT -> WAIT_WAKEWORD -> CHECK_OPERATOR_PRESENCE -> WAIT_START_COMMAND
+//   INIT -> CHECK_OPERATOR_PRESENCE -> WAIT_START_COMMAND
 //     -> FOLLOW_OPERATOR (atau RECOVER_OPERATOR jika operator hilang)
 //     -> ARRIVED -> WAIT_BAG_POINTING -> GRASP_BAG -> RETURN_TO_START
 //     -> PUT_DOWN_BAG -> COMPLETED
@@ -42,7 +42,6 @@ using namespace std::chrono_literals;
 // ==============================================================================
 enum class TaskState {
   INIT,                     // Inisialisasi node & menunggu TTS engine siap
-  WAIT_WAKEWORD,            // Menunggu perintah sapaan/wakeword ("hello robot")
   CHECK_OPERATOR_PRESENCE,  // Memastikan operator berdiri tepat di depan kamera
   WAIT_START_COMMAND,       // Menunggu perintah suara "follow me"
   FOLLOW_OPERATOR,          // Mengikuti operator berjalan ke lokasi tujuan
@@ -61,7 +60,6 @@ static std::string stateToString(TaskState state)
 {
   switch (state) {
     case TaskState::INIT:                    return "INIT";
-    case TaskState::WAIT_WAKEWORD:           return "WAIT_WAKEWORD";
     case TaskState::CHECK_OPERATOR_PRESENCE: return "CHECK_OPERATOR_PRESENCE";
     case TaskState::WAIT_START_COMMAND:      return "WAIT_START_COMMAND";
     case TaskState::FOLLOW_OPERATOR:         return "FOLLOW_OPERATOR";
@@ -154,29 +152,25 @@ public:
       "/arm/letakkan_tas", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
       "/homing", rclcpp::ServicesQoS(), callback_group_);
+    lifter_down_client_ = create_client<Trigger>(
+      "/lifter/turun", rclcpp::ServicesQoS(), callback_group_);
+    lifter_up_client_ = create_client<Trigger>(
+      "/lifter/naik", rclcpp::ServicesQoS(), callback_group_);
 
     // Timer siklus FSM (10 Hz / 100 ms)
     fsm_timer_ = create_wall_timer(
       100ms, std::bind(&HelpMeCarryOrchestrator::fsmTick, this), callback_group_);
 
-    // Parameter konfigurasi FSM & watchdog
-    declare_parameter<double>("global_timeout_sec", 600.0);
-    declare_parameter<double>("operator_timeout_sec", 5.0);
-    declare_parameter<double>("follow_grace_period_sec", 2.0);
-    declare_parameter<double>("arrived_grace_period_sec", 5.0);
-    declare_parameter<double>("tts_min_timeout_sec", 4.0);
-    declare_parameter<double>("tts_sec_per_word", 0.5);
-    declare_parameter<double>("tts_timeout_margin_sec", 2.0);
-    declare_parameter<double>("follow_prompt_interval_sec", 3.0);
-
-    global_timeout_sec_ = get_parameter("global_timeout_sec").as_double();
-    operator_timeout_sec_ = get_parameter("operator_timeout_sec").as_double();
-    follow_grace_period_sec_ = get_parameter("follow_grace_period_sec").as_double();
-    arrived_grace_period_sec_ = get_parameter("arrived_grace_period_sec").as_double();
-    tts_min_timeout_sec_ = get_parameter("tts_min_timeout_sec").as_double();
-    tts_sec_per_word_ = get_parameter("tts_sec_per_word").as_double();
-    tts_timeout_margin_sec_ = get_parameter("tts_timeout_margin_sec").as_double();
-    follow_prompt_interval_sec_ = get_parameter("follow_prompt_interval_sec").as_double();
+    // Parameter konfigurasi FSM & watchdog (Wajib dari params.yaml)
+    global_timeout_sec_ = requireYamlParameter<double>("global_timeout_sec");
+    operator_timeout_sec_ = requireYamlParameter<double>("operator_timeout_sec");
+    follow_grace_period_sec_ = requireYamlParameter<double>("follow_grace_period_sec");
+    arrived_grace_period_sec_ = requireYamlParameter<double>("arrived_grace_period_sec");
+    tts_min_timeout_sec_ = requireYamlParameter<double>("tts_min_timeout_sec");
+    tts_sec_per_word_ = requireYamlParameter<double>("tts_sec_per_word");
+    tts_timeout_margin_sec_ = requireYamlParameter<double>("tts_timeout_margin_sec");
+    follow_prompt_interval_sec_ = requireYamlParameter<double>("follow_prompt_interval_sec");
+    lifter_move_wait_sec_ = requireYamlParameter<double>("lifter_move_wait_sec");
     tts_timeout_sec_ = tts_min_timeout_sec_;
 
     task_start_time_ = now();
@@ -188,25 +182,41 @@ public:
   }
 
 private:
+  template<typename T>
+  T requireYamlParameter(const std::string & name)
+  {
+    try {
+      rcl_interfaces::msg::ParameterDescriptor desc;
+      desc.read_only = true;
+      return declare_parameter<T>(name, desc);
+    } catch (const std::exception & e) {
+      RCLCPP_FATAL(
+        get_logger(),
+        "Parameter '%s' wajib diatur di file YAML (task/help_me_carry/config/params.yaml)! Error: %s",
+        name.c_str(), e.what());
+      throw;
+    }
+  }
+
   // ----------------------------------------------------------------------------
-  // Parameter Timeout & Grace Period (Dapat dikonfigurasi via YAML)
+  // Parameter Timeout & Grace Period (Diisi penuh dari params.yaml)
   // STATUS FSM
   // ----------------------------------------------------------------------------
-  double global_timeout_sec_{600.0};
-  double operator_timeout_sec_{5.0};
-  double follow_grace_period_sec_{2.0};
-  double arrived_grace_period_sec_{5.0};
-  double tts_min_timeout_sec_{4.0};
-  double tts_sec_per_word_{0.5};
-  double tts_timeout_margin_sec_{2.0};
-  double follow_prompt_interval_sec_{3.0};
+  double global_timeout_sec_{0.0};
+  double operator_timeout_sec_{0.0};
+  double follow_grace_period_sec_{0.0};
+  double arrived_grace_period_sec_{0.0};
+  double tts_min_timeout_sec_{0.0};
+  double tts_sec_per_word_{0.0};
+  double tts_timeout_margin_sec_{0.0};
+  double follow_prompt_interval_sec_{0.0};
+  double lifter_move_wait_sec_{0.0};
   // ----------------------------------------------------------------------------
   // Status Variabel Atomic & Waktu
   // ----------------------------------------------------------------------------
   std::atomic<TaskState> state_{TaskState::INIT};
   std::atomic<bool> busy_{false};
   std::atomic<bool> speaking_{false};
-  std::atomic<bool> wakeword_requested_{false};
   std::atomic<bool> follow_requested_{false};
   std::atomic<bool> arrived_requested_{false};
   std::atomic<bool> emergency_stop_requested_{false};
@@ -259,6 +269,8 @@ private:
   TriggerClient::SharedPtr grab_bag_client_;
   TriggerClient::SharedPtr put_down_bag_client_;
   TriggerClient::SharedPtr homing_client_;
+  TriggerClient::SharedPtr lifter_down_client_;
+  TriggerClient::SharedPtr lifter_up_client_;
 
   // ----------------------------------------------------------------------------
   // Helper: Deteksi Operator & Tas di Depan Robot
@@ -289,7 +301,6 @@ private:
   {
     switch (state) {
       case TaskState::INIT:                    return "IDLE";
-      case TaskState::WAIT_WAKEWORD:           return "LISTENING";
       case TaskState::CHECK_OPERATOR_PRESENCE: return "SEARCHING";
       case TaskState::WAIT_START_COMMAND:      return "LISTENING";
       case TaskState::FOLLOW_OPERATOR:         return "FOLLOWING";
@@ -545,15 +556,6 @@ private:
   }
 
   // Daftar kamus frasa suara (Corpus) lengkap dengan variasi fonetik
-  static const std::vector<std::string> & getWakewordCorpus()
-  {
-    static const std::vector<std::string> corpus = {
-      "hello robot", "halo robot", "hey robot", "hello barelang", "hi robot",
-      "robot", "hallo", "hai", "hello", "helo", "helo robot", "hai robot", "hey barelang", "halo barelang"
-    };
-    return corpus;
-  }
-
   static const std::vector<std::string> & getFollowCorpus()
   {
     static const std::vector<std::string> corpus = {
@@ -616,18 +618,7 @@ private:
       "\033[1;33m[STT]\033[0m \"%s\"",
       message->data.c_str());
 
-    // 1. Sapaan di state WAIT_WAKEWORD
-    if (current_state == TaskState::WAIT_WAKEWORD &&
-        matchIntent(command, "WAKEWORD", getWakewordCorpus()))
-    {
-      if (!operator_seen_.load()) {
-        RCLCPP_WARN(get_logger(), "Wakeword terdeteksi, tapi operator belum terlihat di kamera.");
-      }
-      wakeword_requested_ = true;
-      return;
-    }
-
-    // 2. Perintah Follow di state WAIT_START_COMMAND
+    // 1. Perintah Follow di state WAIT_START_COMMAND
     if (current_state == TaskState::WAIT_START_COMMAND &&
         matchIntent(command, "FOLLOW_ME", getFollowCorpus()))
     {
@@ -635,7 +626,7 @@ private:
       return;
     }
 
-    // 3. Perintah Arrived & Emergency Stop di state FOLLOW_OPERATOR
+    // 2. Perintah Arrived & Emergency Stop di state FOLLOW_OPERATOR
     if (current_state == TaskState::FOLLOW_OPERATOR) {
       if (matchIntent(command, "ARRIVED", getArrivedCorpus())) {
         // Abaikan perintah arrived jika masih dalam masa jeda awal follow
@@ -822,33 +813,15 @@ private:
       // State 0: INIT - Menunggu TTS Engine siap (/hri/tts_done & /hri/tts_say aktif)
       // ------------------------------------------------------------------------
       case TaskState::INIT:
-        // Pastikan tts_engine_node sudah siap (mempublish /hri/tts_done) sebelum menyapa
+        // Pastikan tts_engine_node sudah siap (mempublish /hri/tts_done) sebelum mulai
         if (this->count_publishers("/hri/tts_done") == 0 || tts_pub_->get_subscription_count() == 0) {
           return;
         }
-        speakAsync(
-          "I am ready, please say Hello Robot to start the robot!",
-          [this]() {
-            transitionTo(TaskState::WAIT_WAKEWORD, "TTS, ready waiting for wakeword");
-          }
-        );
+        transitionTo(TaskState::CHECK_OPERATOR_PRESENCE, "TTS ready, checking operator");
         break;
 
       // ------------------------------------------------------------------------
-      // State 1: WAIT_WAKEWORD - Menunggu sapaan awal
-      // ------------------------------------------------------------------------
-      case TaskState::WAIT_WAKEWORD:
-        if (wakeword_requested_.exchange(false)) {
-          speakAsync(
-            "Hello, I am Barelang Inari from Batam State Polytechnic! I want to help you to carry the luggage!",
-            [this]() {
-              transitionTo(TaskState::CHECK_OPERATOR_PRESENCE, "Greeting completed, checking operator");
-            });
-        }
-        break;
-
-      // ------------------------------------------------------------------------
-      // State 2: CHECK_OPERATOR_PRESENCE - Memastikan operator terlihat di depan
+      // State 1: CHECK_OPERATOR_PRESENCE - Memastikan operator terlihat di depan
       // ------------------------------------------------------------------------
       case TaskState::CHECK_OPERATOR_PRESENCE:
         if (isOperatorInFront()) {
@@ -868,7 +841,7 @@ private:
         break;
 
       // ------------------------------------------------------------------------
-      // State 3: WAIT_START_COMMAND - Menunggu instruksi "follow me"
+      // State 2: WAIT_START_COMMAND - Menunggu instruksi "follow me"
       // ------------------------------------------------------------------------
       case TaskState::WAIT_START_COMMAND:
         if (follow_requested_.exchange(false)) {
@@ -894,7 +867,7 @@ private:
         break;
 
       // ------------------------------------------------------------------------
-      // State 4: FOLLOW_OPERATOR - Mengikuti operator sambil mengingatkan perintah tiba
+      // State 3: FOLLOW_OPERATOR - Mengikuti operator sambil mengingatkan perintah tiba
       // (Grace period: abaikan perintah tiba di awal agar tidak salah transisi)
       // ------------------------------------------------------------------------
       case TaskState::FOLLOW_OPERATOR:
@@ -931,7 +904,7 @@ private:
         break;
 
       // ------------------------------------------------------------------------
-      // State 5: ARRIVED - Langsung panggil /task/step_back setelah tiba
+      // State 4: ARRIVED - Langsung panggil /task/step_back setelah tiba
       // ------------------------------------------------------------------------
       case TaskState::ARRIVED: {
         RCLCPP_INFO(
@@ -1045,26 +1018,63 @@ private:
       // ------------------------------------------------------------------------
       case TaskState::GRASP_BAG:
         busy_ = true;
+        // Sequence: /lifter/turun -> /arm/motion_task_1 -> /lifter/naik -> speakAsync
         callTrigger(
-          grab_bag_client_, "/arm/motion_task_1",
-          [this](bool success, const std::string & message) {
-            // busy_ TIDAK dilepas di sini: speakAsync menjaga kunci sampai TTS selesai,
-            // lalu transisi state (dan aksi berikutnya) dieksekusi di callback on_done.
-            if (success) {
-              speakAsync("I have the bag. I am returning to the starting point.", [this]() {
-                transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
-              });
-            } else {
+          lifter_down_client_, "/lifter/turun",
+          [this](bool down_ok, const std::string & down_msg) {
+            if (!down_ok) {
               RCLCPP_WARN(
                 get_logger(),
-                "Grasp otonom gagal (%s). Mengaktifkan fallback bantuan operator...",
-                message.c_str());
-              speakAsync(
-                "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
-                [this]() {
-                  transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
-                });
+                "Lifter turun gagal/tidak tersedia (%s), tetap melanjutkan grasp...",
+                down_msg.c_str());
+            } else {
+              RCLCPP_INFO(get_logger(), "\033[1;36m[LIFTER]\033[0m %s", down_msg.c_str());
             }
+            std::thread([this, down_ok]() {
+              if (down_ok && lifter_move_wait_sec_ > 0.0) {
+                std::this_thread::sleep_for(
+                  std::chrono::duration<double>(lifter_move_wait_sec_));
+              }
+              callTrigger(
+                grab_bag_client_, "/arm/motion_task_1",
+                [this](bool grasp_ok, const std::string & grasp_msg) {
+                  callTrigger(
+                    lifter_up_client_, "/lifter/naik",
+                    [this, grasp_ok, grasp_msg](bool up_ok, const std::string & up_msg) {
+                      if (!up_ok) {
+                        RCLCPP_WARN(
+                          get_logger(),
+                          "Lifter naik gagal/tidak tersedia (%s), tetap melanjutkan...",
+                          up_msg.c_str());
+                      } else {
+                        RCLCPP_INFO(get_logger(), "\033[1;36m[LIFTER]\033[0m %s", up_msg.c_str());
+                      }
+                      std::thread([this, grasp_ok, grasp_msg, up_ok]() {
+                        if (up_ok && lifter_move_wait_sec_ > 0.0) {
+                          std::this_thread::sleep_for(
+                            std::chrono::duration<double>(lifter_move_wait_sec_));
+                        }
+                        // busy_ TIDAK dilepas di sini: speakAsync menjaga kunci sampai TTS selesai,
+                        // lalu transisi state (dan aksi berikutnya) dieksekusi di callback on_done.
+                        if (grasp_ok) {
+                          speakAsync("I have the bag. I am returning to the starting point.", [this]() {
+                            transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
+                          });
+                        } else {
+                          RCLCPP_WARN(
+                            get_logger(),
+                            "Grasp otonom gagal (%s). Mengaktifkan fallback bantuan operator...",
+                            grasp_msg.c_str());
+                          speakAsync(
+                            "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
+                            [this]() {
+                              transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
+                            });
+                        }
+                      }).detach();
+                    });
+                });
+            }).detach();
           });
         break;
 
