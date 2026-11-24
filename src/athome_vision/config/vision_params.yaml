@@ -44,6 +44,9 @@ vision:
     enable_bag: true
     host_name: "Alex"
     host_photo: "models/host.jpg"
+    host_shirt_color: "black"
+    host_gender: "male"
+    host_hair_color: "black"
     enable_back_detection: true
     person_back_topic: "/vision/person_back"
     person_max_dist: 1.5

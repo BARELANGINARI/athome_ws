@@ -2610,6 +2610,19 @@ private:
             g_idx = guest_idx_;
           }
 
+          if (g_idx == 1) {
+            // Self-learn Host's face during Cycle 1 when robot is facing Host
+            if (person_name_pub_) {
+              std_msgs::msg::String hname_msg;
+              hname_msg.data = host_.name;
+              person_name_pub_->publish(hname_msg);
+              RCLCPP_INFO(
+                get_logger(),
+                "\033[1;32m[SELF-LEARN HOST]\033[0m Sent Host name '%s' to /vision/set_person_name to capture face embedding",
+                host_.name.c_str());
+            }
+          }
+
           if (!success) {
             RCLCPP_WARN(
               get_logger(),

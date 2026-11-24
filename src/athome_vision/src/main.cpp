@@ -2326,6 +2326,7 @@ ZedNode::ZedNode()
   declare_parameter("host_photo", std::string("models/host.jpg"));
   declare_parameter("host_shirt_color", std::string("black shirt"));
   declare_parameter("host_gender", std::string("male"));
+  declare_parameter("host_hair_color", std::string("black"));
   declare_parameter("enable_back_detection", true);
   declare_parameter("person_back_topic", std::string("/vision/person_back"));
 
@@ -2449,9 +2450,10 @@ ZedNode::ZedNode()
       active_guest_name_ = name;
       capture_face_requested_ = true;
       const bool is_temp_pending = (name.rfind("__pending_", 0) == 0);
+      const std::string host_param_name = get_parameter("host_name").as_string();
       if (!name.empty()) {
         register_start_time_ = now();
-        if (!is_temp_pending) {
+        if (!is_temp_pending && name != host_param_name) {
           if (guest_1_name_.empty()) {
             guest_1_name_ = name;
           } else if (guest_2_name_.empty() && name != guest_1_name_) {
@@ -2477,9 +2479,11 @@ ZedNode::ZedNode()
               rp.feature_samples = 0;
               rp.feature.clear();
               rp.face_gallery.clear();
-              rp.clothing_color.clear();
-              rp.hair_color.clear();
-              rp.gender.clear();
+              if (name != host_param_name) {
+                rp.clothing_color.clear();
+                rp.hair_color.clear();
+                rp.gender.clear();
+              }
               rp.locked = false;
               rp.has_face_verified = false;
               exists = true;
@@ -2496,11 +2500,8 @@ ZedNode::ZedNode()
           }
         }
       } else {
-        if (!guest_2_name_.empty()) {
-          guest_2_name_.clear();
-        } else {
-          guest_1_name_.clear();
-        }
+        pending_register_name_.clear();
+        active_guest_name_.clear();
       }
       publishGuestNames();
     });
@@ -2843,57 +2844,68 @@ void ZedNode::loadModels()
 void ZedNode::loadPreRegisteredHost()
 {
   std::string host_name = get_parameter("host_name").as_string();
+  if (host_name.empty()) return;
+
+  std::string raw_shirt = get_parameter("host_shirt_color").as_string();
+  const std::string suffix = " shirt";
+  if (raw_shirt.size() > suffix.size() &&
+      raw_shirt.rfind(suffix) == raw_shirt.size() - suffix.size())
+  {
+    raw_shirt = raw_shirt.substr(0, raw_shirt.size() - suffix.size());
+  }
+
   std::string host_photo = get_parameter("host_photo").as_string();
-  if (host_name.empty() || host_photo.empty()) return;
-
-  std::string full_path = resolvePath(host_photo);
-  if (!std::filesystem::exists(full_path)) {
-    std::string fallback = resolvePath("models/" + host_photo);
-    if (std::filesystem::exists(fallback)) {
-      full_path = fallback;
-    } else {
-      RCLCPP_INFO(get_logger(),
-        "[RECEPTIONIST] Host photo '%s' not found, skipped",
-        host_photo.c_str());
-      return;
+  std::vector<float> feat;
+  cv::Mat img;
+  if (!host_photo.empty()) {
+    std::string full_path = resolvePath(host_photo);
+    if (!std::filesystem::exists(full_path)) {
+      std::string fallback = resolvePath("models/" + host_photo);
+      if (std::filesystem::exists(fallback)) {
+        full_path = fallback;
+      }
     }
-  }
-
-  cv::Mat img = cv::imread(full_path);
-  if (img.empty()) {
-    RCLCPP_WARN(get_logger(),
-      "[RECEPTIONIST] Failed to read host photo: %s", full_path.c_str());
-    return;
-  }
-
-  std::vector<float> feat = analyzer_.extractFaceFromImage(img);
-  if (feat.empty()) {
-    RCLCPP_WARN(get_logger(),
-      "[RECEPTIONIST] Failed to extract face features from host photo: %s", full_path.c_str());
-    return;
+    if (std::filesystem::exists(full_path)) {
+      img = cv::imread(full_path);
+      if (!img.empty()) {
+        feat = analyzer_.extractFaceFromImage(img);
+      }
+    }
   }
 
   RegisteredPerson host_person;
   host_person.name = host_name;
-  host_person.feature = feat;
-  host_person.face_gallery.push_back(feat);
-  host_person.feature_samples = 30; // Pre-registered with maximum confidence
-  host_person.clothing_color = get_parameter("host_shirt_color").as_string();
+  host_person.clothing_color = raw_shirt;
   host_person.gender = get_parameter("host_gender").as_string();
-  host_person.locked = true;
-  host_person.has_face_verified = true;
+  host_person.hair_color = get_parameter("host_hair_color").as_string();
   host_person.has_color = false;
   host_person.last_tracking_id = -1;
   host_person.last_seen = now();
+
+  if (!feat.empty()) {
+    host_person.feature = feat;
+    host_person.face_gallery.push_back(feat);
+    host_person.feature_samples = 30; // Pre-registered with maximum confidence
+    host_person.locked = true;
+    host_person.has_face_verified = true;
+    RCLCPP_INFO(get_logger(),
+      "\033[1;32m[RECEPTIONIST]\033[0m Host '%s' registered from photo (%dx%d, shirt: %s, gender: %s)",
+      host_name.c_str(), img.cols, img.rows, raw_shirt.c_str(), host_person.gender.c_str());
+  } else {
+    // Foto tidak ada: tetap daftarkan profil Host berbasis atribut pakaian & gender
+    host_person.feature_samples = 0;
+    host_person.locked = false; // Self-learn face when robot faces Host in Cycle 1
+    host_person.has_face_verified = false;
+    RCLCPP_INFO(get_logger(),
+      "\033[1;32m[RECEPTIONIST]\033[0m Host '%s' pre-registered from attributes (shirt: %s, gender: %s, photo pending self-learn)",
+      host_name.c_str(), raw_shirt.c_str(), host_person.gender.c_str());
+  }
 
   auto it = std::remove_if(registered_persons_.begin(), registered_persons_.end(),
     [&host_name](const RegisteredPerson & p) { return p.name == host_name; });
   registered_persons_.erase(it, registered_persons_.end());
 
   registered_persons_.push_back(host_person);
-  RCLCPP_INFO(get_logger(),
-    "\033[1;32m[RECEPTIONIST]\033[0m Host '%s' registered from photo (%dx%d)",
-    host_name.c_str(), img.cols, img.rows);
 }
 
 void ZedNode::publishYaw()
@@ -3402,12 +3414,47 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     capture_face_requested_ = false;
     size_t target_idx = 0;
     std::vector<float> feature;
+    const std::string host_pname = get_parameter("host_name").as_string();
+    const bool is_host_capture = (pending_register_name_ == host_pname);
+
+    int best_score = -999999;
     for (size_t i = 0; i < entries.size(); ++i) {
-      feature = analyzer_.faceEmbedding(
+      std::vector<float> cur_feat = analyzer_.faceEmbedding(
         bgr, entries[i].bbox, entries[i].body->keypoint_2d);
-      if (!feature.empty()) {
+      if (cur_feat.empty()) continue;
+
+      int score = 1000;
+      // Prefer person closest to center of camera
+      const int cx = entries[i].bbox.x + entries[i].bbox.width / 2;
+      score -= std::abs(cx - bgr.cols / 2) * 2;
+
+      if (is_host_capture) {
+        // Exclude Guest 1 if already registered
+        if (!guest_1_name_.empty()) {
+          for (const auto & rp : registered_persons_) {
+            if (rp.name == guest_1_name_ && !rp.feature.empty()) {
+              if (AttributeAnalyzer::matchFace(cur_feat, rp.feature) > 0.60f) {
+                score -= 5000;
+                break;
+              }
+            }
+          }
+        }
+        // Host is at living room distance (>= 1.3m)
+        if (entries[i].range_m >= 1.3) {
+          score += 300;
+        } else {
+          score -= 400; // Penalize person standing too close (< 1.3m)
+        }
+      } else {
+        // Door guest / Restaurant: prefer closer person
+        score += static_cast<int>(std::max(0.0, 100.0 - entries[i].range_m * 25.0));
+      }
+
+      if (score > best_score) {
+        best_score = score;
         target_idx = i;
-        break;
+        feature = cur_feat;
       }
     }
     const bool feature_has_landmarks = !feature.empty();
@@ -4188,7 +4235,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       if (!recognized_name.empty()) {
         label = recognized_name;
       } else {
-        label = first_person ? "guest" : "person";
+        label = person.is_sitting ? "seated" : (first_person ? "guest" : "person");
       }
     } else {
       label = entry.label;
@@ -4201,7 +4248,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     } else {
       ss << "nan,nan,nan";
     }
-    ss << "|id=" << entry.id << "|back=" << (is_facing_back ? "1" : "0") << "|kpt=";
+    ss << "|id=" << entry.id << "|sitting=" << (person.is_sitting ? "1" : "0") << "|back=" << (is_facing_back ? "1" : "0") << "|kpt=";
     for (size_t k = 0; k < 34; ++k) {
       if (k > 0) ss << ",";
       if (k < points.size() && std::isfinite(points[k].x) && std::isfinite(points[k].y)) {
@@ -4373,7 +4420,7 @@ void ZedNode::publishGuestNames()
   std::string host = get_parameter("host_name").as_string();
   std::vector<std::string> reg_guests;
   for (const auto & p : registered_persons_) {
-    if (p.name != host && !p.name.empty()) {
+    if (p.name != host && !p.name.empty() && p.name.rfind("__pending_", 0) != 0) {
       reg_guests.push_back(p.name);
     }
   }
