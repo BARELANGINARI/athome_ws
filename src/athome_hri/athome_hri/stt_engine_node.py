@@ -62,6 +62,7 @@ class SttEngineNode(Node):
         "stt_initial_prompt",
         "stt_hotwords",
         "stt_hallucination_blacklist",
+        "tts_post_mute_sec",
     )
     _LEGACY_ALIASES = {
         "device_index": "mic_device_index",
@@ -90,6 +91,9 @@ class SttEngineNode(Node):
 
         self._tts_speaking = False
         self._tts_speaking_until = 0.0
+        self._tts_post_mute_sec = max(0.0, float(params["tts_post_mute_sec"]))
+        self._tts_post_mute_until = 0.0
+        self._tts_epoch = 0
         self.tts_say_sub = self.create_subscription(
             String, "/hri/tts_say", self._on_tts_say, 10
         )
@@ -237,6 +241,7 @@ class SttEngineNode(Node):
             "stt_initial_prompt": lambda v: setattr(self._stt, "initial_prompt", str(v)),
             "stt_hotwords": lambda v: setattr(self._stt, "hotwords", str(v)),
             "stt_hallucination_blacklist": lambda v: self._stt.set_hallucination_blacklist(v),
+            "tts_post_mute_sec": lambda v: setattr(self, "_tts_post_mute_sec", max(0.0, float(v))),
         }
         return apply_param_updates(
             params,
@@ -246,21 +251,32 @@ class SttEngineNode(Node):
         )
 
     def _is_mic_paused(self) -> bool:
-        if self._tts_speaking and time.monotonic() >= self._tts_speaking_until:
+        now_t = time.monotonic()
+        if self._tts_speaking and now_t >= self._tts_speaking_until:
             self.get_logger().warn(
                 "Watchdog /hri/tts_done timeout; membuka kembali input mikrofon."
             )
             self._tts_speaking = False
-        return (not self._enable_local_mic) or self._tts_speaking
+        return (
+            (not self._enable_local_mic)
+            or self._tts_speaking
+            or (now_t < self._tts_post_mute_until)
+        )
 
     def _on_tts_say(self, msg: String) -> None:
         if msg.data.strip():
+            self._tts_epoch += 1
             self._tts_speaking = True
             self._tts_speaking_until = time.monotonic() + self.TTS_SPEAKING_TIMEOUT_SEC
+            self._tts_post_mute_until = 0.0
 
     def _on_tts_done(self, _msg: String) -> None:
         self._tts_speaking = False
         self._tts_speaking_until = 0.0
+        self._tts_post_mute_until = time.monotonic() + self._tts_post_mute_sec
+        self._tts_post_mute_sec = max(0.0, float(params["tts_post_mute_sec"]))
+        self._tts_post_mute_until = 0.0
+        self._tts_epoch = 0
 
     def _on_metrics(self, m: VadFrameMetrics) -> None:
         if self._enable_visualizer:
@@ -279,8 +295,16 @@ class SttEngineNode(Node):
         )
 
     async def _transcribe(self, audio_input: Union[np.ndarray, bytes]) -> None:
+        if self._is_mic_paused():
+            return
+        epoch = self._tts_epoch
         transcript = await asyncio.to_thread(self._stt.transcribe, audio_input)
         if not transcript:
+            return
+        if self._tts_epoch != epoch or self._is_mic_paused():
+            self.get_logger().info(
+                f"{self.task_header}\n  STT Dropped (TTS echo/stale): \"{transcript}\""
+            )
             return
         message = String()
         message.data = transcript

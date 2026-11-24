@@ -1579,7 +1579,7 @@ private:
 
     if (slot == "person_name") {
       static const std::vector<std::string> kKnownNames = {
-        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal"
+        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal",
         "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma", "maria", "muhammad",
         "budi", "abdul", "jefrey", "jefri", "hezekiel"
       };
@@ -2265,7 +2265,7 @@ private:
         }
         speakAsync(
           "Nice to meet you " + g_name +
-          ". What is your interesting or hobby?",
+          ". What is your main interest or hobby?",
           [this]() {
             transitionTo(ReceptionistState::WAIT_INTEREST, "Waiting for guest interest");
           });
@@ -2587,16 +2587,12 @@ private:
           }
 
           if (g_idx == 1) {
-            // Self-learn Host's face during Cycle 1 when robot is facing Host
-            if (person_name_pub_) {
-              std_msgs::msg::String hname_msg;
-              hname_msg.data = host_.name;
-              person_name_pub_->publish(hname_msg);
-              RCLCPP_INFO(
-                get_logger(),
-                "\033[1;32m[SELF-LEARN HOST]\033[0m Sent Host name '%s' to /vision/set_person_name to capture face embedding",
-                host_.name.c_str());
-            }
+            // Host is pre-registered from host.jpg / launch params.
+            // Do not blindly send set_person_name here to avoid accidentally capturing Guest 1 who is standing nearby.
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;32m[HOST]\033[0m Host '%s' verified from pre-registered profile.",
+              host_.name.c_str());
           }
 
           if (!success) {

@@ -34,9 +34,9 @@ receptionist_node:
     align_chair_min_speed: 0.12
     align_chair_max_speed: 0.28
     align_chair_tolerance_rad: 0.035
-    camera_width: 672
+    camera_width: 1280
 
-    guest_door_distance: 1.5
+    guest_door_distance: 1.3
     guest_door_step_back_speed: 0.30
     guest_door_timeout_sec: 15.0
     guest_door_align_tolerance: 0.07
@@ -75,7 +75,7 @@ receptionist_manager:
       gender: "male"                     # Gender Host ("male" / "female")
       shirt_color: "black"               # Warna pakaian Host
       hair_color: "black"                # Warna rambut Host
-    camera_width: 672                    # Lebar resolusi horizontal frame kamera (px)
+    camera_width: 1280                    # Lebar resolusi horizontal frame kamera (px)
     global_timeout_sec: 600.0            # Batas waktu maksimal seluruh task Receptionist (detik)
     dialog_reprompt_sec: 12.0            # Jeda tunggu sebelum mengulang pertanyaan dialog STT (detik)
     wait_guest_prompt_sec: 8.0           # Interval sapaan saat menunggu tamu berdiri di depan pintu (detik)
@@ -86,3 +86,51 @@ receptionist_manager:
     tts_sec_per_word: 0.5                # Estimasi durasi ucapan TTS per kata (detik/kata)
     tts_timeout_margin_sec: 2.0          # Margin tambahan untuk latensi audio TTS (detik)
     nav_retry_cooldown_sec: 2.0          # Jeda sebelum mengulang navigasi yang gagal (detik)
+
+vision:
+  ros__parameters:
+    task: "receptionist"
+    camera_fps: 30.0
+    camera_resolution: "hd720"           # Resolusi ZED untuk Receptionist: hd720 (1280x720) untuk akurasi jarak jauh
+    depth_mode: "performance"
+    publish_yaw: false
+    yaw_360: true
+    depth_minimum_distance: 30.0
+    person_max_dist: 1.5
+    enable_body_tracking: true
+    enable_chair: true
+    chair_model: ""
+    enable_drinks: true
+    botol_model: "models/water.onnx"
+    cracker_model: "models/crackerbox.onnx"
+    soda_model: "models/soda.onnx"
+    pringles_model: "models/pringles.onnx"
+    sugarbox_model: "models/sugarbox.onnx"
+    milk_model: "models/milk.onnx"
+    drink_min_area: 180.0
+    drink_conf: 0.48
+    water_conf: 0.25
+    drink_max_dist: 2.5
+    enable_bag: false
+    enable_yolo: true
+    yolo_model: "models/yolov8n_sim.onnx"
+    yolo_classes: "models/coco_names.txt"
+    yolo_conf: 0.25
+    face_detect_model: "models/face_detection_yunet.onnx"
+    face_detect_conf: 0.55
+    face_model: "models/face_recognition_sface.onnx"
+    face_threshold: 0.363
+    gender_model: "models/genderage.onnx"
+    color_model: "models/color_model.onnx"
+    color_labels: "models/color_names.txt"
+    hair_model: "models/hair_model.onnx"
+    hair_labels: "models/hair_names.txt"
+    debug_window: true
+    mirror: false
+    # Profil Host (hanya foto yang digunakan untuk ekstraksi wajah, atribut lainnya dari YAML ini)
+    host_name: "Revaldo"                 # Nama Host
+    host_photo: "models/host.jpg"        # Foto wajah Host untuk ekstraksi fitur biometrik
+    host_shirt_color: "black"            # Warna pakaian Host dari YAML
+    host_gender: "male"                  # Gender Host dari YAML
+    host_hair_color: "black"             # Warna rambut Host dari YAML
+

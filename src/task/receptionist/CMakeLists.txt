@@ -57,6 +57,8 @@ install(PROGRAMS
   launch/run.sh
   launch/stop.sh
   launch/register_host.sh
+  launch/capture_host.sh
+  launch/capture_host.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
