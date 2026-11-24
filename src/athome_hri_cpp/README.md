@@ -84,3 +84,11 @@ python3 src/athome_hri_cpp/scripts/benchmark_stt_compare.py record --label cpp -
 ```bash
 python3 src/athome_hri_cpp/scripts/benchmark_stt_compare.py compare /tmp/bench_py.json /tmp/bench_cpp.json
 ```
+
+## 6. GUI Environment Tuner (Kalibrasi & Live Tuning per Lokasi)
+
+Gunakan GUI tuner untuk mengkalibrasi parameter terbaik di setiap ruangan/arena:
+```bash
+python3 src/athome_hri_cpp/scripts/stt_tuner_gui.py
+```
+Alur cepat: **Start Monitor** -> **1. Measure Noise (5s)** -> **2. Measure Voice (5s)** -> **Auto-Calculate Params** -> **Save to YAML** (atau uji live ke `/stt_engine` dengan **Apply Live**).
