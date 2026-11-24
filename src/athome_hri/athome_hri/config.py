@@ -52,6 +52,7 @@ DEFAULT_HRI_PARAMS: Dict[str, Any] = {
     ],
     "tts_model": "en_US-lessac-medium.onnx",
     "tts_use_cuda": True,
+    "tts_post_mute_sec": 0.6,
     "nlu_threshold": 0.68,
     "http_port": 8000,
     "ws_port": 8765,

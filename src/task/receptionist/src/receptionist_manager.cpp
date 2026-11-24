@@ -1579,7 +1579,7 @@ private:
 
     if (slot == "person_name") {
       static const std::vector<std::string> kKnownNames = {
-        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal"
+        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal",s
         "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma", "maria", "muhammad",
         "budi", "abdul", "jefrey", "jefri", "hezekiel"
       };
@@ -2265,7 +2265,7 @@ private:
         }
         speakAsync(
           "Nice to meet you " + g_name +
-          ". What is your interesting or hobby?",
+          ". What is your main interest or hobby?",
           [this]() {
             transitionTo(ReceptionistState::WAIT_INTEREST, "Waiting for guest interest");
           });

@@ -21,6 +21,20 @@ def generate_launch_description():
         SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
         SetEnvironmentVariable('ATHOME_TASK', 'restaurant'),
         DeclareLaunchArgument(
+            'stt_backend',
+            default_value='cpp',
+            description='STT backend to use: "cpp" (athome_hri_cpp) or "python" (athome_hri).',
+        ),
+        DeclareLaunchArgument(
+            'cpp_params_file',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('athome_hri_cpp'),
+                'config',
+                'params.yaml',
+            ]),
+            description='Path to ROS 2 parameters YAML file for C++ STT node.',
+        ),
+        DeclareLaunchArgument(
             'params_file',
             default_value=PathJoinSubstitution([
                 FindPackageShare('athome_hri'),
@@ -40,7 +54,23 @@ def generate_launch_description():
             description='Launch restaurant task manager FSM node.',
         ),
 
-        # 1. Speech-to-Text (ASR) Node - Faster-Whisper
+        # 1a. Speech-to-Text (ASR) Node - C++ (athome_hri_cpp)
+        Node(
+            package='athome_hri_cpp',
+            executable='stt_engine_node',
+            name='stt_engine',
+            output='screen',
+            emulate_tty=True,
+            parameters=[
+                LaunchConfiguration('cpp_params_file'),
+                {'task': 'restaurant'},
+            ],
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('stt_backend'), "' == 'cpp'"])
+            ),
+        ),
+
+        # 1b. Speech-to-Text (ASR) Node - Python (Faster-Whisper)
         Node(
             package='athome_hri',
             executable='stt_engine_node',
@@ -48,6 +78,9 @@ def generate_launch_description():
             output='screen',
             emulate_tty=True,
             parameters=[LaunchConfiguration('params_file')],
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('stt_backend'), "' == 'python'"])
+            ),
         ),
 
         # 2. Text-to-Speech (TTS) Node - Piper ONNX
