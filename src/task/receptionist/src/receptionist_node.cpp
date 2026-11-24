@@ -488,31 +488,6 @@ public:
     }
   }
 
-  void rotateRight(double speed)
-  {
-    geometry_msgs::msg::Twist twist;
-    twist.linear.x = 0.0;
-    twist.linear.y = 0.0;
-    twist.linear.z = 0.0;
-    twist.angular.x = 0.0;
-    twist.angular.y = 0.0;
-    // Clockwise (rotasi ke kanan): nilai angular.z negatif sesuai konvensi ROS REP 103
-    twist.angular.z = -std::abs(speed);
-    cmd_vel_pub_->publish(twist);
-  }
-
-  void rotateLeft(double speed)
-  {
-    geometry_msgs::msg::Twist twist;
-    twist.linear.x = 0.0;
-    twist.linear.y = 0.0;
-    twist.linear.z = 0.0;
-    twist.angular.x = 0.0;
-    twist.angular.y = 0.0;
-    // Counter-clockwise (rotasi ke kiri): nilai angular.z positif sesuai konvensi ROS REP 103
-    twist.angular.z = std::abs(speed);
-    cmd_vel_pub_->publish(twist);
-  }
 
   void onOdom(const nav_msgs::msg::Odometry::SharedPtr msg)
   {
@@ -536,22 +511,6 @@ public:
     return false;
   }
 
-  bool getRobotMapYaw(double & yaw_out)
-  {
-    if (tf_buffer_) {
-      try {
-        auto trans = tf_buffer_->lookupTransform(global_frame_, "base_footprint", tf2::TimePointZero);
-        const auto & q = trans.transform.rotation;
-        const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
-        const double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
-        yaw_out = std::atan2(siny_cosp, cosy_cosp);
-        return true;
-      } catch (const tf2::TransformException &) {
-        // Fallback ke odometry jika TF map belum tersedia
-      }
-    }
-    return getRobotYaw(yaw_out);
-  }
 
   void onChairDetections(const std_msgs::msg::String::SharedPtr msg)
   {

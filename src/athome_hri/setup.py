@@ -46,7 +46,6 @@ setup(
     maintainer_email='yesaya@todo.todo',
     description='Barelang Inari Human-Robot Interaction (HRI) Package',
     license='Apache-2.0',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'help_me_carry_hri = athome_hri.help_me_carry_hri:main_entry',

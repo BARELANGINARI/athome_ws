@@ -28,6 +28,15 @@ def generate_launch_description():
             ]),
             description='Path to Nav2 parameter configuration file',
         ),
+        DeclareLaunchArgument(
+            'task_params_file',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('help_me_carry'),
+                'config',
+                'help_me_carry_params.yaml',
+            ]),
+            description='Path to Help Me Carry task parameter configuration file',
+        ),
         DeclareLaunchArgument('rviz', default_value='true', description='Launch RViz2 visualization'),
         DeclareLaunchArgument('rviz_software', default_value='false', description='Force RViz software OpenGL rendering'),
         DeclareLaunchArgument('rviz_config', default_value=default_rviz, description='Path to RViz configuration file'),
@@ -48,6 +57,7 @@ def generate_launch_description():
                 'rviz': LaunchConfiguration('rviz'),
                 'rviz_software': LaunchConfiguration('rviz_software'),
                 'rviz_config': LaunchConfiguration('rviz_config'),
+                'carry_params': LaunchConfiguration('task_params_file'),
                 'use_following': 'true',
                 'initial_x': '0.0',
                 'initial_y': '0.0',

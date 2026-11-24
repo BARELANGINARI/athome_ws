@@ -21,7 +21,6 @@ setup(
     maintainer_email="cyan@barelang.org",
     description="HDMI LCD Emotion & Expression Interface for Barelang Inari Robot",
     license="MIT",
-    tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "face_node = athome_face.face_node:main",

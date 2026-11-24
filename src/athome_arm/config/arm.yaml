@@ -30,12 +30,6 @@ arm_motion_server:
       confirm_count: 3                # Jumlah deteksi kontak berturut-turut sebelum genggaman dinyatakan valid
       compliance_slope: 50            # Kelenturan kontrol PID servo saat menggenggam (makin besar = makin lembut)
 
-    # Arsip kalibrasi lama (sebelum gripper diperlebar):
-    # calibration:
-    #   servo_1: { center_tick: 802, cw_limit: 10, ccw_limit: 1010 }
-    #   servo_4: { center_tick: 809, cw_limit: 10, ccw_limit: 1010 }
-    #   servo_5: { center_tick: 221, cw_limit: 10, ccw_limit: 1010 }
-    #   servo_6: { center_tick: 506, cw_limit: 491, ccw_limit: 779 }
 
     # -------------------------------------------------------------------------
     # 4. Catatan Kalibrasi Titik Nol & Batas Aman Servo (Nilai aktif dikompilasi di calibration_data.h)

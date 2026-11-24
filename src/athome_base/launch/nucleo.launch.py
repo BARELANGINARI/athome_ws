@@ -22,8 +22,6 @@ def generate_launch_description():
         DeclareLaunchArgument('yaw_offset_deg', default_value='0.0', description='IMU yaw offset in degrees'),
 
         # Untuk ngatur pakai imu vision atau razor
-        # DeclareLaunchArgument('use_yaw_topic', default_value='true', description='Use external /vision/yaw_deg instead of STM32 yaw'),
-        # DeclareLaunchArgument('yaw_topic', default_value='/vision/yaw_deg', description='External yaw topic name'),
         DeclareLaunchArgument('use_yaw_topic', default_value='false', description='Use external yaw topic instead of direct STM32/Razor IMU (false = use direct Razor IMU)'),
         DeclareLaunchArgument('yaw_topic', default_value='/yaw', description='External yaw topic name (use /yaw instead of /vision/yaw_deg)'),
 

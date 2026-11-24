@@ -4,7 +4,7 @@ import re
 import tempfile
 import threading
 import time
-from typing import Callable, Iterable, Optional, Set, Union
+from typing import Callable, Iterable, Optional, Union
 
 import numpy as np
 
