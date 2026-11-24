@@ -53,6 +53,16 @@ def generate_launch_description():
             default_value='true',
             description='Launch restaurant task manager FSM node.',
         ),
+        DeclareLaunchArgument(
+            'enable_hri_logger',
+            default_value='true',
+            description='Enable automatic HRI conversation logger per trial.',
+        ),
+        DeclareLaunchArgument(
+            'hri_log_dir',
+            default_value='~/athome_hri_logs',
+            description='Directory where per-trial HRI log files are saved.',
+        ),
 
         # 1a. Speech-to-Text (ASR) Node - C++ (athome_hri_cpp)
         Node(
@@ -103,6 +113,23 @@ def generate_launch_description():
             parameters=[LaunchConfiguration('task_params_file')],
             condition=IfCondition(
                 PythonExpression(["'", LaunchConfiguration('manager_node'), "' == 'true'"])
+            ),
+        ),
+
+        # 4. Per-Trial HRI Conversation Logger
+        Node(
+            package='athome_hri',
+            executable='hri_logger_node',
+            name='hri_logger',
+            output='screen',
+            emulate_tty=True,
+            parameters=[{
+                'task': 'restaurant',
+                'stt_backend': LaunchConfiguration('stt_backend'),
+                'log_dir': LaunchConfiguration('hri_log_dir'),
+            }],
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('enable_hri_logger'), "' == 'true'"])
             ),
         ),
     ])

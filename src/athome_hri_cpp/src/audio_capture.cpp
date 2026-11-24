@@ -322,9 +322,8 @@ void AudioCapture::emitUtterance(bool force_emit)
     return config_;
   }();
 
-  const size_t min_total = static_cast<size_t>(
-    std::max(1, cfg.min_speech_frames) + std::max(0, cfg.pre_roll_frames));
-  if ((force_emit && !speech_buffer_.empty()) || speech_buffer_.size() >= min_total) {
+  const int min_voice = std::max(1, cfg.min_speech_frames);
+  if ((force_emit && !speech_buffer_.empty()) || active_voice_frames_ >= min_voice) {
     size_t total_samples = 0;
     for (const auto & f : speech_buffer_) {
       total_samples += f.size();
@@ -340,6 +339,7 @@ void AudioCapture::emitUtterance(bool force_emit)
   }
   is_speaking_ = false;
   silence_counter_ = 0;
+  active_voice_frames_ = 0;
   speech_buffer_.clear();
 }
 
@@ -361,6 +361,7 @@ void AudioCapture::processFrame(const std::vector<float> & frame)
     speech_buffer_.clear();
     is_speaking_ = false;
     silence_counter_ = 0;
+    active_voice_frames_ = 0;
     if (on_metrics_) {
       VadFrameMetrics m;
       m.dbfs = dbfs;
@@ -399,10 +400,12 @@ void AudioCapture::processFrame(const std::vector<float> & frame)
   if (frame_is_voice) {
     if (!is_speaking_) {
       is_speaking_ = true;
+      active_voice_frames_ = 0;
       for (const auto & pre : pre_roll_buffer_) {
         speech_buffer_.push_back(pre);
       }
     }
+    ++active_voice_frames_;
     speech_buffer_.push_back(frame);
     silence_counter_ = 0;
 

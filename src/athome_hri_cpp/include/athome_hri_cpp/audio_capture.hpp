@@ -121,6 +121,7 @@ private:
   // VAD state machine variables
   bool is_speaking_{false};
   int silence_counter_{0};
+  int active_voice_frames_{0};
   double noise_floor_dbfs_{-50.0};
   std::deque<std::vector<float>> pre_roll_buffer_;
   std::vector<std::vector<float>> speech_buffer_;

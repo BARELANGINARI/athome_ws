@@ -793,6 +793,7 @@ class LocalMicListener:
         self._speech_buffer: List[np.ndarray] = []
         self._pre_roll_buffer: deque[np.ndarray] = deque(maxlen=self.pre_roll_frames)
         self._silence_counter = 0
+        self._active_voice_frames = 0
         self._zero_signal_frames = 0
         self._zero_signal_warned = False
 
@@ -817,6 +818,7 @@ class LocalMicListener:
                 self._speech_buffer.clear()
                 self._is_speaking = False
                 self._silence_counter = 0
+                self._active_voice_frames = 0
             self._zero_signal_frames = 0
             if self.on_frame_metrics:
                 self.on_frame_metrics(
@@ -869,8 +871,10 @@ class LocalMicListener:
         if frame_is_voice:
             if not self._is_speaking:
                 self._is_speaking = True
+                self._active_voice_frames = 0
                 # Masukkan pre-roll buffer agar awal kata tidak terpotong
                 self._speech_buffer.extend(list(self._pre_roll_buffer))
+            self._active_voice_frames += 1
             self._speech_buffer.append(sig)
             self._silence_counter = 0
             # Batas durasi maksimum agar VAD tidak macet saat bising berkepanjangan
@@ -883,16 +887,14 @@ class LocalMicListener:
                 self._is_speaking = False
                 self._speech_buffer = []
                 self._silence_counter = 0
+                self._active_voice_frames = 0
         else:
             if self._is_speaking:
                 self._speech_buffer.append(sig)
                 self._silence_counter += 1
                 # Jika sudah hening melebihi hangover time, kirim ke ASR
                 if self._silence_counter >= self.hangover_frames:
-                    if (
-                        len(self._speech_buffer)
-                        >= self.min_speech_frames + self.pre_roll_frames
-                    ):
+                    if self._active_voice_frames >= self.min_speech_frames:
                         full_audio = np.concatenate(self._speech_buffer).astype(
                             np.float32
                         )
@@ -904,6 +906,7 @@ class LocalMicListener:
                     self._is_speaking = False
                     self._speech_buffer = []
                     self._silence_counter = 0
+                    self._active_voice_frames = 0
             else:
                 self._pre_roll_buffer.append(sig)
 

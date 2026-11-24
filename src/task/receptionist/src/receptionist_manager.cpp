@@ -399,8 +399,9 @@ private:
   rclcpp::Time tts_started_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_nav_fail_time_{0, 0, RCL_ROS_TIME};
 
-  std::mutex tts_mutex_;
+  mutable std::mutex tts_mutex_;
   double tts_timeout_sec_{4.0};
+  std::string active_tts_text_;
   std::function<void()> pending_tts_done_;
 
   std::mutex srv_mutex_;
@@ -1440,8 +1441,10 @@ private:
       tts_started_time_ = now();
       tts_timeout_sec_ = estimateTtsTimeout(text);
       tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.5);
+      active_tts_text_ = text;
       pending_tts_done_ = std::move(on_done);
     }
+    has_new_utterance_ = false;
 
     std_msgs::msg::String message;
     message.data = text;
@@ -1452,7 +1455,7 @@ private:
 
   /// Callback invoked when /hri/tts_done is received (or by fsmTick TTS watchdog).
   /// Releases speaking_, applies a short anti-echo cooldown, then runs pending callback.
-  void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
+  void onTtsDone(const std_msgs::msg::String::SharedPtr msg = nullptr)
   {
     std::function<void()> callback;
     {
@@ -1460,9 +1463,19 @@ private:
       if (!speaking_.load()) {
         return;
       }
+      if (msg != nullptr && !msg->data.empty() && !active_tts_text_.empty() &&
+          normalize(msg->data) != normalize(active_tts_text_))
+      {
+        RCLCPP_WARN(
+          get_logger(),
+          "[TTS] Ignoring stale /hri/tts_done (got \"%s\", expected \"%s\")",
+          msg->data.c_str(), active_tts_text_.c_str());
+        return;
+      }
       in_callback_ = true;
       speaking_ = false;
-      tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.4);
+      active_tts_text_.clear();
+      tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.35);
       callback = std::move(pending_tts_done_);
       pending_tts_done_ = nullptr;
     }
@@ -1483,7 +1496,15 @@ private:
   /// Prevents STT echo capture while the robot is busy or within post-TTS cooldown.
   bool canListen() const
   {
-    return !isBusy() && now() >= tts_cooldown_until_;
+    if (isBusy()) {
+      return false;
+    }
+    rclcpp::Time cooldown_until(0, 0, RCL_ROS_TIME);
+    {
+      std::lock_guard<std::mutex> lock(tts_mutex_);
+      cooldown_until = tts_cooldown_until_;
+    }
+    return now() >= cooldown_until;
   }
 
   /// Lowercases text and collapses non-alphanumeric punctuation into single spaces.
@@ -1712,21 +1733,42 @@ private:
       return count;
     };
 
+    auto stripLeadingFillers = [](std::string s) -> std::string {
+      static const std::vector<std::string> kLeadFillers = {
+        "is ", "a ", "an ", "the ", "uh ", "um ", "er ", "like "
+      };
+      bool stripped = true;
+      while (stripped) {
+        stripped = false;
+        while (!s.empty() && s.front() == ' ') {
+          s.erase(s.begin());
+        }
+        for (const auto & lf : kLeadFillers) {
+          if (s.rfind(lf, 0) == 0) {
+            s.erase(0, lf.size());
+            stripped = true;
+            break;
+          }
+        }
+      }
+      return s;
+    };
+
     auto stripPrefixes = [&](const std::vector<std::string> & prefixes) -> std::string {
       for (const auto & p : prefixes) {
         const auto pos = norm.find(p);
         if (pos != std::string::npos) {
-          std::string rem = norm.substr(pos + p.size());
-          while (!rem.empty() && rem.front() == ' ') {
-            rem.erase(rem.begin());
-          }
+          std::string rem = stripLeadingFillers(norm.substr(pos + p.size()));
           if (!rem.empty() && countWords(rem) <= 3) {
             return capitalizeWords(rem);
           }
         }
       }
       if (countWords(norm) <= 2) {
-        return capitalizeWords(norm);
+        std::string rem = stripLeadingFillers(norm);
+        if (!rem.empty()) {
+          return capitalizeWords(rem);
+        }
       }
       return "";
     };
@@ -2324,8 +2366,11 @@ private:
           return;
         }
         if (tts_pub_->get_subscription_count() == 0 &&
-            (now() - state_enter_time_).seconds() < 1.5)
+            (now() - state_enter_time_).seconds() < 10.0)
         {
+          RCLCPP_INFO_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Waiting for TTS node (/hri/tts_say subscriber) to be ready...");
           return;
         }
         RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Status: Starting task");

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,7 @@ public:
 
 private:
   struct Impl;
+  mutable std::mutex mutex_;
   std::unique_ptr<Impl> impl_;
   NeuralVadConfig config_;
 };
