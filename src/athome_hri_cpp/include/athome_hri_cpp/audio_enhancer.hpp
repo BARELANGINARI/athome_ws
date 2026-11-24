@@ -2,6 +2,7 @@
 
 #include <complex>
 #include <cstddef>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -79,7 +80,11 @@ public:
     const SpectralDenoiserConfig & spectral_cfg = {});
 
   std::vector<float> enhance(const std::vector<float> & audio) const;
-  std::string activeBackend() const { return active_backend_; }
+  std::string activeBackend() const
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return active_backend_;
+  }
 
 private:
   void initHighpass();
@@ -102,6 +107,7 @@ private:
   BiquadCoeffs hp_stage2_;
   bool hp_enabled_{false};
 
+  mutable std::mutex mutex_;
   void * df_state_{nullptr};
   void * rnnoise_state_{nullptr};
 };

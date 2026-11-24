@@ -433,6 +433,8 @@ private:
         vad_config_.adaptive_noise_alpha_up = p.as_double(); vad_dirty = true;
       } else if (n == "adaptive_noise_alpha_down") {
         vad_config_.adaptive_noise_alpha_down = p.as_double(); vad_dirty = true;
+      } else if (n == "pre_roll_frames") {
+        vad_config_.pre_roll_frames = std::max(0, static_cast<int>(p.as_int())); vad_dirty = true;
       } else if (n == "hangover_frames") {
         vad_config_.hangover_frames = static_cast<int>(p.as_int()); vad_dirty = true;
       } else if (n == "min_speech_frames") {
@@ -441,6 +443,8 @@ private:
         vad_config_.max_speech_frames = static_cast<int>(p.as_int()); vad_dirty = true;
       } else if (n == "stt_denoiser_backend") {
         backend = p.as_string(); enhancer_dirty = true;
+      } else if (n == "stt_deepfilter_model_path") {
+        df_model = resolveModelPath(p.as_string()); enhancer_dirty = true;
       } else if (n == "stt_highpass_hz") {
         highpass_hz = p.as_double(); enhancer_dirty = true;
       } else if (n == "stt_spectral_alpha") {

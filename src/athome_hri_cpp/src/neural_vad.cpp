@@ -75,6 +75,7 @@ bool SileroNeuralVad::isReady() const
 void SileroNeuralVad::updateThresholds(
   float threshold, int min_speech_ms, int min_silence_ms, int speech_pad_ms)
 {
+  std::lock_guard<std::mutex> lock(mutex_);
   config_.threshold = threshold;
   config_.min_speech_ms = min_speech_ms;
   config_.min_silence_ms = min_silence_ms;
@@ -88,9 +89,14 @@ std::vector<float> SileroNeuralVad::filterSpeech(const std::vector<float> & audi
     return audio;
   }
 
+  const NeuralVadConfig cfg = [this]() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_;
+  }();
+
   constexpr size_t kWindowSize = 512;  // 32 ms @ 16 kHz
   constexpr size_t kContextSize = 64;  // Silero v5 context
-  const int sr = config_.sample_rate;
+  const int sr = cfg.sample_rate;
   const int64_t sr_val = static_cast<int64_t>(sr);
 
   std::vector<float> state_v5(2 * 1 * 128, 0.0f);
@@ -167,10 +173,10 @@ std::vector<float> SileroNeuralVad::filterSpeech(const std::vector<float> & audi
   }
 
   // Hysteresis segment extraction matching Silero get_speech_timestamps
-  const float neg_thresh = std::max(0.01f, config_.threshold - 0.15f);
-  const size_t min_speech_samples = static_cast<size_t>((sr * config_.min_speech_ms) / 1000);
-  const size_t min_silence_samples = static_cast<size_t>((sr * config_.min_silence_ms) / 1000);
-  const size_t speech_pad_samples = static_cast<size_t>((sr * config_.speech_pad_ms) / 1000);
+  const float neg_thresh = std::max(0.01f, cfg.threshold - 0.15f);
+  const size_t min_speech_samples = static_cast<size_t>((sr * cfg.min_speech_ms) / 1000);
+  const size_t min_silence_samples = static_cast<size_t>((sr * cfg.min_silence_ms) / 1000);
+  const size_t speech_pad_samples = static_cast<size_t>((sr * cfg.speech_pad_ms) / 1000);
 
   struct Segment { size_t start; size_t end; };
   std::vector<Segment> segments;
@@ -183,10 +189,10 @@ std::vector<float> SileroNeuralVad::filterSpeech(const std::vector<float> & audi
     const float p = probs[i];
     const size_t sample_pos = i * kWindowSize;
 
-    if (p >= config_.threshold && temp_end != 0) {
+    if (p >= cfg.threshold && temp_end != 0) {
       temp_end = 0;
     }
-    if (p >= config_.threshold && !triggered) {
+    if (p >= cfg.threshold && !triggered) {
       triggered = true;
       cur_start = sample_pos;
       continue;

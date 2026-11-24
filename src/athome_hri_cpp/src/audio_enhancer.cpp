@@ -253,6 +253,7 @@ void AudioEnhancer::updateConfig(
   const std::string & deepfilter_model_path,
   const SpectralDenoiserConfig & spectral_cfg)
 {
+  std::lock_guard<std::mutex> lock(mutex_);
   spectral_cfg_ = spectral_cfg;
   bool need_hp = false;
   if (sample_rate > 0 && sample_rate != sample_rate_) {
@@ -360,12 +361,18 @@ std::vector<float> AudioEnhancer::enhanceSpectral(const std::vector<float> & sig
     return sig;
   }
 
+  // Pad left & right by at least `hop` so every original sample receives 2x 50%-overlap Hann frames
+  const size_t min_total = sig.size() + 2 * hop;
+  const size_t n_frames = 1 + (min_total - n_fft + hop - 1) / hop;
+  const size_t padded_len = n_fft + (n_frames - 1) * hop;
+  std::vector<float> padded(padded_len, 0.0f);
+  std::copy(sig.begin(), sig.end(), padded.begin() + static_cast<std::ptrdiff_t>(hop));
+
   std::vector<float> win(n_fft);
   for (size_t i = 0; i < n_fft; ++i) {
     win[i] = 0.5f * (1.0f - std::cos(static_cast<float>(2.0 * kPi * i / (n_fft - 1))));
   }
 
-  const size_t n_frames = 1 + (sig.size() - n_fft) / hop;
   const size_t n_bins = n_fft / 2 + 1;
 
   std::vector<std::vector<std::complex<float>>> stft_frames(
@@ -375,7 +382,7 @@ std::vector<float> AudioEnhancer::enhanceSpectral(const std::vector<float> & sig
   for (size_t f = 0; f < n_frames; ++f) {
     const size_t start = f * hop;
     for (size_t i = 0; i < n_fft; ++i) {
-      stft_frames[f][i] = std::complex<float>(sig[start + i] * win[i], 0.0f);
+      stft_frames[f][i] = std::complex<float>(padded[start + i] * win[i], 0.0f);
     }
     dsp::fftRadix2(stft_frames[f], false);
 
@@ -428,8 +435,8 @@ std::vector<float> AudioEnhancer::enhanceSpectral(const std::vector<float> & sig
   }
 
   // Overlap-add ISTFT
-  std::vector<float> out(sig.size(), 0.0f);
-  std::vector<float> norm_acc(sig.size(), 0.0f);
+  std::vector<float> out_padded(padded_len, 0.0f);
+  std::vector<float> norm_acc(padded_len, 0.0f);
   for (size_t f = 0; f < n_frames; ++f) {
     auto & spec = stft_frames[f];
     spec[0] *= gains[f][0];
@@ -445,14 +452,16 @@ std::vector<float> AudioEnhancer::enhanceSpectral(const std::vector<float> & sig
 
     const size_t start = f * hop;
     for (size_t i = 0; i < n_fft; ++i) {
-      out[start + i] += spec[i].real() * win[i];
+      out_padded[start + i] += spec[i].real() * win[i];
       norm_acc[start + i] += win[i] * win[i];
     }
   }
 
+  std::vector<float> out(sig.size(), 0.0f);
   for (size_t i = 0; i < sig.size(); ++i) {
-    if (norm_acc[i] > 1e-8f) {
-      out[i] /= norm_acc[i];
+    const size_t p_idx = hop + i;
+    if (norm_acc[p_idx] > 1e-8f) {
+      out[i] = out_padded[p_idx] / norm_acc[p_idx];
     } else {
       out[i] = sig[i];
     }
@@ -465,6 +474,7 @@ std::vector<float> AudioEnhancer::enhance(const std::vector<float> & audio) cons
   if (audio.empty()) {
     return {};
   }
+  std::lock_guard<std::mutex> lock(mutex_);
   std::vector<float> sig = audio;
   const double mean = std::accumulate(sig.begin(), sig.end(), 0.0) / static_cast<double>(sig.size());
   for (float & s : sig) {
