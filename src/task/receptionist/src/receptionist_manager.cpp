@@ -1579,7 +1579,7 @@ private:
 
     if (slot == "person_name") {
       static const std::vector<std::string> kKnownNames = {
-        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal",s
+        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal",
         "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma", "maria", "muhammad",
         "budi", "abdul", "jefrey", "jefri", "hezekiel"
       };
