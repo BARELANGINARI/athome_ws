@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Script Pengambil / Pengimpor Foto Host (Revaldo)
-# Penggunaan:
-#   1. Ambil lewat Webcam / Kamera: ./capture_host.sh
-#   2. Import dari file foto yang ada: ./capture_host.sh /path/ke/foto_revaldo.jpg
+# Script Registrasi Foto Wajah Host (Receptionist Task)
+#
+# FITUR 1: Ambil foto Host secara live dari kamera:
+#   ./capture_host.sh --camera
+#
+# FITUR 2: Baca / deteksi wajah Host dari file foto yang ada:
+#   ./capture_host.sh --photo /path/ke/foto.jpg
+#   (atau: ./capture_host.sh /path/ke/foto.jpg)
+#
+# MENU INTERAKTIF:
+#   ./capture_host.sh
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_SCRIPT="${SCRIPT_DIR}/capture_host.py"
 
 chmod +x "${PYTHON_SCRIPT}"
-
-if [ -n "$1" ]; then
-    python3 "${PYTHON_SCRIPT}" "$1"
-else
-    python3 "${PYTHON_SCRIPT}"
-fi
+python3 "${PYTHON_SCRIPT}" "$@"

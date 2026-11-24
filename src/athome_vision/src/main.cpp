@@ -1573,6 +1573,34 @@ public:
   std::vector<float> extractFaceFromImage(const cv::Mat & img)
   {
     if (!face_.ready() || img.empty()) return {};
+
+    // 1. Prioritaskan deteksi wajah YuNet + 5-landmark affine alignment jika detector siap
+    if (faceDetectorReady()) {
+      DetectedFace df = detectFace(img);
+      if (df.valid && df.score >= 0.35f) {
+        const float eye_dist = std::hypot(df.left_eye.x - df.right_eye.x, df.left_eye.y - df.right_eye.y);
+        if (eye_dist >= 6.5f) {
+          std::vector<cv::Point2f> from{
+            df.right_eye, df.left_eye, df.nose, df.right_mouth, df.left_mouth};
+          std::vector<cv::Point2f> to{
+            {38.2946f, 51.6963f},
+            {73.5318f, 51.5014f},
+            {56.0252f, 71.7366f},
+            {41.5493f, 92.3655f},
+            {70.7299f, 92.2041f}};
+          cv::Mat transform = cv::estimateAffinePartial2D(from, to, cv::noArray(), cv::LMEDS);
+          if (transform.empty()) transform = cv::estimateAffine2D(from, to);
+          if (!transform.empty()) {
+            cv::Mat aligned;
+            cv::warpAffine(img, aligned, transform, cv::Size(112, 112),
+              cv::INTER_LINEAR, cv::BORDER_REPLICATE);
+            return embedFace(aligned);
+          }
+        }
+      }
+    }
+
+    // 2. Fallback: Center crop persegi
     cv::Rect roi(0, 0, img.cols, img.rows);
     if (img.cols > img.rows) {
       const int diff = img.cols - img.rows;
@@ -2143,7 +2171,7 @@ private:
 
   std::string resolvePath(const std::string & path) const;
   void loadModels();
-  void loadPreRegisteredHost();
+  void loadPreRegisteredHost(const std::string & custom_photo_path = "");
   void loadYolo(
     YoloDetector & detector, const std::string & model_param,
     const std::vector<std::string> & fallbacks, const std::string & name,
@@ -2252,6 +2280,7 @@ private:
   double bag_max_dist_{2.5};
   double drink_max_dist_{2.5};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_name_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr host_photo_sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr capture_face_srv_;
   std::atomic<bool> capture_face_requested_{false};
   std::mutex state_mutex_;
@@ -2505,6 +2534,22 @@ ZedNode::ZedNode()
         active_guest_name_.clear();
       }
       publishGuestNames();
+    });
+
+  host_photo_sub_ = create_subscription<std_msgs::msg::String>(
+    "/vision/load_host_photo", 10,
+    [this](const std_msgs::msg::String::SharedPtr msg) {
+      std::string path = msg->data;
+      while (!path.empty() &&
+        (path.back() == ' ' || path.back() == '\r' || path.back() == '\n' || path.back() == '\t'))
+      {
+        path.pop_back();
+      }
+      while (!path.empty() && (path.front() == ' ' || path.front() == '\t')) path.erase(path.begin());
+      std::lock_guard<std::mutex> state_lk(state_mutex_);
+      RCLCPP_INFO(get_logger(),
+        "\033[1;32m[HOST PHOTO]\033[0m Request received to load/detect Host from photo: '%s'", path.c_str());
+      loadPreRegisteredHost(path);
     });
 
   sl::InitParameters init;
@@ -2827,12 +2872,13 @@ void ZedNode::loadModels()
         RCLCPP_WARN(get_logger(), "Hair model unavailable, using HSV: %s", err.c_str());
       }
     }
+    bool face_loaded = false;
     if (!face_path.empty()) {
       std::string err;
       if (analyzer_.loadFace(face_path, &err)) {
         RCLCPP_INFO(get_logger(), "Face SFace loaded: %s (threshold %.3f)",
           face_path.c_str(), face_threshold_);
-        loadPreRegisteredHost();
+        face_loaded = true;
       } else {
         RCLCPP_WARN(get_logger(), "Face model unavailable: %s", err.c_str());
       }
@@ -2854,10 +2900,14 @@ void ZedNode::loadModels()
       RCLCPP_WARN(get_logger(), "YuNet model file not found: %s, using ZED keypoints fallback",
         face_detect_path.c_str());
     }
+
+    if (face_loaded) {
+      loadPreRegisteredHost();
+    }
   }
 }
 
-void ZedNode::loadPreRegisteredHost()
+void ZedNode::loadPreRegisteredHost(const std::string & custom_photo_path)
 {
   std::string host_name = get_parameter("host_name").as_string();
   if (host_name.empty()) return;
@@ -2870,7 +2920,9 @@ void ZedNode::loadPreRegisteredHost()
     raw_shirt = raw_shirt.substr(0, raw_shirt.size() - suffix.size());
   }
 
-  std::string host_photo = get_parameter("host_photo").as_string();
+  std::string host_photo = custom_photo_path.empty()
+    ? get_parameter("host_photo").as_string()
+    : custom_photo_path;
   std::vector<float> feat;
   cv::Mat img;
   if (!host_photo.empty()) {
@@ -3778,14 +3830,20 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         if (!has_continuity) {
           const bool attr_matches = (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
                                      prof.clothing_color == entry_feats[i].shirt_color);
-          const float req_claim_th = attr_matches ? th : effective_claim_th;
+          const float req_claim_th = attr_matches
+            ? th
+            : (registered_persons_.size() <= 1 ? th : effective_claim_th);
           if (f_sim < req_claim_th) {
             veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
+            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+              "[FACE] '%s' similarity %.3f < %.3f (veto)",
+              prof.name.c_str(), f_sim, req_claim_th);
           } else if (other_best >= th && face_margin < 0.08f) {
             veto = true; // Wajah ambigu antara dua profil -> jangan tebak nama baru
           }
         } else {
-          if (f_sim < break_th) {
+          const float active_break_th = (registered_persons_.size() <= 1) ? 0.18f : break_th;
+          if (f_sim < active_break_th) {
             veto = true; // Konflik wajah memutus ID/anchor lama
           } else if (other_best >= strong_th && (other_best - f_sim) >= 0.08f) {
             veto = true; // Profil lain menang telak -> lepas ID/anchor lama bila tracker ZED bertukar
@@ -3904,7 +3962,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       const float margin = f_sim - other_best;
       raw_strong_face[assigned_entry] = (has_face_match && f_sim >= strong_th && margin >= 0.07f);
 
-      const bool face_confirmed = (has_face_match && f_sim >= claim_th && margin >= 0.05f);
+      const float eff_claim = (registered_persons_.size() <= 1) ? th : claim_th;
+      const bool face_confirmed = (has_face_match && f_sim >= eff_claim && margin >= 0.05f);
       const bool fallback_no_face = (prof.feature.empty() && score_matrix[assigned_entry][j] >= 0.75f);
       if (face_confirmed || fallback_no_face) {
         prof.last_tracking_id = entries[assigned_entry].id;
@@ -3922,8 +3981,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         prof.last_seen = current_time;
       }
 
-      // Anti-kontaminasi: tambah sudut baru ke gallery HANYA jika wajah sangat yakin & margin lebar
-      if (has_face_match && f_sim >= 0.62f && margin >= 0.12f && prof.face_gallery.size() < 5) {
+      // Anti-kontaminasi: tambah sudut baru ke gallery saat wajah yakin & margin lebar
+      if (has_face_match && f_sim >= 0.48f && margin >= 0.10f && prof.face_gallery.size() < 8) {
         float max_gal_sim = AttributeAnalyzer::matchFace(entry_feats[assigned_entry].face_feat, prof.feature);
         for (const auto & gf : prof.face_gallery) {
           if (!gf.empty()) {
@@ -3937,19 +3996,19 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
 
       // Belajar atribut baju/rambut/gender jika sebelumnya belum terekam
       if (prof.clothing_color.empty() && !entry_feats[assigned_entry].shirt_color.empty()) {
-        if (has_face_match && f_sim >= claim_th && margin >= 0.05f) {
+        if (has_face_match && f_sim >= eff_claim && margin >= 0.05f) {
           prof.clothing_color = entry_feats[assigned_entry].shirt_color;
           prof.torso_hsv = entry_feats[assigned_entry].torso_hsv;
           prof.has_color = true;
         }
       }
       if (prof.hair_color.empty() && !entry_feats[assigned_entry].hair_color.empty()) {
-        if (has_face_match && f_sim >= claim_th && margin >= 0.05f) {
+        if (has_face_match && f_sim >= eff_claim && margin >= 0.05f) {
           prof.hair_color = entry_feats[assigned_entry].hair_color;
         }
       }
       if (prof.gender.empty() && !entry_feats[assigned_entry].gender.empty()) {
-        if (has_face_match && f_sim >= claim_th && margin >= 0.05f) {
+        if (has_face_match && f_sim >= eff_claim && margin >= 0.05f) {
           prof.gender = entry_feats[assigned_entry].gender;
         }
       }
@@ -4005,9 +4064,13 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           mem.candidate_name = raw_name;
           mem.candidate_streak = 1;
         }
-        // Konfirmasi awal: kecocokan wajah kuat langsung, atau modus >= 4 frame
-        if (raw_strong_face[i] || mode_count >= 4 || mem.candidate_streak >= 4) {
-          mem.confirmed_name = (mode_count >= 4) ? mode_name : raw_name;
+        // Konfirmasi awal: langsung jika skor kuat / hanya 1 profil terdaftar, atau modus >= 2 frame
+        const bool instant_confirm =
+          raw_strong_face[i] ||
+          raw_match_scores[i] >= 0.68f ||
+          (registered_persons_.size() <= 1 && raw_match_scores[i] >= 0.52f);
+        if (instant_confirm || mode_count >= 2 || mem.candidate_streak >= 2) {
+          mem.confirmed_name = (mode_count >= 2) ? mode_name : raw_name;
           mem.candidate_streak = 0;
           mem.last_seen = current_time;
         }
@@ -4970,7 +5033,12 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         r &= cv::Rect(0, 0, bgr.cols, bgr.rows);
         if (r.width > 20 && r.height > 20) {
           cv::Mat host_crop = bgr(r).clone();
-          cv::Rect face_roi = analyzer_.faceCropRegion(r, snap_persons[0].kpt, bgr.cols, bgr.rows, bgr);
+          std::vector<sl::float2> sl_kpt;
+          sl_kpt.reserve(snap_persons[0].kpt.size());
+          for (const auto & pt : snap_persons[0].kpt) {
+            sl_kpt.emplace_back(pt.x, pt.y);
+          }
+          cv::Rect face_roi = analyzer_.faceCropRegion(r, sl_kpt, bgr.cols, bgr.rows, bgr);
           if (face_roi.width > 20 && face_roi.height > 20) {
             host_crop = bgr(face_roi).clone();
           }

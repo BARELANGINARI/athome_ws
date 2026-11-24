@@ -45,7 +45,7 @@ receptionist_node:
     guest_approach_timeout_sec: 15.0
 
     # Face person settings
-    host_name: "Revaldo"
+    host_name: "Yesaya"
     person_label_topic: "/vision/person_label"
     guest_1_name_topic: "/vision/guest_1_name"
     guest_2_name_topic: "/vision/guest_2_name"
@@ -69,7 +69,7 @@ receptionist_manager:
   ros__parameters:
     # Parameter Host & Konfigurasi Task (WAJIB ada di file YAML ini; tidak ada default di C++)
     host:
-      name: "Revaldo"                       # Nama Host yang duduk di living room
+      name: "Yesaya"                       # Nama Host yang duduk di living room
       drink: "Coke"                      # Minuman favorit Host
       interest: "Robotics"               # Hobi/minat utama Host
       gender: "male"                     # Gender Host ("male" / "female")
@@ -117,7 +117,7 @@ vision:
     yolo_classes: "models/coco_names.txt"
     yolo_conf: 0.25
     face_detect_model: "models/face_detection_yunet.onnx"
-    face_detect_conf: 0.55
+    face_detect_conf: 0.40
     face_model: "models/face_recognition_sface.onnx"
     face_threshold: 0.363
     gender_model: "models/genderage.onnx"
@@ -128,9 +128,9 @@ vision:
     debug_window: true
     mirror: false
     # Profil Host (hanya foto yang digunakan untuk ekstraksi wajah, atribut lainnya dari YAML ini)
-    host_name: "Revaldo"                 # Nama Host
+    host_name: "Yesaya"                 # Nama Host
     host_photo: "models/host.jpg"        # Foto wajah Host untuk ekstraksi fitur biometrik
-    host_shirt_color: "black"            # Warna pakaian Host dari YAML
-    host_gender: "male"                  # Gender Host dari YAML
-    host_hair_color: "black"             # Warna rambut Host dari YAML
+    host_shirt_color: ""                 # Kosongkan agar pencocokan murni dari foto wajah host.jpg
+    host_gender: ""                      # Kosongkan agar tidak veto jika prediksi gender berbeda
+    host_hair_color: ""                  # Kosongkan agar pencocokan murni dari foto wajah host.jpg
 
