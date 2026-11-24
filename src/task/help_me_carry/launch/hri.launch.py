@@ -43,6 +43,18 @@ def generate_launch_description():
         description="Path to Help Me Carry task parameters YAML file",
     )
 
+    enable_hri_logger_arg = DeclareLaunchArgument(
+        "enable_hri_logger",
+        default_value="true",
+        description="Enable automatic HRI conversation logger per trial.",
+    )
+
+    hri_log_dir_arg = DeclareLaunchArgument(
+        "hri_log_dir",
+        default_value="~/athome_hri_logs",
+        description="Directory where per-trial HRI log files are saved.",
+    )
+
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
         SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
@@ -51,6 +63,8 @@ def generate_launch_description():
         cpp_params_file_arg,
         params_file_arg,
         task_params_file_arg,
+        enable_hri_logger_arg,
+        hri_log_dir_arg,
         Node(
             package="athome_hri_cpp",
             executable="stt_engine_node",
@@ -90,6 +104,21 @@ def generate_launch_description():
             name="help_me_carry_manager",
             output="screen",
             parameters=[LaunchConfiguration("task_params_file")],
+        ),
+        Node(
+            package="athome_hri",
+            executable="hri_logger_node",
+            name="hri_logger",
+            output="screen",
+            emulate_tty=True,
+            parameters=[{
+                "task": "help_me_carry",
+                "stt_backend": LaunchConfiguration("stt_backend"),
+                "log_dir": LaunchConfiguration("hri_log_dir"),
+            }],
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration("enable_hri_logger"), "' == 'true'"])
+            ),
         ),
     ])
 
