@@ -2,6 +2,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -135,6 +136,7 @@ public:
     max_utterance_queue_.store(
       std::max<size_t>(1, static_cast<size_t>(requireYamlParameter<int64_t>("stt_max_utterance_queue"))));
     tts_speaking_timeout_sec_ = requireYamlParameter<double>("tts_speaking_timeout_sec");
+    tts_post_mute_sec_.store(std::max(0.0, requireYamlParameter<double>("tts_post_mute_sec")));
 
     const char * env_task = std::getenv("ATHOME_TASK");
     declare_parameter<std::string>("task", env_task ? env_task : "all");
@@ -233,15 +235,15 @@ private:
 
   bool isMicPaused()
   {
-    if (tts_speaking_.load()) {
-      const double now_sec = std::chrono::duration<double>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-      if (now_sec >= tts_speaking_until_sec_.load()) {
-        RCLCPP_WARN(get_logger(), "Watchdog /hri/tts_done timeout; re-enabling microphone.");
-        tts_speaking_.store(false);
-      }
+    const double now_sec = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (tts_speaking_.load() && now_sec >= tts_speaking_until_sec_.load()) {
+      RCLCPP_WARN(get_logger(), "Watchdog /hri/tts_done timeout; re-enabling microphone.");
+      tts_speaking_.store(false);
     }
-    return (!enable_local_mic_.load()) || tts_speaking_.load();
+    return (!enable_local_mic_.load()) ||
+           tts_speaking_.load() ||
+           (now_sec < tts_post_mute_until_sec_.load());
   }
 
   void onTtsSay(const std_msgs::msg::String::SharedPtr msg)
@@ -249,26 +251,38 @@ private:
     if (msg && !msg->data.empty()) {
       const double now_sec = std::chrono::duration<double>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+      tts_epoch_.fetch_add(1);
       tts_speaking_until_sec_.store(now_sec + tts_speaking_timeout_sec_);
+      tts_post_mute_until_sec_.store(0.0);
       tts_speaking_.store(true);
+      std::lock_guard<std::mutex> lock(asr_queue_mutex_);
+      while (!asr_queue_.empty()) {
+        asr_queue_.pop();
+      }
     }
   }
 
   void onTtsDone(const std_msgs::msg::String::SharedPtr /*msg*/)
   {
+    const double now_sec = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
     tts_speaking_.store(false);
     tts_speaking_until_sec_.store(0.0);
+    tts_post_mute_until_sec_.store(now_sec + tts_post_mute_sec_.load());
   }
 
   void enqueueUtterance(std::vector<float> && audio)
   {
+    if (isMicPaused()) {
+      return;
+    }
     {
       std::lock_guard<std::mutex> lock(asr_queue_mutex_);
       const size_t max_q = max_utterance_queue_.load();
       while (asr_queue_.size() >= max_q) {
         asr_queue_.pop();
       }
-      asr_queue_.push(std::move(audio));
+      asr_queue_.push(UtteranceItem{std::move(audio), tts_epoch_.load()});
     }
     asr_cv_.notify_one();
   }
@@ -276,19 +290,23 @@ private:
   void asrWorkerLoop()
   {
     while (asr_running_.load()) {
-      std::vector<float> raw_audio;
+      UtteranceItem item;
       {
         std::unique_lock<std::mutex> lock(asr_queue_mutex_);
         asr_cv_.wait(lock, [this]() { return !asr_queue_.empty() || !asr_running_.load(); });
         if (!asr_running_.load() && asr_queue_.empty()) {
           break;
         }
-        raw_audio = std::move(asr_queue_.front());
+        item = std::move(asr_queue_.front());
         asr_queue_.pop();
       }
 
+      if (item.epoch != tts_epoch_.load() || isMicPaused()) {
+        continue;
+      }
+
       // Stage 1: CPU Denoising Frontend (120 Hz HPF + DeepFilterNet2 / RNNoise / Spectral)
-      std::vector<float> clean_audio = enhancer_->enhance(raw_audio);
+      std::vector<float> clean_audio = enhancer_->enhance(item.audio);
 
       // Stage 2: Strict CPU Silero Neural VAD Gate
       if (neural_vad_->isReady()) {
@@ -299,9 +317,19 @@ private:
         }
       }
 
+      if (item.epoch != tts_epoch_.load() || isMicPaused()) {
+        continue;
+      }
+
       // Stage 3 & 4: whisper.cpp Anti-Loop Decoding + N-Gram Deduplication + Blacklist
       const AsrResult res = asr_->transcribe(clean_audio);
       if (res.accepted && !res.text.empty()) {
+        if (item.epoch != tts_epoch_.load() || isMicPaused()) {
+          RCLCPP_INFO(
+            get_logger(), "%s\n  STT Dropped (TTS echo/stale): \"%s\"",
+            task_header_.c_str(), res.text.c_str());
+          continue;
+        }
         std_msgs::msg::String out;
         out.data = res.text;
         transcript_pub_->publish(out);
@@ -447,6 +475,8 @@ private:
         min_chars = static_cast<int>(p.as_int()); asr_dirty = true;
       } else if (n == "stt_hallucination_blacklist") {
         bl = p.as_string_array(); asr_dirty = true;
+      } else if (n == "tts_post_mute_sec") {
+        tts_post_mute_sec_.store(std::max(0.0, p.as_double()));
       }
     }
 
@@ -465,6 +495,12 @@ private:
     return result;
   }
 
+  struct UtteranceItem
+  {
+    std::vector<float> audio;
+    uint64_t epoch{0};
+  };
+
   std::string task_header_;
   std::atomic<bool> enable_local_mic_{true};
   std::atomic<bool> enable_live_meter_{true};
@@ -472,6 +508,9 @@ private:
   std::atomic<size_t> max_utterance_queue_{4};
   std::atomic<bool> tts_speaking_{false};
   std::atomic<double> tts_speaking_until_sec_{0.0};
+  std::atomic<double> tts_post_mute_sec_{0.6};
+  std::atomic<double> tts_post_mute_until_sec_{0.0};
+  std::atomic<uint64_t> tts_epoch_{0};
   double tts_speaking_timeout_sec_{20.0};
   std::chrono::steady_clock::time_point last_meter_log_{};
 
@@ -485,7 +524,7 @@ private:
   std::thread asr_thread_;
   std::mutex asr_queue_mutex_;
   std::condition_variable asr_cv_;
-  std::queue<std::vector<float>> asr_queue_;
+  std::queue<UtteranceItem> asr_queue_;
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr transcript_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_say_sub_;

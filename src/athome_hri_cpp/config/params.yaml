@@ -85,4 +85,5 @@ stt_engine:
     # 7. Sinkronisasi TTS Mute Watchdog
     # -------------------------------------------------------------------------
     tts_speaking_timeout_sec: 20.0        # Watchdog pembuka mute mic otomatis jika /hri/tts_done terlewat
+    tts_post_mute_sec: 0.6                # Lama mic tetap dimute setelah /hri/tts_done agar gema/ekor speaker tidak terekam
     task: "all"                           # Label log terminal: receptionist / help_me_carry / restaurant / all

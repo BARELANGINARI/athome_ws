@@ -67,6 +67,7 @@
     # -------------------------------------------------------------------------
     tts_model: "en_US-lessac-medium.onnx" # Nama file model suara Piper (.onnx di folder model/)
     tts_use_cuda: false                   # true = jalankan Piper di GPU CUDA, false = jalankan di CPU (lebih hemat VRAM)
+    tts_post_mute_sec: 0.6                # Lama mic tetap dimute setelah /hri/tts_done agar gema/ekor speaker tidak terekam
 
     # -------------------------------------------------------------------------
     # 5. Web Server & NLU (Antarmuka web dan pencocokan intent)
