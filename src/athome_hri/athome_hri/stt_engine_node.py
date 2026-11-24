@@ -274,9 +274,6 @@ class SttEngineNode(Node):
         self._tts_speaking = False
         self._tts_speaking_until = 0.0
         self._tts_post_mute_until = time.monotonic() + self._tts_post_mute_sec
-        self._tts_post_mute_sec = max(0.0, float(params["tts_post_mute_sec"]))
-        self._tts_post_mute_until = 0.0
-        self._tts_epoch = 0
 
     def _on_metrics(self, m: VadFrameMetrics) -> None:
         if self._enable_visualizer:
