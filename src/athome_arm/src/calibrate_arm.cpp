@@ -127,12 +127,6 @@ int readSignedLoad(uint8_t id) {
     return cw ? -mag : mag;
 }
 
-void waitEnter(const std::string &prompt) {
-    std::cout << prompt << " [Press ENTER to continue] ";
-    std::string dummy;
-    std::getline(std::cin, dummy);
-}
-
 // ---------------- VERIFY CONNECTION ----------------
 bool checkServos() {
     std::cout << "Checking servo connection ID 1, 4, 5, 6 on " << DEVICENAME

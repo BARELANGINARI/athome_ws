@@ -24,6 +24,7 @@ restaurant_node:
     adaptive_standoff_step: 0.05         # Resolusi langkah mundur saat mencari ruang bebas (meter)
     costmap_obstacle_threshold: 60       # Nilai batas cost costmap (0-100) aman dari dinding/rintangan
     costmap_topic: "/global_costmap/costmap" # Topik global costmap Nav2
+    robot_radius: 0.24                   # Radius fisik robot untuk pengecekan safety costmap (meter)
     auto_navigate: false                 # false: tunggu service /go_to_order, true: langsung jalan saat topik publish
     nav_timeout_sec: 120.0               # Batas waktu navigasi Nav2 sebelum timeout (detik)
 

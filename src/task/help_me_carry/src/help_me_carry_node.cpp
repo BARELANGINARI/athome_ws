@@ -1212,59 +1212,6 @@ private:
       status_str.c_str(), twist.linear.x, twist.linear.y, twist.angular.z);
   }
 
-  void send_nav2_goal(const geometry_msgs::msg::PoseStamped & target_pose)
-  {
-    if (!is_following_ || is_nav_active_) {
-      return;
-    }
-
-    if ((now() - last_nav_fail_time_).seconds() < 1.0) {
-      return;
-    }
-
-    if (!action_client_->wait_for_action_server(std::chrono::milliseconds(500))) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "\033[91m[FOLLOW] Action server Nav2 ('%s') belum siap!\033[0m", action_name_.c_str());
-      return;
-    }
-
-    NavigateToPose::Goal goal;
-    goal.behavior_tree = bt_xml_;
-    goal.pose = target_pose;
-
-    auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
-    send_opts.goal_response_callback = [this](const GoalHandle::SharedPtr & handle) {
-      if (!handle) {
-        RCLCPP_WARN(get_logger(), "\033[91m[FOLLOW] Goal following ditolak oleh Nav2!\033[0m");
-        is_nav_active_ = false;
-        last_nav_fail_time_ = now();
-      } else {
-        goal_handle_ = handle;
-        is_nav_active_ = true;
-        RCLCPP_INFO(get_logger(), "\033[92m[FOLLOW] Goal following diterima Nav2 (Avoidance Costmap aktif).\033[0m");
-      }
-    };
-    send_opts.result_callback = [this](const GoalHandle::WrappedResult & res) {
-      is_nav_active_ = false;
-      goal_handle_.reset();
-      if (res.code == rclcpp_action::ResultCode::SUCCEEDED) {
-        RCLCPP_INFO_THROTTLE(
-          get_logger(), *get_clock(), 1500,
-          "\033[92m[FOLLOW] Arrived near operator. Waiting for operator to move...\033[0m");
-      } else if (res.code == rclcpp_action::ResultCode::CANCELED) {
-        RCLCPP_INFO(get_logger(), "\033[93m[FOLLOW] Nav2 following goal canceled.\033[0m");
-      } else if (res.code == rclcpp_action::ResultCode::ABORTED) {
-        last_nav_fail_time_ = now();
-        RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 2000,
-          "\033[91m[FOLLOW] Nav2 aborted (obstacle/unreachable). Retrying shortly...\033[0m");
-      }
-    };
-
-    is_nav_active_ = true;
-    action_client_->async_send_goal(goal, send_opts);
-  }
 
   void handle_start_follow(std::shared_ptr<Trigger::Response> resp)
   {
@@ -2382,56 +2329,6 @@ private:
     return true;
   }
 
-  bool is_facing_away_or_blocked()
-  {
-    double cur_x = 0.0, cur_y = 0.0, cur_yaw = 0.0;
-    bool has_tf = false;
-    try {
-      auto trans = tf_buffer_->lookupTransform(frame_map_, frame_base_, tf2::TimePointZero);
-      cur_x = trans.transform.translation.x;
-      cur_y = trans.transform.translation.y;
-      const auto & rq = trans.transform.rotation;
-      const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
-      const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
-      cur_yaw = std::atan2(siny, cosy);
-      has_tf = true;
-    } catch (...) {}
-
-    double rel_angle_origin = 0.0;
-    if (has_tf && origin_recorded_) {
-      const double origin_map_yaw = std::atan2(origin_y_ - cur_y, origin_x_ - cur_x);
-      rel_angle_origin = normalize_angle(origin_map_yaw - cur_yaw);
-    }
-
-    ClearanceSummary clear = get_clearance_summary();
-
-    RCLCPP_INFO(
-      get_logger(),
-      "\033[1;36m[HOMING DIAGNOSTIC]\033[0m Posisi: (x=%.2f, y=%.2f, yaw=%.1f°) | Selisih Sudut ke Origin: %.1f° | Jarak Sensor: Depan=%.2fm, Belakang=%.2fm, Kiri=%.2fm, Kanan=%.2fm",
-      cur_x, cur_y, cur_yaw * 180.0 / M_PI, rel_angle_origin * 180.0 / M_PI,
-      clear.front, clear.back, clear.left, clear.right);
-
-    // Kriteria membelakangi atau terhalang:
-    // 1. Selisih sudut ke origin > 45 derajat (robot membelakangi jalur pulang)
-    // 2. ATAU jarak rintangan di depan < 0.70 m (ada meja / orang tepat di depan muka robot)
-    bool facing_away = std::abs(rel_angle_origin) > 0.78;
-    bool front_blocked = clear.front < 0.70;
-
-    if (facing_away || front_blocked) {
-      RCLCPP_INFO(
-        get_logger(),
-        "\033[1;33m[HOMING DIAGNOSTIC]\033[0m Status: %s%s -> Memerlukan rotasi di tempat ke area lapang!",
-        facing_away ? "[MEMBELAKANGI ORIGIN] " : "",
-        front_blocked ? "[DEPAN TERHALANG < 0.70m]" : "");
-      return true;
-    }
-
-    RCLCPP_INFO(
-      get_logger(),
-      "\033[1;32m[HOMING DIAGNOSTIC]\033[0m Status: Posisi hadap sudah selaras (%.1f°) dan depan lapang (%.2fm). Siap maju!",
-      rel_angle_origin * 180.0 / M_PI, clear.front);
-    return false;
-  }
 
   void handle_rotate_safe(
     const std::shared_ptr<Trigger::Request> /*req*/,
@@ -2630,73 +2527,6 @@ private:
     }
   }
 
-  // ===========================================================================
-  // HELPER: Cek apakah jalur garis lurus dari robot ke target antrian terhalang obstacle
-  // menggunakan data laser scan terkini.
-  // ===========================================================================
-  bool is_queue_path_blocked(double target_x, double target_y)
-  {
-    sensor_msgs::msg::LaserScan::SharedPtr scan;
-    {
-      std::lock_guard<std::mutex> lock(scan_mutex_);
-      scan = latest_scan_;
-    }
-    if (!scan || scan->ranges.empty()) {
-      return false;
-    }
-
-    const double target_dist = std::hypot(target_x, target_y);
-    if (target_dist < 0.60) {
-      return false; // Jarak sangat dekat, tidak ada rintangan di antaranya
-    }
-
-    double laser_tx = 0.0, laser_ty = 0.0, laser_yaw = 3.1415926535;
-    try {
-      auto tf_laser = tf_buffer_->lookupTransform(
-        frame_base_, scan->header.frame_id, tf2::TimePointZero);
-      laser_tx = tf_laser.transform.translation.x;
-      laser_ty = tf_laser.transform.translation.y;
-      const auto & rq = tf_laser.transform.rotation;
-      const double siny = 2.0 * (rq.w * rq.z + rq.x * rq.y);
-      const double cosy = 1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z);
-      laser_yaw = std::atan2(siny, cosy);
-    } catch (const tf2::TransformException &) {
-      laser_yaw = 3.1415926535;
-    }
-
-    const double ux = target_x / target_dist;
-    const double uy = target_y / target_dist;
-
-    const int num_readings = static_cast<int>(scan->ranges.size());
-    int blocked_points = 0;
-
-    for (int i = 0; i < num_readings; ++i) {
-      const float r = scan->ranges[i];
-      if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) continue;
-      const double angle_laser = scan->angle_min + i * scan->angle_increment;
-      double angle_base = angle_laser + laser_yaw;
-      angle_base = std::atan2(std::sin(angle_base), std::cos(angle_base));
-      const double obs_x = laser_tx + r * std::cos(angle_base);
-      const double obs_y = laser_ty + r * std::sin(angle_base);
-
-      const double proj = obs_x * ux + obs_y * uy;
-      const double perp = std::abs(-obs_x * uy + obs_y * ux);
-
-      // Titik dihitung memblokir jika:
-      // 1. Berada di luar radius fisik robot (proj > 0.28m)
-      // 2. Berada SEBELUM tubuh orang target (proj < target_dist - 0.45m),
-      //    agar tubuh/kaki orang antrian itu sendiri TIDAK memblokir dirinya!
-      // 3. Masuk dalam koridor lintasan robot (perp < 0.35m)
-      if (proj > 0.28 && proj < (target_dist - 0.45) && perp < 0.35) {
-        blocked_points++;
-        if (blocked_points >= 4) {
-          return true;
-        }
-      }
-    }
-
-    return false;
-  }
 
   // ===========================================================================
   // HELPER: Cek apakah orang memotong/menghalangi lintasan path homing Nav2

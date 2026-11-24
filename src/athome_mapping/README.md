@@ -30,7 +30,7 @@ ros2 launch athome_mapping mapping.launch.py
 Argumen opsional:
 ```bash
 # Jika sensor & base sudah menyala di terminal terpisah
-ros2 launch athome_mapping mapping.launch.py use_sensors:=false use_base:=false
+ros2 launch athome_mapping mapping.launch.py use_sensors:=false (atau launch_hardware:=false)
 
 # Mengatur IP mikrokontroler STM32
 ros2 launch athome_mapping mapping.launch.py stm_ip:=192.168.0.4

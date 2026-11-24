@@ -10,7 +10,10 @@ if [ "$1" == "stop" ]; then
 fi
 
 export DISPLAY="${DISPLAY:-:0}"
+export WS_DIR="${WS_DIR}"
 CONFIG_FILE="${SCRIPT_DIR}/../config/terminator.config"
+
+cd "${WS_DIR}"
 
 if command -v terminator >/dev/null 2>&1; then
     echo "=========================================================="
@@ -24,9 +27,9 @@ if command -v terminator >/dev/null 2>&1; then
     echo "=========================================================="
 
     if [ -f "$CONFIG_FILE" ]; then
-        terminator -u -g "$CONFIG_FILE" -l help_me_carry &
+        terminator --working-directory="${WS_DIR}" -u -g "$CONFIG_FILE" -l help_me_carry &
     else
-        terminator -u -l help_me_carry &
+        terminator --working-directory="${WS_DIR}" -u -l help_me_carry &
     fi
 
     echo "Terminator layout Help Me Carry berhasil diluncurkan!"

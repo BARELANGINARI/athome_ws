@@ -17,6 +17,8 @@ help_me_carry_node:
     action_name: "navigate_to_pose"           # Nav2 NavigateToPose action server
     frame_map: "map"                          # Global map frame
     frame_base: "base_link"                   # Robot base frame
+    scan_topic: "/scan"                       # Topic for 2D LiDAR LaserScan input
+    target_index: 0                           # Target person tracking index (default: 0)
     follow_bt_xml: ""                         # Custom Nav2 BT XML path (empty = auto-detect)
 
     # -------------------------------------------------------------
@@ -68,6 +70,8 @@ help_me_carry_node:
     # 6. KALMAN FILTER TUNING & LIDAR FUSION
     # -------------------------------------------------------------
     enable_lidar_fusion: true                 # Enable 360 LiDAR leg tracking fallback
+    kf_lidar_noise: 0.25                      # Measurement noise standard deviation for LiDAR leg updates (meters)
+    lidar_leg_gate: 0.90                      # Minimum gate radius for LiDAR leg clustering association (meters)
     min_lidar_fusion_dist: 1.2                # Min distance for LiDAR fusion (meters, ignores strangers <1.2m)
     kf_process_noise: 1.2                     # Kalman process noise covariance (motion uncertainty)
     kf_measurement_noise: 0.15                # Kalman measurement noise standard deviation (meters)

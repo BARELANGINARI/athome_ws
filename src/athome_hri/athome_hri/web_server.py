@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import http.server
 import json
 import logging
 from pathlib import Path

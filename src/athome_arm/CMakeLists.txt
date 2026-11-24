@@ -16,10 +16,16 @@ find_package(ament_index_cpp REQUIRED)
 find_package(Threads REQUIRED)
 
 find_path(DYNAMIXEL_SDK_INCLUDE_DIR NAMES dynamixel_sdk.h
-  PATHS /usr/local/include/dynamixel_sdk /usr/include/dynamixel_sdk
+  PATHS
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../DynamixelSDK/c++/include/dynamixel_sdk
+    /usr/local/include/dynamixel_sdk
+    /usr/include/dynamixel_sdk
 )
 find_library(DYNAMIXEL_SDK_LIB NAMES dxl_x64_cpp
-  PATHS /usr/local/lib /usr/lib
+  PATHS
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../DynamixelSDK/c++/build/linux64
+    /usr/local/lib
+    /usr/lib
 )
 
 include_directories(

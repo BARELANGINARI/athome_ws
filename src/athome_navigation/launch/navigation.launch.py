@@ -12,7 +12,7 @@ from launch.actions import (
     OpaqueFunction,
     SetEnvironmentVariable,
 )
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     LaunchConfiguration,
@@ -215,7 +215,12 @@ def _launch_setup(context, *args, **kwargs):
         arguments=['-d', rviz_config],
         additional_env={'LIBGL_ALWAYS_SOFTWARE': '1'},
     )
-    carry_params = os.path.join(help_me_carry_share, 'config', 'params.yaml')
+    carry_params = os.path.join(help_me_carry_share, 'config', 'help_me_carry_params.yaml')
+    if not os.path.exists(carry_params):
+        carry_params = os.path.join(help_me_carry_share, 'config', 'params.yaml')
+    raw_carry_params = context.perform_substitution(LaunchConfiguration('carry_params'))
+    if raw_carry_params and os.path.exists(raw_carry_params):
+        carry_params = os.path.abspath(raw_carry_params)
 
     carry_node = Node(
         package='help_me_carry',
@@ -247,6 +252,9 @@ def generate_launch_description():
 
     default_map = os.path.join(navigation_share, 'maps', 'map.yaml')
     default_params = os.path.join(help_me_carry_share, 'config', 'nav2_params.yaml')
+    default_carry_params = os.path.join(help_me_carry_share, 'config', 'help_me_carry_params.yaml')
+    if not os.path.exists(default_carry_params):
+        default_carry_params = os.path.join(help_me_carry_share, 'config', 'params.yaml')
 
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
@@ -264,6 +272,7 @@ def generate_launch_description():
         DeclareLaunchArgument('rviz_software', default_value='false', description='Force RViz software OpenGL rendering'),
         DeclareLaunchArgument('rviz_config', default_value=default_map.replace('maps/map.yaml', 'rviz/navigation.rviz'), description='Path to RViz configuration file'),
         DeclareLaunchArgument('use_following', default_value='true', description='Launch person following node'),
+        DeclareLaunchArgument('carry_params', default_value=default_carry_params, description='Path to Help Me Carry task parameters YAML file'),
         DeclareLaunchArgument('enable_person_detection', default_value='true', description='Enable person detection (body tracking alias)'),
         DeclareLaunchArgument('enable_body_tracking', default_value=LaunchConfiguration('enable_person_detection'), description='Enable ZED body tracking'),
         DeclareLaunchArgument('depth_minimum_distance', default_value='30.0', description='Minimum depth sensing distance (cm)'),

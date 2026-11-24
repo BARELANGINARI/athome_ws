@@ -192,7 +192,7 @@ private:
     } catch (const std::exception & e) {
       RCLCPP_FATAL(
         get_logger(),
-        "Parameter '%s' wajib diatur di file YAML (task/help_me_carry/config/params.yaml)! Error: %s",
+        "Parameter '%s' wajib diatur di file YAML (help_me_carry_params.yaml)! Error: %s",
         name.c_str(), e.what());
       throw;
     }

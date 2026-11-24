@@ -67,7 +67,6 @@ void nucleo::loadParam()
   declare_parameter("base_frame", "base_link");
   declare_parameter("yaw_offset_deg", 0.0);
   declare_parameter("use_yaw_topic", false);
-  // declare_parameter("yaw_topic", "/vision/yaw_deg");
   declare_parameter("yaw_topic", "/yaw");
   declare_parameter("yaw_topic_timeout", 0.5);
   declare_parameter("cmd_vel_timeout", 0.5);
