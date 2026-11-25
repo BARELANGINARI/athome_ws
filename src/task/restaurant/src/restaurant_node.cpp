@@ -468,7 +468,6 @@ private:
       std::lock_guard<std::mutex> lock(order_mutex_);
       latest_order_x_ = parsed_x;
       latest_order_y_ = corrected_y;
-      latest_order_time_ = now();
       has_order_ = true;
       if (is_searching_.load()) {
         wave_seen_during_search_ = true;
@@ -1456,7 +1455,6 @@ private:
   bool has_order_{false};
   double latest_order_x_{0.0};
   double latest_order_y_{0.0};
-  rclcpp::Time latest_order_time_;
 
   // TF2
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;

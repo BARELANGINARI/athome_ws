@@ -283,8 +283,6 @@ public:
     reset_living_room_yaw_client_ = create_client<Trigger>(
       "/receptionist/reset_living_room_yaw", rclcpp::ServicesQoS(), callback_group_);
 
-    arm_ambil_tas_client_ = create_client<Trigger>(
-      "/arm/ambil_tas", rclcpp::ServicesQoS(), callback_group_);
     arm_ambil_tas_simple_client_ = create_client<Trigger>(
       "/arm/ambil_tas_simple", rclcpp::ServicesQoS(), callback_group_);
 
@@ -378,10 +376,6 @@ private:
   std::string active_vision_reg_name_;
   std::string empty_seat_position_{"center"};
   bool has_explicit_empty_seat_{false};
-  int nearest_person_bbox_x_{0};
-  int nearest_person_bbox_w_{0};
-  int nearest_person_bbox_y_{0};
-  int nearest_person_bbox_h_{0};
 
   // Data STT / Dialog
   std::mutex stt_mutex_;
@@ -445,7 +439,6 @@ private:
   TriggerClient::SharedPtr clear_locks_client_;
   TriggerClient::SharedPtr reset_living_room_yaw_client_;
 
-  TriggerClient::SharedPtr arm_ambil_tas_client_;
   TriggerClient::SharedPtr arm_ambil_tas_simple_client_;
   TriggerClient::SharedPtr arm_point_position_client_;
   TriggerClient::SharedPtr arm_point_to_chair_client_;
@@ -615,7 +608,6 @@ private:
       attributes_locked_from_scan_ = false;
       active_vision_reg_name_.clear();
       has_explicit_empty_seat_ = false;
-      nearest_person_bbox_w_ = 0;
     }
   }
 
@@ -1070,21 +1062,6 @@ private:
         }
       },
       25.0);
-  }
-
-  // Menentukan posisi horizontal (left, center, right) pada frame kamera statis
-  std::string calculateHorizontalPosition(int bbox_x, int bbox_w) const
-  {
-    const double center_x = static_cast<double>(bbox_x) + static_cast<double>(bbox_w) * 0.5;
-    const double w = (camera_width_ > 0) ? static_cast<double>(camera_width_) : 672.0;
-    const double mid = w * 0.5;
-    const double deadband = w * 0.12; // ±12% dari garis tengah kamera (~80 px pada 672px)
-    if (center_x < mid - deadband) {
-      return "left";
-    } else if (center_x > mid + deadband) {
-      return "right";
-    }
-    return "center";
   }
 
   /// Maps brand names and synonyms (e.g., "coke", "pepsi", "mineral water") to
@@ -2197,24 +2174,6 @@ private:
 
     std::lock_guard<std::mutex> lock(vision_mutex_);
     const std::string & data = message->data;
-    const auto sep1 = data.find(':');
-    const auto bar1 = data.find('|');
-    if (sep1 != std::string::npos && bar1 != std::string::npos && bar1 > sep1) {
-      const std::string bbox_str = data.substr(sep1 + 1, bar1 - sep1 - 1);
-      std::stringstream ss(bbox_str);
-      std::string item;
-      std::vector<int> rect;
-      while (std::getline(ss, item, ',')) {
-        try { rect.push_back(std::stoi(item)); } catch (...) {}
-      }
-      if (rect.size() >= 4) {
-        nearest_person_bbox_x_ = rect[0];
-        nearest_person_bbox_y_ = rect[1];
-        nearest_person_bbox_w_ = rect[2];
-        nearest_person_bbox_h_ = rect[3];
-      }
-    }
-
     const auto id_pos = data.find("id=");
     if (id_pos != std::string::npos) {
       try {

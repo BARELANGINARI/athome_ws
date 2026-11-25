@@ -10,7 +10,6 @@ DEFAULT_HRI_PARAMS: Dict[str, Any] = {
     "mic_device_index": -1,
     "speaker_device_index": -1,
     "enable_local_mic": True,
-    "enable_ws_audio": True,
     "enable_visualizer": True,
     "enable_live_meter": True,
     "enable_local_speaker": True,
@@ -53,9 +52,6 @@ DEFAULT_HRI_PARAMS: Dict[str, Any] = {
     "tts_model": "en_US-lessac-medium.onnx",
     "tts_use_cuda": True,
     "tts_post_mute_sec": 0.6,
-    "nlu_threshold": 0.68,
-    "http_port": 8000,
-    "ws_port": 8765,
 }
 
 

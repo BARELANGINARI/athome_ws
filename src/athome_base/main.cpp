@@ -85,8 +85,6 @@ void nucleo::loadParam()
   declare_parameter("base_length_cm", 20.8);
   declare_parameter("publish_imu_yaw", true);
   declare_parameter("pub_yaw_topic", "/yaw");
-  declare_parameter("wheel_yaw_deg", 0.0);
-  declare_parameter("odom_yaw_source", "stm32");
   declare_parameter("vel_log_interval", 1.0);
 
   publish_imu_yaw_ = get_parameter("publish_imu_yaw").as_bool();

@@ -336,8 +336,6 @@ public:
     // Vision Services
     vision_wave_hand_client_ = create_client<Trigger>(
       "/vision/wave_hand", rclcpp::ServicesQoS(), callback_group_);
-    vision_capture_face_client_ = create_client<Trigger>(
-      "/vision/camera_capture_face", rclcpp::ServicesQoS(), callback_group_);
 
     // Navigation helper services (dari restaurant_node jika dijalankan bersamaan)
     go_to_order_client_ = create_client<Trigger>(
@@ -484,8 +482,6 @@ private:
   std::string active_srv_name_;
   TriggerResult pending_srv_result_;
 
-  GoalHandleNav::SharedPtr current_goal_handle_;
-
   // ROS 2 Interfaces
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -523,7 +519,6 @@ private:
 
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_action_client_;
   TriggerClient::SharedPtr vision_wave_hand_client_;
-  TriggerClient::SharedPtr vision_capture_face_client_;
   TriggerClient::SharedPtr go_to_order_client_;
   TriggerClient::SharedPtr go_to_order1_client_;
   TriggerClient::SharedPtr deliver_order_client_;
@@ -787,7 +782,6 @@ private:
           last_nav_fail_time_ = now();
           if (on_finished) on_finished(false);
         } else {
-          current_goal_handle_ = handle;
           RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Nav: Goal accepted, navigating...");
         }
       };
@@ -1304,134 +1298,6 @@ private:
     }
     const double overlap_ratio = static_cast<double>(overlap) / static_cast<double>(tokens.size());
     return overlap_ratio >= 0.65 && !has_novel_content;
-  }
-
-  // Ekstraksi nama pelanggan dari kalimat STT
-  static std::string parseCustomerName(const std::string & raw_text)
-  {
-    const std::string norm = normalize(raw_text);
-    if (norm.empty() || isLikelyNoiseOrPromptEcho(norm) ||
-        norm == "yes" || norm == "no" || norm == "yes robot" || norm == "no robot")
-    {
-      return "";
-    }
-
-    static const std::vector<std::string> kKnownNames = {
-      "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan",
-      "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma"
-    };
-    for (const auto & name : kKnownNames) {
-      if (containsWholePhrase(norm, name)) {
-        return capitalizeWords(name);
-      }
-    }
-
-    auto stripLeadingFillers = [](std::string s) -> std::string {
-      static const std::vector<std::string> kLeadFillers = {
-        "is ", "a ", "an ", "the ", "uh ", "um ", "er ", "ah ", "oh ",
-        "hmm ", "well ", "so ", "actually "
-      };
-      bool stripped = true;
-      while (stripped) {
-        stripped = false;
-        while (!s.empty() && s.front() == ' ') {
-          s.erase(s.begin());
-        }
-        for (const auto & lf : kLeadFillers) {
-          if (s.rfind(lf, 0) == 0) {
-            s.erase(0, lf.size());
-            stripped = true;
-            break;
-          }
-        }
-      }
-      return s;
-    };
-
-    auto stripTrailingFillers = [](std::string s) -> std::string {
-      static const std::vector<std::string> kTrailFillers = {
-        " please", " robot", " thank you", " thanks",
-        " uh", " um", " okay", " ok", " sorry"
-      };
-      bool stripped = true;
-      while (stripped) {
-        stripped = false;
-        while (!s.empty() && s.back() == ' ') {
-          s.pop_back();
-        }
-        for (const auto & tf : kTrailFillers) {
-          if (s.size() >= tf.size() &&
-              s.compare(s.size() - tf.size(), tf.size(), tf) == 0)
-          {
-            s.erase(s.size() - tf.size());
-            stripped = true;
-            break;
-          }
-        }
-      }
-      while (!s.empty() && s.back() == ' ') {
-        s.pop_back();
-      }
-      return s;
-    };
-
-    auto isValidNameFallback = [&](const std::string & rem) -> bool {
-      if (rem.size() < 2) {
-        return false;
-      }
-      const std::vector<std::string> rem_words = splitWords(rem);
-      if (rem_words.empty() || rem_words.size() > 2) {
-        return false;
-      }
-      const bool all_digits = std::all_of(rem.begin(), rem.end(), [](unsigned char c) {
-        return std::isdigit(c) || std::isspace(c);
-      });
-      if (all_digits) {
-        return false;
-      }
-      return std::any_of(rem_words.begin(), rem_words.end(), [](const std::string & tok) {
-        return !isNameStopWord(tok);
-      });
-    };
-
-    static const std::vector<std::string> kPrefixes = {
-      "you can call me ", "my name is ", "may name is ", "mai name is ",
-      "my name s ", "mai name s ", "my name ", "name is ", "name s ",
-      "ame is ", "me is ", "call me ", "this is ",
-      "i am ", "iam ", "iyem ", "i m ", "im ", "name ", "is "
-    };
-    for (const auto & p : kPrefixes) {
-      size_t search_from = 0;
-      while (search_from < norm.size()) {
-        const auto pos = norm.find(p, search_from);
-        if (pos == std::string::npos) {
-          break;
-        }
-        if (pos == 0 || norm[pos - 1] == ' ') {
-          std::string rem = stripTrailingFillers(
-            stripLeadingFillers(norm.substr(pos + p.size())));
-          const std::vector<std::string> rem_words = splitWords(rem);
-          if (!rem_words.empty()) {
-            const std::string cand = (rem_words.size() >= 2)
-              ? (rem_words[0] + " " + rem_words[1])
-              : rem_words[0];
-            if (isValidNameFallback(cand)) {
-              return capitalizeWords(cand);
-            }
-          }
-        }
-        search_from = pos + 1;
-      }
-    }
-
-    const std::vector<std::string> words = splitWords(norm);
-    if (!words.empty() && words.size() <= 2) {
-      std::string rem = stripTrailingFillers(stripLeadingFillers(norm));
-      if (isValidNameFallback(rem)) {
-        return capitalizeWords(rem);
-      }
-    }
-    return "";
   }
 
   static size_t levenshteinDistance(const std::string & a, const std::string & b)

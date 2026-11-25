@@ -401,18 +401,9 @@
           if (msg.expression) {
             setEmotion(msg.expression);
           }
-          if (msg.state) {
-            handleRobotStateMapping(msg.state);
-          }
           if (msg.type === "TTS_PLAY" || msg.type === "SPEAK") {
             setEmotion("SPEAKING");
             if (msg.text) showSubtitle(msg.text);
-          } else if (msg.type === "TTS_END") {
-            setEmotion("IDLE");
-            hideSubtitle();
-          }
-          if (msg.tracking_status === "LOST") {
-            setEmotion("LOST");
           }
           if (msg.type === "CUSTOMER_DISPLAY") {
             handleCustomerDisplay(msg.payload);
@@ -448,21 +439,6 @@
     } else {
       card.classList.remove("visible");
     }
-  }
-
-  function handleRobotStateMapping(stateName) {
-    const mapping = {
-      IDLE: "IDLE",
-      READY_TO_FOLLOW: "GREETING",
-      FOLLOWING: "FOLLOWING",
-      WAIT_GESTURE: "CURIOUS",
-      ALIGNING_BAG: "GRABBING",
-      GRABBING_BAG: "GRABBING",
-      HOMING: "FOLLOWING",
-      DONE: "SUCCESS",
-    };
-    const targetExpr = mapping[stateName] || "IDLE";
-    setEmotion(targetExpr);
   }
 
   function showSubtitle(text) {
