@@ -59,10 +59,14 @@ Foto Host harus disimpan di `src/athome_vision/models/host.jpg`. Anda dapat meng
 #### Cara A: Ambil Foto Langsung via Kamera (Live Capture)
 Gunakan script berikut (pastikan `camera.launch.py` / node `vision` **tidak sedang berjalan**, karena `/dev/video0` dipakai eksklusif oleh node `vision`):
 ```bash
+cd ~/Documents/athome-ws
+./src/task/receptionist/launch/capture_host.sh --camera
+```
+Atau lewat menu interaktif:
+```bash
+cd ~/Documents/athome-ws
 ./src/task/receptionist/launch/capture_host.sh
 # Pilih [1] Capture Host dari Kamera (Live Camera)
-# Atau langsung tanpa menu:
-./src/task/receptionist/launch/capture_host.sh --camera
 ```
 - Jendela preview kamera akan terbuka dan mendeteksi wajah secara visual (kotak hijau).
 - Posisikan wajah Host di tengah frame.
@@ -78,8 +82,12 @@ Gunakan script berikut (pastikan `camera.launch.py` / node `vision` **tidak seda
 #### Cara B: Import dari File Foto yang Sudah Ada
 Jika Anda memiliki file foto Host (misalnya dari HP/flashdisk), atau saat `camera.launch.py` sedang berjalan, gunakan Fitur 2 untuk auto-crop wajah:
 ```bash
+cd ~/Documents/athome-ws
 ./src/task/receptionist/launch/capture_host.sh --photo /path/ke/foto_host.jpg
-# Atau langsung:
+```
+Atau langsung:
+```bash
+cd ~/Documents/athome-ws
 ./src/task/receptionist/launch/capture_host.sh /path/ke/foto_host.jpg
 ```
 Script akan otomatis mencari wajah pada foto tersebut, melakukan crop, menyimpannya ke `host.jpg`, dan mengirim notifikasi ke topic `/vision/load_host_photo` jika node `vision` sedang aktif.
@@ -92,24 +100,36 @@ src/athome_vision/models/host.jpg
 > **Catatan:** Pastikan `camera.launch.py` menggunakan file parameter yang sesuai (`params_file`, default: `src/task/receptionist/config/receptionist_params.yaml`).
 
 ### 2. Mengatur Profil & Deskripsi Host
-Buka file konfigurasi `src/task/receptionist/config/receptionist_params.yaml`, lalu sesuaikan profil Host pada bagian `receptionist_manager`:
+Buka file konfigurasi `src/task/receptionist/config/receptionist_params.yaml`, lalu sesuaikan profil Host pada bagian `receptionist_manager` **dan** `vision`:
 ```yaml
 receptionist_manager:
   ros__parameters:
     host:
-      name: "Alex"
+      name: "Yesaya"           # Nama Host yang duduk di living room
       drink: "Coke"
       interest: "Robotics"
-      gender: "male"          # "male" atau "female"
+      gender: "male"           # "male" atau "female"
       shirt_color: "black"     # Warna pakaian/baju host
       hair_color: "black"      # Warna rambut host
+
+vision:
+  ros__parameters:
+    face_model: "models/arcface_w600k_r50.onnx"
+    face_threshold: 0.40
+    host_name: "Yesaya"        # Harus sama dengan receptionist_manager.host.name
+    host_photo: "models/host.jpg"
+    host_shirt_color: ""       # Kosongkan agar tidak veto jika warna baju/pencahayaan berubah
+    host_gender: ""
+    host_hair_color: ""
 ```
 
 ### 3. Verifikasi Saat Menjalankan Kamera
 Saat `camera.launch.py` (atau `run.sh`) dijalankan, periksa terminal kamera. Fitur aktif jika muncul log hijau:
 ```text
-[Host Pre-Register] Berhasil mendaftarkan Host 'Alex' dari file foto: .../models/host.jpg (640x640 px)
+[RECEPTIONIST] Host 'Yesaya' registered from photo (...x..., shirt: ..., gender: ..., gallery: 3 templates)
 ```
+> Jika muncul `photo pending self-learn`, artinya wajah di `host.jpg` tidak terdeteksi—ulangi capture dengan pencahayaan lebih jelas.
+
 Begitu Host terdeteksi di ruang tamu, robot akan otomatis mengidentifikasinya sebagai Host dan memperkenalkan tamu kepadanya.
 
 ### 4. Alternatif: Registrasi Host Langsung (Tanpa Foto)

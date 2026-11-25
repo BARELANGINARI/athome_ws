@@ -631,9 +631,12 @@ public:
   OrtModel()
   : mem_(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)) {}
 
-  bool load(const std::string & path, std::string * err = nullptr)
+  bool load(
+    const std::string & path, std::string * err = nullptr,
+    OrtCudnnConvAlgoSearch algo_search = OrtCudnnConvAlgoSearchHeuristic)
   {
     session_.reset();
+    using_cuda_ = false;
     try {
       Ort::SessionOptions opts;
       opts.SetIntraOpNumThreads(4);
@@ -642,7 +645,7 @@ public:
       try {
         OrtCUDAProviderOptions cuda_opts{};
         cuda_opts.device_id = 0;
-        cuda_opts.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchHeuristic;
+        cuda_opts.cudnn_conv_algo_search = algo_search;
         cuda_opts.do_copy_in_default_stream = 0;
         opts.AppendExecutionProvider_CUDA(cuda_opts);
         using_cuda_ = true;
@@ -907,11 +910,16 @@ public:
 
   bool loadFace(const std::string & path, std::string * err = nullptr)
   {
-    bool ok = face_.load(path, err);
+    const bool want_arcface = (path.find("arcface") != std::string::npos ||
+                               path.find("w600k") != std::string::npos ||
+                               path.find("insightface") != std::string::npos);
+    // ArcFace w600k_r50 fails cuDNN Frontend Heuristic/Exhaustive on Conv_19 in ORT 1.22 + cuDNN 9.27,
+    // but runs on GPU with OrtCudnnConvAlgoSearchDefault.
+    const OrtCudnnConvAlgoSearch algo =
+      want_arcface ? OrtCudnnConvAlgoSearchDefault : OrtCudnnConvAlgoSearchHeuristic;
+    bool ok = face_.load(path, err, algo);
     if (ok) {
-      is_arcface_ = (path.find("arcface") != std::string::npos ||
-                     path.find("w600k") != std::string::npos ||
-                     path.find("insightface") != std::string::npos);
+      is_arcface_ = want_arcface;
     }
     return ok;
   }

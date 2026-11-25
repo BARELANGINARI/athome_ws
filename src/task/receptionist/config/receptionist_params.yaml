@@ -119,8 +119,8 @@ vision:
     yolo_conf: 0.25
     face_detect_model: "models/face_detection_yunet.onnx"
     face_detect_conf: 0.40
-    face_model: "models/face_recognition_sface.onnx"
-    face_threshold: 0.363
+    face_model: "models/arcface_w600k_r50.onnx"
+    face_threshold: 0.40
     gender_model: "models/genderage.onnx"
     color_model: "models/color_model.onnx"
     color_labels: "models/color_names.txt"
@@ -131,7 +131,7 @@ vision:
     # Profil Host (hanya foto yang digunakan untuk ekstraksi wajah, atribut lainnya dari YAML ini)
     host_name: "Yesaya"                 # Nama Host
     host_photo: "models/host.jpg"        # Foto wajah Host untuk ekstraksi fitur biometrik
-    host_shirt_color: "black"            # Warna baju Host (disamakan dengan receptionist_manager.host.shirt_color)
+    host_shirt_color: ""                 # Kosongkan agar tidak veto jika warna baju berbeda/pencahayaan berubah
     host_gender: ""                      # Kosongkan agar tidak veto jika prediksi gender berbeda
     host_hair_color: ""                  # Kosongkan agar pencocokan murni dari foto wajah host.jpg & warna baju
 

@@ -2,6 +2,14 @@ cmake_minimum_required(VERSION 3.12)
 
 project(athome_vision LANGUAGES CXX)
 
+# Suppress dev warnings from external OpenCV5/ZED CMake configs using FindCUDA and exec_program
+if(POLICY CMP0146)
+  cmake_policy(SET CMP0146 OLD)
+endif()
+if(POLICY CMP0153)
+  cmake_policy(SET CMP0153 OLD)
+endif()
+
 if(EXISTS "/usr/local/cuda/bin/nvcc")
   set(CUDA_TOOLKIT_ROOT_DIR "/usr/local/cuda" CACHE PATH "CUDA toolkit root (pinned)" FORCE)
   set(CUDAToolkit_ROOT "/usr/local/cuda" CACHE PATH "CUDAToolkit root (pinned)" FORCE)
