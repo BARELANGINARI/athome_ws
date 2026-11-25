@@ -187,6 +187,11 @@ public:
             std::bind(&ArmMotionServer::handleReleaseGripper, this, std::placeholders::_1, std::placeholders::_2)
         );
 
+        adaptive_grasp_srv_ = this->create_service<std_srvs::srv::Trigger>(
+            "/arm/adaptive_grasp",
+            std::bind(&ArmMotionServer::handleAdaptiveGrasp, this, std::placeholders::_1, std::placeholders::_2)
+        );
+
         letakkan_tas_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "/arm/letakkan_tas",
             std::bind(&ArmMotionServer::handleLetakkanTas, this, std::placeholders::_1, std::placeholders::_2)
@@ -317,6 +322,7 @@ private:
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_tas_simple_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_order_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr release_gripper_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr adaptive_grasp_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr letakkan_tas_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr play_motion_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr point_pos_srv_;
@@ -628,7 +634,7 @@ private:
         moveSmooth(gsw, cur, target, 0.5);
     }
 
-    void executeMotion(dynamixel::GroupSyncWrite &gsw, double cur[3], const MotionData &motion, int loops) {
+    void executeMotion(dynamixel::GroupSyncWrite &gsw, double cur[3], const MotionData &motion, int loops, bool disable_grasp = false) {
         if (motion.frames.empty()) {
             RCLCPP_WARN(this->get_logger(), "[ExecuteMotion] Motion data is empty.");
             return;
@@ -638,6 +644,7 @@ private:
 
         for (int l = 1; l <= loops; l++) {
             bool holding_object = false;
+            bool lock_open_grip = false;
 
             if (motion.mode == MotionMode::WAYPOINT) {
                 for (size_t i = 0; i < motion.frames.size(); i++) {
@@ -645,14 +652,20 @@ private:
                     if (f.action == FrameAction::ADAPTIVE_GRASP) {
                         double arm_target[3] = { f.j1, f.j2, cur[2] };
                         moveSmooth(gsw, cur, arm_target, f.duration);
-                        holding_object = adaptiveGrasp(cur[2], f.grasp_load);
+                        if (disable_grasp) {
+                            lock_open_grip = true;
+                            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Skipping ADAPTIVE_GRASP (keeping gripper open at %.1f deg)", getTaskTag().c_str(), cur[2]);
+                        } else {
+                            holding_object = adaptiveGrasp(cur[2], f.grasp_load);
+                        }
                     } else if (f.action == FrameAction::RELEASE) {
                         double arm_target[3] = { f.j1, f.j2, cur[2] };
                         moveSmooth(gsw, cur, arm_target, f.duration);
                         releaseGripper(gsw, cur, f.grip);
                         holding_object = false;
+                        lock_open_grip = false;
                     } else {
-                        double grip_target = holding_object ? cur[2] : f.grip;
+                        double grip_target = (holding_object || lock_open_grip) ? cur[2] : f.grip;
                         double target[3] = { f.j1, f.j2, grip_target };
                         moveSmooth(gsw, cur, target, f.duration);
                     }
@@ -672,7 +685,12 @@ private:
                         double arm_hold[3] = { f.j1, f.j2, cur[2] };
                         sendJoints(gsw, arm_hold);
                         cur[0] = f.j1; cur[1] = f.j2;
-                        holding_object = adaptiveGrasp(cur[2], f.grasp_load);
+                        if (disable_grasp) {
+                            lock_open_grip = true;
+                            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Skipping ADAPTIVE_GRASP (keeping gripper open at %.1f deg)", getTaskTag().c_str(), cur[2]);
+                        } else {
+                            holding_object = adaptiveGrasp(cur[2], f.grasp_load);
+                        }
                         next = std::chrono::steady_clock::now();
                     } else if (f.action == FrameAction::RELEASE) {
                         double arm_hold[3] = { f.j1, f.j2, cur[2] };
@@ -680,9 +698,10 @@ private:
                         cur[0] = f.j1; cur[1] = f.j2;
                         releaseGripper(gsw, cur, f.grip);
                         holding_object = false;
+                        lock_open_grip = false;
                         next = std::chrono::steady_clock::now();
                     } else {
-                        double grip_cmd = holding_object ? cur[2] : f.grip;
+                        double grip_cmd = (holding_object || lock_open_grip) ? cur[2] : f.grip;
                         double a[3] = { f.j1, f.j2, grip_cmd };
                         sendJoints(gsw, a);
                         cur[0] = a[0]; cur[1] = a[1]; cur[2] = a[2];
@@ -855,7 +874,7 @@ private:
         is_connected_ = false;
     }
 
-    bool runMotionByName(const std::string &name, std::string &error_msg) {
+    bool runMotionByName(const std::string &name, std::string &error_msg, bool disable_grasp = false) {
         if (!initHardware()) {
             error_msg = "Failed to connect to Dynamixel hardware on port " + port_name_;
             return false;
@@ -872,7 +891,7 @@ private:
             readCurrentPose(cur);
             dynamixel::GroupSyncWrite gsw(portHandler, packetHandler, ADDR_GOAL_POSITION, LEN_GOAL_POSITION);
 
-            executeMotion(gsw, cur, motion, 1);
+            executeMotion(gsw, cur, motion, 1, disable_grasp);
             return true;
         } catch (const std::exception &e) {
             error_msg = std::string("Motion execution error: ") + e.what();
@@ -1077,17 +1096,44 @@ private:
         }
     }
 
+    void handleAdaptiveGrasp(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        std::lock_guard<std::mutex> lock(hardware_mutex_);
+
+        if (!initHardware()) {
+            response->success = false;
+            response->message = "Failed to connect to Dynamixel hardware on port " + port_name_;
+            RCLCPP_ERROR(this->get_logger(), "%s\033[1;31m[ARM]\033[0m %s", getTaskTag().c_str(), response->message.c_str());
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Adaptive grasp start...", getTaskTag().c_str());
+        double cur[3] = {0.0, 0.0, 0.0};
+        readCurrentPose(cur);
+        const bool grasped = adaptiveGrasp(cur[2], DEFAULT_GRASP_LOAD);
+        response->success = grasped;
+        if (grasped) {
+            response->message = "Adaptive grasp succeeded.";
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Adaptive grasp done", getTaskTag().c_str());
+        } else {
+            response->message = "Adaptive grasp closed without detecting load.";
+            RCLCPP_WARN(this->get_logger(), "%s\033[1;33m[ARM]\033[0m %s", getTaskTag().c_str(), response->message.c_str());
+        }
+    }
+
     void handleAmbilTas(
         const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
         std::shared_ptr<std_srvs::srv::Trigger::Response> response)
     {
         std::lock_guard<std::mutex> lock(hardware_mutex_);
 
-        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Ambil tas start...", getTaskTag().c_str());
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Ambil tas start (grasp disabled)...", getTaskTag().c_str());
         std::string err;
-        if (runMotionByName("motion_task_1", err)) {
+        if (runMotionByName("motion_task_1", err, true)) {
             response->success = true;
-            response->message = "Motion ambil_tas executed successfully.";
+            response->message = "Motion ambil_tas (without grasp) executed successfully.";
             RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Ambil tas done", getTaskTag().c_str());
         } else {
             response->success = false;
