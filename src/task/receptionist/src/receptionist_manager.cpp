@@ -402,6 +402,8 @@ private:
   mutable std::mutex tts_mutex_;
   double tts_timeout_sec_{4.0};
   std::string active_tts_text_;
+  std::string last_tts_text_norm_;
+  rclcpp::Time last_tts_done_time_{0, 0, RCL_ROS_TIME};
   std::function<void()> pending_tts_done_;
 
   std::mutex srv_mutex_;
@@ -1476,8 +1478,14 @@ private:
       }
       in_callback_ = true;
       speaking_ = false;
+      const std::string completed =
+        (msg != nullptr && !msg->data.empty()) ? msg->data : active_tts_text_;
+      if (!completed.empty()) {
+        last_tts_text_norm_ = normalize(completed);
+      }
+      last_tts_done_time_ = now();
       active_tts_text_.clear();
-      tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.35);
+      tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.25);
       callback = std::move(pending_tts_done_);
       pending_tts_done_ = nullptr;
     }
@@ -1493,6 +1501,14 @@ private:
       callback();
     }
     in_callback_ = false;
+  }
+
+  bool isDialogWaitState(ReceptionistState s) const
+  {
+    return s == ReceptionistState::WAIT_NAME ||
+           s == ReceptionistState::WAIT_INTEREST ||
+           s == ReceptionistState::WAIT_CONFIRM_GUEST_INFO ||
+           s == ReceptionistState::WAIT_DRINK;
   }
 
   /// Prevents STT echo capture while the robot is busy or within post-TTS cooldown.
@@ -1605,9 +1621,109 @@ private:
       "this", "that", "the", "favorite", "favourite", "drink", "would",
       "like", "want", "prefer", "main", "interest", "interested", "hobby",
       "love", "enjoy", "not", "dont", "don", "hello", "hi", "hey",
-      "please", "thanks", "thank"
+      "please", "thanks", "thank", "then", "your", "answer", "with", "say",
+      "sorry", "okay", "ok", "what", "pardon", "uh", "um", "er", "ah", "oh",
+      "hmm", "huh", "yes", "no", "robot", "actually", "well", "so", "here",
+      "there", "s", "m"
     };
     return std::find(kStopWords.begin(), kStopWords.end(), w) != kStopWords.end();
+  }
+
+  static bool isLikelyNoiseOrPromptEcho(const std::string & norm)
+  {
+    if (norm.size() < 2) {
+      return true;
+    }
+    const bool all_digits_or_space = std::all_of(norm.begin(), norm.end(), [](unsigned char c) {
+      return std::isdigit(c) || std::isspace(c);
+    });
+    if (all_digits_or_space) {
+      return true;
+    }
+
+    static const std::vector<std::string> kPromptEchoPhrases = {
+      "please answer", "answer with", "please say", "then your", "then the",
+      "is that correct", "what is your", "nice to meet you", "let us try again",
+      "beverage area", "stand on my left", "follow me", "yes robot or no robot",
+      "yes or no"
+    };
+    for (const auto & p : kPromptEchoPhrases) {
+      if (containsWholePhrase(norm, p)) {
+        return true;
+      }
+    }
+
+    static const std::vector<std::string> kExactNoiseHallucinations = {
+      "hello", "hi", "hey", "okay", "ok", "what", "sorry", "pardon",
+      "excuse me", "thank you", "thank you very much", "thank you so much",
+      "thanks", "thanks for watching", "thanks for listening", "please", "robot",
+      "uh", "um", "er", "ah", "oh", "hmm", "huh", "mm", "mhm",
+      "you", "bye", "music", "applause", "laughter", "silence", "blank audio",
+      "subtitles by", "please subscribe"
+    };
+    for (const auto & item : kExactNoiseHallucinations) {
+      if (norm == item) {
+        return true;
+      }
+    }
+
+    static const std::vector<std::string> kPureFillers = {
+      "uh", "um", "er", "ah", "oh", "hmm", "huh", "mm", "mhm",
+      "okay", "ok", "thanks", "thank", "you", "please", "sorry",
+      "hello", "hi", "hey", "robot"
+    };
+    const std::vector<std::string> words = splitWords(norm);
+    if (words.empty()) {
+      return true;
+    }
+    const bool all_fillers = std::all_of(words.begin(), words.end(), [](const std::string & w) {
+      return std::find(kPureFillers.begin(), kPureFillers.end(), w) != kPureFillers.end();
+    });
+    return all_fillers;
+  }
+
+  bool isTtsEcho(const std::string & norm_text) const
+  {
+    std::string last_norm;
+    rclcpp::Time last_done(0, 0, RCL_ROS_TIME);
+    {
+      std::lock_guard<std::mutex> lock(tts_mutex_);
+      last_norm = last_tts_text_norm_;
+      last_done = last_tts_done_time_;
+    }
+    if (last_norm.empty() || last_done.nanoseconds() == 0 ||
+        (now() - last_done).seconds() > 2.5)
+    {
+      return false;
+    }
+    if (state_.load() == ReceptionistState::WAIT_CONFIRM_GUEST_INFO &&
+        parseYesNoIntent(norm_text) != 0 &&
+        !isLikelyNoiseOrPromptEcho(norm_text))
+    {
+      return false;
+    }
+
+    const std::vector<std::string> tokens = splitWords(norm_text);
+    if (tokens.size() < 3) {
+      return false;
+    }
+
+    size_t overlap = 0;
+    bool has_novel_content = false;
+    for (const auto & tok : tokens) {
+      const bool in_tts = containsWholePhrase(last_norm, tok);
+      if (in_tts) {
+        ++overlap;
+      } else if (!isCarrierStopWord(tok)) {
+        has_novel_content = true;
+      }
+    }
+
+    if (containsWholePhrase(last_norm, norm_text)) {
+      return true;
+    }
+    const double overlap_ratio = static_cast<double>(overlap) / static_cast<double>(tokens.size());
+    return overlap_ratio >= 0.65 && !has_novel_content;
   }
 
   static std::string findBestFuzzyMatch(
@@ -1696,18 +1812,10 @@ private:
   static std::string parseSlotIntent(const std::string & raw_text, const std::string & slot)
   {
     const std::string norm = normalize(raw_text);
-    if (norm.empty()) {
+    if (norm.empty() || isLikelyNoiseOrPromptEcho(norm) ||
+        norm == "yes" || norm == "no" || norm == "yes robot" || norm == "no robot")
+    {
       return "";
-    }
-
-    static const std::vector<std::string> kIgnoredFillers = {
-      "hello", "hi", "hey", "yes", "no", "okay", "ok", "what", "sorry",
-      "pardon", "excuse me", "thank you", "thanks", "please", "robot"
-    };
-    for (const auto & filler : kIgnoredFillers) {
-      if (norm == filler) {
-        return "";
-      }
     }
 
     const std::vector<std::string> tokens = splitWords(norm);
@@ -1737,7 +1845,8 @@ private:
 
     auto stripLeadingFillers = [](std::string s) -> std::string {
       static const std::vector<std::string> kLeadFillers = {
-        "is ", "a ", "an ", "the ", "uh ", "um ", "er ", "like "
+        "is ", "a ", "an ", "the ", "uh ", "um ", "er ", "ah ", "oh ",
+        "hmm ", "well ", "so ", "actually ", "like "
       };
       bool stripped = true;
       while (stripped) {
@@ -1756,19 +1865,74 @@ private:
       return s;
     };
 
-    auto stripPrefixes = [&](const std::vector<std::string> & prefixes) -> std::string {
-      for (const auto & p : prefixes) {
-        const auto pos = norm.find(p);
-        if (pos != std::string::npos) {
-          std::string rem = stripLeadingFillers(norm.substr(pos + p.size()));
-          if (!rem.empty() && countWords(rem) <= 3) {
-            return capitalizeWords(rem);
+    auto stripTrailingFillers = [](std::string s) -> std::string {
+      static const std::vector<std::string> kTrailFillers = {
+        " please", " robot", " thank you", " thanks",
+        " uh", " um", " okay", " ok", " sorry"
+      };
+      bool stripped = true;
+      while (stripped) {
+        stripped = false;
+        while (!s.empty() && s.back() == ' ') {
+          s.pop_back();
+        }
+        for (const auto & tf : kTrailFillers) {
+          if (s.size() >= tf.size() &&
+              s.compare(s.size() - tf.size(), tf.size(), tf) == 0)
+          {
+            s.erase(s.size() - tf.size());
+            stripped = true;
+            break;
           }
         }
       }
+      while (!s.empty() && s.back() == ' ') {
+        s.pop_back();
+      }
+      return s;
+    };
+
+    auto isValidFallbackValue = [&](const std::string & rem) -> bool {
+      if (rem.size() < 2) {
+        return false;
+      }
+      const size_t wc = countWords(rem);
+      if (wc < 1 || wc > 3) {
+        return false;
+      }
+      const bool all_digits = std::all_of(rem.begin(), rem.end(), [](unsigned char c) {
+        return std::isdigit(c) || std::isspace(c);
+      });
+      if (all_digits) {
+        return false;
+      }
+      const std::vector<std::string> rem_words = splitWords(rem);
+      return std::any_of(rem_words.begin(), rem_words.end(), [](const std::string & tok) {
+        return !isCarrierStopWord(tok);
+      });
+    };
+
+    auto stripPrefixes = [&](const std::vector<std::string> & prefixes) -> std::string {
+      for (const auto & p : prefixes) {
+        size_t search_from = 0;
+        while (search_from < norm.size()) {
+          const auto pos = norm.find(p, search_from);
+          if (pos == std::string::npos) {
+            break;
+          }
+          if (pos == 0 || norm[pos - 1] == ' ') {
+            std::string rem = stripTrailingFillers(
+              stripLeadingFillers(norm.substr(pos + p.size())));
+            if (isValidFallbackValue(rem)) {
+              return capitalizeWords(rem);
+            }
+          }
+          search_from = pos + 1;
+        }
+      }
       if (countWords(norm) <= 2) {
-        std::string rem = stripLeadingFillers(norm);
-        if (!rem.empty()) {
+        std::string rem = stripTrailingFillers(stripLeadingFillers(norm));
+        if (isValidFallbackValue(rem)) {
           return capitalizeWords(rem);
         }
       }
@@ -1810,7 +1974,10 @@ private:
         return capitalizeWords(fuzzy);
       }
       return stripPrefixes({
-        "my name is ", "i am ", "im ", "i m ", "iam ", "iyem ", "name s ", "may name is ", "mai name is ", "you can call me ", "my name s ", "mai name s ", "call me ", "this is ", "name is "
+        "you can call me ", "my name is ", "may name is ", "mai name is ",
+        "my name s ", "mai name s ", "my name ", "name is ", "name s ",
+        "ame is ", "me is ", "call me ", "this is ",
+        "i am ", "iam ", "iyem ", "i m ", "im ", "name ", "is "
       });
     }
 
@@ -1860,8 +2027,14 @@ private:
         return formatDrink(fuzzy);
       }
       return stripPrefixes({
-        "my favorite drink is ", "i would like ", "i like ", "i want ",
-        "i prefer ", "favorite drink is ", "drink is "
+        "my favorite drink is ", "my favourite drink is ",
+        "favorite drink is ", "favourite drink is ",
+        "vorite drink is ", "rite drink is ",
+        "my favorite drink ", "my favourite drink ",
+        "favorite drink ", "favourite drink ",
+        "i would like ", "would like ", "drink is ", "ink is ",
+        "i prefer ", "i like ", "i want ",
+        "prefer ", "drink ", "like ", "want ", "is "
       });
     }
 
@@ -1875,7 +2048,7 @@ private:
         "drawing", "boxing", "playing"
       };
       static const std::vector<PhoneticAlias> kInterestAliases = {
-        {"robotic", "Robotics"}, {"robot", "Robotics"},
+        {"robotic", "Robotics"}, {"robots", "Robotics"},
         {"programing", "Programming"}, {"program", "Programming"},
         {"fotball", "Football"},
         {"badminton", "Playing Badminton"},
@@ -1909,8 +2082,15 @@ private:
         return capitalizeWords(fuzzy);
       }
       return stripPrefixes({
-        "my main interest is ", "my interest is ", "my hobby is ",
-        "i am interested in ", "i like ", "i love ", "i enjoy "
+        "my main interest is ", "main interest is ",
+        "i am interested in ", "im interested in ", "i m interested in ",
+        "interested in ", "terested in ",
+        "my interest is ", "my hobby is ",
+        "interest is ", "terest is ", "rest is ", "est is ",
+        "hobby is ", "obby is ",
+        "my interest ", "my hobby ", "interest ", "hobby ",
+        "i like ", "i love ", "i enjoy ",
+        "like ", "love ", "enjoy ", "is "
       });
     }
 
@@ -1924,21 +2104,35 @@ private:
     if (norm.empty()) return 0;
 
     static const std::vector<std::string> kNoPhrases = {
-      "no", "no robot", "nope", "not correct", "wrong", "false",
+      "no", "no robot", "o robot", "nope", "not correct", "wrong", "false", "incorrect",
     };
     static const std::vector<std::string> kYesPhrases = {
-      "yes", "yes robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
+      "yes", "yes robot", "es robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
     };
 
+    bool has_no = false;
     for (const auto & phrase : kNoPhrases) {
       if (containsWholePhrase(norm, phrase)) {
-        return -1;
+        has_no = true;
+        break;
       }
     }
+    bool has_yes = false;
     for (const auto & phrase : kYesPhrases) {
       if (containsWholePhrase(norm, phrase)) {
-        return 1;
+        has_yes = true;
+        break;
       }
+    }
+
+    if (has_no && has_yes) {
+      return 0;
+    }
+    if (has_no) {
+      return -1;
+    }
+    if (has_yes) {
+      return 1;
     }
     return 0;
   }
@@ -1948,12 +2142,26 @@ private:
   // ============================================================================
   void onTranscript(const std_msgs::msg::String::SharedPtr message)
   {
-    if (!canListen() || !message) {
+    if (!canListen() || !message || !isDialogWaitState(state_.load())) {
       return;
     }
 
     const std::string clean = normalize(message->data);
     if (clean.empty()) {
+      return;
+    }
+    if (isTtsEcho(clean)) {
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[2m[STT IGNORED]\033[0m TTS echo: \"%s\"",
+        message->data.c_str());
+      return;
+    }
+    if (isLikelyNoiseOrPromptEcho(clean)) {
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[2m[STT IGNORED]\033[0m Noise/filler: \"%s\"",
+        message->data.c_str());
       return;
     }
 

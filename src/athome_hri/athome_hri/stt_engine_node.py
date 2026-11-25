@@ -89,7 +89,8 @@ class SttEngineNode(Node):
             String, "/hri/stt_transcript", 10
         )
 
-        self._tts_speaking = False
+        self._tts_lock = threading.Lock()
+        self._pending_tts_count = 0
         self._tts_speaking_until = 0.0
         self._tts_post_mute_sec = max(0.0, float(params["tts_post_mute_sec"]))
         self._tts_post_mute_until = 0.0
@@ -252,28 +253,34 @@ class SttEngineNode(Node):
 
     def _is_mic_paused(self) -> bool:
         now_t = time.monotonic()
-        if self._tts_speaking and now_t >= self._tts_speaking_until:
-            self.get_logger().warn(
-                "Watchdog /hri/tts_done timeout; membuka kembali input mikrofon."
+        with self._tts_lock:
+            if self._pending_tts_count > 0 and now_t >= self._tts_speaking_until:
+                self.get_logger().warn(
+                    "Watchdog /hri/tts_done timeout; membuka kembali input mikrofon."
+                )
+                self._pending_tts_count = 0
+                self._tts_speaking_until = 0.0
+            return (
+                (not self._enable_local_mic)
+                or (self._pending_tts_count > 0)
+                or (now_t < self._tts_post_mute_until)
             )
-            self._tts_speaking = False
-        return (
-            (not self._enable_local_mic)
-            or self._tts_speaking
-            or (now_t < self._tts_post_mute_until)
-        )
 
     def _on_tts_say(self, msg: String) -> None:
         if msg.data.strip():
-            self._tts_epoch += 1
-            self._tts_speaking = True
-            self._tts_speaking_until = time.monotonic() + self.TTS_SPEAKING_TIMEOUT_SEC
-            self._tts_post_mute_until = 0.0
+            with self._tts_lock:
+                self._tts_epoch += 1
+                self._pending_tts_count += 1
+                self._tts_speaking_until = time.monotonic() + self.TTS_SPEAKING_TIMEOUT_SEC
+                self._tts_post_mute_until = 0.0
 
     def _on_tts_done(self, _msg: String) -> None:
-        self._tts_speaking = False
-        self._tts_speaking_until = 0.0
-        self._tts_post_mute_until = time.monotonic() + self._tts_post_mute_sec
+        with self._tts_lock:
+            if self._pending_tts_count > 0:
+                self._pending_tts_count -= 1
+            if self._pending_tts_count == 0:
+                self._tts_speaking_until = 0.0
+                self._tts_post_mute_until = time.monotonic() + self._tts_post_mute_sec
 
     def _on_metrics(self, m: VadFrameMetrics) -> None:
         if self._enable_visualizer:
