@@ -1,5 +1,4 @@
 # Single source of truth parameter untuk seluruh node athome_hri:
-#   - barelang_hri_node / barelang_audio_bridge (help_me_carry_hri)
 #   - stt_engine (stt_engine_node)
 #   - tts_engine (tts_engine_node)
 # Cukup ubah nilai di sini, seluruh node otomatis mengikuti.
@@ -11,7 +10,6 @@
     mic_device_index: -1                 # Indeks perangkat mic (-1 = auto-detect mic USB; untuk mic jack 3.5mm isi indeks soundcard)
     speaker_device_index: -1             # Indeks perangkat speaker (-1 = pakai speaker default sistem)
     enable_local_mic: true               # true = aktifkan mic yang terpasang langsung di robot/PC
-    enable_ws_audio: true                # true = terima audio dari Web UI lewat WebSocket
     enable_visualizer: true              # true = tampilkan jendela grafik gelombang/spektrum VAD (false = matikan GUI)
     enable_live_meter: true              # true = tampilkan bar level suara [VAD] di terminal log
     enable_local_speaker: true           # true = putar suara TTS langsung lewat speaker lokal robot
@@ -85,10 +83,3 @@
     tts_model: "en_US-lessac-medium.onnx" # Nama file model suara Piper (.onnx di folder model/)
     tts_use_cuda: false                   # true = jalankan Piper di GPU CUDA, false = jalankan di CPU (lebih hemat VRAM)
     tts_post_mute_sec: 0.45                # Lama mic tetap dimute setelah /hri/tts_done agar gema/ekor speaker tidak terekam
-
-    # -------------------------------------------------------------------------
-    # 5. Web Server & NLU (Antarmuka web dan pencocokan intent)
-    # -------------------------------------------------------------------------
-    nlu_threshold: 0.68                  # Ambang batas kemiripan teks minimum (0-1) agar perintah suara diterima NLU
-    http_port: 8000                      # Port server halaman web HMI
-    ws_port: 8765                        # Port WebSocket untuk komunikasi audio/status real-time dengan web HMI

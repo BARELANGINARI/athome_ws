@@ -112,15 +112,12 @@ public:
     declare_parameter<double>("guest_approach_speed", 0.16);
     declare_parameter<double>("guest_approach_timeout_sec", 15.0);
     declare_parameter<double>("guest_door_align_tolerance", 0.07);
-    declare_parameter<double>("face_person_angular_speed", 0.30);
-    declare_parameter<double>("face_person_timeout_sec", 25.0);
     declare_parameter<double>("face_person_p_gain", 1.2);
     declare_parameter<double>("face_person_min_speed", 0.14);
     declare_parameter<double>("face_person_max_speed", 0.30);
     declare_parameter<double>("face_person_tolerance_rad", 0.07);
 
     // Relative 90-degree turn parameters (/receptionist/left & /receptionist/right)
-    declare_parameter<double>("turn_90_angular_speed", 0.30);
     declare_parameter<double>("turn_90_min_speed", 0.14);
     declare_parameter<double>("turn_90_max_speed", 0.35);
     declare_parameter<double>("turn_90_tolerance_rad", 0.04);
@@ -132,10 +129,6 @@ public:
     declare_parameter<std::string>("chair_topic", "/vision/chair_detections");
     declare_parameter<std::string>("empty_seat_topic", "/vision/empty_seat");
     declare_parameter<std::string>("odom_topic", "/odom");
-    declare_parameter<double>("search_chair_ref_yaw", -1.57);
-    declare_parameter<double>("search_chair_angular_speed", 0.30);
-    declare_parameter<double>("search_chair_timeout_sec", 40.0);
-    declare_parameter<int>("search_chair_confirm_frames", 2);
     declare_parameter<double>("search_chair_sweep_angle_deg", 30.0);
     declare_parameter<double>("chair_max_dist", 3.0);
     declare_parameter<double>("align_chair_p_gain", 1.5);
@@ -162,14 +155,11 @@ public:
     guest_approach_speed_ = get_parameter("guest_approach_speed").as_double();
     guest_approach_timeout_sec_ = get_parameter("guest_approach_timeout_sec").as_double();
     guest_door_align_tolerance_ = get_parameter("guest_door_align_tolerance").as_double();
-    face_person_angular_speed_ = get_parameter("face_person_angular_speed").as_double();
-    face_person_timeout_sec_ = get_parameter("face_person_timeout_sec").as_double();
     face_person_p_gain_ = get_parameter("face_person_p_gain").as_double();
     face_person_min_speed_ = get_parameter("face_person_min_speed").as_double();
     face_person_max_speed_ = get_parameter("face_person_max_speed").as_double();
     face_person_tolerance_rad_ = get_parameter("face_person_tolerance_rad").as_double();
 
-    turn_90_angular_speed_ = get_parameter("turn_90_angular_speed").as_double();
     turn_90_min_speed_ = get_parameter("turn_90_min_speed").as_double();
     turn_90_max_speed_ = get_parameter("turn_90_max_speed").as_double();
     turn_90_tolerance_rad_ = get_parameter("turn_90_tolerance_rad").as_double();
@@ -180,10 +170,6 @@ public:
     chair_topic_ = get_parameter("chair_topic").as_string();
     empty_seat_topic_ = get_parameter("empty_seat_topic").as_string();
     odom_topic_ = get_parameter("odom_topic").as_string();
-    search_chair_ref_yaw_ = get_parameter("search_chair_ref_yaw").as_double();
-    search_chair_angular_speed_ = get_parameter("search_chair_angular_speed").as_double();
-    search_chair_timeout_sec_ = get_parameter("search_chair_timeout_sec").as_double();
-    search_chair_confirm_frames_ = get_parameter("search_chair_confirm_frames").as_int();
     search_chair_sweep_angle_deg_ = get_parameter("search_chair_sweep_angle_deg").as_double();
     chair_max_dist_ = get_parameter("chair_max_dist").as_double();
     align_chair_p_gain_ = get_parameter("align_chair_p_gain").as_double();
@@ -2680,10 +2666,6 @@ private:
   std::string cmd_vel_topic_{"cmd_vel"};
   std::string chair_topic_{"/vision/chair_detections"};
   std::string empty_seat_topic_{"/vision/empty_seat"};
-  double search_chair_ref_yaw_{-1.57};
-  double search_chair_angular_speed_{0.30};
-  double search_chair_timeout_sec_{40.0};
-  int search_chair_confirm_frames_{2};
   double search_chair_sweep_angle_deg_{30.0};
   double chair_max_dist_{3.0};
   double align_chair_p_gain_{1.2};
@@ -2756,8 +2738,6 @@ private:
   double guest_approach_speed_{0.16};
   double guest_approach_timeout_sec_{15.0};
   double guest_door_align_tolerance_{0.07};
-  double face_person_angular_speed_{0.30};
-  double face_person_timeout_sec_{25.0};
   double face_person_p_gain_{1.2};
   double face_person_min_speed_{0.14};
   double face_person_max_speed_{0.30};
@@ -2789,7 +2769,6 @@ private:
 
   // 90-degree relative turn (/receptionist/left dan /receptionist/right)
   std::atomic<bool> is_turning_{false};
-  double turn_90_angular_speed_{0.30};
   double turn_90_min_speed_{0.14};
   double turn_90_max_speed_{0.35};
   double turn_90_tolerance_rad_{0.04};

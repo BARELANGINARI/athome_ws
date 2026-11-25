@@ -68,7 +68,6 @@ dynamixel::PortHandler   *portHandler   = nullptr;
 dynamixel::PacketHandler *packetHandler = nullptr;
 GraspConfig g_cfg;
 bool g_is_holding = false;
-uint16_t g_hold_tick = 510;
 
 // ---------------- CALIBRATION & CONVERSION ----------------
 const CalibratedServoConfig *getGripperCalib() {
@@ -371,7 +370,6 @@ bool executeAdaptiveGrasp(int custom_threshold = -1) {
                                           static_cast<uint16_t>(hold_tick), &err);
 
             g_is_holding = true;
-            g_hold_tick  = static_cast<uint16_t>(hold_tick);
 
             std::cout << "-----------------------------------------------------------------------------\n";
             std::cout << "  [HOLDING OBJECT] Object grasped successfully!\n"

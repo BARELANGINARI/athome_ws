@@ -446,7 +446,6 @@ class SpeechToText:
         except Exception as exc:
             logger.error("Transcription failed: %s", exc)
             return ""
-            return ""
         finally:
             if temp_path and os.path.exists(temp_path):
                 try:

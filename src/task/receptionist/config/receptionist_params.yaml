@@ -24,10 +24,6 @@ receptionist_node:
     chair_topic: "/vision/chair_detections"
     empty_seat_topic: "/vision/empty_seat"
     odom_topic: "/odom"
-    search_chair_ref_yaw: -1.57
-    search_chair_angular_speed: 0.30
-    search_chair_timeout_sec: 60.0
-    search_chair_confirm_frames: 2
     search_chair_sweep_angle_deg: 30.0
     chair_max_dist: 2.0
     align_chair_p_gain: 1.5
@@ -51,15 +47,12 @@ receptionist_node:
     guest_1_name_topic: "/vision/guest_1_name"
     guest_2_name_topic: "/vision/guest_2_name"
     host_seated_max_dist: 3.0
-    face_person_angular_speed: 0.30
-    face_person_timeout_sec: 25.0
     face_person_p_gain: 1.2
     face_person_min_speed: 0.15
     face_person_max_speed: 0.30
     face_person_tolerance_rad: 0.045
 
     # Relative 90-degree turn settings (/receptionist/left dan /receptionist/right)
-    turn_90_angular_speed: 0.30
     turn_90_min_speed: 0.14
     turn_90_max_speed: 0.55
     turn_90_tolerance_rad: 0.04

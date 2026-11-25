@@ -192,11 +192,6 @@ public:
             std::bind(&ArmMotionServer::handleLetakkanTas, this, std::placeholders::_1, std::placeholders::_2)
         );
 
-        play_motion_srv_ = this->create_service<std_srvs::srv::Trigger>(
-            "/arm/play_motion",
-            std::bind(&ArmMotionServer::handleAmbilTas, this, std::placeholders::_1, std::placeholders::_2)
-        );
-
         point_pos_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "/arm/point_position",
             [this] (const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
@@ -306,7 +301,6 @@ private:
 
     std::mutex target_mutex_;
     double target_x_ = 0.0;
-    double target_y_ = 0.0;
     double target_z_ = 0.0;
     rclcpp::Time target_stamp_{0, 0, RCL_ROS_TIME};
     bool has_target_ = false;
@@ -318,7 +312,6 @@ private:
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_order_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr release_gripper_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr letakkan_tas_srv_;
-    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr play_motion_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr point_pos_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr point_to_chair_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr free_srv_;
@@ -330,8 +323,6 @@ private:
     bool g_gripper_online = false;
 
     std::map<uint8_t, uint16_t> g_last_valid_raw;
-    std::map<uint8_t, bool>     g_in_deadzone;
-    std::map<uint8_t, bool>     g_servo_is_free;
 
     const CalibratedServoConfig *getCalib(uint8_t id) {
         for (const auto &c : ARM_CALIBRATION) {
@@ -389,7 +380,6 @@ private:
                 pos = std::clamp<uint16_t>(pos, c->cw_limit, c->ccw_limit);
             }
             g_last_valid_raw[id] = pos;
-            g_in_deadzone[id]    = false;
         }
     }
 
@@ -477,7 +467,6 @@ private:
         uint8_t err = 0;
         for (uint8_t id : ALL_IDS) {
             if (id == GRIPPER_ID && !g_gripper_online) continue;
-            g_servo_is_free[id] = false;
             packetHandler->write1ByteTxRx(portHandler, id, ADDR_LED, 0, &err);
             packetHandler->write2ByteTxRx(portHandler, id, ADDR_MOVING_SPEED, 0, &err);
             packetHandler->write2ByteTxRx(portHandler, id, ADDR_TORQUE_LIMIT, DEFAULT_TORQUE_LIM, &err);
@@ -544,7 +533,6 @@ private:
             return false;
         }
 
-        g_servo_is_free[GRIPPER_ID] = false;
         packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_LED, 1, &err);
 
         int search_torque = std::clamp(load_threshold + 250, 350, 850);
@@ -616,7 +604,6 @@ private:
         open_deg = std::clamp(open_deg, 0.0, MAX_OPEN_DEG);
         if (g_gripper_online) {
             uint8_t err = 0;
-            g_servo_is_free[GRIPPER_ID] = false;
             packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_LED, 0, &err);
             packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_CW_SLOPE,  COMPLIANCE_SLOPE, &err);
             packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_CCW_SLOPE, COMPLIANCE_SLOPE, &err);
@@ -800,7 +787,6 @@ private:
             if (packetHandler->ping(portHandler, id, &model, &err) != COMM_SUCCESS) {
                 RCLCPP_WARN(this->get_logger(), "Servo ID %d did not respond to ping.", id);
             }
-            g_servo_is_free[id] = false;
             packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, 0, &err);
             if (const auto *c = getCalib(id)) {
                 packetHandler->write2ByteTxRx(portHandler, id, ADDR_CW_ANGLE_LIMIT,  c->cw_limit,  &err);
@@ -811,7 +797,6 @@ private:
         uint16_t grip_model = 0;
         if (packetHandler->ping(portHandler, GRIPPER_ID, &grip_model, &err) == COMM_SUCCESS) {
             g_gripper_online = true;
-            g_servo_is_free[GRIPPER_ID] = false;
             packetHandler->write1ByteTxRx(portHandler, GRIPPER_ID, ADDR_TORQUE_ENABLE, 0, &err);
             if (const auto *c = getCalib(GRIPPER_ID)) {
                 packetHandler->write2ByteTxRx(portHandler, GRIPPER_ID, ADDR_CW_ANGLE_LIMIT,  c->cw_limit,  &err);
@@ -833,7 +818,6 @@ private:
         if (!enable) resetDeadzoneFilter();
         for (uint8_t id : ALL_IDS) {
             if (id == GRIPPER_ID && !g_gripper_online) continue;
-            g_servo_is_free[id] = !enable;
             packetHandler->write1ByteTxRx(portHandler, id, ADDR_TORQUE_ENABLE, enable ? 1 : 0, &err);
             if (!enable) {
                 packetHandler->write1ByteTxRx(portHandler, id, ADDR_LED, 0, &err);
@@ -892,7 +876,6 @@ private:
             if (std::isfinite(x) && std::isfinite(y) && std::isfinite(z)) {
                 std::lock_guard<std::mutex> lock(target_mutex_);
                 target_x_ = x;
-                target_y_ = y;
                 target_z_ = z;
                 target_stamp_ = this->now();
                 has_target_ = true;
