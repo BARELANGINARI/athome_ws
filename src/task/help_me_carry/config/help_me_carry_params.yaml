@@ -36,12 +36,12 @@ help_me_carry_node:
     # 3. VELOCITY LIMITS & PID GAINS
     # -------------------------------------------------------------
     min_vx: 0.08                              # Minimum forward speed when moving (m/s)
-    max_vx: 0.32                              # Maximum forward speed (m/s)
-    max_vy: 0.22                              # Maximum lateral strafe speed (m/s)
-    max_wz: 0.40                              # Maximum angular rotation speed (rad/s)
-    occlusion_max_vx: 0.22                    # Capped forward speed during Kalman dead-reckoning (m/s)
-    kp_dist: 0.45                             # Proportional gain for forward distance error
-    kp_yaw: 0.75                              # Proportional gain for yaw heading error
+    max_vx: 0.55                              # Maximum forward speed (m/s, dinaikkan dari 0.32 agar mampu mengimbangi langkah jalan normal)
+    max_vy: 0.28                              # Maximum lateral strafe speed (m/s)
+    max_wz: 0.75                              # Maximum angular rotation speed (rad/s, dinaikkan dari 0.40 agar responsif saat belokan tajam)
+    occlusion_max_vx: 0.30                    # Capped forward speed during Kalman dead-reckoning (m/s)
+    kp_dist: 0.55                             # Proportional gain for forward distance error
+    kp_yaw: 0.85                              # Proportional gain for yaw heading error
     kd_yaw: 0.15                              # Derivative damping gain for yaw rate
     deadband_moving: 0.04                     # Heading deadband when robot is moving (rad, ~2.3 deg)
     deadband_stop: 0.12                       # Heading deadband when robot is stopped (rad, ~6.9 deg)
