@@ -28,11 +28,11 @@
 #include <mutex>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/u_int8.hpp"
 #include "std_srvs/srv/trigger.hpp"
 
 using namespace std::chrono_literals;
@@ -87,9 +87,9 @@ public:
   HelpMeCarryOrchestrator()
   : Node("help_me_carry_orchestrator")
   {
-    // Callback group eksklusif untuk mencegah race condition antar callback
+    // Reentrant callback group untuk subscription & response service
     callback_group_ = create_callback_group(
-      rclcpp::CallbackGroupType::MutuallyExclusive);
+      rclcpp::CallbackGroupType::Reentrant);
 
     rclcpp::SubscriptionOptions options;
     options.callback_group = callback_group_;
@@ -99,6 +99,7 @@ public:
     // --------------------------------------------------------------------------
     tts_pub_ = create_publisher<std_msgs::msg::String>("/hri/tts_say", 10);
     face_expression_pub_ = create_publisher<std_msgs::msg::String>("/robot/expression", 10);
+    lifter_cmd_pub_ = create_publisher<std_msgs::msg::UInt8>("/lifter_target", 10);
 
     tts_done_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_done", 10,
@@ -135,6 +136,11 @@ public:
       std::bind(&HelpMeCarryOrchestrator::onBagDetections, this, std::placeholders::_1),
       options);
 
+    lifter_state_sub_ = create_subscription<std_msgs::msg::UInt8>(
+      "/lifter_state", 10,
+      std::bind(&HelpMeCarryOrchestrator::onLifterState, this, std::placeholders::_1),
+      options);
+
     // --------------------------------------------------------------------------
     // Service Clients (Following, Vision Alignment, Arm, & Navigation)
     // --------------------------------------------------------------------------
@@ -157,9 +163,9 @@ public:
     lifter_up_client_ = create_client<Trigger>(
       "/lifter/naik", rclcpp::ServicesQoS(), callback_group_);
 
-    // Timer siklus FSM (10 Hz / 100 ms)
+    // Timer siklus FSM (10 Hz / 100 ms) pada default MutuallyExclusive group
     fsm_timer_ = create_wall_timer(
-      100ms, std::bind(&HelpMeCarryOrchestrator::fsmTick, this), callback_group_);
+      100ms, std::bind(&HelpMeCarryOrchestrator::fsmTick, this));
 
     // Parameter konfigurasi FSM & watchdog (Wajib dari params.yaml)
     global_timeout_sec_ = requireYamlParameter<double>("global_timeout_sec");
@@ -217,6 +223,11 @@ private:
   std::atomic<TaskState> state_{TaskState::INIT};
   std::atomic<bool> busy_{false};
   std::atomic<bool> speaking_{false};
+  std::atomic<bool> service_busy_{false};
+  std::atomic<bool> in_callback_{false};
+  std::atomic<bool> lifter_wait_active_{false};
+  std::atomic<bool> lifter_state_received_{false};
+  std::atomic<uint8_t> lifter_state_{255};
   std::atomic<bool> follow_requested_{false};
   std::atomic<bool> arrived_requested_{false};
   std::atomic<bool> emergency_stop_requested_{false};
@@ -234,10 +245,22 @@ private:
   rclcpp::Time last_command_time_{0, 0, RCL_ROS_TIME};
 
   std::mutex data_mutex_;
-  std::mutex tts_mutex_;              // Proteksi state TTS (ditulis dari thread callback service)
+  mutable std::mutex tts_mutex_;      // Proteksi state TTS (ditulis dari thread callback service)
   double tts_timeout_sec_{4.0};
   std::string last_command_;
   std::function<void()> pending_tts_done_;
+
+  std::mutex srv_mutex_;
+  rclcpp::Time srv_started_time_{0, 0, RCL_ROS_TIME};
+  double srv_timeout_sec_{20.0};
+  std::string active_srv_name_;
+  TriggerResult pending_srv_result_;
+
+  std::mutex lifter_mutex_;
+  rclcpp::Time lifter_wait_until_{0, 0, RCL_ROS_TIME};
+  uint8_t lifter_wait_target_{1};
+  std::function<void()> pending_lifter_cb_;
+
   bool bag_prompt_sent_{false};
   bool recovery_prompt_sent_{false};
   std::string detected_gesture_{"NONE"};
@@ -254,6 +277,7 @@ private:
   rclcpp::TimerBase::SharedPtr fsm_timer_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr tts_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr face_expression_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr lifter_cmd_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr stt_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr emergency_sub_;
@@ -261,6 +285,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr gesture_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr follow_status_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr bag_sub_;
+  rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr lifter_state_sub_;
 
   TriggerClient::SharedPtr follow_start_client_;
   TriggerClient::SharedPtr follow_stop_client_;
@@ -271,6 +296,12 @@ private:
   TriggerClient::SharedPtr homing_client_;
   TriggerClient::SharedPtr lifter_down_client_;
   TriggerClient::SharedPtr lifter_up_client_;
+
+  bool isBusy() const
+  {
+    return busy_.load() || speaking_.load() || service_busy_.load() ||
+           lifter_wait_active_.load() || in_callback_.load();
+  }
 
   // ----------------------------------------------------------------------------
   // Helper: Deteksi Operator & Tas di Depan Robot
@@ -337,7 +368,8 @@ private:
       arrived_requested_ = false;
       tracker_lost_ = false;
       follow_prompt_count_ = 0;
-      follow_prompt_next_time_ = now();
+      follow_prompt_next_time_ =
+        now() + rclcpp::Duration::from_seconds(follow_prompt_interval_sec_);
     }
     if (next_state == TaskState::CHECK_OPERATOR_PRESENCE) {
       last_operator_warn_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
@@ -405,6 +437,7 @@ private:
       if (!speaking_.load()) {
         return;  // Abaikan tts_done ganda / yang tidak diminta orchestrator
       }
+      in_callback_ = true;
       speaking_ = false;
       busy_ = false;
       tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.4);
@@ -422,12 +455,21 @@ private:
     if (callback) {
       callback();
     }
+    in_callback_ = false;
   }
 
   // Cek apakah mic aktif mendengarkan (tidak sedang bicara & jeda cooldown terlewati)
   bool canListen() const
   {
-    return !speaking_.load() && now() >= tts_cooldown_until_;
+    if (speaking_.load()) {
+      return false;
+    }
+    rclcpp::Time cooldown_until(0, 0, RCL_ROS_TIME);
+    {
+      std::lock_guard<std::mutex> lock(tts_mutex_);
+      cooldown_until = tts_cooldown_until_;
+    }
+    return now() >= cooldown_until;
   }
 
   // Normalisasi string: ubah ke lowercase, hilangkan tanda baca, dan rapikan spasi
@@ -569,7 +611,7 @@ private:
   static const std::vector<std::string> & getArrivedCorpus()
   {
     static const std::vector<std::string> corpus = {
-      "arrived at the location", "we have arrived", "this is the location", "this is the location",
+      "arrived at the location", "we have arrived", "this is the location",
       "reached the car", "arrived at the car", "stop here we arrived",
       "i have arrived", "we are here", "here is the car", "arrived",
     };
@@ -665,7 +707,10 @@ private:
   // Callback sinkronisasi status pelacakan dari help_me_carry_node
   void onFollowStatus(const std_msgs::msg::String::SharedPtr message)
   {
-    if (message->data == "TRACKING" || message->data == "PREDICTING") {
+    if (!message) return;
+    if (message->data == "TRACKING" || message->data == "PREDICTING" ||
+        message->data == "TRACKING_LIDAR_360" || message->data == "AVOID_OBSTACLE_PEEKING")
+    {
       tracker_lost_ = false;
       operator_seen_ = true;
       last_operator_seen_time_ = now();
@@ -673,6 +718,14 @@ private:
       tracker_lost_ = true;
       operator_seen_ = false;
     }
+  }
+
+  // Callback feedback status lifter dari STM32/nucleo (/lifter_state)
+  void onLifterState(const std_msgs::msg::UInt8::SharedPtr message)
+  {
+    if (!message) return;
+    lifter_state_ = message->data;
+    lifter_state_received_ = true;
   }
 
   // Callback deteksi gesture penunjukan tas dari kamera ZED
@@ -705,38 +758,127 @@ private:
   // ============================================================================
   // 5. HELPER SERVICE CLIENT
   // ============================================================================
-  // Memanggil service ROS 2 bertipe Trigger secara non-blocking di thread terpisah
+  // Memanggil service ROS 2 bertipe Trigger secara non-blocking dengan response timeout watchdog
   void callTrigger(
     const TriggerClient::SharedPtr & client,
     const std::string & service_name,
     TriggerResult result,
-    std::chrono::seconds timeout = 3s)
+    double response_timeout_sec = 20.0)
   {
-    std::thread([this, client, service_name, result, timeout]() {
-      if (!client) {
-        result(false, "Client is null");
-        return;
-      }
-      if (!client->wait_for_service(timeout)) {
-        RCLCPP_WARN(
-          get_logger(), "Service %s belum siap setelah timeout %ld detik.",
-          service_name.c_str(), static_cast<long>(timeout.count()));
-        result(false, "Service not ready (timeout)");
-        return;
-      }
+    if (!client) {
+      if (result) result(false, "Client is null");
+      return;
+    }
 
-      auto request = std::make_shared<Trigger::Request>();
-      client->async_send_request(
-        request,
-        [result](TriggerClient::SharedFuture future) {
-          try {
-            const auto response = future.get();
-            result(response->success, response->message);
-          } catch (const std::exception & exception) {
-            result(false, exception.what());
+    service_busy_ = true;
+
+    if (!client->service_is_ready()) {
+      if (!client->wait_for_service(1s)) {
+        service_busy_ = false;
+        RCLCPP_WARN(
+          get_logger(), "Service %s belum tersedia.",
+          service_name.c_str());
+        if (result) result(false, "Service not ready");
+        return;
+      }
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(srv_mutex_);
+      service_busy_ = true;
+      srv_started_time_ = now();
+      srv_timeout_sec_ = response_timeout_sec;
+      active_srv_name_ = service_name;
+      pending_srv_result_ = std::move(result);
+    }
+
+    auto request = std::make_shared<Trigger::Request>();
+    client->async_send_request(
+      request,
+      [this, service_name](TriggerClient::SharedFuture future) {
+        TriggerResult cb;
+        {
+          std::lock_guard<std::mutex> lock(srv_mutex_);
+          if (!service_busy_.load() || active_srv_name_ != service_name) {
+            return;
           }
-        });
-    }).detach();
+          in_callback_ = true;
+          service_busy_ = false;
+          cb = std::move(pending_srv_result_);
+          pending_srv_result_ = nullptr;
+        }
+
+        bool ok = false;
+        std::string msg;
+        try {
+          const auto response = future.get();
+          ok = response->success;
+          msg = response->message;
+        } catch (const std::exception & exception) {
+          ok = false;
+          msg = exception.what();
+        }
+
+        if (cb) {
+          cb(ok, msg);
+        }
+        in_callback_ = false;
+      });
+  }
+
+  // Menjadwalkan jeda non-blocking untuk pergerakan mekanis lifter
+  void scheduleLifterWait(uint8_t target, std::function<void()> on_done)
+  {
+    if (lifter_move_wait_sec_ <= 0.0) {
+      if (on_done) on_done();
+      return;
+    }
+    std::lock_guard<std::mutex> lock(lifter_mutex_);
+    lifter_wait_target_ = target;
+    lifter_wait_until_ = now() + rclcpp::Duration::from_seconds(lifter_move_wait_sec_);
+    pending_lifter_cb_ = std::move(on_done);
+    lifter_wait_active_ = true;
+  }
+
+  // Menggerakkan lifter via topic /lifter_target + service /lifter/naik atau /lifter/turun
+  void moveLifter(bool up, std::function<void()> on_done)
+  {
+    const uint8_t target = up ? 1 : 0;
+    const std::string srv_name = up ? "/lifter/naik" : "/lifter/turun";
+    const auto & client = up ? lifter_up_client_ : lifter_down_client_;
+
+    if (lifter_cmd_pub_) {
+      std_msgs::msg::UInt8 cmd;
+      cmd.data = target;
+      lifter_cmd_pub_->publish(cmd);
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[LIFTER]\033[0m Command %s (target=%u) published to /lifter_target",
+      up ? "UP" : "DOWN", static_cast<unsigned int>(target));
+
+    if (client && client->service_is_ready()) {
+      callTrigger(
+        client, srv_name,
+        [this, target, srv_name, on_done](bool ok, const std::string & msg) {
+          if (ok) {
+            RCLCPP_INFO(get_logger(), "\033[1;36m[LIFTER]\033[0m %s", msg.c_str());
+          } else {
+            RCLCPP_WARN(
+              get_logger(),
+              "\033[1;33m[LIFTER]\033[0m Service %s warning (%s); tetap menunggu via /lifter_target.",
+              srv_name.c_str(), msg.c_str());
+          }
+          scheduleLifterWait(target, on_done);
+        },
+        5.0);
+    } else {
+      RCLCPP_WARN(
+        get_logger(),
+        "\033[1;33m[LIFTER]\033[0m Service %s belum siap; menggunakan topic /lifter_target.",
+        srv_name.c_str());
+      scheduleLifterWait(target, std::move(on_done));
+    }
   }
 
   // Menghentikan tracking/following person
@@ -744,7 +886,8 @@ private:
   {
     callTrigger(
       follow_stop_client_, "/follow/stop",
-      [on_done](bool success, const std::string &) { on_done(success); });
+      [on_done](bool success, const std::string &) { on_done(success); },
+      10.0);
   }
 
   // ============================================================================
@@ -776,6 +919,16 @@ private:
 
     // Emergency Stop jika diucapkan perintah berhenti darurat
     if (emergency_stop_requested_.exchange(false)) {
+      {
+        std::lock_guard<std::mutex> lk(srv_mutex_);
+        service_busy_ = false;
+        pending_srv_result_ = nullptr;
+      }
+      {
+        std::lock_guard<std::mutex> lk(lifter_mutex_);
+        lifter_wait_active_ = false;
+        pending_lifter_cb_ = nullptr;
+      }
       busy_ = true;
       stopFollowing([this](bool) {
         // busy_ tetap terkunci; transisi dilakukan setelah TTS selesai
@@ -783,6 +936,31 @@ private:
           transitionTo(TaskState::WAIT_START_COMMAND, "Emergency stop");
         });
       });
+      return;
+    }
+
+    // Service response timeout watchdog
+    TriggerResult timed_out_srv_cb;
+    std::string timed_out_srv_name;
+    {
+      std::lock_guard<std::mutex> lock(srv_mutex_);
+      if (service_busy_.load() &&
+          (now() - srv_started_time_).seconds() > srv_timeout_sec_)
+      {
+        service_busy_ = false;
+        timed_out_srv_name = active_srv_name_;
+        timed_out_srv_cb = std::move(pending_srv_result_);
+        pending_srv_result_ = nullptr;
+      }
+    }
+    if (timed_out_srv_cb) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Service %s response timeout (> %.1f s), releasing lock.",
+        timed_out_srv_name.c_str(), srv_timeout_sec_);
+      in_callback_ = true;
+      timed_out_srv_cb(false, "Service response timeout");
+      in_callback_ = false;
       return;
     }
 
@@ -801,7 +979,48 @@ private:
       onTtsDone(nullptr);
     }
 
-    if (busy_.load()) {
+    // Non-blocking lifter wait completion check
+    if (lifter_wait_active_.load()) {
+      std::function<void()> lifter_cb;
+      uint8_t wait_target = 1;
+      {
+        std::lock_guard<std::mutex> lock(lifter_mutex_);
+        if (lifter_wait_active_.load() && now() >= lifter_wait_until_) {
+          lifter_wait_active_ = false;
+          wait_target = lifter_wait_target_;
+          lifter_cb = std::move(pending_lifter_cb_);
+          pending_lifter_cb_ = nullptr;
+          if (lifter_cb) {
+            in_callback_ = true;
+          }
+        }
+      }
+      if (lifter_cb) {
+        if (lifter_state_received_.load()) {
+          const uint8_t cur_state = lifter_state_.load();
+          if (cur_state != wait_target) {
+            RCLCPP_WARN(
+              get_logger(),
+              "\033[1;33m[LIFTER]\033[0m Feedback /lifter_state=%u != target=%u (cek mekanis/STM32).",
+              static_cast<unsigned int>(cur_state), static_cast<unsigned int>(wait_target));
+          } else {
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;36m[LIFTER]\033[0m Feedback /lifter_state=%u sesuai target.",
+              static_cast<unsigned int>(cur_state));
+          }
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "\033[1;33m[LIFTER]\033[0m Tidak ada feedback /lifter_state dari STM32/nucleo.");
+        }
+        lifter_cb();
+        in_callback_ = false;
+        return;
+      }
+    }
+
+    if (isBusy()) {
       return;
     }
 
@@ -855,13 +1074,15 @@ private:
                 [this](bool success, const std::string & message) {
                   if (!success) {
                     RCLCPP_ERROR(get_logger(), "Follow gagal: %s", message.c_str());
+                    busy_ = false;
                     speakAsync("Person following is not ready.");
                     return;
                   }
                   last_operator_seen_time_ = now();
                   transitionTo(TaskState::FOLLOW_OPERATOR, "Follow started");
                   busy_ = false;
-                });
+                },
+                10.0);
             });
         }
         break;
@@ -871,7 +1092,7 @@ private:
       // (Grace period: abaikan perintah tiba di awal agar tidak salah transisi)
       // ------------------------------------------------------------------------
       case TaskState::FOLLOW_OPERATOR:
-        // Ingatkan operator maksimal 3 kali dengan jeda 15 detik setelah TTS selesai
+        // Ingatkan operator maksimal 3 kali dengan jeda follow_prompt_interval_sec_ setelah TTS selesai
         if (follow_prompt_count_ < 3 && !speaking_.load() && now() >= follow_prompt_next_time_) {
           ++follow_prompt_count_;
           speakAsync(
@@ -880,7 +1101,7 @@ private:
               if (follow_prompt_count_ < 3 && state_.load() == TaskState::FOLLOW_OPERATOR)
               {
                 follow_prompt_next_time_ = now() + rclcpp::Duration::from_seconds(
-                  15.0
+                  follow_prompt_interval_sec_
                 );
               }
             }
@@ -925,7 +1146,7 @@ private:
                 transitionTo(TaskState::WAIT_BAG_POINTING, "Step back finished");
               });
             },
-            20s);
+            35.0);
         });
         break;
       }
@@ -956,7 +1177,8 @@ private:
                   RCLCPP_WARN(get_logger(), "Recovery follow gagal: %s", message.c_str());
                 }
                 busy_ = false;
-              });
+              },
+              10.0);
           });
         } else if ((now() - state_enter_time_).seconds() > 15.0) {
           transitionTo(TaskState::ABORTED, "Operator recovery timeout");
@@ -1003,7 +1225,8 @@ private:
                       publishExpression(expressionForState(TaskState::WAIT_BAG_POINTING));
                     }
                     busy_ = false;  // Lepas kunci FSM setelah state baru siap
-                  });
+                  },
+                  25.0);
               });
           } else if ((now() - state_enter_time_).seconds() > 30.0) {
             state_enter_time_ = now();
@@ -1018,64 +1241,32 @@ private:
       // ------------------------------------------------------------------------
       case TaskState::GRASP_BAG:
         busy_ = true;
-        // Sequence: /lifter/turun -> /arm/motion_task_1 -> /lifter/naik -> speakAsync
-        callTrigger(
-          lifter_down_client_, "/lifter/turun",
-          [this](bool down_ok, const std::string & down_msg) {
-            if (!down_ok) {
-              RCLCPP_WARN(
-                get_logger(),
-                "Lifter turun gagal/tidak tersedia (%s), tetap melanjutkan grasp...",
-                down_msg.c_str());
-            } else {
-              RCLCPP_INFO(get_logger(), "\033[1;36m[LIFTER]\033[0m %s", down_msg.c_str());
-            }
-            std::thread([this, down_ok]() {
-              if (down_ok && lifter_move_wait_sec_ > 0.0) {
-                std::this_thread::sleep_for(
-                  std::chrono::duration<double>(lifter_move_wait_sec_));
-              }
-              callTrigger(
-                grab_bag_client_, "/arm/motion_task_1",
-                [this](bool grasp_ok, const std::string & grasp_msg) {
-                  callTrigger(
-                    lifter_up_client_, "/lifter/naik",
-                    [this, grasp_ok, grasp_msg](bool up_ok, const std::string & up_msg) {
-                      if (!up_ok) {
-                        RCLCPP_WARN(
-                          get_logger(),
-                          "Lifter naik gagal/tidak tersedia (%s), tetap melanjutkan...",
-                          up_msg.c_str());
-                      } else {
-                        RCLCPP_INFO(get_logger(), "\033[1;36m[LIFTER]\033[0m %s", up_msg.c_str());
-                      }
-                      std::thread([this, grasp_ok, grasp_msg, up_ok]() {
-                        if (up_ok && lifter_move_wait_sec_ > 0.0) {
-                          std::this_thread::sleep_for(
-                            std::chrono::duration<double>(lifter_move_wait_sec_));
-                        }
-                        // busy_ TIDAK dilepas di sini: speakAsync menjaga kunci sampai TTS selesai,
-                        // lalu transisi state (dan aksi berikutnya) dieksekusi di callback on_done.
-                        if (grasp_ok) {
-                          speakAsync("I have the bag. I am returning to the starting point.", [this]() {
-                            transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
-                          });
-                        } else {
-                          RCLCPP_WARN(
-                            get_logger(),
-                            "Grasp otonom gagal (%s). Mengaktifkan fallback bantuan operator...",
-                            grasp_msg.c_str());
-                          speakAsync(
-                            "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
-                            [this]() {
-                              transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
-                            });
-                        }
-                      }).detach();
+        // Sequence: lifter down -> /arm/motion_task_1 -> lifter up -> speakAsync
+        moveLifter(false, [this]() {
+          callTrigger(
+            grab_bag_client_, "/arm/motion_task_1",
+            [this](bool grasp_ok, const std::string & grasp_msg) {
+              moveLifter(true, [this, grasp_ok, grasp_msg]() {
+                busy_ = false;
+                if (grasp_ok) {
+                  speakAsync("I have the bag. I am returning to the starting point.", [this]() {
+                    transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
+                  });
+                } else {
+                  RCLCPP_WARN(
+                    get_logger(),
+                    "Grasp otonom gagal (%s). Mengaktifkan fallback bantuan operator...",
+                    grasp_msg.c_str());
+                  speakAsync(
+                    "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
+                    [this]() {
+                      transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
                     });
-                });
-            }).detach();
-          });
+                }
+              });
+            },
+            30.0);
+        });
         break;
 
       // ------------------------------------------------------------------------
@@ -1104,7 +1295,7 @@ private:
               busy_ = false;
             }
           },
-          125s);
+          310.0);
         break;
 
       // ------------------------------------------------------------------------
@@ -1112,20 +1303,27 @@ private:
       // ------------------------------------------------------------------------
       case TaskState::PUT_DOWN_BAG:
         busy_ = true;
-        callTrigger(
-          put_down_bag_client_, "/arm/letakkan_tas",
-          [this](bool success, const std::string & message) {
-            if (success) {
-              speakAsync("I have placed the bag down. Task completed.", [this]() {
-                transitionTo(TaskState::COMPLETED, "Bag placed down successfully");
+        // Sequence: lifter down -> /arm/letakkan_tas -> lifter up -> speakAsync
+        moveLifter(false, [this]() {
+          callTrigger(
+            put_down_bag_client_, "/arm/letakkan_tas",
+            [this](bool success, const std::string & message) {
+              moveLifter(true, [this, success, message]() {
+                busy_ = false;
+                if (success) {
+                  speakAsync("I have placed the bag down. Task completed.", [this]() {
+                    transitionTo(TaskState::COMPLETED, "Bag placed down successfully");
+                  });
+                } else {
+                  RCLCPP_WARN(get_logger(), "Letakkan tas tidak berhasil: %s. Melanjutkan ke completed.", message.c_str());
+                  speakAsync("Task completed.", [this]() {
+                    transitionTo(TaskState::COMPLETED, "Task completed (fallback)");
+                  });
+                }
               });
-            } else {
-              RCLCPP_WARN(get_logger(), "Letakkan tas tidak berhasil: %s. Melanjutkan ke completed.", message.c_str());
-              speakAsync("Task completed.", [this]() {
-                transitionTo(TaskState::COMPLETED, "Task completed (fallback)");
-              });
-            }
-          });
+            },
+            30.0);
+        });
         break;
 
       case TaskState::COMPLETED:
