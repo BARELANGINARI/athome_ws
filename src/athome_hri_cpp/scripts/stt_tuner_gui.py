@@ -104,7 +104,7 @@ def compute_optimal_params(
 
     # Adaptive SNR margin scales gently downward when SNR is tight so quiet speech is not clipped
     snr_margin = round(float(np.clip(snr_db * 0.45, 7.0, 14.0)), 1)
-    max_thresh = round(float(np.clip(voice_p75 - 3.0, -24.0, -8.0)), 1)
+    max_thresh = round(float(np.clip(max(voice_p75 - 3.0, threshold_dbfs + 4.0), -24.0, -6.0)), 1)
 
     # Flatness gate sits between voice p90 and ambient noise p50
     flat_mid = 0.5 * (voice_flat_p90 + noise_flat_p50)
@@ -155,7 +155,15 @@ def _format_yaml_value(val: Any) -> str:
     if isinstance(val, int):
         return str(val)
     if isinstance(val, float):
-        return f"{val:.4g}" if abs(val) < 1e-2 else f"{val:.2f}".rstrip("0").rstrip(".") if "." in f"{val:.2f}" else str(val)
+        if abs(val) < 1e-2 and val != 0.0:
+            s = f"{val:.4g}"
+        else:
+            s = f"{val:.2f}".rstrip("0")
+            if s.endswith("."):
+                s += "0"
+        if "." not in s and "e" not in s.lower():
+            s += ".0"
+        return s
     if isinstance(val, str):
         escaped = val.replace('"', '\\"')
         return f'"{escaped}"'

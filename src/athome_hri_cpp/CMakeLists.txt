@@ -148,7 +148,12 @@ set(_EXTRA_RPATHS "")
 if(HAVE_WHISPER_CPP)
   target_compile_definitions(stt_engine_node PRIVATE HAVE_WHISPER_CPP=1)
   target_include_directories(stt_engine_node PRIVATE ${WHISPER_INCLUDE_DIR})
-  target_link_libraries(stt_engine_node ${WHISPER_LIBRARY} ${_WHISPER_COMPANION_LIBS})
+  target_link_libraries(stt_engine_node
+    ${WHISPER_LIBRARY}
+    "-Wl,--no-as-needed"
+    ${_WHISPER_COMPANION_LIBS}
+    "-Wl,--as-needed"
+  )
   list(APPEND _EXTRA_RPATHS "${WHISPER_LIBDIR}")
 endif()
 
@@ -179,6 +184,7 @@ if(_EXTRA_RPATHS)
     INSTALL_RPATH "${_RPATH_STR}"
     BUILD_WITH_INSTALL_RPATH TRUE
   )
+  target_link_options(stt_engine_node PRIVATE "-Wl,--disable-new-dtags")
 endif()
 
 target_compile_options(stt_engine_node PRIVATE -O3 -Wall -Wextra -Wpedantic)

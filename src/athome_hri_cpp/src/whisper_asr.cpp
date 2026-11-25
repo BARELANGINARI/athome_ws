@@ -281,12 +281,20 @@ AsrResult WhisperAsr::transcribe(const std::vector<float> & audio_16k)
     }
 
     const int n_tokens = whisper_full_n_tokens(impl_->ctx, i);
+    const whisper_token eot_tok = whisper_token_eot(impl_->ctx);
     double sum_logprob = 0.0;
+    int text_tokens = 0;
     for (int j = 0; j < n_tokens; ++j) {
-      sum_logprob += static_cast<double>(whisper_full_get_token_data(impl_->ctx, i, j).plog);
+      const whisper_token_data td = whisper_full_get_token_data(impl_->ctx, i, j);
+      if (td.id >= eot_tok) {
+        continue;
+      }
+      sum_logprob += static_cast<double>(td.plog);
+      ++text_tokens;
     }
-    const double avg_logprob = (n_tokens > 0) ? (sum_logprob / static_cast<double>(n_tokens)) : 0.0;
-    if (n_tokens > 0 && avg_logprob < static_cast<double>(config_.log_prob_threshold)) {
+    const double avg_logprob =
+      (text_tokens > 0) ? (sum_logprob / static_cast<double>(text_tokens)) : 0.0;
+    if (text_tokens > 0 && avg_logprob < static_cast<double>(config_.log_prob_threshold)) {
       continue;
     }
 

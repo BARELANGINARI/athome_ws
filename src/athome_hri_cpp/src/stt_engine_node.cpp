@@ -237,13 +237,15 @@ private:
   {
     const double now_sec = std::chrono::duration<double>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
-    if (tts_speaking_.load() && now_sec >= tts_speaking_until_sec_.load()) {
+    std::lock_guard<std::mutex> lock(tts_sync_mutex_);
+    if (pending_tts_count_ > 0 && now_sec >= tts_speaking_until_sec_) {
       RCLCPP_WARN(get_logger(), "Watchdog /hri/tts_done timeout; re-enabling microphone.");
-      tts_speaking_.store(false);
+      pending_tts_count_ = 0;
+      tts_speaking_until_sec_ = 0.0;
     }
     return (!enable_local_mic_.load()) ||
-           tts_speaking_.load() ||
-           (now_sec < tts_post_mute_until_sec_.load());
+           (pending_tts_count_ > 0) ||
+           (now_sec < tts_post_mute_until_sec_);
   }
 
   void onTtsSay(const std_msgs::msg::String::SharedPtr msg)
@@ -252,9 +254,12 @@ private:
       const double now_sec = std::chrono::duration<double>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
       tts_epoch_.fetch_add(1);
-      tts_speaking_until_sec_.store(now_sec + tts_speaking_timeout_sec_);
-      tts_post_mute_until_sec_.store(0.0);
-      tts_speaking_.store(true);
+      {
+        std::lock_guard<std::mutex> lock(tts_sync_mutex_);
+        ++pending_tts_count_;
+        tts_speaking_until_sec_ = now_sec + tts_speaking_timeout_sec_;
+        tts_post_mute_until_sec_ = 0.0;
+      }
       std::lock_guard<std::mutex> lock(asr_queue_mutex_);
       while (!asr_queue_.empty()) {
         asr_queue_.pop();
@@ -266,9 +271,14 @@ private:
   {
     const double now_sec = std::chrono::duration<double>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
-    tts_speaking_.store(false);
-    tts_speaking_until_sec_.store(0.0);
-    tts_post_mute_until_sec_.store(now_sec + tts_post_mute_sec_.load());
+    std::lock_guard<std::mutex> lock(tts_sync_mutex_);
+    if (pending_tts_count_ > 0) {
+      --pending_tts_count_;
+    }
+    if (pending_tts_count_ == 0) {
+      tts_speaking_until_sec_ = 0.0;
+      tts_post_mute_until_sec_ = now_sec + tts_post_mute_sec_.load();
+    }
   }
 
   void enqueueUtterance(std::vector<float> && audio)
@@ -312,7 +322,9 @@ private:
       if (neural_vad_->isReady()) {
         clean_audio = neural_vad_->filterSpeech(clean_audio);
         if (clean_audio.empty()) {
-          RCLCPP_DEBUG(get_logger(), "[ASR] Rejected by Silero Neural VAD (non-speech/noise).");
+          RCLCPP_INFO(
+            get_logger(), "%s\n  STT Dropped (Silero VAD: non-speech/too short)",
+            task_header_.c_str());
           continue;
         }
       }
@@ -431,6 +443,8 @@ private:
         vad_config_.adaptive_noise_alpha_up = p.as_double(); vad_dirty = true;
       } else if (n == "adaptive_noise_alpha_down") {
         vad_config_.adaptive_noise_alpha_down = p.as_double(); vad_dirty = true;
+      } else if (n == "pre_roll_frames") {
+        vad_config_.pre_roll_frames = std::max(0, static_cast<int>(p.as_int())); vad_dirty = true;
       } else if (n == "hangover_frames") {
         vad_config_.hangover_frames = static_cast<int>(p.as_int()); vad_dirty = true;
       } else if (n == "min_speech_frames") {
@@ -439,6 +453,8 @@ private:
         vad_config_.max_speech_frames = static_cast<int>(p.as_int()); vad_dirty = true;
       } else if (n == "stt_denoiser_backend") {
         backend = p.as_string(); enhancer_dirty = true;
+      } else if (n == "stt_deepfilter_model_path") {
+        df_model = resolveModelPath(p.as_string()); enhancer_dirty = true;
       } else if (n == "stt_highpass_hz") {
         highpass_hz = p.as_double(); enhancer_dirty = true;
       } else if (n == "stt_spectral_alpha") {
@@ -506,10 +522,11 @@ private:
   std::atomic<bool> enable_live_meter_{true};
   std::atomic<double> live_meter_interval_sec_{1.0};
   std::atomic<size_t> max_utterance_queue_{4};
-  std::atomic<bool> tts_speaking_{false};
-  std::atomic<double> tts_speaking_until_sec_{0.0};
-  std::atomic<double> tts_post_mute_sec_{0.6};
-  std::atomic<double> tts_post_mute_until_sec_{0.0};
+  std::mutex tts_sync_mutex_;
+  int pending_tts_count_{0};
+  double tts_speaking_until_sec_{0.0};
+  double tts_post_mute_until_sec_{0.0};
+  std::atomic<double> tts_post_mute_sec_{0.45};
   std::atomic<uint64_t> tts_epoch_{0};
   double tts_speaking_timeout_sec_{20.0};
   std::chrono::steady_clock::time_point last_meter_log_{};
