@@ -127,8 +127,7 @@ static std::string stateToString(RestaurantState state)
 struct CustomerRecord {
   int id{1};
   std::string name;
-  std::string order_1;
-  std::string order_2;
+  std::vector<std::string> orders;
   double map_x{0.0};
   double map_y{0.0};
   double map_yaw{0.0};
@@ -437,6 +436,7 @@ private:
   std::vector<CustomerRecord> served_customers_;
   CustomerRecord current_customer_;
   int customer_idx_{1};
+  bool barman_briefed_{false};
 
   // Data Deteksi Vision (Wave Hand, Person Position, Order Items)
   std::mutex vision_mutex_;
@@ -553,18 +553,40 @@ private:
     RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Status: %s", text.c_str());
   }
 
+  static std::string formatOrderList(const std::vector<std::string> & items)
+  {
+    if (items.empty()) return "";
+    if (items.size() == 1) return items[0];
+    if (items.size() == 2) return items[0] + " and " + items[1];
+    std::string out = items[0];
+    for (size_t i = 1; i + 1 < items.size(); ++i) {
+      out += ", " + items[i];
+    }
+    out += ", and " + items.back();
+    return out;
+  }
+
+  static std::string formatTrayOrders(const std::vector<std::string> & items)
+  {
+    if (items.size() < 2) return "";
+    std::vector<std::string> tray_items(items.begin() + 1, items.end());
+    return formatOrderList(tray_items);
+  }
+
   void publishCustomerHmi(bool show)
   {
     if (!hmi_customer_pub_) return;
     std_msgs::msg::String msg;
     if (show) {
-      std::string name, o1, o2;
+      std::string name, o1, o2, o3, all_orders;
       int c_idx = 1;
       {
         std::lock_guard<std::mutex> lock(customer_mutex_);
         name = current_customer_.name;
-        o1 = current_customer_.order_1;
-        o2 = current_customer_.order_2;
+        if (current_customer_.orders.size() >= 1) o1 = current_customer_.orders[0];
+        if (current_customer_.orders.size() >= 2) o2 = current_customer_.orders[1];
+        if (current_customer_.orders.size() >= 3) o3 = current_customer_.orders[2];
+        all_orders = formatOrderList(current_customer_.orders);
         c_idx = customer_idx_;
       }
       std::ostringstream ss;
@@ -573,6 +595,8 @@ private:
          << "\"name\":\"" << name << "\","
          << "\"order1\":\"" << o1 << "\","
          << "\"order2\":\"" << o2 << "\","
+         << "\"order3\":\"" << o3 << "\","
+         << "\"orders\":\"" << all_orders << "\","
          << "\"image_url\":\"captures/customer_latest.jpg\"}";
       msg.data = ss.str();
     } else {
@@ -599,6 +623,8 @@ private:
       customer_idx_ = idx;
       current_customer_ = CustomerRecord{};
       current_customer_.id = idx;
+      current_customer_.name = "Customer " + std::to_string(idx);
+      current_customer_.orders.clear();
     }
     {
       std::lock_guard<std::mutex> lock(vision_mutex_);
@@ -1090,8 +1116,7 @@ private:
 
   bool isDialogWaitState(RestaurantState s) const
   {
-    return s == RestaurantState::WAIT_CUSTOMER_NAME ||
-           s == RestaurantState::WAIT_CUSTOMER_ORDER ||
+    return s == RestaurantState::WAIT_CUSTOMER_ORDER ||
            s == RestaurantState::WAIT_ORDER_CONFIRMATION ||
            s == RestaurantState::WAIT_TRAY_CONFIRMATION;
   }
@@ -1195,10 +1220,10 @@ private:
     }
 
     static const std::vector<std::string> kPromptEchoPhrases = {
-      "welcome to the bar", "can you please tell", "tell your name",
-      "may i take your order", "please answer with", "is it correct",
-      "yes robot or no robot", "yes or no", "had take in the tray",
-      "please wave your hand", "i will confirm your order"
+      "may i take your order", "please say your items", "separated by and",
+      "what else would you like", "is that correct", "please say yes robot",
+      "yes robot or no robot", "yes or no", "placed on my tray",
+      "please wave your hand", "please tell me your order", "let us try again"
     };
     for (const auto & p : kPromptEchoPhrases) {
       if (containsWholePhrase(norm, p)) {
@@ -1259,7 +1284,8 @@ private:
     }
 
     const std::vector<std::string> tokens = splitWords(norm_text);
-    if (tokens.size() < 3) {
+    const size_t min_tokens = (st == RestaurantState::WAIT_CUSTOMER_ORDER) ? 4 : 3;
+    if (tokens.size() < min_tokens) {
       return false;
     }
 
@@ -1408,24 +1434,116 @@ private:
     return "";
   }
 
-  // Ekstraksi 2 item pesanan ({order_1} dan {order_2}) dari kalimat pelanggan
+  static size_t levenshteinDistance(const std::string & a, const std::string & b)
+  {
+    const size_t n = a.size();
+    const size_t m = b.size();
+    if (n == 0) return m;
+    if (m == 0) return n;
+
+    std::vector<size_t> prev(m + 1);
+    std::vector<size_t> curr(m + 1);
+    for (size_t j = 0; j <= m; ++j) prev[j] = j;
+    for (size_t i = 1; i <= n; ++i) {
+      curr[0] = i;
+      for (size_t j = 1; j <= m; ++j) {
+        const size_t cost = (a[i - 1] == b[j - 1]) ? 0 : 1;
+        curr[j] = std::min({prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost});
+      }
+      prev.swap(curr);
+    }
+    return prev[m];
+  }
+
+  static size_t maxFuzzyDistance(size_t len)
+  {
+    if (len < 5) return 0;
+    if (len <= 6) return 1;
+    return 2;
+  }
+
+  static bool isOrderStopWord(const std::string & w)
+  {
+    static const std::vector<std::string> kStopWords = {
+      "i", "would", "like", "want", "order", "ordered", "my", "is", "are",
+      "can", "may", "have", "get", "give", "me", "please", "robot",
+      "and", "with", "plus", "also", "the", "a", "an", "one", "two", "three",
+      "some", "for", "of", "to", "hello", "hi", "hey", "yes", "no",
+      "thanks", "thank", "you", "sorry", "okay", "ok", "uh", "um",
+      "then", "items", "item"
+    };
+    return std::find(kStopWords.begin(), kStopWords.end(), w) != kStopWords.end();
+  }
+
+  // Ekstraksi 2-3 item pesanan dari kalimat pelanggan (exact + alias fonetik + fuzzy + fallback)
   static bool parseCustomerOrders(
     const std::string & raw_text,
-    std::string & order_1,
-    std::string & order_2)
+    std::vector<std::string> & orders)
   {
-    std::string norm = normalize(raw_text);
-    if (norm.empty()) return false;
+    const std::string norm = normalize(raw_text);
+    if (norm.empty() || isLikelyNoiseOrPromptEcho(norm) ||
+        norm == "yes" || norm == "no" || norm == "yes robot" || norm == "no robot")
+    {
+      return false;
+    }
 
-    // 1. Cek daftar item menu yang dikenal berdasarkan urutan kemunculan di kalimat
+    auto addUnique = [](std::vector<std::string> & dst, const std::string & item) {
+      if (item.empty() || dst.size() >= 3) return;
+      const std::string item_norm = normalize(item);
+      if (item_norm.empty()) return;
+      for (const auto & existing : dst) {
+        if (normalize(existing) == item_norm) return;
+      }
+      dst.push_back(item);
+    };
+
+    auto formatMenuItem = [](const std::string & norm_item) -> std::string {
+      if (norm_item == "cheez it" || norm_item == "cheezit") return "Cheez-It";
+      if (norm_item == "seven up") return "Seven Up";
+      return capitalizeWords(norm_item);
+    };
+
+    // 1. Kamus item makanan/minuman standar RoboCup (urutan: frase panjang lebih dulu)
     static const std::vector<std::string> kKnownMenuItems = {
-      "orange juice", "apple juice", "iced tea", "green tea", "mineral water",
-      "cracker box", "potato chips", "coca cola",
-      "pringles", "sugar box", "sugarbox", "sugar",
-      "cheezit", "cracker", "chips", "snack",
-      "coke", "cola", "pepsi", "sprite", "fanta",
-      "water", "milk", "coffee", "tea", "juice", "soda",
-      "burger", "sandwich", "pizza", "cake", "donut", "apple", "banana", "orange"
+      "chocolate milk", "strawberry juice", "orange juice", "apple juice",
+      "grape juice", "mango juice", "pineapple juice", "tropical juice",
+      "sparkling water", "mineral water", "iced coffee", "black coffee",
+      "iced tea", "green tea", "lemon tea", "red wine", "white wine",
+      "coca cola", "root beer", "seven up", "potato chips", "cracker box",
+      "sugar box", "tomato soup", "mustard bottle", "cheez it", "ice cream",
+      "hot dog",
+      "coke", "cola", "pepsi", "sprite", "fanta", "beer", "wine",
+      "water", "milk", "coffee", "tea", "juice", "soda", "lemonade", "smoothie",
+      "pringles", "crackers", "cracker", "biscuits", "biscuit",
+      "cookies", "cookie", "cornflakes", "cereal", "popcorn", "pretzels",
+      "oreo", "chips", "snack", "candy", "chocolate", "sugar",
+      "sandwich", "burger", "pizza", "pasta", "noodles", "ramen", "soup",
+      "bread", "muffin", "cupcake", "donut", "cake", "tuna", "spam",
+      "cheese", "butter", "jam", "honey", "ketchup", "mustard",
+      "apple", "banana", "orange", "pear", "peach", "plum",
+      "lemon", "lime", "strawberry", "grapes", "tomato", "salad"
+    };
+
+    struct PhoneticAlias {
+      const char * alias;
+      const char * canonical;
+    };
+    static const std::vector<PhoneticAlias> kMenuAliases = {
+      {"cheese it", "Cheez-It"}, {"cheezit", "Cheez-It"},
+      {"cheesit", "Cheez-It"}, {"cheese its", "Cheez-It"},
+      {"cook", "Coke"}, {"koke", "Coke"}, {"cock", "Coke"}, {"coca", "Coke"},
+      {"springles", "Pringles"}, {"pringle", "Pringles"}, {"bringles", "Pringles"},
+      {"ice tea", "Iced Tea"}, {"ice coffee", "Iced Coffee"},
+      {"orange choose", "Orange Juice"}, {"apple choose", "Apple Juice"},
+      {"grape choose", "Grape Juice"},
+      {"watter", "Water"}, {"kofi", "Coffee"}, {"copi", "Coffee"},
+      {"spread", "Sprite"}, {"fenta", "Fanta"}, {"pepsy", "Pepsi"},
+      {"sugarbox", "Sugar Box"}, {"crackerbox", "Cracker Box"},
+      {"corn flakes", "Cornflakes"}, {"crisps", "Chips"},
+      {"doughnut", "Donut"}, {"7 up", "Seven Up"}, {"7up", "Seven Up"},
+      {"choc milk", "Chocolate Milk"}, {"choco milk", "Chocolate Milk"},
+      {"biscuit", "Biscuits"}, {"cookie", "Cookies"},
+      {"noodle", "Noodles"}, {"cheetos", "Chips"}
     };
 
     struct FoundItem {
@@ -1435,83 +1553,155 @@ private:
     std::vector<FoundItem> found;
     std::string masked = " " + norm + " ";
 
-    for (const auto & item : kKnownMenuItems) {
-      const std::string needle = " " + item + " ";
-      const auto pos = masked.find(needle);
-      if (pos != std::string::npos) {
-        found.push_back({pos, capitalizeWords(item)});
-        // Mask agar tidak terambil dua kali oleh sub-kata (misal "orange juice" & "juice")
-        for (size_t i = pos + 1; i < pos + needle.size() - 1; ++i) {
+    auto maskMatch = [&](const std::string & needle, const std::string & canonical) {
+      size_t search_from = 0;
+      while (search_from < masked.size()) {
+        const auto pos = masked.find(needle, search_from);
+        if (pos == std::string::npos) break;
+        found.push_back({pos, canonical});
+        for (size_t i = pos + 1; i + 1 < pos + needle.size(); ++i) {
           masked[i] = '_';
         }
+        search_from = pos + needle.size() - 1;
       }
+    };
+
+    for (const auto & item : kKnownMenuItems) {
+      maskMatch(" " + item + " ", formatMenuItem(item));
+    }
+
+    // 2. Alias fonetik pada sisa token yang belum ter-mask
+    for (const auto & entry : kMenuAliases) {
+      maskMatch(" " + std::string(entry.alias) + " ", entry.canonical);
     }
 
     std::sort(found.begin(), found.end(), [](const FoundItem & a, const FoundItem & b) {
       return a.pos < b.pos;
     });
-
-    if (found.size() >= 2) {
-      order_1 = found[0].name;
-      order_2 = found[1].name;
-      return true;
+    for (const auto & f : found) {
+      addUnique(orders, f.name);
     }
 
-    // 2. Fallback: Pisahkan berdasarkan kata penghubung ("and", "with", "plus", "also", "dan")
-    static const std::vector<std::string> kOrderPrefixes = {
-      "i would like to order ", "i would like ", "i want to order ", "i want ",
-      "can i have ", "may i have ", "please give me ", "give me ",
-      "my order is ", "i order ", "order is ", "please "
-    };
-    for (const auto & prefix : kOrderPrefixes) {
-      if (norm.find(prefix) == 0) {
-        norm = trimString(norm.substr(prefix.size()));
-        break;
-      } else {
-        const auto p = norm.find(prefix);
-        if (p != std::string::npos) {
-          norm = trimString(norm.substr(p + prefix.size()));
-          break;
+    // 3. Fuzzy matching (Levenshtein) untuk token tersisa jika belum lengkap (< 3 item)
+    if (orders.size() < 3) {
+      std::string unmasked = masked;
+      for (char & c : unmasked) {
+        if (c == '_') c = ' ';
+      }
+      const std::vector<std::string> rem_tokens = splitWords(unmasked);
+      std::vector<std::string> active_tokens;
+      for (const auto & t : rem_tokens) {
+        if (!isOrderStopWord(t)) {
+          active_tokens.push_back(t);
         }
       }
-    }
 
-    static const std::vector<std::string> kConnectors = {
-      " and ", " with ", " plus ", " also ", " dan ", " sama "
-    };
-    for (const auto & conn : kConnectors) {
-      const auto cpos = norm.find(conn);
-      if (cpos != std::string::npos) {
-        std::string left = trimString(norm.substr(0, cpos));
-        std::string right = trimString(norm.substr(cpos + conn.size()));
-        // Hilangkan artikel a / an / the di awal item
-        for (std::string * part : {&left, &right}) {
-          for (const char * art_cstr : {"a ", "an ", "the ", "one "}) {
-            const std::string art(art_cstr);
-            if (part->find(art) == 0) {
-              *part = trimString(part->substr(art.size()));
+      if (!active_tokens.empty()) {
+        // Cek jendela 2 kata lalu 1 kata
+        for (size_t k : {size_t{2}, size_t{1}}) {
+          if (active_tokens.size() < k) continue;
+          for (size_t i = 0; i + k <= active_tokens.size() && orders.size() < 3; ++i) {
+            std::string win = active_tokens[i];
+            if (k == 2) win += " " + active_tokens[i + 1];
+
+            std::string best_cand;
+            size_t best_dist = 999;
+            for (const auto & cand : kKnownMenuItems) {
+              if (splitWords(cand).size() != k) continue;
+              const size_t max_d = maxFuzzyDistance(cand.size());
+              if (max_d == 0) continue;
+              const size_t len_diff = (win.size() > cand.size())
+                ? (win.size() - cand.size())
+                : (cand.size() - win.size());
+              if (len_diff > max_d) continue;
+              const size_t d = levenshteinDistance(win, cand);
+              if (d <= max_d &&
+                  (d < best_dist || (d == best_dist && cand.size() > best_cand.size())))
+              {
+                best_dist = d;
+                best_cand = cand;
+              }
+            }
+            if (!best_cand.empty()) {
+              addUnique(orders, formatMenuItem(best_cand));
             }
           }
         }
-        if (!left.empty() && !right.empty()) {
-          order_1 = capitalizeWords(left);
-          order_2 = capitalizeWords(right);
-          return true;
+      }
+    }
+
+    if (orders.size() >= 2) {
+      return true;
+    }
+
+    // 4. Fallback delimiter splitting untuk item di luar kamus (2-3 item dipisah koma / "and")
+    std::string raw_lower = raw_text;
+    std::transform(raw_lower.begin(), raw_lower.end(), raw_lower.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    for (char & c : raw_lower) {
+      if (c == ';') c = ',';
+    }
+
+    std::vector<std::string> segments = {raw_lower};
+    for (const std::string & delim : {",", " and ", " with ", " plus ", " also ", " dan ", " sama "}) {
+      std::vector<std::string> next_segs;
+      for (const auto & seg : segments) {
+        size_t start = 0;
+        while (start < seg.size()) {
+          const auto pos = seg.find(delim, start);
+          if (pos == std::string::npos) {
+            next_segs.push_back(seg.substr(start));
+            break;
+          }
+          next_segs.push_back(seg.substr(start, pos - start));
+          start = pos + delim.size();
+        }
+      }
+      segments = std::move(next_segs);
+    }
+
+    if (segments.size() >= 2) {
+      static const std::vector<std::string> kOrderPrefixes = {
+        "i would like to order ", "i would like ", "i want to order ", "i want ",
+        "can i have ", "may i have ", "please give me ", "give me ",
+        "my order is ", "i order ", "order is ", "please "
+      };
+      static const std::vector<std::string> kTrailFillers = {
+        " please", " robot", " thank you", " thanks"
+      };
+      for (const auto & raw_seg : segments) {
+        std::string seg = normalize(raw_seg);
+        if (seg.empty()) continue;
+        for (const auto & prefix : kOrderPrefixes) {
+          const auto p = seg.find(prefix);
+          if (p != std::string::npos && (p == 0 || seg[p - 1] == ' ')) {
+            seg = trimString(seg.substr(p + prefix.size()));
+            break;
+          }
+        }
+        for (const std::string & art : {"a ", "an ", "the ", "one ", "some "}) {
+          if (seg.rfind(art, 0) == 0) {
+            seg = trimString(seg.substr(art.size()));
+          }
+        }
+        for (const auto & tf : kTrailFillers) {
+          if (seg.size() >= tf.size() &&
+              seg.compare(seg.size() - tf.size(), tf.size(), tf) == 0)
+          {
+            seg = trimString(seg.substr(0, seg.size() - tf.size()));
+          }
+        }
+        const std::vector<std::string> sw = splitWords(seg);
+        if (seg.size() >= 2 && !sw.empty() && sw.size() <= 3 &&
+            std::any_of(sw.begin(), sw.end(), [](const std::string & w) { return !isOrderStopWord(w); }))
+        {
+          addUnique(orders, formatMenuItem(seg));
         }
       }
     }
 
-    // Jika baru 1 item yang disebutkan, simpan ke slot yang masih kosong
-    if (found.size() == 1) {
-      if (order_1.empty()) {
-        order_1 = found[0].name;
-      } else if (order_2.empty() && found[0].name != order_1) {
-        order_2 = found[0].name;
-      }
-      return !order_1.empty() && !order_2.empty();
-    }
-
-    return false;
+    return orders.size() >= 2;
   }
 
   // Pengenalan respon konfirmasi Yes / No (termasuk "yes robot" / "no robot")
@@ -2023,6 +2213,7 @@ private:
         }
 
         served_customers_.clear();
+        barman_briefed_ = false;
         initCurrentCustomer(1);
         publishStatus("Initialized origin_position, STT and TTS engine. Starting Customer 1.");
         transitionTo(RestaurantState::ANNOUNCE_SERVER, "Initialization complete");
@@ -2032,19 +2223,24 @@ private:
       // ========================================================================
       // POINT 2: Announce Server & Detect Person Who Waves Hand -> zed/wave_hand
       // ========================================================================
-      case RestaurantState::ANNOUNCE_SERVER:
-        speakAsync(
-          "Hello everyone, i'm barelang inari a server in this bar, if you would like to place an order, please wave your hand",
-          [this]() {
-            speakAsync(
-              "i will detect who will order",
-              [this]() {
-                transitionTo(
-                  RestaurantState::DETECT_WAVE_HAND,
-                  "Waiting to detect waving customer");
-              });
-          });
+      case RestaurantState::ANNOUNCE_SERVER: {
+        std::string announce_msg;
+        {
+          std::lock_guard<std::mutex> lock(customer_mutex_);
+          if (customer_idx_ == 1) {
+            announce_msg =
+              "Hello everyone, I am Barelang Inari, your server. If you would like to order, please wave your hand.";
+          } else {
+            announce_msg = "If anyone else would like to order, please wave your hand.";
+          }
+        }
+        speakAsync(announce_msg, [this]() {
+          transitionTo(
+            RestaurantState::DETECT_WAVE_HAND,
+            "Waiting to detect waving customer");
+        });
         break;
+      }
 
       case RestaurantState::DETECT_WAVE_HAND: {
         bool waved = false;
@@ -2054,7 +2250,7 @@ private:
         }
 
         if (waved) {
-          speakAsync("i'm coming", [this]() {
+          speakAsync("I see you, I am coming.", [this]() {
             if (vision_wave_hand_client_ && vision_wave_hand_client_->service_is_ready()) {
               callTrigger(
                 vision_wave_hand_client_, "/vision/wave_hand",
@@ -2096,7 +2292,7 @@ private:
                   waving_person_y_ = -py;
                   has_waving_person_coords_ = true;
                 }
-                speakAsync("i'm coming", [this]() {
+                speakAsync("I see you, I am coming.", [this]() {
                   transitionTo(
                     RestaurantState::NAV_TO_WAVING_CUSTOMER,
                     "Customer wave detected via /vision/wave_hand");
@@ -2106,7 +2302,7 @@ private:
             10.0);
         } else if ((now() - last_wave_prompt_time_).seconds() >= wave_reprompt_sec_) {
           last_wave_prompt_time_ = now();
-          speakAsync("if you would like to place an order, please wave your hand");
+          speakAsync("If you would like to order, please wave your hand.");
         }
         break;
       }
@@ -2132,7 +2328,7 @@ private:
         break;
 
       // ========================================================================
-      // POINT 4: Save Coordinate Location for Customer & Ask Name
+      // POINT 4: Save Coordinate Location for Customer (skip ask name & capture face)
       // ========================================================================
       case RestaurantState::SAVE_CUSTOMER_POSE_ASK_NAME: {
         double cx = 0.0, cy = 0.0, cyaw = 0.0;
@@ -2154,129 +2350,30 @@ private:
           "\033[1;32m[CUSTOMER %d POSE SAVED]\033[0m x=%.2f, y=%.2f, yaw=%.2f",
           customer_idx_, cx, cy, cyaw);
 
-        // Capture image person upon arriving at waving customer location
-        std::string def_name = "customer_" + std::to_string(customer_idx_);
-        if (person_name_pub_) {
-          std_msgs::msg::String msg;
-          msg.data = def_name;
-          person_name_pub_->publish(msg);
-        }
-        auto ask_name = [this]() {
-          speakAsync(
-            "Hello, Welcome to the bar!! Can you please tell your name?",
-            [this]() {
-              transitionTo(
-                RestaurantState::WAIT_CUSTOMER_NAME,
-                "Waiting for customer name response");
-            });
-        };
-
-        RCLCPP_INFO(
-          get_logger(),
-          "\033[1;32m[RESTAURANT]\033[0m Arrived at waving customer location. Capturing customer image...");
-
-        if (vision_capture_face_client_ && vision_capture_face_client_->service_is_ready()) {
-          callTrigger(
-            vision_capture_face_client_, "/vision/camera_capture_face",
-            [this, ask_name](bool ok, const std::string & msg) {
-              RCLCPP_INFO(
-                get_logger(),
-                "[VISION] /vision/camera_capture_face on arrival (ok=%s, msg='%s')",
-                ok ? "true" : "false", msg.c_str());
-              ask_name();
-            },
-            3.0);
-        } else {
-          ask_name();
-        }
+        transitionTo(
+          RestaurantState::ASK_CUSTOMER_ORDER,
+          "Customer pose saved; proceeding directly to take order");
         break;
       }
 
       case RestaurantState::WAIT_CUSTOMER_NAME:
-        if (has_new_utterance_.exchange(false)) {
-          std::string raw;
-          {
-            std::lock_guard<std::mutex> lock(stt_mutex_);
-            raw = heard_utterance_;
-          }
-          const std::string parsed_name = parseCustomerName(raw);
-          if (!parsed_name.empty()) {
-            {
-              std::lock_guard<std::mutex> lock(customer_mutex_);
-              current_customer_.name = parsed_name;
-            }
-            if (person_name_pub_) {
-              std_msgs::msg::String msg;
-              msg.data = parsed_name;
-              person_name_pub_->publish(msg);
-            }
-            RCLCPP_INFO(
-              get_logger(),
-              "\033[1;32m[CUSTOMER %d NAME]\033[0m \"%s\" (from \"%s\")",
-              customer_idx_, parsed_name.c_str(), raw.c_str());
-            transitionTo(
-              RestaurantState::CAPTURE_CUSTOMER_FACE,
-              "Customer name captured");
-          } else {
-            speakAsync(
-              "Hello, Welcome to the bar!! Can you please tell your name?",
-              [this]() { state_enter_time_ = now(); });
-          }
-        } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
-          speakAsync(
-            "Hello, Welcome to the bar!! Can you please tell your name?",
-            [this]() { state_enter_time_ = now(); });
-        }
+      case RestaurantState::CAPTURE_CUSTOMER_FACE:
+        transitionTo(
+          RestaurantState::ASK_CUSTOMER_ORDER,
+          "Name and face capture skipped; proceeding to take order");
         break;
 
       // ========================================================================
-      // POINT 5: Save Facial Data -> Call Service zed/camera_capture_face
-      // ========================================================================
-      case RestaurantState::CAPTURE_CUSTOMER_FACE: {
-        std::string c_name;
-        {
-          std::lock_guard<std::mutex> lock(customer_mutex_);
-          c_name = current_customer_.name;
-        }
-        if (person_name_pub_ && !c_name.empty()) {
-          std_msgs::msg::String msg;
-          msg.data = c_name;
-          person_name_pub_->publish(msg);
-        }
-        speakAsync(
-          "Hello " + c_name + "! please dont move, as i want to save your facial data",
-          [this]() {
-            if (vision_capture_face_client_ && vision_capture_face_client_->service_is_ready()) {
-              callTrigger(
-                vision_capture_face_client_, "/vision/camera_capture_face",
-                [this](bool ok, const std::string & msg) {
-                  RCLCPP_INFO(
-                    get_logger(),
-                    "[VISION] /vision/camera_capture_face finished (ok=%s, msg='%s')",
-                    ok ? "true" : "false", msg.c_str());
-                  transitionTo(
-                    RestaurantState::ASK_CUSTOMER_ORDER,
-                    "Facial data capture completed");
-                },
-                10.0);
-            } else {
-              transitionTo(
-                RestaurantState::ASK_CUSTOMER_ORDER,
-                "Facial data registered via /vision/set_person_name");
-            }
-          });
-        break;
-      }
-
-      // ========================================================================
-      // POINT 6: Take Order ({order_1} & {order_2}), Wait 0.5s, Confirm Yes/No
+      // POINT 6: Take Order (2-3 items) & Confirm Yes/No
       // ========================================================================
       case RestaurantState::ASK_CUSTOMER_ORDER:
-        speakAsync("it's finished, May i take your order please?", [this]() {
-          transitionTo(
-            RestaurantState::WAIT_CUSTOMER_ORDER,
-            "Waiting for customer order");
-        });
+        speakAsync(
+          "Hello, welcome! May I take your order? Please say your items separated by and.",
+          [this]() {
+            transitionTo(
+              RestaurantState::WAIT_CUSTOMER_ORDER,
+              "Waiting for customer order");
+          });
         break;
 
       case RestaurantState::WAIT_CUSTOMER_ORDER:
@@ -2286,73 +2383,60 @@ private:
             std::lock_guard<std::mutex> lock(stt_mutex_);
             raw = heard_utterance_;
           }
-          std::string o1, o2;
+          std::vector<std::string> orders;
           {
             std::lock_guard<std::mutex> lock(customer_mutex_);
-            o1 = current_customer_.order_1;
-            o2 = current_customer_.order_2;
+            orders = current_customer_.orders;
           }
 
-          if (parseCustomerOrders(raw, o1, o2)) {
+          if (parseCustomerOrders(raw, orders)) {
             {
               std::lock_guard<std::mutex> lock(customer_mutex_);
-              current_customer_.order_1 = o1;
-              current_customer_.order_2 = o2;
+              current_customer_.orders = orders;
             }
             RCLCPP_INFO(
               get_logger(),
-              "\033[1;32m[ORDER CAPTURED]\033[0m order_1=\"%s\", order_2=\"%s\"",
-              o1.c_str(), o2.c_str());
+              "\033[1;32m[ORDER CAPTURED]\033[0m (%zu items): %s",
+              orders.size(), formatOrderList(orders).c_str());
             transitionTo(
-              RestaurantState::PRE_CONFIRM_ORDER,
-              "Both orders captured");
-          } else if (!o1.empty() && o2.empty()) {
+              RestaurantState::SPEAK_ORDER_CONFIRMATION,
+              "Orders captured");
+          } else if (orders.size() == 1) {
             {
               std::lock_guard<std::mutex> lock(customer_mutex_);
-              current_customer_.order_1 = o1;
+              current_customer_.orders = orders;
             }
             speakAsync(
-              "What is your second order please?",
+              "I got " + orders[0] + ". What else would you like to order?",
               [this]() { state_enter_time_ = now(); });
           } else {
             speakAsync(
-              "May i take your order please?",
+              "Sorry, please tell me your order, separated by and.",
               [this]() { state_enter_time_ = now(); });
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           speakAsync(
-            "May i take your order please?",
+            "May I take your order? Please say your items separated by and.",
             [this]() { state_enter_time_ = now(); });
         }
         break;
 
       case RestaurantState::PRE_CONFIRM_ORDER:
-        speakAsync(
-          "i will confirm your order, please answer with yes if the order has correct and answer with no, if the order is incorrect",
-          [this]() {
-            transitionTo(
-              RestaurantState::WAIT_BEFORE_CONFIRM_SPEECH,
-              "Waiting 0.5 seconds before stating order confirmation");
-          });
-        break;
-
       case RestaurantState::WAIT_BEFORE_CONFIRM_SPEECH:
-        if ((now() - state_enter_time_).seconds() >= 0.5) {
-          transitionTo(
-            RestaurantState::SPEAK_ORDER_CONFIRMATION,
-            "0.5s elapsed, speaking order confirmation");
-        }
+        transitionTo(
+          RestaurantState::SPEAK_ORDER_CONFIRMATION,
+          "Proceeding directly to order confirmation");
         break;
 
       case RestaurantState::SPEAK_ORDER_CONFIRMATION: {
-        std::string o1, o2;
+        std::vector<std::string> orders;
         {
           std::lock_guard<std::mutex> lock(customer_mutex_);
-          o1 = current_customer_.order_1;
-          o2 = current_customer_.order_2;
+          orders = current_customer_.orders;
         }
         speakAsync(
-          "your order is " + o1 + " and " + o2 + " is it correct?",
+          "Your order is " + formatOrderList(orders) +
+          ". Is that correct? Please say yes robot, or no robot.",
           [this]() {
             transitionTo(
               RestaurantState::WAIT_ORDER_CONFIRMATION,
@@ -2372,7 +2456,7 @@ private:
           if (ans == 1) {
             publishCustomerHmi(true);
             speakAsync(
-              "alright thank you, i will come back to pick up the order you requested",
+              "Thank you. I will go to the bar to get your order.",
               [this]() {
                 transitionTo(
                   RestaurantState::NAV_TO_ORIGIN_BARMAN,
@@ -2381,30 +2465,29 @@ private:
           } else if (ans == -1) {
             {
               std::lock_guard<std::mutex> lock(customer_mutex_);
-              current_customer_.order_1.clear();
-              current_customer_.order_2.clear();
+              current_customer_.orders.clear();
             }
             speakAsync(
-              "apologies for my mistake, may i ask about your order again?",
+              "Sorry, let us try again. Please tell me your order, separated by and.",
               [this]() {
                 transitionTo(
                   RestaurantState::WAIT_CUSTOMER_ORDER,
-                  "Order rejected (NO), returning to point 6");
+                  "Order rejected (NO), returning to take order");
               });
           } else {
             speakAsync(
-              "Please answer with yes if the order has correct and answer with no, if the order is incorrect",
+              "Please say yes robot, or no robot.",
               [this]() { state_enter_time_ = now(); });
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
-          std::string o1, o2;
+          std::vector<std::string> orders;
           {
             std::lock_guard<std::mutex> lock(customer_mutex_);
-            o1 = current_customer_.order_1;
-            o2 = current_customer_.order_2;
+            orders = current_customer_.orders;
           }
           speakAsync(
-            "your order is " + o1 + " and " + o2 + " is it correct?",
+            "Your order is " + formatOrderList(orders) +
+            ". Is that correct? Please say yes robot, or no robot.",
             [this]() { state_enter_time_ = now(); });
         }
         break;
@@ -2457,26 +2540,39 @@ private:
       // POINT 8: Barman Interaction, Detect & Navigate to order_1, Grasp, Tray
       // ========================================================================
       case RestaurantState::ANNOUNCE_ORDER_TO_BARMAN: {
-        std::string o1, o2;
+        std::vector<std::string> orders;
         int c_idx = 1;
+        bool need_briefing = false;
         {
           std::lock_guard<std::mutex> lock(customer_mutex_);
-          o1 = current_customer_.order_1;
-          o2 = current_customer_.order_2;
+          orders = current_customer_.orders;
           c_idx = customer_idx_;
+          need_briefing = !barman_briefed_;
+          barman_briefed_ = true;
         }
+        const std::string o1 = orders.empty() ? "the first item" : orders[0];
+        const std::string order_list = formatOrderList(orders);
         const std::string customer_ordinal = (c_idx == 1) ? "first" : "second";
-        speakAsync(
-          "The " + customer_ordinal + " customer order " + o1 + " and " + o2,
-          [this, o1]() {
-            speakAsync(
-              "please place " + o1 + " in front of my gripper",
-              [this]() {
-                transitionTo(
-                  RestaurantState::GRASP_ORDER1,
-                  "Order_1 requested in front of gripper, proceeding directly to grasp");
-              });
-          });
+
+        auto announce_order = [this, customer_ordinal, order_list, o1]() {
+          speakAsync(
+            "The " + customer_ordinal + " customer ordered " + order_list +
+            ". Please place " + o1 + " in front of my gripper.",
+            [this]() {
+              transitionTo(
+                RestaurantState::GRASP_ORDER1,
+                "Order_1 requested in front of gripper, proceeding directly to grasp");
+            });
+        };
+
+        if (need_briefing) {
+          speakAsync(
+            "Hello Barman. Please place the first item in front of my gripper, and the remaining items on my tray. "
+            "When I ask if the tray is ready, please say yes robot, or no robot.",
+            [announce_order]() { announce_order(); });
+        } else {
+          announce_order();
+        }
         break;
       }
 
@@ -2484,7 +2580,9 @@ private:
         std::string o1;
         {
           std::lock_guard<std::mutex> lock(customer_mutex_);
-          o1 = current_customer_.order_1;
+          if (!current_customer_.orders.empty()) {
+            o1 = current_customer_.orders[0];
+          }
         }
 
         double ox = 0.0, oy = 0.0, oz = 0.0;
@@ -2523,7 +2621,9 @@ private:
         std::string o1;
         {
           std::lock_guard<std::mutex> lock(customer_mutex_);
-          o1 = current_customer_.order_1;
+          if (!current_customer_.orders.empty()) {
+            o1 = current_customer_.orders[0];
+          }
         }
         double tx = 0.0, ty = 0.0, tz = 0.0;
         bool has_target_3d = findOrder1Position(o1, tx, ty, tz);
@@ -2556,17 +2656,18 @@ private:
               "[ARM] /arm/ambil_order finished (ok=%s, msg='%s')",
               ok ? "true" : "false", msg.c_str());
 
-            std::string o2;
+            std::vector<std::string> orders;
             {
               std::lock_guard<std::mutex> lock(customer_mutex_);
-              o2 = current_customer_.order_2;
+              orders = current_customer_.orders;
             }
+            const std::string tray_str = formatTrayOrders(orders);
             speakAsync(
-              "I've got it, for " + o2 + " please, place it on the tray in front of me",
+              "Thank you. Please place " + tray_str + " on the tray in front of me.",
               [this]() {
                 transitionTo(
                   RestaurantState::WAIT_TRAY_SILENT_5S,
-                  "Remaining silent for 5 seconds while order_2 is placed on tray");
+                  "Remaining silent for 5 seconds while remaining items are placed on tray");
               });
           },
           25.0);
@@ -2581,15 +2682,25 @@ private:
         }
         break;
 
-      case RestaurantState::ASK_TRAY_CONFIRMATION:
+      case RestaurantState::ASK_TRAY_CONFIRMATION: {
+        std::vector<std::string> orders;
+        {
+          std::lock_guard<std::mutex> lock(customer_mutex_);
+          orders = current_customer_.orders;
+        }
+        const std::string tray_str = formatTrayOrders(orders);
+        const std::string prompt = (orders.size() > 2)
+          ? ("Are " + tray_str + " placed on my tray? Please say yes robot, or no robot.")
+          : ("Is " + tray_str + " placed on my tray? Please say yes robot, or no robot.");
         speakAsync(
-          "is the order had take in the tray, please answer with yes robot or no robot",
+          prompt,
           [this]() {
             transitionTo(
               RestaurantState::WAIT_TRAY_CONFIRMATION,
               "Waiting for yes robot / no robot response");
           });
         break;
+      }
 
       case RestaurantState::WAIT_TRAY_CONFIRMATION:
         if (has_new_utterance_.exchange(false)) {
@@ -2603,7 +2714,7 @@ private:
             publishCustomerHmi(false);
             publishExpression("HAPPY");
             speakAsync(
-              "Alright, thank you, I will deliver this order to the customer.",
+              "Thank you. I will deliver the order to the customer.",
               [this]() {
                 transitionTo(
                   RestaurantState::NAV_DELIVER_TO_CUSTOMER,
@@ -2615,12 +2726,21 @@ private:
               "Tray order not ready (no robot), waiting 3 seconds before repeating callback");
           } else {
             speakAsync(
-              "is the order had take in the tray, please answer with yes robot or no robot",
+              "Please say yes robot, or no robot.",
               [this]() { state_enter_time_ = now(); });
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
+          std::vector<std::string> orders;
+          {
+            std::lock_guard<std::mutex> lock(customer_mutex_);
+            orders = current_customer_.orders;
+          }
+          const std::string tray_str = formatTrayOrders(orders);
+          const std::string prompt = (orders.size() > 2)
+            ? ("Are " + tray_str + " placed on my tray? Please say yes robot, or no robot.")
+            : ("Is " + tray_str + " placed on my tray? Please say yes robot, or no robot.");
           speakAsync(
-            "is the order had take in the tray, please answer with yes robot or no robot",
+            prompt,
             [this]() { state_enter_time_ = now(); });
         }
         break;
@@ -2698,21 +2818,15 @@ private:
         break;
       }
 
-      case RestaurantState::GREET_DELIVERY_CUSTOMER: {
-        std::string c_name;
-        {
-          std::lock_guard<std::mutex> lock(customer_mutex_);
-          c_name = current_customer_.name;
-        }
+      case RestaurantState::GREET_DELIVERY_CUSTOMER:
         speakAsync(
-          "Hello " + c_name + ", i have brought the order you requested",
+          "Hello, here is your order.",
           [this]() {
             transitionTo(
               RestaurantState::WAIT_1S_BEFORE_RELEASE_PROMPT,
               "Waiting 1 second before release prompt");
           });
         break;
-      }
 
       case RestaurantState::WAIT_1S_BEFORE_RELEASE_PROMPT:
         if ((now() - state_enter_time_).seconds() >= 1.0) {
@@ -2726,10 +2840,10 @@ private:
         std::string o1;
         {
           std::lock_guard<std::mutex> lock(customer_mutex_);
-          o1 = current_customer_.order_1;
+          o1 = current_customer_.orders.empty() ? "this item" : current_customer_.orders[0];
         }
         speakAsync(
-          "for " + o1 + ", please hold out your hand beneath this order, i'm going to let go on one two and three",
+          "For " + o1 + ", please hold your hand under my gripper. Releasing on one, two, three.",
           [this]() {
             transitionTo(
               RestaurantState::RELEASE_GRIPPER_AND_TORQUE_OFF,
@@ -2747,17 +2861,19 @@ private:
         break;
 
       case RestaurantState::PROMPT_TAKE_ORDER2_TRAY: {
-        std::string o2;
+        std::vector<std::string> orders;
         {
           std::lock_guard<std::mutex> lock(customer_mutex_);
-          o2 = current_customer_.order_2;
+          orders = current_customer_.orders;
         }
+        const std::string tray_str = formatTrayOrders(orders);
+        const std::string pronoun = (orders.size() > 2) ? "them" : "it";
         speakAsync(
-          "for " + o2 + " please take it from the tray",
+          "For " + tray_str + ", please take " + pronoun + " from my tray.",
           [this]() {
             transitionTo(
               RestaurantState::WAIT_5S_CUSTOMER_TAKE_TRAY,
-              "Waiting 5 seconds for customer to take order_2 from tray");
+              "Waiting 5 seconds for customer to take remaining items from tray");
           });
         break;
       }
@@ -2765,7 +2881,7 @@ private:
       case RestaurantState::WAIT_5S_CUSTOMER_TAKE_TRAY:
         if ((now() - state_enter_time_).seconds() >= 5.0) {
           publishCustomerHmi(false);
-          speakAsync("thank you for your order", [this]() {
+          speakAsync("Enjoy your order, thank you.", [this]() {
             transitionTo(
               RestaurantState::NAV_RETURN_ORIGIN_AFTER_SERVE,
               "Returning to origin_position after serving customer");
@@ -2812,8 +2928,8 @@ private:
 
       case RestaurantState::FINISH_TASK:
         publishCustomerHmi(false);
-        speakAsync("completed restaurant task", [this]() {
-          publishStatus("completed restaurant task");
+        speakAsync("Restaurant task complete.", [this]() {
+          publishStatus("Restaurant task complete.");
           transitionTo(RestaurantState::COMPLETED, "Restaurant task completed");
         });
         break;
