@@ -17,7 +17,7 @@ receptionist_node:
     # Operational settings
     global_frame: "map"
     announce_topic: "/receptionist/status"
-    nav_timeout_sec: 110.0
+    nav_timeout_sec: 45.0
 
     # Search chair settings
     cmd_vel_topic: "cmd_vel"
@@ -42,7 +42,7 @@ receptionist_node:
     guest_door_timeout_sec: 15.0
     guest_door_align_tolerance: 0.07
     guest_approach_distance: 0.7
-    guest_approach_speed: 0.55
+    guest_approach_speed: 0.18
     guest_approach_timeout_sec: 15.0
 
     # Face person settings
@@ -77,7 +77,8 @@ receptionist_manager:
       shirt_color: "black"               # Warna pakaian Host
       hair_color: "black"                # Warna rambut Host
     camera_width: 1280                    # Lebar resolusi horizontal frame kamera (px)
-    global_timeout_sec: 600.0            # Batas waktu maksimal seluruh task Receptionist (detik)
+    global_timeout_sec: 360.0            # Batas waktu maksimal Receptionist sesuai rulebook (6 menit)
+    nav_service_timeout_sec: 50.0        # Watchdog service navigasi (> nav_timeout_sec)
     dialog_reprompt_sec: 12.0            # Jeda tunggu sebelum mengulang pertanyaan dialog STT (detik)
     wait_guest_prompt_sec: 8.0           # Interval sapaan saat menunggu tamu berdiri di depan pintu (detik)
     vision_initial_settle_sec: 1.2       # Waktu stabilisasi kamera setelah robot berhenti navigasi (detik)
@@ -87,6 +88,74 @@ receptionist_manager:
     tts_sec_per_word: 0.5                # Estimasi durasi ucapan TTS per kata (detik/kata)
     tts_timeout_margin_sec: 2.0          # Margin tambahan untuk latensi audio TTS (detik)
     nav_retry_cooldown_sec: 2.0          # Jeda sebelum mengulang navigasi yang gagal (detik)
+    # Daftar entitas Setup Days (bisa diubah tanpa compile ulang)
+    known_names:
+      - "adel"
+      - "angel"
+      - "axel"
+      - "charlie"
+      - "jane"
+      - "john"
+      - "jules"
+      - "morgan"
+      - "paris"
+      - "robin"
+      - "simone"
+      - "alex"
+      - "michael"
+      - "sarah"
+      - "david"
+      - "emma"
+      - "maria"
+      - "ahmad"
+      - "rizal"
+      - "muhammad"
+      - "budi"
+      - "abdul"
+      - "jeffrey"
+      - "hezekiel"
+    known_drinks:
+      - "orange juice"
+      - "apple juice"
+      - "iced tea"
+      - "green tea"
+      - "mineral water"
+      - "coke"
+      - "cola"
+      - "pepsi"
+      - "sprite"
+      - "fanta"
+      - "milk"
+      - "water"
+      - "coffee"
+      - "tea"
+      - "juice"
+      - "soda"
+    known_interests:
+      - "artificial intelligence"
+      - "playing football"
+      - "playing badminton"
+      - "playing tennis"
+      - "playing golf"
+      - "robotics"
+      - "reading"
+      - "music"
+      - "sports"
+      - "cooking"
+      - "gaming"
+      - "traveling"
+      - "photography"
+      - "movies"
+      - "swimming"
+      - "football"
+      - "basketball"
+      - "coding"
+      - "programming"
+      - "dancing"
+      - "painting"
+      - "drawing"
+      - "boxing"
+      - "playing"
 
 vision:
   ros__parameters:
@@ -97,7 +166,7 @@ vision:
     publish_yaw: false
     yaw_360: true
     depth_minimum_distance: 30.0
-    person_max_dist: 1.5
+    person_max_dist: 2.0
     enable_body_tracking: true
     enable_chair: true
     chair_model: ""
