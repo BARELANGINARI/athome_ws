@@ -59,6 +59,7 @@ install(PROGRAMS
   launch/register_host.sh
   launch/capture_host.sh
   launch/capture_host.py
+  launch/mock_hardware.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
