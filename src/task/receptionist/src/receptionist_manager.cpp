@@ -2107,7 +2107,7 @@ private:
       "no", "robot no", "bot no","obot no", "no robot", "o robot", "nope", "not correct", "wrong", "false", "incorrect",
     };
     static const std::vector<std::string> kYesPhrases = {
-      "yes", , "robot yes", "bot yes", "obot yes", "yes robot", "es robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
+      "yes", "yess", "robot yes", "bot yes", "obot yes", "yes robot", "es robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
     };
 
     bool has_no = false;
