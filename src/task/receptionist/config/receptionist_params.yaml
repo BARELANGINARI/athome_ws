@@ -130,7 +130,7 @@ vision:
     # Profil Host (hanya foto yang digunakan untuk ekstraksi wajah, atribut lainnya dari YAML ini)
     host_name: "Yesaya"                 # Nama Host
     host_photo: "models/host.jpg"        # Foto wajah Host untuk ekstraksi fitur biometrik
-    host_shirt_color: ""                 # Kosongkan agar pencocokan murni dari foto wajah host.jpg
+    host_shirt_color: "black"            # Warna baju Host (disamakan dengan receptionist_manager.host.shirt_color)
     host_gender: ""                      # Kosongkan agar tidak veto jika prediksi gender berbeda
-    host_hair_color: ""                  # Kosongkan agar pencocokan murni dari foto wajah host.jpg
+    host_hair_color: ""                  # Kosongkan agar pencocokan murni dari foto wajah host.jpg & warna baju
 

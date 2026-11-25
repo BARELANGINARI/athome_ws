@@ -1312,7 +1312,7 @@ public:
         }
       }
 
-      if (!best_host.valid) {
+      if (!best_host.valid && (!is_guest2_session || g1_cluster_idx >= 0)) {
         int unnamed_idx = -1;
         int best_unnamed_votes = 0;
         for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
@@ -1329,7 +1329,7 @@ public:
         }
       }
 
-      if (!best_host.valid) {
+      if (!best_host.valid && (!is_guest2_session || g1_cluster_idx >= 0)) {
         int seated_idx = -1;
         int best_seated_votes = 0;
         for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {

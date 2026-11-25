@@ -3567,26 +3567,6 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
             cv::imwrite(dir + "/customer_" + safe_name + ".jpg", crop_img);
           } catch (...) {}
         }
-        if (is_host_capture || pending_register_name_ == host_pname) {
-          std::vector<std::string> host_dirs = {
-            "src/athome_vision/models",
-            "/home/dell/Documents/athome_ws/src/athome_vision/models",
-            "models"
-          };
-          try {
-            const std::string vshare = ament_index_cpp::get_package_share_directory("athome_vision");
-            host_dirs.push_back(vshare + "/models");
-          } catch (...) {}
-          for (const auto & dir : host_dirs) {
-            try {
-              std::filesystem::create_directories(dir);
-              cv::imwrite(dir + "/host.jpg", crop_img);
-            } catch (...) {}
-          }
-          RCLCPP_INFO(get_logger(),
-            "\033[1;32m[HOST PHOTO]\033[0m Host photo automatically saved to models/host.jpg (%dx%d)",
-            crop_img.cols, crop_img.rows);
-        }
         RCLCPP_INFO(get_logger(),
           "\033[1;32m[%s]\033[0m Saved customer image to captures/customer_latest.jpg (%dx%d)",
           is_restaurant_ ? "RESTAURANT" : "RECEPTIONIST",
@@ -3839,6 +3819,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
 
       // Hard Veto: tolak wajah ambigu, tolak klaim baru di bawah claim_th, dan jaga sticky identity
       const float effective_claim_th = std::max(claim_th, 0.46f);
+      const bool is_host_prof = (prof.name == get_parameter("host_name").as_string());
       bool veto = false;
       if (has_face) {
         if (!has_continuity) {
@@ -3846,7 +3827,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
                                      prof.clothing_color == entry_feats[i].shirt_color);
           const float req_claim_th = attr_matches
             ? th
-            : (registered_persons_.size() <= 1 ? th : effective_claim_th);
+            : (registered_persons_.size() <= 1
+                ? th
+                : (is_host_prof && entries[i].range_m >= 1.3 ? std::max(th, 0.38f) : effective_claim_th));
           if (f_sim < req_claim_th) {
             veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
             RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
