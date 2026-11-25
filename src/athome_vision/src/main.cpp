@@ -903,9 +903,17 @@ public:
     return hair_.load(path, err);
   }
 
+  bool is_arcface_{false};
+
   bool loadFace(const std::string & path, std::string * err = nullptr)
   {
-    return face_.load(path, err);
+    bool ok = face_.load(path, err);
+    if (ok) {
+      is_arcface_ = (path.find("arcface") != std::string::npos ||
+                     path.find("w600k") != std::string::npos ||
+                     path.find("insightface") != std::string::npos);
+    }
+    return ok;
   }
 
   bool faceReady() const {return face_.ready();}
@@ -1790,15 +1798,17 @@ private:
   {
     if (!face_.ready() || image.empty()) return {};
 
+    const double scale = is_arcface_ ? (1.0 / 127.5) : 1.0;
+    const cv::Scalar mean = is_arcface_ ? cv::Scalar(127.5, 127.5, 127.5) : cv::Scalar(0, 0, 0);
     cv::Mat blob = cv::dnn::blobFromImage(
-      image, 1.0, cv::Size(112, 112), cv::Scalar(0, 0, 0), true, false);
+      image, scale, cv::Size(112, 112), mean, true, false);
     std::array<int64_t, 4> shape{1, 3, 112, 112};
     std::vector<Ort::Value> outputs = face_.run(blob, shape);
     if (outputs.empty()) return {};
 
     const float * data = outputs.front().GetTensorData<float>();
     const auto out_shape = outputs.front().GetTensorTypeAndShapeInfo().GetShape();
-    const int dim = (out_shape.size() >= 2) ? static_cast<int>(out_shape[1]) : 128;
+    const int dim = (out_shape.size() >= 2) ? static_cast<int>(out_shape[1]) : 512;
     std::vector<float> feature(static_cast<size_t>(dim));
     float norm_sq = 0.0f;
     for (int i = 0; i < dim; ++i) {
@@ -2212,7 +2222,7 @@ private:
   rclcpp::Time register_start_time_{0, 0, RCL_ROS_TIME};
   std::string guest_1_name_;
   std::string guest_2_name_;
-  double face_threshold_{0.363};
+  double face_threshold_{0.40};
 
   void publishGuestNames();
 
@@ -2276,8 +2286,10 @@ private:
   bool is_help_me_carry_{false};
   bool is_receptionist_{false};
   bool is_restaurant_{false};
-  double person_max_dist_{2.8};
-  double bag_max_dist_{2.5};
+  double person_max_dist_{2.0};
+  double person_seated_max_dist_{3.0};
+  double chair_max_dist_{2.0};
+  double bag_max_dist_{2.0};
   double drink_max_dist_{2.5};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr person_name_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr host_photo_sub_;
@@ -2313,8 +2325,9 @@ ZedNode::ZedNode()
   declare_parameter("yaw_360", true);
   declare_parameter("enable_body_tracking", true);
   declare_parameter("depth_minimum_distance", 30.0);
-  declare_parameter("person_max_dist", 2.8);
-  declare_parameter("bag_max_dist", 2.5);
+  declare_parameter("person_max_dist", 2.0);
+  declare_parameter("person_seated_max_dist", 3.0);
+  declare_parameter("bag_max_dist", 2.0);
   declare_parameter("enable_yolo", true);
   declare_parameter("debug_window", false);
   declare_parameter("mirror", true);
@@ -2340,6 +2353,7 @@ ZedNode::ZedNode()
   declare_parameter("enable_drinks", true);
   declare_parameter("chair_model", std::string(""));
   declare_parameter("enable_chair", true);
+  declare_parameter("chair_max_dist", 2.0);
   declare_parameter("chair_labels", std::vector<std::string>{"chair", "couch", "sofa", "bench"});
   declare_parameter("enable_bag", true);
   declare_parameter("gender_model", std::string("models/genderage.onnx"));
@@ -2347,8 +2361,8 @@ ZedNode::ZedNode()
   declare_parameter("color_labels", std::string("models/color_names.txt"));
   declare_parameter("hair_model", std::string("models/hair_model.onnx"));
   declare_parameter("hair_labels", std::string("models/hair_names.txt"));
-  declare_parameter("face_model", std::string("models/face_recognition_sface.onnx"));
-  declare_parameter("face_threshold", 0.363);
+  declare_parameter("face_model", std::string("models/arcface_w600k_r50.onnx"));
+  declare_parameter("face_threshold", 0.40);
   declare_parameter("face_detect_model", std::string("models/face_detection_yunet.onnx"));
   declare_parameter("face_detect_conf", 0.55);
   declare_parameter("camera_resolution", std::string(""));
@@ -2628,6 +2642,8 @@ ZedNode::ZedNode()
   enable_drinks_ = get_parameter("enable_drinks").as_bool();
   face_threshold_ = get_parameter("face_threshold").as_double();
   person_max_dist_ = get_parameter("person_max_dist").as_double();
+  person_seated_max_dist_ = get_parameter("person_seated_max_dist").as_double();
+  chair_max_dist_ = get_parameter("chair_max_dist").as_double();
   bag_max_dist_ = get_parameter("bag_max_dist").as_double();
   drink_max_dist_ = get_parameter("drink_max_dist").as_double();
 
@@ -3099,6 +3115,7 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
 
     const double dist = (ok && std::isfinite(x) && std::isfinite(y)) ? std::hypot(x, y) : 1e9;
     if (ok && dist > bag_max_dist_) continue;
+    if (!ok && (det.rect.area() < 3000 || det.rect.height < 45)) continue;
     candidates.push_back({det, ok, x, y, z, dist});
   }
 
@@ -3259,6 +3276,7 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
       // izinkan fallback 2D untuk water mulai skor water_conf agar tetap terdeteksi.
       const float min_no_depth = (det.label == "water") ? water_conf_param : 0.65f;
       if (det.score < min_no_depth) continue;
+      if (det.rect.area() < 1200 || det.rect.height < 40) continue;
     }
 
     preview_drinks_.push_back({det.label, det.rect, ok, x, y, dist, det.score});
@@ -3318,6 +3336,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     bool has_depth{false};
     double range_m{std::numeric_limits<double>::infinity()};
     double dist{std::numeric_limits<double>::infinity()};
+    bool is_sitting{false};
   };
 
   std::vector<PersonEntry> entries;
@@ -3334,6 +3353,45 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       ? std::hypot(entry.x, entry.y)
       : (1e6 - static_cast<double>(bbox.area()));
     entry.dist = entry.range_m;
+
+    // Deteksi postur duduk awal jika keypoint 3D tersedia
+    bool is_seated = false;
+    if (body.keypoint.size() >= 25) {
+      const auto & k3 = body.keypoint;
+      auto valid3d = [](const sl::float3 & p) {
+        return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+      };
+      auto leg_bent = [&](int hip_i, int knee_i, int ankle_i) {
+        const auto & hip = k3[hip_i];
+        const auto & knee = k3[knee_i];
+        const auto & ankle = k3[ankle_i];
+        if (!valid3d(hip) || !valid3d(knee) || !valid3d(ankle)) return false;
+        const float thigh_dz = hip.z - knee.z;
+        const float shin_dz = knee.z - ankle.z;
+        const float thigh_horiz = std::hypot(knee.x - hip.x, knee.y - hip.y);
+        const float ux = hip.x - knee.x, uy = hip.y - knee.y, uz = hip.z - knee.z;
+        const float vx = ankle.x - knee.x, vy = ankle.y - knee.y, vz = ankle.z - knee.z;
+        const float un = std::sqrt(ux * ux + uy * uy + uz * uz);
+        const float vn = std::sqrt(vx * vx + vy * vy + vz * vz);
+        if (un < 1e-3f || vn < 1e-3f) return false;
+        const float cos_knee = (ux * vx + uy * vy + uz * vz) / (un * vn);
+        return (thigh_dz < 28.0f && shin_dz > 15.0f &&
+                thigh_horiz > thigh_dz * 0.85f && cos_knee > -0.68f);
+      };
+      if (leg_bent(18, 19, 20) || leg_bent(22, 23, 24)) {
+        is_seated = true;
+      }
+    }
+    entry.is_sitting = is_seated;
+
+    const double max_allowed = is_seated ? person_seated_max_dist_ : person_max_dist_;
+    if (entry.has_depth && entry.range_m > max_allowed) {
+      continue;
+    }
+    if (!entry.has_depth && (bbox.height < 150 || bbox.area() < 8000)) {
+      continue;
+    }
+
     entries.push_back(entry);
   }
 
@@ -3825,11 +3883,14 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         if (!has_continuity) {
           const bool attr_matches = (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
                                      prof.clothing_color == entry_feats[i].shirt_color);
-          const float req_claim_th = attr_matches
+          float req_claim_th = attr_matches
             ? th
             : (registered_persons_.size() <= 1
                 ? th
                 : (is_host_prof && entries[i].range_m >= 1.3 ? std::max(th, 0.38f) : effective_claim_th));
+          if (entries[i].is_sitting) {
+            req_claim_th = std::max(th - 0.05f, req_claim_th - 0.05f);
+          }
           if (f_sim < req_claim_th) {
             veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
             RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
@@ -3837,7 +3898,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
               prof.name.c_str(), f_sim, req_claim_th);
           } else if (other_best >= th) {
             // Longgarkan margin ambiguitas untuk orang yang duduk/jarak jauh agar tidak drop ke 'Guest'
-            const float req_margin = attr_matches ? 0.01f : (entries[i].range_m >= 1.4 ? 0.02f : 0.08f);
+            const float req_margin = attr_matches ? 0.01f : ((entries[i].is_sitting || entries[i].range_m >= 1.4) ? 0.02f : 0.08f);
             if (face_margin < req_margin) {
               veto = true; // Wajah ambigu antara dua profil -> jangan tebak nama baru
             }
@@ -3971,8 +4032,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       const float margin = f_sim - other_best;
       raw_strong_face[assigned_entry] = (has_face_match && f_sim >= strong_th && margin >= 0.07f);
 
-      const float eff_claim = (registered_persons_.size() <= 1) ? th : claim_th;
-      const bool face_confirmed = (has_face_match && f_sim >= eff_claim && margin >= 0.05f);
+      const float eff_claim = (registered_persons_.size() <= 1)
+        ? th
+        : (entries[assigned_entry].is_sitting ? std::max(th, claim_th - 0.05f) : claim_th);
+      const float eff_margin = entries[assigned_entry].is_sitting ? 0.03f : 0.05f;
+      const bool face_confirmed = (has_face_match && f_sim >= eff_claim && margin >= eff_margin);
       const bool fallback_no_face = (prof.feature.empty() && score_matrix[assigned_entry][j] >= 0.75f);
       if (face_confirmed || fallback_no_face) {
         prof.last_tracking_id = entries[assigned_entry].id;
@@ -4623,6 +4687,13 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       chair.y = y;
       chair.z = z;
       chair.range_m = std::hypot(x, y);
+      if (chair.range_m > chair_max_dist_) {
+        continue;
+      }
+    } else {
+      if (det.rect.area() < 5000 || det.rect.height < 60) {
+        continue;
+      }
     }
     chairs.push_back(chair);
   }
@@ -4870,7 +4941,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
 
     for (size_t i = 0; i < std::min<size_t>(4, snap_persons.size()); ++i) {
       const auto & p = snap_persons[i];
-      if (p.has_pos && p.range_m > (p.is_sitting ? 3.5 : person_max_dist_)) continue;
+      if (p.has_pos && p.range_m > (p.is_sitting ? person_seated_max_dist_ : person_max_dist_)) continue;
+      if (!p.has_pos && (p.bbox.height < 150 || p.bbox.area() < 8000)) continue;
       cv::Rect r = flipRect(p.bbox);
       r &= cv::Rect(0, 0, W, H);
       if (r.width <= 0 || r.height <= 0) continue;
@@ -4918,6 +4990,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     if (enable_bag_) {
       for (size_t i = 0; i < std::min<size_t>(2, snap_bags.size()); ++i) {
         const auto & b = snap_bags[i];
+        if (b.has_pos && b.range_m > bag_max_dist_) continue;
+        if (!b.has_pos && (b.bbox.height < 45 || b.bbox.area() < 3000)) continue;
         cv::Rect r = flipRect(b.bbox);
         r &= cv::Rect(0, 0, W, H);
         if (r.width <= 0 || r.height <= 0) continue;
@@ -4931,6 +5005,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
 
     for (size_t i = 0; i < std::min<size_t>(6, snap_drinks.size()); ++i) {
       const auto & d = snap_drinks[i];
+      if (d.has_pos && d.range_m > drink_max_dist_) continue;
+      if (!d.has_pos && (d.bbox.height < 40 || d.bbox.area() < 1200)) continue;
       cv::Rect r = flipRect(d.bbox);
       r &= cv::Rect(0, 0, W, H);
       if (r.width <= 0 || r.height <= 0) continue;
@@ -4965,6 +5041,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
 
     for (size_t i = 0; i < std::min<size_t>(4, snap_chairs.size()); ++i) {
       const auto & c = snap_chairs[i];
+      if (c.has_pos && c.range_m > chair_max_dist_) continue;
+      if (!c.has_pos && (c.bbox.height < 60 || c.bbox.area() < 5000)) continue;
       cv::Rect r = flipRect(c.bbox);
       r &= cv::Rect(0, 0, W, H);
       if (r.width <= 0 || r.height <= 0) continue;

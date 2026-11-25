@@ -51,6 +51,7 @@ Makefile
 *.gguf
 *.onnx
 !src/athome_vision/models/*.onnx
+src/athome_vision/models/arcface_w600k_r50.onnx
 *.pth
 *.pt
 *.safetensors

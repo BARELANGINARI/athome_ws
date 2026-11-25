@@ -2617,7 +2617,7 @@ private:
         if (isPersonInFront()) {
           transitionTo(
             ReceptionistState::ALIGN_GUEST,
-            "Guest detected at entrance; aligning heading and adjusting distance to 1.5m");
+            "Guest detected at entrance; aligning heading and adjusting distance to 1.2m");
         } else if (last_wait_prompt_time_.nanoseconds() == 0 ||
                    (now() - last_wait_prompt_time_).seconds() >= wait_guest_prompt_sec_)
         {
@@ -2646,7 +2646,7 @@ private:
           }
           transitionTo(
             ReceptionistState::SCAN_GUEST_ATTRIBUTES,
-            "Stepped back to 1.5m; scanning face, gender, shirt color, and hair color silently");
+            "Position adjusted to 1.2m; scanning face, gender, shirt color, and hair color silently");
         });
         break;
 
@@ -2669,7 +2669,7 @@ private:
         }
         transitionTo(
           ReceptionistState::APPROACH_GUEST,
-          "Face & attributes locked at 1.5m; approaching guest to 0.7m for name");
+          "Face & attributes locked at 1.2m; approaching guest to 0.7m for name");
         break;
 
       case ReceptionistState::APPROACH_GUEST:
