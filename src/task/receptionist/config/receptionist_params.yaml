@@ -24,20 +24,17 @@ receptionist_node:
     chair_topic: "/vision/chair_detections"
     empty_seat_topic: "/vision/empty_seat"
     odom_topic: "/odom"
-    search_chair_ref_yaw: -1.57
-    search_chair_angular_speed: 0.30
-    search_chair_timeout_sec: 40.0
-    search_chair_confirm_frames: 2
     search_chair_sweep_angle_deg: 30.0
-    chair_max_dist: 3.0
+    chair_max_dist: 2.0
     align_chair_p_gain: 1.5
     align_chair_min_speed: 0.12
     align_chair_max_speed: 0.28
     align_chair_tolerance_rad: 0.035
-    camera_width: 672
+    camera_width: 1280
 
-    guest_door_distance: 1.5
-    guest_door_step_back_speed: 0.30
+    guest_door_distance: 1.2
+    guest_door_distance_min: 0.9
+    guest_door_step_back_speed: 0.22
     guest_door_timeout_sec: 15.0
     guest_door_align_tolerance: 0.07
     guest_approach_distance: 0.7
@@ -45,20 +42,17 @@ receptionist_node:
     guest_approach_timeout_sec: 15.0
 
     # Face person settings
-    host_name: "Revaldo"
+    host_name: "Yesaya"
     person_label_topic: "/vision/person_label"
     guest_1_name_topic: "/vision/guest_1_name"
     guest_2_name_topic: "/vision/guest_2_name"
     host_seated_max_dist: 3.0
-    face_person_angular_speed: 0.30
-    face_person_timeout_sec: 25.0
     face_person_p_gain: 1.2
     face_person_min_speed: 0.15
     face_person_max_speed: 0.30
     face_person_tolerance_rad: 0.045
 
     # Relative 90-degree turn settings (/receptionist/left dan /receptionist/right)
-    turn_90_angular_speed: 0.30
     turn_90_min_speed: 0.14
     turn_90_max_speed: 0.55
     turn_90_tolerance_rad: 0.04
@@ -69,13 +63,13 @@ receptionist_manager:
   ros__parameters:
     # Parameter Host & Konfigurasi Task (WAJIB ada di file YAML ini; tidak ada default di C++)
     host:
-      name: "Revaldo"                       # Nama Host yang duduk di living room
+      name: "Yesaya"                       # Nama Host yang duduk di living room
       drink: "Coke"                      # Minuman favorit Host
       interest: "Robotics"               # Hobi/minat utama Host
       gender: "male"                     # Gender Host ("male" / "female")
       shirt_color: "black"               # Warna pakaian Host
       hair_color: "black"                # Warna rambut Host
-    camera_width: 672                    # Lebar resolusi horizontal frame kamera (px)
+    camera_width: 1280                    # Lebar resolusi horizontal frame kamera (px)
     global_timeout_sec: 600.0            # Batas waktu maksimal seluruh task Receptionist (detik)
     dialog_reprompt_sec: 12.0            # Jeda tunggu sebelum mengulang pertanyaan dialog STT (detik)
     wait_guest_prompt_sec: 8.0           # Interval sapaan saat menunggu tamu berdiri di depan pintu (detik)
@@ -86,3 +80,51 @@ receptionist_manager:
     tts_sec_per_word: 0.5                # Estimasi durasi ucapan TTS per kata (detik/kata)
     tts_timeout_margin_sec: 2.0          # Margin tambahan untuk latensi audio TTS (detik)
     nav_retry_cooldown_sec: 2.0          # Jeda sebelum mengulang navigasi yang gagal (detik)
+
+vision:
+  ros__parameters:
+    task: "receptionist"
+    camera_fps: 30.0
+    camera_resolution: "hd720"           # Resolusi ZED untuk Receptionist: hd720 (1280x720) untuk akurasi jarak jauh
+    depth_mode: "performance"
+    publish_yaw: false
+    yaw_360: true
+    depth_minimum_distance: 30.0
+    person_max_dist: 1.5
+    enable_body_tracking: true
+    enable_chair: true
+    chair_model: ""
+    enable_drinks: true
+    botol_model: "models/water.onnx"
+    cracker_model: "models/crackerbox.onnx"
+    soda_model: "models/soda.onnx"
+    pringles_model: "models/pringles.onnx"
+    sugarbox_model: "models/sugarbox.onnx"
+    milk_model: "models/milk.onnx"
+    drink_min_area: 180.0
+    drink_conf: 0.48
+    water_conf: 0.25
+    drink_max_dist: 2.5
+    enable_bag: false
+    enable_yolo: true
+    yolo_model: "models/yolov8n_sim.onnx"
+    yolo_classes: "models/coco_names.txt"
+    yolo_conf: 0.25
+    face_detect_model: "models/face_detection_yunet.onnx"
+    face_detect_conf: 0.40
+    face_model: "models/face_recognition_sface.onnx"
+    face_threshold: 0.363
+    gender_model: "models/genderage.onnx"
+    color_model: "models/color_model.onnx"
+    color_labels: "models/color_names.txt"
+    hair_model: "models/hair_model.onnx"
+    hair_labels: "models/hair_names.txt"
+    debug_window: true
+    mirror: false
+    # Profil Host (hanya foto yang digunakan untuk ekstraksi wajah, atribut lainnya dari YAML ini)
+    host_name: "Yesaya"                 # Nama Host
+    host_photo: "models/host.jpg"        # Foto wajah Host untuk ekstraksi fitur biometrik
+    host_shirt_color: "black"            # Warna baju Host (disamakan dengan receptionist_manager.host.shirt_color)
+    host_gender: ""                      # Kosongkan agar tidak veto jika prediksi gender berbeda
+    host_hair_color: ""                  # Kosongkan agar pencocokan murni dari foto wajah host.jpg & warna baju
+

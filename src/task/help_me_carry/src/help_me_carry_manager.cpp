@@ -169,7 +169,6 @@ public:
     tts_min_timeout_sec_ = requireYamlParameter<double>("tts_min_timeout_sec");
     tts_sec_per_word_ = requireYamlParameter<double>("tts_sec_per_word");
     tts_timeout_margin_sec_ = requireYamlParameter<double>("tts_timeout_margin_sec");
-    follow_prompt_interval_sec_ = requireYamlParameter<double>("follow_prompt_interval_sec");
     lifter_move_wait_sec_ = requireYamlParameter<double>("lifter_move_wait_sec");
     tts_timeout_sec_ = tts_min_timeout_sec_;
 
@@ -209,7 +208,6 @@ private:
   double tts_min_timeout_sec_{0.0};
   double tts_sec_per_word_{0.0};
   double tts_timeout_margin_sec_{0.0};
-  double follow_prompt_interval_sec_{0.0};
   double lifter_move_wait_sec_{0.0};
   // ----------------------------------------------------------------------------
   // Status Variabel Atomic & Waktu
@@ -278,11 +276,6 @@ private:
   bool isOperatorInFront() const
   {
     return operator_seen_.load() && (now() - last_operator_seen_time_).seconds() < 2.5;
-  }
-
-  bool isBagInFront() const
-  {
-    return bag_seen_.load() && (now() - last_bag_seen_time_).seconds() < 2.5;
   }
 
   // ----------------------------------------------------------------------------

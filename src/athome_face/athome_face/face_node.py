@@ -53,9 +53,6 @@ class RobotFaceNode(Node):
             String, "/robot/expression", self._on_expression_received, 10
         )
         self.create_subscription(
-            String, "/hri/event", self._on_hri_event_received, 10
-        )
-        self.create_subscription(
             String, "/hri/tts_say", self._on_tts_say_received, 10
         )
         self.create_subscription(
@@ -138,19 +135,6 @@ class RobotFaceNode(Node):
         expr = msg.data.strip().upper()
         logger.info("[Expression] Received: %s", expr)
         self.broadcast({"type": "EXPRESSION", "expression": expr})
-
-    def _on_hri_event_received(self, msg: String) -> None:
-        evt = msg.data.strip().upper()
-        mapping = {
-            "WAKEWORD_DETECTED": "GREETING",
-            "FOLLOW_COMMAND": "FOLLOWING",
-            "STOP_COMMAND": "IDLE",
-            "ARRIVED_COMMAND": "CURIOUS",
-            "OPERATOR_LOST": "LOST",
-            "OPERATOR_FOUND": "GREETING",
-        }
-        if evt in mapping:
-            self.broadcast({"type": "EXPRESSION", "expression": mapping[evt]})
 
     def _on_tts_say_received(self, msg: String) -> None:
         text = msg.data.strip()

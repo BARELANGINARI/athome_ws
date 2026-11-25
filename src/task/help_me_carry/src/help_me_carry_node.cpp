@@ -221,7 +221,6 @@ public:
     frame_map_ = declare_parameter<std::string>("frame_map", "map");
     frame_base_ = declare_parameter<std::string>("frame_base", "base_link");
     scan_topic_ = declare_parameter<std::string>("scan_topic", "/scan");
-    target_index_ = declare_parameter<int>("target_index", 0);
     bt_xml_ = declare_parameter<std::string>("follow_bt_xml", "");
 
     // Distances & Timeouts
@@ -3960,7 +3959,6 @@ private:
   std::string action_name_;
   std::string frame_map_;
   std::string frame_base_;
-  int target_index_{0};
   double stop_distance_{0.5};
   double start_distance_{0.7};
   double bag_stop_distance_{0.45};
@@ -4015,8 +4013,6 @@ private:
   double current_cmd_vy_{0.0};
   double current_cmd_wz_{0.0};
   double last_seen_sec_{0.0};
-  rclcpp::Time last_goal_pub_time_{0, 0, RCL_ROS_TIME};
-  rclcpp::Time last_nav_fail_time_{0, 0, RCL_ROS_TIME};
 
   std::mutex scan_mutex_;
   sensor_msgs::msg::LaserScan::SharedPtr latest_scan_;

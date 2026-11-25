@@ -88,6 +88,18 @@ install(TARGETS vision record
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
+set(ARCFACE_MODEL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/models/arcface_w600k_r50.onnx")
+if(NOT EXISTS "${ARCFACE_MODEL_PATH}")
+  message(STATUS "ArcFace model not found at ${ARCFACE_MODEL_PATH}, running install_arcface_model.sh...")
+  execute_process(
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/install_arcface_model.sh"
+    RESULT_VARIABLE _arcface_res
+  )
+  if(NOT _arcface_res EQUAL 0)
+    message(WARNING "Failed to auto-install ArcFace model. Run src/athome_vision/scripts/install_arcface_model.sh manually.")
+  endif()
+endif()
+
 install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(DIRECTORY models/ DESTINATION share/${PROJECT_NAME}/models)

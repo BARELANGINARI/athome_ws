@@ -188,26 +188,6 @@ public:
     updateZED(zx, zy, r_var_);
   }
 
-  // Mahalanobis distance untuk spatial gating EKF
-  double mahalanobis_distance(double mx, double my, double r_cov = 0.0625) const
-  {
-    if (!is_initialized_) return 999.0;
-    const double yx = mx - x_;
-    const double yy = my - y_;
-    const double s00 = p_[0][0] + r_cov;
-    const double s01 = p_[0][1];
-    const double s10 = p_[1][0];
-    const double s11 = p_[1][1] + r_cov;
-    double det = s00 * s11 - s01 * s10;
-    if (std::abs(det) < 1e-6) det = 1e-6;
-    const double inv_s00 = s11 / det;
-    const double inv_s01 = -s01 / det;
-    const double inv_s10 = -s10 / det;
-    const double inv_s11 = s00 / det;
-    const double d2 = yx * (inv_s00 * yx + inv_s01 * yy) + yy * (inv_s10 * yx + inv_s11 * yy);
-    return std::sqrt(std::max(0.0, d2));
-  }
-
   double get_gate_radius(double min_gate = 0.9, double max_gate = 2.2) const
   {
     if (!is_initialized_) {
@@ -225,11 +205,6 @@ public:
   bool is_initialized() const { return is_initialized_; }
   double x() const { return x_; }
   double y() const { return y_; }
-  double vx() const { return vx_; }
-  double vy() const { return vy_; }
-  double speed() const { return std::hypot(vx_, vy_); }
-  SensorSource last_source() const { return last_source_; }
-  int lidar_updates_in_row() const { return lidar_updates_in_row_; }
 
 private:
   bool is_initialized_{false};

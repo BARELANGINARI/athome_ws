@@ -35,9 +35,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', [f for f in glob('launch/*.launch.py') if os.path.isfile(f)]),
         ('share/' + package_name + '/config', [f for f in glob('config/*') if os.path.isfile(f)]),
-        ('share/' + package_name + '/src', [f for f in glob('src/*') if os.path.isfile(f)]),
         ('share/' + package_name + '/model', [f for f in glob('model/*') if os.path.isfile(f)]),
     ],
     install_requires=['setuptools'],
@@ -48,10 +46,9 @@ setup(
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            'help_me_carry_hri = athome_hri.help_me_carry_hri:main_entry',
-            'barelang_hri = athome_hri.help_me_carry_hri:main_entry',
             'stt_engine_node = athome_hri.stt_engine_node:main',
             'tts_engine_node = athome_hri.tts_engine_node:main',
+            'hri_logger_node = athome_hri.hri_logger_node:main',
         ],
     },
 )

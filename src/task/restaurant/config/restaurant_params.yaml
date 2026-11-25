@@ -87,4 +87,4 @@ restaurant_manager:
     tts_timeout_margin_sec: 2.0          # Margin latensi sintesis dan output audio TTS (detik)
     nav_retry_cooldown_sec: 2.0          # Waktu tunggu jeda sebelum mengulang navigasi yang gagal (detik)
     tray_wait_sec: 5.0                  # Lama jeda diam menunggu barman menaruh order ke tray sebelum bertanya konfirmasi (detik)
-    tts_post_delay_sec: 2.0              # Jeda setelah TTS selesai berbicara sebelum callback/state berikutnya berjalan (detik)
+    tts_post_delay_sec: 0.25             # Jeda setelah TTS selesai berbicara sebelum callback/state berikutnya berjalan (detik)

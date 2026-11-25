@@ -104,22 +104,20 @@ public:
     declare_parameter<std::string>("guest_1_name_topic", "/vision/guest_1_name");
     declare_parameter<std::string>("guest_2_name_topic", "/vision/guest_2_name");
     declare_parameter<double>("host_seated_max_dist", 3.0);
-    declare_parameter<double>("guest_door_distance", 1.5);
-    declare_parameter<double>("guest_door_step_back_speed", 0.16);
+    declare_parameter<double>("guest_door_distance", 1.2);
+    declare_parameter<double>("guest_door_distance_min", 0.9);
+    declare_parameter<double>("guest_door_step_back_speed", 0.18);
     declare_parameter<double>("guest_door_timeout_sec", 15.0);
     declare_parameter<double>("guest_approach_distance", 0.7);
     declare_parameter<double>("guest_approach_speed", 0.16);
     declare_parameter<double>("guest_approach_timeout_sec", 15.0);
     declare_parameter<double>("guest_door_align_tolerance", 0.07);
-    declare_parameter<double>("face_person_angular_speed", 0.30);
-    declare_parameter<double>("face_person_timeout_sec", 25.0);
     declare_parameter<double>("face_person_p_gain", 1.2);
     declare_parameter<double>("face_person_min_speed", 0.14);
     declare_parameter<double>("face_person_max_speed", 0.30);
     declare_parameter<double>("face_person_tolerance_rad", 0.07);
 
     // Relative 90-degree turn parameters (/receptionist/left & /receptionist/right)
-    declare_parameter<double>("turn_90_angular_speed", 0.30);
     declare_parameter<double>("turn_90_min_speed", 0.14);
     declare_parameter<double>("turn_90_max_speed", 0.35);
     declare_parameter<double>("turn_90_tolerance_rad", 0.04);
@@ -131,10 +129,6 @@ public:
     declare_parameter<std::string>("chair_topic", "/vision/chair_detections");
     declare_parameter<std::string>("empty_seat_topic", "/vision/empty_seat");
     declare_parameter<std::string>("odom_topic", "/odom");
-    declare_parameter<double>("search_chair_ref_yaw", -1.57);
-    declare_parameter<double>("search_chair_angular_speed", 0.30);
-    declare_parameter<double>("search_chair_timeout_sec", 40.0);
-    declare_parameter<int>("search_chair_confirm_frames", 2);
     declare_parameter<double>("search_chair_sweep_angle_deg", 30.0);
     declare_parameter<double>("chair_max_dist", 3.0);
     declare_parameter<double>("align_chair_p_gain", 1.5);
@@ -154,20 +148,18 @@ public:
     guest_2_name_topic_ = get_parameter("guest_2_name_topic").as_string();
     host_seated_max_dist_ = get_parameter("host_seated_max_dist").as_double();
     guest_door_distance_ = get_parameter("guest_door_distance").as_double();
+    guest_door_distance_min_ = get_parameter("guest_door_distance_min").as_double();
     guest_door_step_back_speed_ = get_parameter("guest_door_step_back_speed").as_double();
     guest_door_timeout_sec_ = get_parameter("guest_door_timeout_sec").as_double();
     guest_approach_distance_ = get_parameter("guest_approach_distance").as_double();
     guest_approach_speed_ = get_parameter("guest_approach_speed").as_double();
     guest_approach_timeout_sec_ = get_parameter("guest_approach_timeout_sec").as_double();
     guest_door_align_tolerance_ = get_parameter("guest_door_align_tolerance").as_double();
-    face_person_angular_speed_ = get_parameter("face_person_angular_speed").as_double();
-    face_person_timeout_sec_ = get_parameter("face_person_timeout_sec").as_double();
     face_person_p_gain_ = get_parameter("face_person_p_gain").as_double();
     face_person_min_speed_ = get_parameter("face_person_min_speed").as_double();
     face_person_max_speed_ = get_parameter("face_person_max_speed").as_double();
     face_person_tolerance_rad_ = get_parameter("face_person_tolerance_rad").as_double();
 
-    turn_90_angular_speed_ = get_parameter("turn_90_angular_speed").as_double();
     turn_90_min_speed_ = get_parameter("turn_90_min_speed").as_double();
     turn_90_max_speed_ = get_parameter("turn_90_max_speed").as_double();
     turn_90_tolerance_rad_ = get_parameter("turn_90_tolerance_rad").as_double();
@@ -178,10 +170,6 @@ public:
     chair_topic_ = get_parameter("chair_topic").as_string();
     empty_seat_topic_ = get_parameter("empty_seat_topic").as_string();
     odom_topic_ = get_parameter("odom_topic").as_string();
-    search_chair_ref_yaw_ = get_parameter("search_chair_ref_yaw").as_double();
-    search_chair_angular_speed_ = get_parameter("search_chair_angular_speed").as_double();
-    search_chair_timeout_sec_ = get_parameter("search_chair_timeout_sec").as_double();
-    search_chair_confirm_frames_ = get_parameter("search_chair_confirm_frames").as_int();
     search_chair_sweep_angle_deg_ = get_parameter("search_chair_sweep_angle_deg").as_double();
     chair_max_dist_ = get_parameter("chair_max_dist").as_double();
     align_chair_p_gain_ = get_parameter("align_chair_p_gain").as_double();
@@ -1312,7 +1300,7 @@ public:
         }
       }
 
-      if (!best_host.valid) {
+      if (!best_host.valid && (!is_guest2_session || g1_cluster_idx >= 0)) {
         int unnamed_idx = -1;
         int best_unnamed_votes = 0;
         for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
@@ -1329,7 +1317,7 @@ public:
         }
       }
 
-      if (!best_host.valid) {
+      if (!best_host.valid && (!is_guest2_session || g1_cluster_idx >= 0)) {
         int seated_idx = -1;
         int best_seated_votes = 0;
         for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
@@ -2103,7 +2091,7 @@ public:
 
     publishStatus(
       "Service /receptionist/adjust_guest called: Aligning to guest and adjusting distance to " +
-      std::to_string(guest_door_distance_) + "m...");
+      std::to_string(guest_door_distance_min_) + "m-" + std::to_string(guest_door_distance_) + "m...");
 
     auto get_door_guest_target = [this]() -> PersonTarget {
       std::lock_guard<std::mutex> lock(person_mutex_);
@@ -2170,12 +2158,16 @@ public:
       stopRobot();
     }
 
-    // FASE 2: Mundur hingga jaraknya dengan tamu mencapai target (misal 1.5 meter)
-    auto step_back_start = now();
-    int reached_dist_frames = 0;
+    // FASE 2: Penyesuaian Jarak Adaptif Dua Arah (Smart Distance Adjustment)
+    // Target rentang ideal: 0.9m - 1.2m
+    auto adjust_dist_start = now();
+    int in_ideal_range_frames = 0;
+    const double target_max = guest_door_distance_;     // 1.2m
+    const double target_min = guest_door_distance_min_; // 0.9m
+
     while (rclcpp::ok() && is_facing_person_.load()) {
-      if ((now() - step_back_start).seconds() > guest_door_timeout_sec_) {
-        RCLCPP_WARN(get_logger(), "[ADJUST GUEST] Step back timeout reached (%.1fs)", guest_door_timeout_sec_);
+      if ((now() - adjust_dist_start).seconds() > guest_door_timeout_sec_) {
+        RCLCPP_WARN(get_logger(), "[ADJUST GUEST] Distance adjustment timeout (%.1fs)", guest_door_timeout_sec_);
         break;
       }
 
@@ -2184,28 +2176,45 @@ public:
         current_target = t;
       }
 
-      // Periksa apakah jarak saat ini sudah mencapai atau melebihi guest_door_distance_
-      if (current_target.dist >= guest_door_distance_) {
-        reached_dist_frames++;
-        if (reached_dist_frames >= 2) {
-          break; // Jarak sudah terpenuhi (>= 1.5m)
+      const double dist = current_target.dist;
+
+      // Cek apakah sudah berada di rentang ideal (0.9m - 1.2m)
+      if (dist >= target_min && dist <= target_max) {
+        in_ideal_range_frames++;
+        if (in_ideal_range_frames >= 3) {
+          break; // Stabil di zona ideal
         }
       } else {
-        reached_dist_frames = 0;
+        in_ideal_range_frames = 0;
       }
 
-      // Mundur perlahan
       geometry_msgs::msg::Twist twist;
-      twist.linear.x = -std::abs(guest_door_step_back_speed_);
       twist.linear.y = 0.0;
-      // Koreksi sudut halus sambil mundur jika sudut agak miring
-      if (std::abs(current_target.angle_err) > 0.12) {
+
+      if (dist > target_max) {
+        // Tamu berdiri agak jauh (> 1.2m): Robot maju mendekat secara proporsional
+        const double err = dist - target_max;
+        const double p_gain = 0.40;
+        double spd = std::clamp(p_gain * err, 0.10, 0.25);
+        twist.linear.x = spd;
+      } else if (dist < target_min && dist > 0.10) {
+        // Tamu berdiri terlalu dekat (< 0.9m): Robot mundur sedikit secara proporsional
+        const double err = target_min - dist;
+        const double p_gain = 0.35;
+        double spd = std::clamp(p_gain * err, 0.08, std::abs(guest_door_step_back_speed_));
+        twist.linear.x = -spd;
+      } else {
+        twist.linear.x = 0.0;
+      }
+
+      // Koreksi sudut halus sambil bergerak jika sudut agak melenceng
+      if (std::abs(current_target.angle_err) > 0.08) {
         twist.angular.z = (current_target.angle_err >= 0.0) ? 0.12 : -0.12;
       } else {
         twist.angular.z = 0.0;
       }
-      cmd_vel_pub_->publish(twist);
 
+      cmd_vel_pub_->publish(twist);
       loop_rate.sleep();
     }
 
@@ -2213,9 +2222,9 @@ public:
     is_facing_person_ = false;
 
     res->success = true;
-    res->message = "Guest alignment and distance adjustment completed (dist=" +
-                   std::to_string(current_target.dist) + "m, target=" +
-                   std::to_string(guest_door_distance_) + "m)";
+    res->message = "Guest alignment and adaptive distance adjustment completed (dist=" +
+                   std::to_string(current_target.dist) + "m, ideal=" +
+                   std::to_string(target_min) + "m-" + std::to_string(target_max) + "m)";
     publishStatus(res->message);
     RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Align: %s", res->message.c_str());
   }
@@ -2352,7 +2361,12 @@ public:
       }
 
       geometry_msgs::msg::Twist twist;
-      twist.linear.x = std::abs(guest_approach_speed_);
+      const double max_vx = std::abs(guest_approach_speed_);
+      const double min_vx = std::min(0.10, max_vx);
+      const double slow_zone = 0.50;
+      const double dist_remaining = std::max(0.0, current_target.dist - guest_approach_distance_);
+      const double ratio = std::clamp(dist_remaining / slow_zone, 0.0, 1.0);
+      twist.linear.x = min_vx + (max_vx - min_vx) * ratio;
       if (std::abs(current_target.angle_err) > 0.10) {
         twist.angular.z = (current_target.angle_err >= 0.0) ? 0.12 : -0.12;
       } else {
@@ -2652,10 +2666,6 @@ private:
   std::string cmd_vel_topic_{"cmd_vel"};
   std::string chair_topic_{"/vision/chair_detections"};
   std::string empty_seat_topic_{"/vision/empty_seat"};
-  double search_chair_ref_yaw_{-1.57};
-  double search_chair_angular_speed_{0.30};
-  double search_chair_timeout_sec_{40.0};
-  int search_chair_confirm_frames_{2};
   double search_chair_sweep_angle_deg_{30.0};
   double chair_max_dist_{3.0};
   double align_chair_p_gain_{1.2};
@@ -2720,15 +2730,14 @@ private:
   std::string guest_1_name_topic_{"/vision/guest_1_name"};
   std::string guest_2_name_topic_{"/vision/guest_2_name"};
   double host_seated_max_dist_{3.0};
-  double guest_door_distance_{1.5};
-  double guest_door_step_back_speed_{0.16};
+  double guest_door_distance_{1.2};
+  double guest_door_distance_min_{0.9};
+  double guest_door_step_back_speed_{0.18};
   double guest_door_timeout_sec_{15.0};
   double guest_approach_distance_{0.7};
   double guest_approach_speed_{0.16};
   double guest_approach_timeout_sec_{15.0};
   double guest_door_align_tolerance_{0.07};
-  double face_person_angular_speed_{0.30};
-  double face_person_timeout_sec_{25.0};
   double face_person_p_gain_{1.2};
   double face_person_min_speed_{0.14};
   double face_person_max_speed_{0.30};
@@ -2760,7 +2769,6 @@ private:
 
   // 90-degree relative turn (/receptionist/left dan /receptionist/right)
   std::atomic<bool> is_turning_{false};
-  double turn_90_angular_speed_{0.30};
   double turn_90_min_speed_{0.14};
   double turn_90_max_speed_{0.35};
   double turn_90_tolerance_rad_{0.04};

@@ -2,6 +2,7 @@ vision:
   ros__parameters:
     task: "all"
     camera_fps: 30.0
+    camera_resolution: "vga"
     depth_mode: "performance"
     publish_yaw: true
     yaw_360: true
@@ -26,8 +27,8 @@ vision:
     color_labels: "models/color_names.txt"
     hair_model: "models/hair_model.onnx"
     hair_labels: "models/hair_names.txt"
-    face_model: "models/face_recognition_sface.onnx"
-    face_threshold: 0.363
+    face_model: "models/arcface_w600k_r50.onnx"
+    face_threshold: 0.40
     botol_model: "models/water.onnx"
     soda_model: "models/soda.onnx"
     cracker_model: "models/crackerbox.onnx"
@@ -37,17 +38,21 @@ vision:
     drink_min_area: 180.0
     drink_conf: 0.48
     water_conf: 0.25
-    drink_max_dist: 2.5
     enable_drinks: true
     chair_model: ""
     enable_chair: true
     enable_bag: true
-    host_name: "Alex"
+    host_name: "Revaldo"
     host_photo: "models/host.jpg"
     host_shirt_color: "black"
     host_gender: "male"
     host_hair_color: "black"
     enable_back_detection: true
     person_back_topic: "/vision/person_back"
-    person_max_dist: 1.5
+
+    # Distance limits (meters) - Objects beyond these ranges will not be detected/bboxed
+    person_max_dist: 2.0
+    person_seated_max_dist: 3.0
+    chair_max_dist: 2.0
     bag_max_dist: 2.0
+    drink_max_dist: 2.5

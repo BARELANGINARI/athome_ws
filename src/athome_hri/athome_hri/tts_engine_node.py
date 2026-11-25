@@ -90,16 +90,21 @@ class TtsEngineNode(Node):
             self._executor.submit(self._speak, text)
 
     def _speak(self, text: str) -> None:
-        wav_base64 = self._tts.synthesize_wav_base64(text)
-        if self._play_locally and wav_base64:
-            AudioSpeechQueue._play_wav_locally(
-                wav_base64, device_index=self._speaker_device_index
+        try:
+            wav_base64 = self._tts.synthesize_wav_base64(text)
+            if self._play_locally and wav_base64:
+                AudioSpeechQueue._play_wav_locally(
+                    wav_base64, device_index=self._speaker_device_index
+                )
+            self.get_logger().info(f"{self.task_header}\n  TTS: \"{text}\"")
+        except Exception as exc:
+            self.get_logger().error(
+                f"{self.task_header}\n  TTS playback/synthesis error for \"{text}\": {exc}"
             )
-
-        done = String()
-        done.data = text
-        self.tts_done_pub.publish(done)
-        self.get_logger().info(f"{self.task_header}\n  TTS: \"{text}\"")
+        finally:
+            done = String()
+            done.data = text
+            self.tts_done_pub.publish(done)
 
     def destroy_node(self):
         self._executor.shutdown(wait=True)

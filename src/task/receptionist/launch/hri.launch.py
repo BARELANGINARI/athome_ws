@@ -21,6 +21,20 @@ def generate_launch_description():
         SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
         SetEnvironmentVariable('ATHOME_TASK', 'receptionist'),
         DeclareLaunchArgument(
+            'stt_backend',
+            default_value='cpp',
+            description='STT backend to use: "cpp" (athome_hri_cpp) or "python" (athome_hri).',
+        ),
+        DeclareLaunchArgument(
+            'cpp_params_file',
+            default_value=PathJoinSubstitution([
+                FindPackageShare('athome_hri_cpp'),
+                'config',
+                'params.yaml',
+            ]),
+            description='Path to ROS 2 parameters YAML file for C++ STT node.',
+        ),
+        DeclareLaunchArgument(
             'params_file',
             default_value=PathJoinSubstitution([
                 FindPackageShare('athome_hri'),
@@ -39,8 +53,34 @@ def generate_launch_description():
             default_value='true',
             description='Launch receptionist task manager FSM node.',
         ),
+        DeclareLaunchArgument(
+            'enable_hri_logger',
+            default_value='true',
+            description='Enable automatic HRI conversation logger per trial.',
+        ),
+        DeclareLaunchArgument(
+            'hri_log_dir',
+            default_value='~/athome_hri_logs',
+            description='Directory where per-trial HRI log files are saved.',
+        ),
 
-        # 1. Speech-to-Text (ASR) Node - Faster-Whisper
+        # 1a. Speech-to-Text (ASR) Node - C++ (athome_hri_cpp)
+        Node(
+            package='athome_hri_cpp',
+            executable='stt_engine_node',
+            name='stt_engine',
+            output='screen',
+            emulate_tty=True,
+            parameters=[
+                LaunchConfiguration('cpp_params_file'),
+                {'task': 'receptionist'},
+            ],
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('stt_backend'), "' == 'cpp'"])
+            ),
+        ),
+
+        # 1b. Speech-to-Text (ASR) Node - Python (Faster-Whisper)
         Node(
             package='athome_hri',
             executable='stt_engine_node',
@@ -48,6 +88,9 @@ def generate_launch_description():
             output='screen',
             emulate_tty=True,
             parameters=[LaunchConfiguration('params_file')],
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('stt_backend'), "' == 'python'"])
+            ),
         ),
 
         # 2. Text-to-Speech (TTS) Node - Piper ONNX
@@ -70,6 +113,23 @@ def generate_launch_description():
             parameters=[LaunchConfiguration('task_params_file')],
             condition=IfCondition(
                 PythonExpression(["'", LaunchConfiguration('manager_node'), "' == 'true'"])
+            ),
+        ),
+
+        # 4. Per-Trial HRI Conversation Logger
+        Node(
+            package='athome_hri',
+            executable='hri_logger_node',
+            name='hri_logger',
+            output='screen',
+            emulate_tty=True,
+            parameters=[{
+                'task': 'receptionist',
+                'stt_backend': LaunchConfiguration('stt_backend'),
+                'log_dir': LaunchConfiguration('hri_log_dir'),
+            }],
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('enable_hri_logger'), "' == 'true'"])
             ),
         ),
     ])
