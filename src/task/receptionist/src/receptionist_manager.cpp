@@ -1379,15 +1379,12 @@ private:
 
     std::string pronoun = "They";
     std::string verb = "are";
-    std::string has_verb = "have";
     if (gender == "male") {
       pronoun = "He";
       verb = "is";
-      has_verb = "has";
     } else if (gender == "female") {
       pronoun = "She";
       verb = "is";
-      has_verb = "has";
     }
 
     if (shirt.find("shirt") == std::string::npos &&
@@ -1400,7 +1397,12 @@ private:
       hair += " hair";
     }
 
-    return pronoun + " " + verb + " a " + gender + ", wearing a " + shirt + ", and " + has_verb + " " + hair;
+    const std::string gender_phrase = (gender == "person") ? "a person" : gender;
+    const std::string shirt_phrase =
+      (shirt.find("attire") != std::string::npos || shirt.find("clothes") != std::string::npos)
+      ? shirt : ("a " + shirt);
+
+    return pronoun + " " + verb + " " + gender_phrase + ", wearing " + shirt_phrase + ", with " + hair;
   }
 
   // Deteksi orang terdekat di depan robot (dari ZED /zed/person_label)
@@ -2389,7 +2391,7 @@ private:
         {
           return;
         }
-        speakAsync("Now I will go to the door to wait for the guest.", [this]() {
+        speakAsync("I am going to the door.", [this]() {
           navigateTo("entrance_door", [this](bool success) {
             if (!success) {
               return; // Tetap di NAV_TO_DOOR dan retry setelah cooldown
@@ -2412,7 +2414,7 @@ private:
                    (now() - last_wait_prompt_time_).seconds() >= wait_guest_prompt_sec_)
         {
           last_wait_prompt_time_ = now();
-          speakAsync("I am waiting for a guest; please stand in front of me.");
+          speakAsync("Please stand in front of me.");
         }
         break;
 
@@ -2465,7 +2467,7 @@ private:
       case ReceptionistState::APPROACH_GUEST:
         approachGuest([this](bool /*success*/, const std::string & /*msg*/) {
           speakAsync(
-            "Hello!. I am Barelang Inari from Politeknik Negeri Batam; I am your robot receptionist.",
+            "Hello, I am Barelang Inari, your receptionist.",
             [this]() {
               transitionTo(ReceptionistState::ASK_NAME, "Approached guest to 0.7m and greeted");
             });
@@ -2473,7 +2475,7 @@ private:
         break;
 
       case ReceptionistState::ASK_NAME:
-        speakAsync("May I please have your name?", [this]() {
+        speakAsync("What is your name? Please answer with: my name is, then your name.", [this]() {
           transitionTo(ReceptionistState::WAIT_NAME, "Waiting for guest name");
         });
         break;
@@ -2528,11 +2530,11 @@ private:
               "\033[1;33m[DIALOG NAME]\033[0m Unrecognized input \"%s\", asking again.",
               raw.c_str());
             state_enter_time_ = now();
-            speakAsync("I am sorry, I did not catch your name. May I please have your name?");
+            speakAsync("Sorry, please say: my name is, then your name.");
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
-          speakAsync("May I please have your name?");
+          speakAsync("What is your name? Please answer with: my name is, then your name.");
         }
         break;
 
@@ -2543,8 +2545,8 @@ private:
           g_name = current_guest_.name;
         }
         speakAsync(
-          "Nice to meet you " + g_name +
-          ". What is your main interest or hobby?",
+          "Nice to meet you, " + g_name +
+          ". What is your interest? Please answer with: my interest is, then your interest.",
           [this]() {
             transitionTo(ReceptionistState::WAIT_INTEREST, "Waiting for guest interest");
           });
@@ -2582,11 +2584,11 @@ private:
               "\033[1;33m[DIALOG INTEREST]\033[0m Unrecognized input \"%s\", asking again.",
               raw.c_str());
             state_enter_time_ = now();
-            speakAsync("I am sorry. What is your interesting or hobby?");
+            speakAsync("Sorry, please say: my interest is, then your interest.");
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
-          speakAsync("Could you please tell me your interesting or hobby?");
+          speakAsync("Sorry, please say: my interest is, then your interest.");
         }
         break;
 
@@ -2598,8 +2600,8 @@ private:
           g_interest = current_guest_.interest;
         }
         const std::string confirm_text =
-          "Hello " + g_name + ", you have an interest in " +
-          g_interest + ". Is that correct? Please say yes robot or no robot";
+          g_name + ", your interest is " +
+          g_interest + ". Is that correct? Please say yes robot, or no robot.";
 
         speakAsync(confirm_text, [this]() {
           transitionTo(ReceptionistState::WAIT_CONFIRM_GUEST_INFO, "Waiting for confirmation (yes/no)");
@@ -2657,7 +2659,7 @@ private:
               person_name_pub_->publish(m);
             }
             publishGuestNames();
-            speakAsync("I am sorry. Let us start over. Can you tell me your name?", [this]() {
+            speakAsync("Sorry, let us try again. Please say: my name is, then your name.", [this]() {
               transitionTo(ReceptionistState::WAIT_NAME, "Restarted name and interest capture");
             });
           } else {
@@ -2666,7 +2668,7 @@ private:
               "\033[1;33m[DIALOG CONFIRM]\033[0m Heard: \"%s\" | Decision: \033[1;33mUNRECOGNIZED\033[0m (reprompting yes/no)",
               raw.c_str());
             state_enter_time_ = now();
-            speakAsync("Please say yes robot if it is, or no robot if it is not.");
+            speakAsync("Please say yes robot, or no robot.");
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           RCLCPP_INFO(
@@ -2703,7 +2705,7 @@ private:
           return;
         }
 
-        speakAsync("We've already arrived in Beverage Area, please stand on my left side.", [this](){
+        speakAsync("This is the beverage area. Please stand on my left.", [this](){
           // Freeze table drink detections BEFORE rotating left toward the guest
           const size_t drink_count = snapshotBeveragesOnTable();
           std::string table_status;
@@ -2717,7 +2719,7 @@ private:
           // Announce table drinks, rotate left to face the standing guest, then ask favorite drink
           speakAsync(table_status, [this]() {
             rotateLeft([this](bool /*ok*/, const std::string & /*msg*/) {
-              speakAsync("please tell me, what is your favorite drink?", [this]() {
+              speakAsync("What is your favorite drink? Please answer with: my favorite drink is, then the drink.", [this]() {
                 transitionTo(ReceptionistState::WAIT_DRINK, "Rotated left and asked for favorite drink");
               });
             });
@@ -2767,11 +2769,11 @@ private:
               "\033[1;33m[DIALOG DRINK]\033[0m Unrecognized input \"%s\", asking again.",
               raw.c_str());
             state_enter_time_ = now();
-            speakAsync("I am sorry, I did not catch that. What is your favorite drink?");
+            speakAsync("Sorry, please say: my favorite drink is, then the drink.");
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
-          speakAsync("I am sorry, What is your favorite drink?");
+          speakAsync("Sorry, please say: my favorite drink is, then the drink.");
         }
         break;
 
@@ -2786,12 +2788,12 @@ private:
           bool found_match = false;
           const std::string side = locateBeverageSide(fav_drink, found_match);
           if (found_match) {
-            report = "Your favorite drink is located on the " + side + " side.";
+            report = "Your " + fav_drink + " is on the " + side + " of the table.";
           } else {
-            report = "The drink you like is not available on this table.";
+            report = "Sorry, " + fav_drink + " is not available on the table.";
           }
         } else {
-          report = "The drink you like is not available here.";
+          report = "Sorry, " + fav_drink + " is not available on the table.";
         }
 
         speakAsync(report, [this]() {
@@ -2810,17 +2812,15 @@ private:
           return;
         }
 
-        std::string escort_msg =
-          "We are moving to the living room; please follow me slowly from behind.";
+        std::string escort_msg = "Please follow me to the living room.";
 
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
           if (guest_idx_ == 1) {
-            escort_msg += " A guest is waiting in the living room.";
+            escort_msg += " A guest is waiting there.";
           } else if (guest_idx_ == 2 && !guests_.empty()) {
             escort_msg +=
-              " The first guest, " + guests_[0].name +
-              ", is in the living room. " +
+              " The first guest is " + guests_[0].name + ". " +
               formatPersonDescription(guests_[0]) + ".";
           }
         }
@@ -2930,9 +2930,8 @@ private:
           }
 
           const std::string text =
-            guest1.name + ", I would like to introduce " + guest2.name + ". " +
-            formatPersonDescription(guest2) + ". " +
-            "Their favorite drink is " + guest2.drink +
+            guest1.name + ", this is " + guest2.name + ". " +
+            guest2.name + "'s favorite drink is " + guest2.drink +
             ", and their interest is " + guest2.interest + ".";
 
           speakAsync(text, [this]() {
@@ -2958,8 +2957,7 @@ private:
 
         const std::string text =
           guest2.name + ", this is " + guest1.name + ". " +
-          formatPersonDescription(guest1) + ". " +
-          "Their favorite drink is " + guest1.drink +
+          guest1.name + "'s favorite drink is " + guest1.drink +
           ", and their interest is " + guest1.interest + ".";
 
         speakAsync(text, [this]() {
@@ -2988,9 +2986,9 @@ private:
 
         if (!h_int.empty() && h_int == g1_int && g1_int == g2_int) {
           similarity_speech =
-            "Interestingly, " + all_people[0].name + ", " + all_people[1].name + ", and " +
-            all_people[2].name + " all share the same interest in " +
-            all_people[1].interest + "!";
+            all_people[0].name + ", " + all_people[1].name + ", and " +
+            all_people[2].name + " share the same interest: " +
+            all_people[1].interest + ".";
         } else {
           for (size_t i = 0; i < all_people.size(); ++i) {
             for (size_t j = i + 1; j < all_people.size(); ++j) {
@@ -2998,9 +2996,9 @@ private:
               const std::string int_j = normalize(all_people[j].interest);
               if (!int_i.empty() && int_i == int_j) {
                 similarity_speech =
-                  "Interestingly, both " + all_people[i].name + " and " +
-                  all_people[j].name + " share the same interest in " +
-                  all_people[i].interest + "!";
+                  all_people[i].name + " and " +
+                  all_people[j].name + " share the same interest: " +
+                  all_people[i].interest + ".";
                 break;
               }
             }
@@ -3085,7 +3083,7 @@ private:
 
         pointToSeatWithArm([this](bool /*success*/) {
           speakAsync(
-            "please take a seat in the empty chair on the side that I am indicating.",
+            "Please sit on the seat I am pointing at.",
             [this]() {
               // Setelah selesai menunjuk dan menawarkan kursi, matikan daya lengan (mode free)
               freeArm([this](bool /*ok*/) {
@@ -3143,8 +3141,8 @@ private:
       // STATE 6: PENYELESAIAN TUGAS RECEPTIONIST
       // ------------------------------------------------------------------------
       case ReceptionistState::FINISH_TASK:
-        speakAsync("The second guest is now seated in the provided spot.", [this]() {
-          speakAsync("Receptionist task complete.", [this]() {
+        speakAsync("All guests are seated.", [this]() {
+          speakAsync("Task complete.", [this]() {
             publishTaskStatus("SUCCESS: Receptionist task complete.");
             RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Status: Task completed successfully");
             transitionTo(ReceptionistState::COMPLETED, "Receptionist task complete");
