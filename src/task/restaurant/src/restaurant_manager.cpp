@@ -468,8 +468,11 @@ private:
   rclcpp::Time tts_started_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_nav_fail_time_{0, 0, RCL_ROS_TIME};
 
-  std::mutex tts_mutex_;
+  mutable std::mutex tts_mutex_;
   double tts_timeout_sec_{4.0};
+  std::string active_tts_text_;
+  std::string last_tts_text_norm_;
+  rclcpp::Time last_tts_done_time_{0, 0, RCL_ROS_TIME};
   std::function<void()> pending_tts_done_;
   std::atomic<bool> tts_post_delay_active_{false};
   rclcpp::Time tts_post_delay_until_{0, 0, RCL_ROS_TIME};
@@ -1020,8 +1023,10 @@ private:
       tts_started_time_ = now();
       tts_timeout_sec_ = estimateTtsTimeout(text);
       tts_cooldown_until_ = now() + rclcpp::Duration::from_seconds(0.5);
+      active_tts_text_ = text;
       pending_tts_done_ = std::move(on_done);
     }
+    has_new_utterance_ = false;
 
     std_msgs::msg::String message;
     message.data = text;
@@ -1030,7 +1035,7 @@ private:
     RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  TTS: \"%s\"", text.c_str());
   }
 
-  void onTtsDone(const std_msgs::msg::String::SharedPtr = nullptr)
+  void onTtsDone(const std_msgs::msg::String::SharedPtr msg = nullptr)
   {
     std::function<void()> callback;
     bool deferred = false;
@@ -1041,7 +1046,14 @@ private:
       }
       speaking_ = false;
       const auto current_now = now();
-      const auto min_cooldown_until = current_now + rclcpp::Duration::from_seconds(0.4);
+      const std::string completed =
+        (msg != nullptr && !msg->data.empty()) ? msg->data : active_tts_text_;
+      if (!completed.empty()) {
+        last_tts_text_norm_ = normalize(completed);
+      }
+      last_tts_done_time_ = current_now;
+      active_tts_text_.clear();
+      const auto min_cooldown_until = current_now + rclcpp::Duration::from_seconds(0.25);
       if (tts_post_delay_sec_ > 0.0) {
         tts_post_delay_active_ = true;
         tts_post_delay_until_ = current_now + rclcpp::Duration::from_seconds(tts_post_delay_sec_);
@@ -1076,9 +1088,25 @@ private:
     in_callback_ = false;
   }
 
+  bool isDialogWaitState(RestaurantState s) const
+  {
+    return s == RestaurantState::WAIT_CUSTOMER_NAME ||
+           s == RestaurantState::WAIT_CUSTOMER_ORDER ||
+           s == RestaurantState::WAIT_ORDER_CONFIRMATION ||
+           s == RestaurantState::WAIT_TRAY_CONFIRMATION;
+  }
+
   bool canListen() const
   {
-    return !isBusy() && !tts_post_delay_active_.load() && now() >= tts_cooldown_until_;
+    if (isBusy() || tts_post_delay_active_.load()) {
+      return false;
+    }
+    rclcpp::Time cooldown_until(0, 0, RCL_ROS_TIME);
+    {
+      std::lock_guard<std::mutex> lock(tts_mutex_);
+      cooldown_until = tts_cooldown_until_;
+    }
+    return now() >= cooldown_until;
   }
 
   static std::string normalize(const std::string & text)
@@ -1131,18 +1159,135 @@ private:
     return s.substr(first, last - first + 1);
   }
 
+  static std::vector<std::string> splitWords(const std::string & norm)
+  {
+    std::vector<std::string> words;
+    std::stringstream ss(norm);
+    std::string w;
+    while (ss >> w) {
+      words.push_back(w);
+    }
+    return words;
+  }
+
+  static bool isNameStopWord(const std::string & w)
+  {
+    static const std::vector<std::string> kStopWords = {
+      "my", "name", "is", "am", "im", "are", "you", "can", "call", "me",
+      "this", "that", "the", "hello", "hi", "hey", "welcome", "to", "bar",
+      "please", "tell", "your", "yes", "no", "robot", "thanks", "thank",
+      "sorry", "okay", "ok", "what", "pardon", "uh", "um", "er", "ah", "oh",
+      "hmm", "huh", "actually", "well", "so", "s", "m", "and", "or", "correct"
+    };
+    return std::find(kStopWords.begin(), kStopWords.end(), w) != kStopWords.end();
+  }
+
+  static bool isLikelyNoiseOrPromptEcho(const std::string & norm)
+  {
+    if (norm.size() < 2) {
+      return true;
+    }
+    const bool all_digits_or_space = std::all_of(norm.begin(), norm.end(), [](unsigned char c) {
+      return std::isdigit(c) || std::isspace(c);
+    });
+    if (all_digits_or_space) {
+      return true;
+    }
+
+    static const std::vector<std::string> kPromptEchoPhrases = {
+      "welcome to the bar", "can you please tell", "tell your name",
+      "may i take your order", "please answer with", "is it correct",
+      "yes robot or no robot", "yes or no", "had take in the tray",
+      "please wave your hand", "i will confirm your order"
+    };
+    for (const auto & p : kPromptEchoPhrases) {
+      if (containsWholePhrase(norm, p)) {
+        return true;
+      }
+    }
+
+    static const std::vector<std::string> kExactNoiseHallucinations = {
+      "hello", "hi", "hey", "okay", "ok", "what", "sorry", "pardon",
+      "excuse me", "thank you", "thank you very much", "thank you so much",
+      "thanks", "thanks for watching", "thanks for listening", "please", "robot",
+      "uh", "um", "er", "ah", "oh", "hmm", "huh", "mm", "mhm",
+      "you", "bye", "music", "applause", "laughter", "silence", "blank audio",
+      "subtitles by", "please subscribe"
+    };
+    for (const auto & item : kExactNoiseHallucinations) {
+      if (norm == item) {
+        return true;
+      }
+    }
+
+    static const std::vector<std::string> kPureFillers = {
+      "uh", "um", "er", "ah", "oh", "hmm", "huh", "mm", "mhm",
+      "okay", "ok", "thanks", "thank", "you", "please", "sorry",
+      "hello", "hi", "hey", "robot"
+    };
+    const std::vector<std::string> words = splitWords(norm);
+    if (words.empty()) {
+      return true;
+    }
+    const bool all_fillers = std::all_of(words.begin(), words.end(), [](const std::string & w) {
+      return std::find(kPureFillers.begin(), kPureFillers.end(), w) != kPureFillers.end();
+    });
+    return all_fillers;
+  }
+
+  bool isTtsEcho(const std::string & norm_text) const
+  {
+    std::string last_norm;
+    rclcpp::Time last_done(0, 0, RCL_ROS_TIME);
+    {
+      std::lock_guard<std::mutex> lock(tts_mutex_);
+      last_norm = last_tts_text_norm_;
+      last_done = last_tts_done_time_;
+    }
+    if (last_norm.empty() || last_done.nanoseconds() == 0 ||
+        (now() - last_done).seconds() > 2.5)
+    {
+      return false;
+    }
+    const RestaurantState st = state_.load();
+    if ((st == RestaurantState::WAIT_ORDER_CONFIRMATION ||
+         st == RestaurantState::WAIT_TRAY_CONFIRMATION) &&
+        parseYesNoIntent(norm_text) != 0 &&
+        !isLikelyNoiseOrPromptEcho(norm_text))
+    {
+      return false;
+    }
+
+    const std::vector<std::string> tokens = splitWords(norm_text);
+    if (tokens.size() < 3) {
+      return false;
+    }
+
+    size_t overlap = 0;
+    bool has_novel_content = false;
+    for (const auto & tok : tokens) {
+      if (containsWholePhrase(last_norm, tok)) {
+        ++overlap;
+      } else if (!isNameStopWord(tok)) {
+        has_novel_content = true;
+      }
+    }
+
+    if (containsWholePhrase(last_norm, norm_text)) {
+      return true;
+    }
+    const double overlap_ratio = static_cast<double>(overlap) / static_cast<double>(tokens.size());
+    return overlap_ratio >= 0.65 && !has_novel_content;
+  }
+
   // Ekstraksi nama pelanggan dari kalimat STT
   static std::string parseCustomerName(const std::string & raw_text)
   {
     const std::string norm = normalize(raw_text);
-    if (norm.empty()) return "";
-
-    static const std::vector<std::string> kIgnoredFillers = {
-      "hello", "hi", "hey", "yes", "no", "okay", "ok", "what", "sorry",
-      "pardon", "excuse me", "thank you", "thanks", "please", "robot"
-    };
-    for (const auto & filler : kIgnoredFillers) {
-      if (norm == filler) return "";
+    if (norm.empty() || isLikelyNoiseOrPromptEcho(norm) ||
+        norm == "yes" || norm == "no" || norm == "yes robot" || norm == "no robot")
+    {
+      return "";
     }
 
     static const std::vector<std::string> kKnownNames = {
@@ -1155,30 +1300,110 @@ private:
       }
     }
 
+    auto stripLeadingFillers = [](std::string s) -> std::string {
+      static const std::vector<std::string> kLeadFillers = {
+        "is ", "a ", "an ", "the ", "uh ", "um ", "er ", "ah ", "oh ",
+        "hmm ", "well ", "so ", "actually "
+      };
+      bool stripped = true;
+      while (stripped) {
+        stripped = false;
+        while (!s.empty() && s.front() == ' ') {
+          s.erase(s.begin());
+        }
+        for (const auto & lf : kLeadFillers) {
+          if (s.rfind(lf, 0) == 0) {
+            s.erase(0, lf.size());
+            stripped = true;
+            break;
+          }
+        }
+      }
+      return s;
+    };
+
+    auto stripTrailingFillers = [](std::string s) -> std::string {
+      static const std::vector<std::string> kTrailFillers = {
+        " please", " robot", " thank you", " thanks",
+        " uh", " um", " okay", " ok", " sorry"
+      };
+      bool stripped = true;
+      while (stripped) {
+        stripped = false;
+        while (!s.empty() && s.back() == ' ') {
+          s.pop_back();
+        }
+        for (const auto & tf : kTrailFillers) {
+          if (s.size() >= tf.size() &&
+              s.compare(s.size() - tf.size(), tf.size(), tf) == 0)
+          {
+            s.erase(s.size() - tf.size());
+            stripped = true;
+            break;
+          }
+        }
+      }
+      while (!s.empty() && s.back() == ' ') {
+        s.pop_back();
+      }
+      return s;
+    };
+
+    auto isValidNameFallback = [&](const std::string & rem) -> bool {
+      if (rem.size() < 2) {
+        return false;
+      }
+      const std::vector<std::string> rem_words = splitWords(rem);
+      if (rem_words.empty() || rem_words.size() > 2) {
+        return false;
+      }
+      const bool all_digits = std::all_of(rem.begin(), rem.end(), [](unsigned char c) {
+        return std::isdigit(c) || std::isspace(c);
+      });
+      if (all_digits) {
+        return false;
+      }
+      return std::any_of(rem_words.begin(), rem_words.end(), [](const std::string & tok) {
+        return !isNameStopWord(tok);
+      });
+    };
+
     static const std::vector<std::string> kPrefixes = {
-      "my name is ", "i am ", "im ", "call me ", "this is ", "name is "
+      "you can call me ", "my name is ", "may name is ", "mai name is ",
+      "my name s ", "mai name s ", "my name ", "name is ", "name s ",
+      "ame is ", "me is ", "call me ", "this is ",
+      "i am ", "iam ", "iyem ", "i m ", "im ", "name ", "is "
     };
     for (const auto & p : kPrefixes) {
-      const auto pos = norm.find(p);
-      if (pos != std::string::npos) {
-        std::string rem = trimString(norm.substr(pos + p.size()));
-        if (!rem.empty()) {
-          std::stringstream ss(rem);
-          std::string w1, w2;
-          ss >> w1 >> w2;
-          return capitalizeWords(w2.empty() ? w1 : (w1 + " " + w2));
+      size_t search_from = 0;
+      while (search_from < norm.size()) {
+        const auto pos = norm.find(p, search_from);
+        if (pos == std::string::npos) {
+          break;
         }
+        if (pos == 0 || norm[pos - 1] == ' ') {
+          std::string rem = stripTrailingFillers(
+            stripLeadingFillers(norm.substr(pos + p.size())));
+          const std::vector<std::string> rem_words = splitWords(rem);
+          if (!rem_words.empty()) {
+            const std::string cand = (rem_words.size() >= 2)
+              ? (rem_words[0] + " " + rem_words[1])
+              : rem_words[0];
+            if (isValidNameFallback(cand)) {
+              return capitalizeWords(cand);
+            }
+          }
+        }
+        search_from = pos + 1;
       }
     }
 
-    std::stringstream ss(norm);
-    std::vector<std::string> words;
-    std::string w;
-    while (ss >> w) {
-      words.push_back(w);
-    }
+    const std::vector<std::string> words = splitWords(norm);
     if (!words.empty() && words.size() <= 2) {
-      return capitalizeWords(norm);
+      std::string rem = stripTrailingFillers(stripLeadingFillers(norm));
+      if (isValidNameFallback(rem)) {
+        return capitalizeWords(rem);
+      }
     }
     return "";
   }
@@ -1296,23 +1521,36 @@ private:
     if (norm.empty()) return 0;
 
     static const std::vector<std::string> kNoPhrases = {
-      "no robot", "no", "nope", "nah", "not correct", "wrong", "false",
+      "no robot", "o robot", "no", "nope", "nah", "not correct", "wrong", "false",
       "incorrect", "negative", "not yet", "wait", "belum", "tidak", "bukan"
     };
     static const std::vector<std::string> kYesPhrases = {
-      "yes robot", "yes", "yeah", "yep", "correct", "right", "sure",
+      "yes robot", "es robot", "yes", "yeah", "yep", "correct", "right", "sure",
       "true", "exactly", "of course", "already", "done", "ya", "benar", "betul", "sudah"
     };
 
+    bool has_no = false;
     for (const auto & phrase : kNoPhrases) {
       if (containsWholePhrase(norm, phrase)) {
-        return -1;
+        has_no = true;
+        break;
       }
     }
+    bool has_yes = false;
     for (const auto & phrase : kYesPhrases) {
       if (containsWholePhrase(norm, phrase)) {
-        return 1;
+        has_yes = true;
+        break;
       }
+    }
+    if (has_no && has_yes) {
+      return 0;
+    }
+    if (has_no) {
+      return -1;
+    }
+    if (has_yes) {
+      return 1;
     }
     return 0;
   }
@@ -1322,12 +1560,33 @@ private:
   // ============================================================================
   void onTranscript(const std_msgs::msg::String::SharedPtr message)
   {
-    if (!canListen() || !message) {
+    if (!message || !isDialogWaitState(state_.load())) {
+      return;
+    }
+    if (!canListen()) {
+      RCLCPP_DEBUG(
+        get_logger(),
+        "[STT] Ignored while busy/post-delay: \"%s\"",
+        message->data.c_str());
       return;
     }
 
     const std::string clean = normalize(message->data);
     if (clean.empty()) {
+      return;
+    }
+    if (isTtsEcho(clean)) {
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[2m[STT IGNORED]\033[0m TTS echo: \"%s\"",
+        message->data.c_str());
+      return;
+    }
+    if (isLikelyNoiseOrPromptEcho(clean)) {
+      RCLCPP_INFO(
+        get_logger(),
+        "\033[2m[STT IGNORED]\033[0m Noise/filler: \"%s\"",
+        message->data.c_str());
       return;
     }
 
@@ -1902,28 +2161,34 @@ private:
           msg.data = def_name;
           person_name_pub_->publish(msg);
         }
-        if (vision_capture_face_client_ && vision_capture_face_client_->service_is_ready()) {
-          callTrigger(
-            vision_capture_face_client_, "/vision/camera_capture_face",
-            [this](bool ok, const std::string & msg) {
-              RCLCPP_INFO(
-                get_logger(),
-                "[VISION] /vision/camera_capture_face on arrival (ok=%s, msg='%s')",
-                ok ? "true" : "false", msg.c_str());
-            },
-            3.0);
-        }
+        auto ask_name = [this]() {
+          speakAsync(
+            "Hello, Welcome to the bar!! Can you please tell your name?",
+            [this]() {
+              transitionTo(
+                RestaurantState::WAIT_CUSTOMER_NAME,
+                "Waiting for customer name response");
+            });
+        };
+
         RCLCPP_INFO(
           get_logger(),
           "\033[1;32m[RESTAURANT]\033[0m Arrived at waving customer location. Capturing customer image...");
 
-        speakAsync(
-          "Hello, Welcome to the bar!! Can you please tell your name?",
-          [this]() {
-            transitionTo(
-              RestaurantState::WAIT_CUSTOMER_NAME,
-              "Waiting for customer name response");
-          });
+        if (vision_capture_face_client_ && vision_capture_face_client_->service_is_ready()) {
+          callTrigger(
+            vision_capture_face_client_, "/vision/camera_capture_face",
+            [this, ask_name](bool ok, const std::string & msg) {
+              RCLCPP_INFO(
+                get_logger(),
+                "[VISION] /vision/camera_capture_face on arrival (ok=%s, msg='%s')",
+                ok ? "true" : "false", msg.c_str());
+              ask_name();
+            },
+            3.0);
+        } else {
+          ask_name();
+        }
         break;
       }
 
