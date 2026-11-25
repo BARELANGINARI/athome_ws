@@ -2104,10 +2104,10 @@ private:
     if (norm.empty()) return 0;
 
     static const std::vector<std::string> kNoPhrases = {
-      "no", "no robot", "o robot", "nope", "not correct", "wrong", "false", "incorrect",
+      "no", "robot no", "bot no","obot no", "no robot", "o robot", "nope", "not correct", "wrong", "false", "incorrect",
     };
     static const std::vector<std::string> kYesPhrases = {
-      "yes", "yes robot", "es robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
+      "yes", , "robot yes", "bot yes", "obot yes", "yes robot", "es robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
     };
 
     bool has_no = false;
@@ -2809,7 +2809,7 @@ private:
         }
         const std::string confirm_text =
           g_name + ", your interest is " +
-          g_interest + ". Is that correct? Please say yes robot, or no robot.";
+          g_interest + ". Is that correct? Please say robot yes, or robot no.";
 
         speakAsync(confirm_text, [this]() {
           transitionTo(ReceptionistState::WAIT_CONFIRM_GUEST_INFO, "Waiting for confirmation (yes/no)");
