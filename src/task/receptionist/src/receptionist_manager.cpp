@@ -466,6 +466,11 @@ private:
     return speaking_.load() || service_busy_.load() || in_callback_depth_.load() > 0;
   }
 
+  static bool isTerminalState(ReceptionistState s)
+  {
+    return s == ReceptionistState::COMPLETED || s == ReceptionistState::ABORTED;
+  }
+
   bool isVisionActive() const
   {
     const ReceptionistState current = state_.load();
@@ -631,10 +636,20 @@ private:
 
   void transitionTo(ReceptionistState next_state, const std::string & reason)
   {
+    const ReceptionistState cur = state_.load();
+    if (isTerminalState(cur)) {
+      RCLCPP_WARN(
+        get_logger(),
+        "\033[1;33m[STATE]\033[0m Ignoring transition %s -> %s (already terminal)",
+        stateToString(cur).c_str(),
+        stateToString(next_state).c_str());
+      return;
+    }
+
     RCLCPP_INFO(
       get_logger(),
       "\033[1;34m[STATE]\033[0m %s -> %s (G%d: %s)",
-      stateToString(state_.load()).c_str(),
+      stateToString(cur).c_str(),
       stateToString(next_state).c_str(),
       guest_idx_,
       reason.c_str());
@@ -1280,6 +1295,9 @@ private:
     }
 
     CallbackExit cb_exit{in_callback_depth_};
+    if (isTerminalState(state_.load())) {
+      return;
+    }
     publishExpression(expressionForState(state_.load()));
     if (callback) {
       callback();
@@ -2166,7 +2184,7 @@ private:
     double timeout_sec = 10.0)
   {
     if (!client) {
-      if (result) {
+      if (result && !isTerminalState(state_.load())) {
         CallbackScope cb_scope(in_callback_depth_);
         result(false, "Client is null");
       }
@@ -2175,10 +2193,14 @@ private:
 
     if (!client->service_is_ready()) {
       RCLCPP_WARN(get_logger(), "Service %s belum tersedia.", service_name.c_str());
-      if (result) {
+      if (result && !isTerminalState(state_.load())) {
         CallbackScope cb_scope(in_callback_depth_);
         result(false, "Service not ready");
       }
+      return;
+    }
+
+    if (isTerminalState(state_.load())) {
       return;
     }
 
@@ -2219,7 +2241,7 @@ private:
           msg = e.what();
         }
 
-        if (cb) cb(ok, msg);
+        if (cb && !isTerminalState(state_.load())) cb(ok, msg);
       });
   }
 
@@ -2243,6 +2265,18 @@ private:
     {
       RCLCPP_ERROR(get_logger(), "Global receptionist task timeout reached.");
       state_ = ReceptionistState::ABORTED;
+      {
+        std::lock_guard<std::mutex> lock(tts_mutex_);
+        speaking_ = false;
+        active_tts_text_.clear();
+        pending_tts_done_ = nullptr;
+      }
+      {
+        std::lock_guard<std::mutex> lock(srv_mutex_);
+        service_busy_ = false;
+        active_srv_name_.clear();
+        pending_srv_result_ = nullptr;
+      }
       publishExpression("LOST");
       return;
     }
@@ -2737,9 +2771,7 @@ private:
         std::string escort_msg = "Please follow me to the living room.";
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
-          if (guest_idx_ == 1) {
-            escort_msg += " A guest is waiting there.";
-          } else if (guest_idx_ == 2 && !guests_.empty()) {
+          if (guest_idx_ == 2 && !guests_.empty()) {
             // Optional Goal 2: deskripsikan Guest 1 ke Guest 2 SEBELUM tiba di living room
             const std::string g1_desc = formatPersonDescription(guests_[0]);
             escort_msg += " The first guest is " + guests_[0].name + ".";
