@@ -2358,12 +2358,13 @@ private:
         {
           return;
         }
-        speakAsync("I am going to the door.", [this]() {
-          navigateTo("entrance_door", [this](bool success) {
-            if (!success) return;
-            transitionTo(ReceptionistState::WAIT_GUEST, "Arrived at entrance_door");
-          });
+        navigateTo("entrance_door", [this](bool success) {
+          if (!success) return;
+          transitionTo(ReceptionistState::WAIT_GUEST, "Arrived at entrance_door");
         });
+        if (service_busy_.load()) {
+          speakAsync("I am going to the door.");
+        }
         break;
 
       case ReceptionistState::WAIT_GUEST:
@@ -2618,12 +2619,13 @@ private:
         {
           return;
         }
-        speakAsync("Please follow me to the beverage area.", [this]() {
-          navigateTo("beverage_area", [this](bool success) {
-            if (!success) return;
-            transitionTo(ReceptionistState::ASK_DRINK, "Arrived at beverage_area");
-          });
+        navigateTo("beverage_area", [this](bool success) {
+          if (!success) return;
+          transitionTo(ReceptionistState::ASK_DRINK, "Arrived at beverage_area");
         });
+        if (service_busy_.load()) {
+          speakAsync("Please follow me to the beverage area.");
+        }
         break;
 
       case ReceptionistState::ASK_DRINK: {
