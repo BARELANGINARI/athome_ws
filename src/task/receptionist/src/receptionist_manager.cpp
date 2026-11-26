@@ -73,6 +73,8 @@ enum class ReceptionistState {
   NAV_TO_BEVERAGE,
   ASK_DRINK,
   WAIT_DRINK,
+  CONFIRM_DRINK,
+  WAIT_CONFIRM_DRINK,
   CHECK_BEVERAGE,
   // Phase 3 & 4 — Living Room: scan room, introduce Host/Guests, check similarity
   NAV_TO_LIVING_ROOM,
@@ -112,6 +114,8 @@ static std::string stateToString(ReceptionistState state)
     case ReceptionistState::NAV_TO_BEVERAGE:         return "NAV_TO_BEVERAGE";
     case ReceptionistState::ASK_DRINK:               return "ASK_DRINK";
     case ReceptionistState::WAIT_DRINK:              return "WAIT_DRINK";
+    case ReceptionistState::CONFIRM_DRINK:           return "CONFIRM DRINK";
+    case ReceptionistState::WAIT_CONFIRM_DRINK:      return "WAIT_CONFIRM_DRINK";
     case ReceptionistState::CHECK_BEVERAGE:          return "CHECK_BEVERAGE";
     case ReceptionistState::NAV_TO_LIVING_ROOM:      return "NAV_TO_LIVING_ROOM";
     case ReceptionistState::SCAN_LIVING_ROOM:        return "SCAN_LIVING_ROOM";
@@ -186,6 +190,7 @@ public:
     camera_width_ = requireYamlParameter<int>("camera_width");
 
     global_timeout_sec_ = requireYamlParameter<double>("global_timeout_sec");
+    nav_service_timeout_sec_ = requireYamlParameter<double>("nav_service_timeout_sec");
     dialog_reprompt_sec_ = requireYamlParameter<double>("dialog_reprompt_sec");
     wait_guest_prompt_sec_ = requireYamlParameter<double>("wait_guest_prompt_sec");
     vision_initial_settle_sec_ = requireYamlParameter<double>("vision_initial_settle_sec");
@@ -196,6 +201,23 @@ public:
     tts_timeout_margin_sec_ = requireYamlParameter<double>("tts_timeout_margin_sec");
     nav_retry_cooldown_sec_ = requireYamlParameter<double>("nav_retry_cooldown_sec");
     tts_timeout_sec_ = tts_min_timeout_sec_;
+
+    auto loadSortNormList = [this](const std::string & param_name) {
+      std::vector<std::string> raw = requireYamlParameter<std::vector<std::string>>(param_name);
+      std::vector<std::string> out;
+      out.reserve(raw.size());
+      for (const auto & item : raw) {
+        const std::string n = normalize(item);
+        if (!n.empty()) out.push_back(n);
+      }
+      std::sort(out.begin(), out.end(), [](const std::string & a, const std::string & b) {
+        return a.size() > b.size();
+      });
+      return out;
+    };
+    known_names_ = loadSortNormList("known_names");
+    known_drinks_ = loadSortNormList("known_drinks");
+    known_interests_ = loadSortNormList("known_interests");
 
     callback_group_ = create_callback_group(
       rclcpp::CallbackGroupType::Reentrant);
@@ -268,6 +290,8 @@ public:
       "/receptionist/host", rclcpp::ServicesQoS(), callback_group_);
     face_guest1_client_ = create_client<Trigger>(
       "/receptionist/guest1", rclcpp::ServicesQoS(), callback_group_);
+    face_guest2_client_ = create_client<Trigger>(
+      "/receptionist/guest2", rclcpp::ServicesQoS(), callback_group_);
     adjust_guest_client_ = create_client<Trigger>(
       "/receptionist/adjust_guest", rclcpp::ServicesQoS(), callback_group_);
     approach_guest_client_ = create_client<Trigger>(
@@ -334,6 +358,7 @@ private:
   // Parameter Waktu & Timeout (Diisi penuh dari YAML saat startup)
   // ----------------------------------------------------------------------------
   double global_timeout_sec_{0.0};
+  double nav_service_timeout_sec_{50.0};
   double dialog_reprompt_sec_{0.0};
   double wait_guest_prompt_sec_{0.0};
   double vision_initial_settle_sec_{0.0};
@@ -360,6 +385,11 @@ private:
   std::vector<PersonProfile> guests_;
   PersonProfile current_guest_;
   int guest_idx_{1};
+  int search_chair_retries_{0};
+  int face_g1_retries_{0};
+  std::vector<std::string> known_names_;
+  std::vector<std::string> known_drinks_;
+  std::vector<std::string> known_interests_;
   ReceptionistState after_return_living_room_state_{ReceptionistState::SEARCH_CHAIR};
   bool return_yaw_only_{false};
   int camera_width_{0};
@@ -439,6 +469,7 @@ private:
   TriggerClient::SharedPtr search_chair_client_;
   TriggerClient::SharedPtr face_host_client_;
   TriggerClient::SharedPtr face_guest1_client_;
+  TriggerClient::SharedPtr face_guest2_client_;
   TriggerClient::SharedPtr adjust_guest_client_;
   TriggerClient::SharedPtr approach_guest_client_;
   TriggerClient::SharedPtr rotate_left_client_;
@@ -522,6 +553,7 @@ private:
       case ReceptionistState::ASK_INTEREST:
       case ReceptionistState::CONFIRM_GUEST_INFO:
       case ReceptionistState::ASK_DRINK:
+      case ReceptionistState::CONFIRM_DRINK:
       case ReceptionistState::FACE_AND_INTRODUCE_HOST:
       case ReceptionistState::INTRODUCE_G1_TO_G2:
       case ReceptionistState::INTRODUCE_G2_TO_G1:
@@ -530,6 +562,7 @@ private:
       case ReceptionistState::WAIT_INTEREST:
       case ReceptionistState::WAIT_CONFIRM_GUEST_INFO:
       case ReceptionistState::WAIT_DRINK:
+      case ReceptionistState::WAIT_CONFIRM_DRINK:
         return "LISTENING";
       case ReceptionistState::EVALUATE_SIMILARITY:
         return "HAPPY";
@@ -584,8 +617,8 @@ private:
     profile = PersonProfile{};
     profile.id = "guest_" + std::to_string(idx);
     profile.gender = "unknown";
-    profile.shirt_color = "casual attire";
-    profile.hair_color = "dark hair";
+    profile.shirt_color = "";
+    profile.hair_color = "";
   }
 
   /// Initializes state, vision caches, and attribute voting histograms for a new guest cycle (1 or 2).
@@ -596,6 +629,8 @@ private:
       guest_idx_ = idx;
       resetGuestProfileFields(current_guest_, idx);
     }
+    search_chair_retries_ = 0;
+    face_g1_retries_ = 0;
 
     if (person_name_pub_) {
       std_msgs::msg::String m;
@@ -713,7 +748,7 @@ private:
           on_finished(success);
         }
       },
-      120.0);
+      nav_service_timeout_sec_);
   }
 
   /// Points toward the empty seat using /arm/point_to_chair, falling back to
@@ -881,6 +916,32 @@ private:
         }
       },
       35.0);
+  }
+
+  // Menyelaraskan arah hadap robot ke Guest 2 via /receptionist/guest2
+  void faceGuest2(std::function<void(bool, const std::string &)> on_finished)
+  {
+    TriggerClient::SharedPtr client = face_guest2_client_;
+    std::string srv_name = "/receptionist/guest2";
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;36m[GUEST 2]\033[0m Calling %s to align facing Guest 2...",
+      srv_name.c_str());
+
+    callTrigger(
+      client, srv_name,
+      [this, srv_name, on_finished](bool success, const std::string & msg) {
+        if (success) {
+          RCLCPP_INFO(get_logger(), "\033[1;32m[GUEST 2]\033[0m Face Guest 2 succeeded: %s", msg.c_str());
+        } else {
+          RCLCPP_WARN(get_logger(), "\033[1;33m[GUEST 2]\033[0m Face Guest 2 warning/failure: %s", msg.c_str());
+        }
+        if (on_finished) {
+          on_finished(success, msg);
+        }
+      },
+      20.0);
   }
 
   // Memindai ruang tamu saat tiba dan mengunci sudut yaw Host / Guest 1 / Kursi Kosong
@@ -1248,17 +1309,17 @@ private:
         return side;
       }
     }
-
-    if (!drinks_list.empty()) {
-      found_match = true;
-      const auto & first = drinks_list.front();
-      const std::string side = sideByIndex(0);
-      RCLCPP_INFO(
-        get_logger(),
-        "\033[1;33m[BEVERAGE]\033[0m Fallback item terdekat '%s' di sisi %s (3D: x=%.2f m, y=%.2f m)",
-        first.name.c_str(), side.c_str(), first.x, first.y);
-      return side;
-    }
+    // menghapus blok fallback yang salah melaporkan minuman tersedia padahal tidak ada di meja
+    // if (!drinks_list.empty()) {
+    //   found_match = true;
+    //   const auto & first = drinks_list.front();
+    //   const std::string side = sideByIndex(0);
+    //   RCLCPP_INFO(
+    //     get_logger(),
+    //     "\033[1;33m[BEVERAGE]\033[0m Fallback item terdekat '%s' di sisi %s (3D: x=%.2f m, y=%.2f m)",
+    //     first.name.c_str(), side.c_str(), first.x, first.y);
+    //   return side;
+    // }
 
     return "center";
   }
@@ -1319,6 +1380,7 @@ private:
     // Ekstrak langsung dari snapshot atribut terbaru pada jarak 1.5m (tanpa voting)
     std::string snap_gender, snap_shirt, snap_hair;
     for (const auto & a : raw_attrs) {
+      if (isPlaceholderAttr(a)) continue;
       std::string lower_a = a;
       std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
       if (lower_a == "male" || lower_a == "female") {
@@ -1332,28 +1394,41 @@ private:
         snap_hair = a;
       }
     }
+    // dihilangkan karena gak dipakai
+    // if (!snap_gender.empty()) {
+    //   current_guest_.gender = snap_gender;
+    // } else {
+    //   const std::string mode_gender = pickMode(gender_counts);
+    //   if (!mode_gender.empty()) current_guest_.gender = mode_gender;
+    // }
 
-    if (!snap_gender.empty()) {
-      current_guest_.gender = snap_gender;
-    } else {
-      const std::string mode_gender = pickMode(gender_counts);
-      if (!mode_gender.empty()) current_guest_.gender = mode_gender;
-    }
+    // if (!snap_shirt.empty() && snap_shirt != "casual attire") {
+    //   current_guest_.shirt_color = snap_shirt;
+    // } else {
+    //   const std::string mode_shirt = pickMode(shirt_counts, "casual attire");
+    //   if (!mode_shirt.empty()) current_guest_.shirt_color = mode_shirt;
+    //   else if (!snap_shirt.empty()) current_guest_.shirt_color = snap_shirt;
+    // }
 
-    if (!snap_shirt.empty() && snap_shirt != "casual attire") {
-      current_guest_.shirt_color = snap_shirt;
-    } else {
-      const std::string mode_shirt = pickMode(shirt_counts, "casual attire");
-      if (!mode_shirt.empty()) current_guest_.shirt_color = mode_shirt;
-      else if (!snap_shirt.empty()) current_guest_.shirt_color = snap_shirt;
-    }
+    // if (!snap_hair.empty()) {
+    //   current_guest_.hair_color = snap_hair;
+    // } else {
+    //   const std::string mode_hair = pickMode(hair_counts);
+    //   if (!mode_hair.empty()) current_guest_.hair_color = mode_hair;
+    // }
+    // Prioritaskan modus dari akumulasi frame; fallback ke snapshot hanya jika valid (non-placeholder)
+    const std::string mode_gender = pickMode(gender_counts);
+    if (!mode_gender.empty()) current_guest_.gender = mode_gender;
+    else if (!snap_gender.empty()) current_guest_.gender = snap_gender;
 
-    if (!snap_hair.empty()) {
-      current_guest_.hair_color = snap_hair;
-    } else {
-      const std::string mode_hair = pickMode(hair_counts);
-      if (!mode_hair.empty()) current_guest_.hair_color = mode_hair;
-    }
+    const std::string mode_shirt = pickMode(shirt_counts);
+    if (!mode_shirt.empty()) current_guest_.shirt_color = mode_shirt;
+    else if (!snap_shirt.empty()) current_guest_.shirt_color = snap_shirt;
+
+    const std::string mode_hair = pickMode(hair_counts);
+    if (!mode_hair.empty()) current_guest_.hair_color = mode_hair;
+    else if (!snap_hair.empty()) current_guest_.hair_color = snap_hair;
+
 
     if (!current_guest_.gender.empty() && current_guest_.gender != "unknown") {
       attrs.push_back(current_guest_.gender);
@@ -1364,10 +1439,11 @@ private:
     if (!current_guest_.hair_color.empty()) {
       attrs.push_back(current_guest_.hair_color);
     }
-    if (attrs.empty()) {
-      attrs.push_back("casual attire");
-    }
+    // if (attrs.empty()) {
+    //   attrs.push_back("casual attire");
+    // }
     current_guest_.attributes = attrs;
+
     RCLCPP_INFO(
       get_logger(),
       "\033[1;32m[VISION]\033[0m Guest %d Visual Profile (Mode): Gender='%s', Shirt='%s', Hair='%s'",
@@ -1378,37 +1454,86 @@ private:
   /// (defaults "unknown" gender to neutral "person" + "They are...").
   static std::string formatPersonDescription(const PersonProfile & person)
   {
-    std::string gender = (person.gender.empty() || person.gender == "unknown")
-      ? "person" : person.gender;
-    std::string shirt = person.shirt_color.empty() ? "casual attire" : person.shirt_color;
-    std::string hair = person.hair_color.empty() ? "dark hair" : person.hair_color;
+    // std::string gender = (person.gender.empty() || person.gender == "unknown")
+    //   ? "person" : person.gender;
+    // std::string shirt = person.shirt_color.empty() ? "casual attire" : person.shirt_color;
+    // std::string hair = person.hair_color.empty() ? "dark hair" : person.hair_color;
+
+    // std::string pronoun = "They";
+    // std::string verb = "are";
+    // if (gender == "male") {
+    //   pronoun = "He";
+    //   verb = "is";
+    // } else if (gender == "female") {
+    //   pronoun = "She";
+    //   verb = "is";
+    // }
+
+    // if (shirt.find("shirt") == std::string::npos &&
+    //     shirt.find("attire") == std::string::npos &&
+    //     shirt.find("clothes") == std::string::npos)
+    // {
+    //   shirt += " shirt";
+    // }
+    // if (hair.find("hair") == std::string::npos) {
+    //   hair += " hair";
+    // }
+
+    // const std::string gender_phrase = (gender == "person") ? "a person" : gender;
+    // const std::string shirt_phrase =
+    //   (shirt.find("attire") != std::string::npos || shirt.find("clothes") != std::string::npos)
+    //   ? shirt : ("a " + shirt);
+
+    // return pronoun + " " + verb + " " + gender_phrase + ", wearing " + shirt_phrase + ", with " + hair;
+
+     const bool has_gender = !isPlaceholderAttr(person.gender) &&
+                            (person.gender == "male" || person.gender == "female");
+    const bool has_shirt = !isPlaceholderAttr(person.shirt_color);
+    const bool has_hair = !isPlaceholderAttr(person.hair_color);
+    if (!has_gender && !has_shirt && !has_hair) {
+      return "";
+    }
 
     std::string pronoun = "They";
     std::string verb = "are";
-    if (gender == "male") {
+    if (has_gender && person.gender == "male") {
       pronoun = "He";
       verb = "is";
-    } else if (gender == "female") {
+    } else if (has_gender && person.gender == "female") {
       pronoun = "She";
       verb = "is";
     }
 
-    if (shirt.find("shirt") == std::string::npos &&
-        shirt.find("attire") == std::string::npos &&
-        shirt.find("clothes") == std::string::npos)
-    {
-      shirt += " shirt";
+    std::vector<std::string> parts;
+    if (has_gender) {
+      parts.push_back(person.gender);
     }
-    if (hair.find("hair") == std::string::npos) {
-      hair += " hair";
+    if (has_shirt) {
+      std::string shirt = person.shirt_color;
+      if (shirt.find("shirt") == std::string::npos &&
+          shirt.find("attire") == std::string::npos &&
+          shirt.find("clothes") == std::string::npos)
+      {
+        shirt += " shirt";
+      }
+      const std::string shirt_phrase =
+        (shirt.find("attire") != std::string::npos || shirt.find("clothes") != std::string::npos)
+        ? shirt : ("a " + shirt);
+      parts.push_back("wearing " + shirt_phrase);
+    }
+    if (has_hair) {
+      std::string hair = person.hair_color;
+      if (hair.find("hair") == std::string::npos) {
+        hair += " hair";
+      }
+      parts.push_back("with " + hair);
     }
 
-    const std::string gender_phrase = (gender == "person") ? "a person" : gender;
-    const std::string shirt_phrase =
-      (shirt.find("attire") != std::string::npos || shirt.find("clothes") != std::string::npos)
-      ? shirt : ("a " + shirt);
-
-    return pronoun + " " + verb + " " + gender_phrase + ", wearing " + shirt_phrase + ", with " + hair;
+    std::string out = pronoun + " " + verb + " " + parts[0];
+    for (size_t i = 1; i < parts.size(); ++i) {
+      out += ", " + parts[i];
+    }
+    return out;
   }
 
   // Deteksi orang terdekat di depan robot (dari ZED /zed/person_label)
@@ -1518,7 +1643,8 @@ private:
     return s == ReceptionistState::WAIT_NAME ||
            s == ReceptionistState::WAIT_INTEREST ||
            s == ReceptionistState::WAIT_CONFIRM_GUEST_INFO ||
-           s == ReceptionistState::WAIT_DRINK;
+           s == ReceptionistState::WAIT_DRINK ||
+           s == ReceptionistState::WAIT_CONFIRM_DRINK;
   }
 
   /// Prevents STT echo capture while the robot is busy or within post-TTS cooldown.
@@ -1577,6 +1703,12 @@ private:
     const std::string padded_h = " " + norm_haystack + " ";
     const std::string padded_p = " " + phrase + " ";
     return padded_h.find(padded_p) != std::string::npos;
+  }
+
+  static bool isPlaceholderAttr(const std::string & raw)
+  {
+    const std::string n = normalize(raw);
+    return n.empty() || n == "unknown" || n == "person" || n == "casual attire" || n == "dark hair";
   }
 
   static std::vector<std::string> splitWords(const std::string & norm)
@@ -1706,7 +1838,8 @@ private:
     {
       return false;
     }
-    if (state_.load() == ReceptionistState::WAIT_CONFIRM_GUEST_INFO &&
+    if ((state_.load() == ReceptionistState::WAIT_CONFIRM_GUEST_INFO ||
+         state_.load() == ReceptionistState::WAIT_CONFIRM_DRINK) &&
         parseYesNoIntent(norm_text) != 0 &&
         !isLikelyNoiseOrPromptEcho(norm_text))
     {
@@ -1819,7 +1952,7 @@ private:
   /// 2) Matches known RoboCup vocabulary with exact word boundaries (longer phrases first).
   /// 3) Checks phonetic alias tables, then Levenshtein fuzzy matching.
   /// 4) Falls back to stripping common carrier phrases (e.g. "my name is ...").
-  static std::string parseSlotIntent(const std::string & raw_text, const std::string & slot)
+  std::string parseSlotIntent(const std::string & raw_text, const std::string & slot) const
   {
     const std::string norm = normalize(raw_text);
     if (norm.empty() || isLikelyNoiseOrPromptEcho(norm) ||
@@ -1950,11 +2083,7 @@ private:
     };
 
     if (slot == "person_name") {
-      static const std::vector<std::string> kKnownNames = {
-        "adel", "angel", "axel", "charlie", "jane", "john", "jules", "morgan", "ahmad", "rizal",
-        "paris", "robin", "simone", "alex", "michael", "sarah", "david", "emma", "maria", "muhammad",
-        "budi", "abdul", "jeffrey", "hezekiel"
-      };
+      const auto & kKnownNames = known_names_;
       static const std::vector<PhoneticAlias> kNameAliases = {
         {"jefrey", "Jeffrey"}, {"jefri", "Jeffrey"}, {"geoffrey", "Jeffrey"},
         {"jeffry", "Jeffrey"}, {"jefery", "Jeffrey"},
@@ -2000,13 +2129,7 @@ private:
       };
 
       // Frase spesifik (2 kata) diperiksa lebih dulu sebelum kata tunggal ("tea", "juice", "cracker", "sugar")
-      static const std::vector<std::string> kKnownDrinks = {
-        "orange juice", "apple juice", "iced tea", "green tea",
-        "mineral water", "cracker box", "sugar box", "cheez it",
-        "coke", "cola", "pepsi", "sprite", "fanta",
-        "milk", "water", "coffee", "tea", "juice", "soda",
-        "pringles", "cracker", "sugar", "chips", "snack", "bottle", "botol"
-      };
+      const auto & kKnownDrinks = known_drinks_;
       static const std::vector<PhoneticAlias> kDrinkAliases = {
         {"cheese it", "Cheez-It"}, {"cheezit", "Cheez-It"},
         {"cheesit", "Cheez-It"}, {"cheese its", "Cheez-It"},
@@ -2049,14 +2172,7 @@ private:
     }
 
     if (slot == "interest") {
-      static const std::vector<std::string> kKnownInterests = {
-        "artificial intelligence", "playing football", "playing badminton",
-        "playing tennis", "playing golf",
-        "robotics", "reading", "music", "sports", "cooking", "gaming",
-        "traveling", "photography", "movies", "swimming", "football",
-        "basketball", "coding", "programming", "dancing", "painting",
-        "drawing", "boxing", "playing"
-      };
+      const auto & kKnownInterests = known_interests_;
       static const std::vector<PhoneticAlias> kInterestAliases = {
         {"robotic", "Robotics"}, {"robots", "Robotics"},
         {"programing", "Programming"}, {"program", "Programming"},
@@ -2107,6 +2223,23 @@ private:
     return "";
   }
 
+   static std::string canonicalInterestCategory(const std::string & raw)
+  {
+    const std::string n = normalize(raw);
+    if (n.empty()) return "";
+    if (n.find("football") != std::string::npos || n.find("badminton") != std::string::npos ||
+        n.find("tennis") != std::string::npos || n.find("golf") != std::string::npos ||
+        n.find("basketball") != std::string::npos || n.find("swim") != std::string::npos ||
+        n.find("boxing") != std::string::npos || n == "sports")
+    {
+      return "sports";
+    }
+    if (n == "coding" || n == "programming") return "programming";
+    if (n == "robotics" || n == "artificial intelligence") return "robotics and AI";
+    if (n == "painting" || n == "drawing") return "art";
+    return n;
+  }
+
   // Pengenalan respon konfirmasi (Yes / No) dengan pencocokan word-boundary
   static int parseYesNoIntent(const std::string & raw_text)
   {
@@ -2117,7 +2250,7 @@ private:
       "no", "robot no", "bot no","obot no", "no robot", "o robot", "nope", "not correct", "wrong", "false", "incorrect",
     };
     static const std::vector<std::string> kYesPhrases = {
-      "yes", "robot yes", "bot yes", "obot yes", "yes robot", "es robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
+      "yes", "yess", "robot yes", "bot yes", "obot yes", "yes robot", "es robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
     };
 
     bool has_no = false;
@@ -2424,6 +2557,7 @@ private:
           cur == ReceptionistState::WAIT_CONFIRM_GUEST_INFO)
       {
         for (const auto & a : parsed) {
+          if (isPlaceholderAttr(a)) continue;
           std::string lower_a = a;
           std::transform(lower_a.begin(), lower_a.end(), lower_a.begin(), ::tolower);
           if (lower_a == "male" || lower_a == "female") {
@@ -2446,7 +2580,15 @@ private:
   {
     if (!isVisionActive() || !message || message->data.empty()) return;
     std::lock_guard<std::mutex> lock(vision_mutex_);
-    const std::string raw = normalize(message->data);
+    // const std::string raw = normalize(message->data);
+    std::string raw = message->data;
+    std::transform(raw.begin(), raw.end(), raw.begin(), ::tolower);
+    while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.front()))) raw.erase(raw.begin());
+    while (!raw.empty() && std::isspace(static_cast<unsigned char>(raw.back()))) raw.pop_back();
+    {
+      /* code */
+    }
+    
     if (raw == "none" || raw.empty()) {
       has_explicit_empty_seat_ = false;
       return;
@@ -2940,7 +3082,7 @@ private:
               "\033[1;33m[DIALOG CONFIRM]\033[0m Heard: \"%s\" | Decision: \033[1;33mUNRECOGNIZED\033[0m (reprompting yes/no)",
               raw.c_str());
             state_enter_time_ = now();
-            speakAsync("Please say yes robot, or no robot.");
+            speakAsync("Please say robot yes, or robot no.");
           }
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           RCLCPP_INFO(
@@ -2948,7 +3090,7 @@ private:
             "\033[1;33m[DIALOG CONFIRM]\033[0m Confirmation timeout (%.1fs without speech), reprompting.",
             dialog_reprompt_sec_);
           state_enter_time_ = now();
-          speakAsync("Please say yes robot, or no robot.");
+          speakAsync("Please say robot yes, or robot no.");
         }
         break;
 
@@ -3032,9 +3174,11 @@ private:
               "\033[1;32m[DIALOG DRINK]\033[0m Guest %d Drink -> \033[1;32m\"%s\"\033[0m (from \"%s\")",
               guest_idx_, parsed_drink.c_str(), raw.c_str());
 
-            rotateRight([this](bool /*ok*/, const std::string & /*msg*/) {
-              transitionTo(ReceptionistState::CHECK_BEVERAGE, "Favorite drink captured and rotated right");
-            });
+            // rotateRight([this](bool /*ok*/, const std::string & /*msg*/) {
+              // transitionTo(ReceptionistState::CHECK_BEVERAGE, "Favorite drink captured and rotated right");
+            // });
+            // Tetap menghadap tamu (jangan rotateRight) untuk konfirmasi & laporan lokasi minuman
+            transitionTo(ReceptionistState::CONFIRM_DRINK, "Favorite drink captured; confirming drink");
           } else {
             RCLCPP_WARN(
               get_logger(),
@@ -3046,6 +3190,51 @@ private:
         } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
           state_enter_time_ = now();
           speakAsync("Sorry, please say: my favorite drink is, then the drink.");
+        }
+        break;
+
+      case ReceptionistState::CONFIRM_DRINK: {
+        std::string g_drink;
+        {
+          std::lock_guard<std::mutex> lock(guest_mutex_);
+          g_drink = current_guest_.drink;
+        }
+        speakAsync(
+          "Your favorite drink is " + g_drink + ". Is that correct? Please say robot yes, or robot no.",
+          [this]() {
+            transitionTo(ReceptionistState::WAIT_CONFIRM_DRINK, "Waiting for drink confirmation");
+          });
+        break;
+      }
+
+      case ReceptionistState::WAIT_CONFIRM_DRINK:
+        if (has_new_utterance_.exchange(false)) {
+          std::string raw;
+          {
+            std::lock_guard<std::mutex> lock(stt_mutex_);
+            raw = heard_utterance_;
+          }
+          const int ans = parseYesNoIntent(raw);
+          if (ans == 1) {
+            transitionTo(ReceptionistState::CHECK_BEVERAGE, "Drink confirmed; announcing beverage position");
+          } else if (ans == -1) {
+            {
+              std::lock_guard<std::mutex> lock(guest_mutex_);
+              current_guest_.drink.clear();
+              if (guest_idx_ >= 1 && guests_.size() >= static_cast<size_t>(guest_idx_)) {
+                guests_[static_cast<size_t>(guest_idx_ - 1)].drink.clear();
+              }
+            }
+            speakAsync("Sorry, let us try again. Please say: my favorite drink is, then the drink.", [this]() {
+              transitionTo(ReceptionistState::WAIT_DRINK, "Restarted favorite drink capture");
+            });
+          } else {
+            state_enter_time_ = now();
+            speakAsync("Please say robot yes, or robot no.");
+          }
+        } else if ((now() - state_enter_time_).seconds() > dialog_reprompt_sec_) {
+          state_enter_time_ = now();
+          speakAsync("Please say robot yes, or robot no.");
         }
         break;
 
@@ -3091,23 +3280,40 @@ private:
           if (guest_idx_ == 1) {
             escort_msg += " A guest is waiting there.";
           } else if (guest_idx_ == 2 && !guests_.empty()) {
-            escort_msg +=
-              " The first guest is " + guests_[0].name + ". " +
-              formatPersonDescription(guests_[0]) + ".";
+            // escort_msg +=
+            //   " The first guest is " + guests_[0].name + ". " +
+            //   formatPersonDescription(guests_[0]) + ".";
+            const std::string g1_desc = formatPersonDescription(guests_[0]);
+            escort_msg += " The first guest is " + guests_[0].name + ".";
+            if (!g1_desc.empty()) {
+              escort_msg += " " + g1_desc + ".";
+            }
           }
         }
 
-        // jalankan TTS tanpa callback
-        speakAsync(escort_msg);
+        // // jalankan TTS tanpa callback
+        // speakAsync(escort_msg);
 
-        // langsung jalankan navigasi secara bersamaan
-        navigateTo("living_room", [this](bool success) {
-          if (!success) {
-            return; //retry di tick berikutnya setelah TTS dan cooldown selesai
-          }
-          transitionTo(
-            ReceptionistState::SCAN_LIVING_ROOM,
-            "Arrived at living_room; scanning & locking person/chair positions");
+        // // langsung jalankan navigasi secara bersamaan
+        // navigateTo("living_room", [this](bool success) {
+        //   if (!success) {
+        //     return; //retry di tick berikutnya setelah TTS dan cooldown selesai
+        //   }
+        //   transitionTo(
+        //     ReceptionistState::SCAN_LIVING_ROOM,
+        //     "Arrived at living_room; scanning & locking person/chair positions");
+        // Ucapkan deskripsi Guest 1 sambil masih menghadap Guest 2 SEBELUM berangkat ke living room
+        speakAsync(escort_msg, [this]() {
+          navigateTo("living_room", [this](bool success) {
+            if (!success) {
+              return;
+            }
+            search_chair_retries_ = 0;
+            face_g1_retries_ = 0;
+            transitionTo(
+              ReceptionistState::SCAN_LIVING_ROOM,
+              "Arrived at living_room; scanning & locking person/chair positions");
+          });
         });
         break;
 
@@ -3143,21 +3349,29 @@ private:
               "\033[1;33m[LIVING ROOM]\033[0m Face Host gagal/timeout, tetap melanjutkan perkenalan.");
           }
 
+          // const std::string intro_guest_to_host =
+          //   "Hello, this is our guest, " + cg.name + ". " +
+          //   formatPersonDescription(cg) + ". Their favorite drink is " +
+          //   cg.drink + ", and their interest is " + cg.interest + ".";
+
+          // const std::string intro_host_to_guest =
+          //   cg.name + ", this is our host, " + host_.name + ". " +
+          //   formatPersonDescription(host_) + ". Their favorite drink is " +
+          //   host_.drink + ", and their interest is " + host_.interest + ".";
+          const std::string cg_desc = formatPersonDescription(cg);
           const std::string intro_guest_to_host =
-            "Hello, this is our guest, " + cg.name + ". " +
-            formatPersonDescription(cg) + ". Their favorite drink is " +
-            cg.drink + ", and their interest is " + cg.interest + ".";
+            "Hello " + host_.name + ", this is " + cg.name + "." +
+            (cg_desc.empty() ? "" : (" " + cg_desc + ".")) +
+            " Favorite drink is " + cg.drink + ", and interest is " + cg.interest + ".";
 
           const std::string intro_host_to_guest =
-            cg.name + ", this is our host, " + host_.name + ". " +
-            formatPersonDescription(host_) + ". Their favorite drink is " +
-            host_.drink + ", and their interest is " + host_.interest + ".";
-
+            cg.name + ", this is our host, " + host_.name +
+            ". Favorite drink is " + host_.drink + ", and interest is " + host_.interest + ".";
           speakAsync(intro_guest_to_host, [this, g_idx, intro_host_to_guest]() {
             speakAsync(intro_host_to_guest, [this, g_idx]() {
               if (g_idx == 1) {
                 after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
-                return_yaw_only_ = false;
+                return_yaw_only_ = true;
                 transitionTo(
                   ReceptionistState::RETURN_TO_LIVING_ROOM,
                   "Guest and Host introduced; returning to living_room before searching chair");
@@ -3189,7 +3403,16 @@ private:
           }
         }
 
-        faceGuest1([this](bool /*success*/, const std::string & /*msg*/) {
+        faceGuest1([this](bool success, const std::string & /*msg*/) {
+          if (!success && face_g1_retries_ < 1) {
+            face_g1_retries_++;
+            after_return_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_G2;
+            return_yaw_only_ = true;
+            transitionTo(
+              ReceptionistState::RETURN_TO_LIVING_ROOM,
+              "Face Guest 1 failed; resetting yaw for 1x retry");
+            return;
+          }
           PersonProfile guest1, guest2;
           {
             std::lock_guard<std::mutex> lock(guest_mutex_);
@@ -3216,26 +3439,46 @@ private:
       }
 
       case ReceptionistState::INTRODUCE_G2_TO_G1: {
-        PersonProfile guest1, guest2;
+        // PersonProfile guest1, guest2;
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
           if (guests_.size() < 2) {
             transitionTo(ReceptionistState::SEARCH_CHAIR, "Skipped introduction due to missing guest data");
             break;
           }
-          guest1 = guests_[0];
-          guest2 = guests_[1];
+          // guest1 = guests_[0];
+          // guest2 = guests_[1];
         }
 
-        const std::string text =
-          guest2.name + ", this is " + guest1.name + ". " +
-          guest1.name + "'s favorite drink is " + guest1.drink +
-          ", and their interest is " + guest1.interest + ".";
+        // const std::string text =
+        //   guest2.name + ", this is " + guest1.name + ". " +
+        //   guest1.name + "'s favorite drink is " + guest1.drink +
+        //   ", and their interest is " + guest1.interest + ".";
 
-        speakAsync(text, [this]() {
-          transitionTo(
-            ReceptionistState::EVALUATE_SIMILARITY,
-            "Introduced Guest 1 to Guest 2");
+        // speakAsync(text, [this]() {
+        //   transitionTo(
+        //     ReceptionistState::EVALUATE_SIMILARITY,
+        //     "Introduced Guest 1 to Guest 2");
+        faceGuest2([this](bool /*success*/, const std::string & /*msg*/) {
+          PersonProfile guest1, guest2;
+          {
+            std::lock_guard<std::mutex> lock(guest_mutex_);
+            if (guests_.size() < 2) {
+              transitionTo(ReceptionistState::SEARCH_CHAIR, "Skipped introduction due to missing guest data");
+              return;
+            }
+            guest1 = guests_[0];
+            guest2 = guests_[1];
+          }
+          const std::string text =
+            guest2.name + ", this is " + guest1.name + ". " +
+            guest1.name + "'s favorite drink is " + guest1.drink +
+            ", and their interest is " + guest1.interest + ".";
+          speakAsync(text, [this]() {
+            transitionTo(
+              ReceptionistState::EVALUATE_SIMILARITY,
+              "Introduced Guest 1 to Guest 2");
+          });
         });
         break;
       }
@@ -3255,12 +3498,19 @@ private:
         const std::string h_int = normalize(all_people[0].interest);
         const std::string g1_int = normalize(all_people[1].interest);
         const std::string g2_int = normalize(all_people[2].interest);
+        const std::string h_cat = canonicalInterestCategory(all_people[0].interest);
+        const std::string g1_cat = canonicalInterestCategory(all_people[1].interest);
+        const std::string g2_cat = canonicalInterestCategory(all_people[2].interest);
 
         if (!h_int.empty() && h_int == g1_int && g1_int == g2_int) {
           similarity_speech =
             all_people[0].name + ", " + all_people[1].name + ", and " +
             all_people[2].name + " share the same interest: " +
             all_people[1].interest + ".";
+        } else if (!h_cat.empty() && h_cat == g1_cat && g1_cat == g2_cat) {
+          similarity_speech =
+            all_people[0].name + ", " + all_people[1].name + ", and " +
+            all_people[2].name + " all like " + h_cat + ".";
         } else {
           for (size_t i = 0; i < all_people.size(); ++i) {
             for (size_t j = i + 1; j < all_people.size(); ++j) {
@@ -3273,6 +3523,15 @@ private:
                   all_people[i].interest + ".";
                 break;
               }
+
+              const std::string cat_i = canonicalInterestCategory(all_people[i].interest);
+              const std::string cat_j = canonicalInterestCategory(all_people[j].interest);
+              if (!cat_i.empty() && cat_i == cat_j) {
+                similarity_speech =
+                  all_people[i].name + " and " +
+                  all_people[j].name + " both like " + cat_i + ".";
+                break;
+              }
             }
             if (!similarity_speech.empty()) {
               break;
@@ -3283,12 +3542,14 @@ private:
         if (!similarity_speech.empty()) {
           speakAsync(similarity_speech, [this]() {
             after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
+            return_yaw_only_ = true;
             transitionTo(
               ReceptionistState::RETURN_TO_LIVING_ROOM,
               "Shared interest announced; returning to living_room before searching chair");
           });
         } else {
           after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
+          return_yaw_only_ = true;
           transitionTo(
             ReceptionistState::RETURN_TO_LIVING_ROOM,
             "No identical interest found; returning to living_room before searching chair");
@@ -3337,7 +3598,16 @@ private:
       // STATE 5: CARI KURSI KOSONG DENGAN BERPUTAR & ALIGNMENT (/search_chair)
       // ------------------------------------------------------------------------
       case ReceptionistState::SEARCH_CHAIR:
-        searchChair([this](bool /*success*/, const std::string & /*msg*/) {
+        searchChair([this](bool success, const std::string & /*msg*/) {
+          if (!success && search_chair_retries_ < 1) {
+            search_chair_retries_++;
+            after_return_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
+            return_yaw_only_ = true;
+            transitionTo(
+              ReceptionistState::RETURN_TO_LIVING_ROOM,
+              "Chair search failed; resetting yaw for 1x retry");
+            return;
+          }
           transitionTo(
             ReceptionistState::OFFER_SEAT,
             "Chair search finished; proceeding to offer seat");

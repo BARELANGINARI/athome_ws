@@ -154,6 +154,8 @@ public:
       "/task/align_bag", rclcpp::ServicesQoS(), callback_group_);
     grab_bag_client_ = create_client<Trigger>(
       "/arm/motion_task_1", rclcpp::ServicesQoS(), callback_group_);
+    adaptive_grasp_client_ = create_client<Trigger>(
+      "/arm/adaptive_grasp", rclcpp::ServicesQoS(), callback_group_);
     put_down_bag_client_ = create_client<Trigger>(
       "/arm/letakkan_tas", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
@@ -292,6 +294,7 @@ private:
   TriggerClient::SharedPtr step_back_client_;
   TriggerClient::SharedPtr align_bag_client_;
   TriggerClient::SharedPtr grab_bag_client_;
+  TriggerClient::SharedPtr adaptive_grasp_client_;
   TriggerClient::SharedPtr put_down_bag_client_;
   TriggerClient::SharedPtr homing_client_;
   TriggerClient::SharedPtr lifter_down_client_;
@@ -1241,32 +1244,50 @@ private:
       // ------------------------------------------------------------------------
       case TaskState::GRASP_BAG:
         busy_ = true;
-        // Sequence: lifter down -> /arm/motion_task_1 -> lifter up -> speakAsync
-        moveLifter(false, [this]() {
-          callTrigger(
-            grab_bag_client_, "/arm/motion_task_1",
-            [this](bool grasp_ok, const std::string & grasp_msg) {
-              moveLifter(true, [this, grasp_ok, grasp_msg]() {
-                busy_ = false;
-                if (grasp_ok) {
-                  speakAsync("I have the bag. I am returning to the starting point.", [this]() {
-                    transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
+        // Sequence: /arm/motion_task_1 (grasp off) -> lifter down -> /arm/adaptive_grasp -> lifter up -> speakAsync
+        callTrigger(
+          grab_bag_client_, "/arm/motion_task_1",
+          [this](bool motion_ok, const std::string & motion_msg) {
+            if (!motion_ok) {
+              busy_ = false;
+              RCLCPP_WARN(
+                get_logger(),
+                "Motion arm/motion_task_1 gagal (%s). Mengaktifkan fallback bantuan operator...",
+                motion_msg.c_str());
+              speakAsync(
+                "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
+                [this]() {
+                  transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
+                });
+              return;
+            }
+            moveLifter(false, [this]() {
+              callTrigger(
+                adaptive_grasp_client_, "/arm/adaptive_grasp",
+                [this](bool grasp_ok, const std::string & grasp_msg) {
+                  moveLifter(true, [this, grasp_ok, grasp_msg]() {
+                    busy_ = false;
+                    if (grasp_ok) {
+                      speakAsync("I have the bag. I am returning to the starting point.", [this]() {
+                        transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
+                      });
+                    } else {
+                      RCLCPP_WARN(
+                        get_logger(),
+                        "Grasp otonom gagal (%s). Mengaktifkan fallback bantuan operator...",
+                        grasp_msg.c_str());
+                      speakAsync(
+                        "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
+                        [this]() {
+                          transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
+                        });
+                    }
                   });
-                } else {
-                  RCLCPP_WARN(
-                    get_logger(),
-                    "Grasp otonom gagal (%s). Mengaktifkan fallback bantuan operator...",
-                    grasp_msg.c_str());
-                  speakAsync(
-                    "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
-                    [this]() {
-                      transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
-                    });
-                }
-              });
-            },
-            30.0);
-        });
+                },
+                15.0);
+            });
+          },
+          30.0);
         break;
 
       // ------------------------------------------------------------------------
