@@ -2839,11 +2839,10 @@ private:
         if ((now() - state_enter_time_).seconds() < vision_initial_settle_sec_) {
           return;
         }
+        speakAsync("Please sit on the seat I am pointing at.");
         pointToSeatWithArm([this](bool /*success*/) {
-          speakAsync("Please sit on the seat I am pointing at.", [this]() {
-            freeArm([this](bool /*ok*/) {
-              transitionTo(ReceptionistState::WAIT_GUEST_SIT, "Waiting for guest to sit");
-            });
+          freeArm([this](bool /*ok*/) {
+            transitionTo(ReceptionistState::WAIT_GUEST_SIT, "Waiting for guest to sit");
           });
         });
         break;
