@@ -21,7 +21,7 @@ vision:
     yolo_min_area: 250.0
     bag_labels: ["bag", "paper_bag", "backpack", "handbag", "suitcase"]
     face_detect_model: "models/face_detection_yunet.onnx"
-    face_detect_conf: 0.55
+    face_detect_conf: 0.30
     gender_model: "models/genderage.onnx"
     color_model: "models/color_model.onnx"
     color_labels: "models/color_names.txt"
@@ -51,7 +51,7 @@ vision:
     person_back_topic: "/vision/person_back"
 
     # Distance limits (meters) - Objects beyond these ranges will not be detected/bboxed
-    person_max_dist: 2.0
+    person_max_dist: 2.5
     person_seated_max_dist: 3.0
     chair_max_dist: 2.0
     bag_max_dist: 2.0

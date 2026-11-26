@@ -1000,10 +1000,10 @@ public:
 
     cv::Rect search_roi(0, 0, bgr.cols, bgr.rows);
     if (person_bbox.width > 20 && person_bbox.height > 20) {
-      const int hx = std::max(0, person_bbox.x - static_cast<int>(person_bbox.width * 0.10f));
-      const int hy = std::max(0, person_bbox.y - static_cast<int>(person_bbox.height * 0.05f));
-      const int hw = std::min(bgr.cols - hx, static_cast<int>(person_bbox.width * 1.20f));
-      const int hh = std::min(bgr.rows - hy, static_cast<int>(person_bbox.height * 0.50f));
+      const int hx = std::max(0, person_bbox.x - static_cast<int>(person_bbox.width * 0.15f));
+      const int hy = std::max(0, person_bbox.y - static_cast<int>(person_bbox.height * 0.08f));
+      const int hw = std::min(bgr.cols - hx, static_cast<int>(person_bbox.width * 1.30f));
+      const int hh = std::min(bgr.rows - hy, static_cast<int>(person_bbox.height * 0.55f));
       search_roi = cv::Rect(hx, hy, hw, hh) & cv::Rect(0, 0, bgr.cols, bgr.rows);
     }
 
@@ -1011,9 +1011,15 @@ public:
 
     try {
       cv::Mat roi_img = bgr(search_roi);
-      face_detector_->setInputSize(roi_img.size());
+      float scale = 1.0f;
+      cv::Mat det_img = roi_img;
+      if (roi_img.cols < 180 || roi_img.rows < 180) {
+        scale = 2.0f;
+        cv::resize(roi_img, det_img, cv::Size(), 2.0, 2.0, cv::INTER_LINEAR);
+      }
+      face_detector_->setInputSize(det_img.size());
       cv::Mat faces;
-      face_detector_->detect(roi_img, faces);
+      face_detector_->detect(det_img, faces);
 
       if (faces.rows <= 0) return result;
 
@@ -1032,26 +1038,26 @@ public:
       result.valid = true;
       result.score = best_score;
       result.bbox = cv::Rect(
-        static_cast<int>(faces.at<float>(best_idx, 0)) + search_roi.x,
-        static_cast<int>(faces.at<float>(best_idx, 1)) + search_roi.y,
-        static_cast<int>(faces.at<float>(best_idx, 2)),
-        static_cast<int>(faces.at<float>(best_idx, 3))
+        static_cast<int>(faces.at<float>(best_idx, 0) / scale) + search_roi.x,
+        static_cast<int>(faces.at<float>(best_idx, 1) / scale) + search_roi.y,
+        static_cast<int>(faces.at<float>(best_idx, 2) / scale),
+        static_cast<int>(faces.at<float>(best_idx, 3) / scale)
       );
       result.right_eye = cv::Point2f(
-        faces.at<float>(best_idx, 4) + search_roi.x,
-        faces.at<float>(best_idx, 5) + search_roi.y);
+        faces.at<float>(best_idx, 4) / scale + search_roi.x,
+        faces.at<float>(best_idx, 5) / scale + search_roi.y);
       result.left_eye = cv::Point2f(
-        faces.at<float>(best_idx, 6) + search_roi.x,
-        faces.at<float>(best_idx, 7) + search_roi.y);
+        faces.at<float>(best_idx, 6) / scale + search_roi.x,
+        faces.at<float>(best_idx, 7) / scale + search_roi.y);
       result.nose = cv::Point2f(
-        faces.at<float>(best_idx, 8) + search_roi.x,
-        faces.at<float>(best_idx, 9) + search_roi.y);
+        faces.at<float>(best_idx, 8) / scale + search_roi.x,
+        faces.at<float>(best_idx, 9) / scale + search_roi.y);
       result.right_mouth = cv::Point2f(
-        faces.at<float>(best_idx, 10) + search_roi.x,
-        faces.at<float>(best_idx, 11) + search_roi.y);
+        faces.at<float>(best_idx, 10) / scale + search_roi.x,
+        faces.at<float>(best_idx, 11) / scale + search_roi.y);
       result.left_mouth = cv::Point2f(
-        faces.at<float>(best_idx, 12) + search_roi.x,
-        faces.at<float>(best_idx, 13) + search_roi.y);
+        faces.at<float>(best_idx, 12) / scale + search_roi.x,
+        faces.at<float>(best_idx, 13) / scale + search_roi.y);
 
       if (result.right_eye.x > result.left_eye.x) {
         std::swap(result.right_eye, result.left_eye);
@@ -1543,9 +1549,9 @@ public:
     // 1. Prioritaskan YuNet face detector untuk landmark 5 titik sub-pixel
     if (faceDetectorReady()) {
       DetectedFace df = detectFace(bgr, bbox);
-      if (df.valid && df.score >= 0.45f) {
+      if (df.valid && df.score >= 0.28f) {
         const float eye_dist = std::hypot(df.left_eye.x - df.right_eye.x, df.left_eye.y - df.right_eye.y);
-        if (eye_dist >= 6.5f) {
+        if (eye_dist >= 4.5f) {
           std::vector<cv::Point2f> from{
             df.right_eye, df.left_eye, df.nose, df.right_mouth, df.left_mouth};
           std::vector<cv::Point2f> to{
@@ -1563,27 +1569,52 @@ public:
             return embedFace(aligned);
           }
         }
+
+        // Fallback untuk posisi serong/menyamping (eye_dist sempit): gunakan crop bbox wajah dari YuNet
+        const int pad_x = static_cast<int>(df.bbox.width * 0.10f);
+        const int pad_y = static_cast<int>(df.bbox.height * 0.10f);
+        cv::Rect fbox(
+          df.bbox.x - pad_x, df.bbox.y - pad_y,
+          df.bbox.width + 2 * pad_x, df.bbox.height + 2 * pad_y);
+        fbox &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+        if (fbox.width >= 16 && fbox.height >= 16) {
+          cv::Mat resized;
+          cv::resize(bgr(fbox), resized, cv::Size(112, 112), 0, 0, cv::INTER_LINEAR);
+          return embedFace(resized);
+        }
       }
     }
 
     // 2. Fallback ke landmark ZED skeleton 2-eye similarity transform
     cv::Point2f eye_left, eye_right, nose;
-    if (!faceLandmarks(kpt, eye_left, eye_right, nose)) {
-      return {};
-    }
-    const float eye_dist = std::hypot(eye_right.x - eye_left.x, eye_right.y - eye_left.y);
-    if (eye_dist < 6.5f || nose.y < std::min(eye_left.y, eye_right.y) - eye_dist * 0.2f) {
-      return {};
+    if (faceLandmarks(kpt, eye_left, eye_right, nose)) {
+      const float eye_dist = std::hypot(eye_right.x - eye_left.x, eye_right.y - eye_left.y);
+      if (eye_dist >= 4.5f && nose.y >= std::min(eye_left.y, eye_right.y) - eye_dist * 0.2f) {
+        // Pure 2-eye similarity transform agar jitter keypoint hidung ZED tidak merusak skala wajah
+        cv::Mat transform = twoEyeSimilarityTransform(eye_left, eye_right, 112);
+        if (!transform.empty()) {
+          cv::Mat aligned;
+          cv::warpAffine(bgr, aligned, transform, cv::Size(112, 112),
+            cv::INTER_LINEAR, cv::BORDER_REPLICATE);
+          return embedFace(aligned);
+        }
+      }
     }
 
-    // Pure 2-eye similarity transform agar jitter keypoint hidung ZED tidak merusak skala wajah
-    cv::Mat transform = twoEyeSimilarityTransform(eye_left, eye_right, 112);
-    if (transform.empty()) return {};
-
-    cv::Mat aligned;
-    cv::warpAffine(bgr, aligned, transform, cv::Size(112, 112),
-      cv::INTER_LINEAR, cv::BORDER_REPLICATE);
-    return embedFace(aligned);
+    // 3. Fallback terakhir untuk posisi sangat menyamping jika bukan membelakangi kamera:
+    // gunakan ROI kepala dari ZED keypoint
+    if (!kpt.empty() && kpt.size() > 26 &&
+        std::isfinite(kpt[26].x) && std::isfinite(kpt[26].y) &&
+        kpt[26].x > 0.0f && kpt[26].y > 0.0f)
+    {
+      cv::Rect head_roi = faceRegion(bbox, kpt, bgr.cols, bgr.rows);
+      if (head_roi.width >= 20 && head_roi.height >= 20) {
+        cv::Mat resized;
+        cv::resize(bgr(head_roi), resized, cv::Size(112, 112), 0, 0, cv::INTER_LINEAR);
+        return embedFace(resized);
+      }
+    }
+    return {};
   }
 
   std::vector<float> extractFaceFromImage(const cv::Mat & img)
@@ -3922,7 +3953,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
             }
           }
         } else {
-          const float active_break_th = (registered_persons_.size() <= 1) ? 0.18f : break_th;
+          const float active_break_th = (registered_persons_.size() <= 1 || entries[i].is_sitting || entries[i].range_m > 1.6)
+            ? 0.20f : break_th;
           if (f_sim < active_break_th) {
             veto = true; // Konflik wajah memutus ID/anchor lama
           } else if (other_best >= strong_th && (other_best - f_sim) >= 0.08f) {
@@ -3945,18 +3977,27 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       }
 
-      // Jangan biarkan tracking ID ZED atau sticky memory mem-bypass konflik warna baju
+      // Penalti konflik warna baju & gender (hard veto hanya jika klaim baru multi-profil tanpa wajah kuat)
+      float attr_penalty = 0.0f;
       if (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
           prof.clothing_color != entry_feats[i].shirt_color &&
           (!has_face || f_sim < strong_th || face_margin < 0.10f))
       {
-        veto = true;
+        if (!has_continuity && registered_persons_.size() >= 2 && !has_face) {
+          veto = true;
+        } else {
+          attr_penalty += 0.20f;
+        }
       }
       if (!prof.gender.empty() && !entry_feats[i].gender.empty() &&
           prof.gender != entry_feats[i].gender &&
           (!has_face || f_sim < strong_th || face_margin < 0.10f))
       {
-        veto = true;
+        if (!has_continuity && registered_persons_.size() >= 2 && !has_face) {
+          veto = true;
+        } else {
+          attr_penalty += 0.15f;
+        }
       }
 
       if (veto) {
@@ -3978,6 +4019,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         } else {
           score_matrix[i][j] = 0.55f * shirt_score + 0.25f * gender_score + 0.20f * hair_score;
         }
+        score_matrix[i][j] -= attr_penalty;
 
         if (is_sticky) {
           score_matrix[i][j] += 0.18f; // Sticky inertia ringan agar tidak mengalahkan skor wajah ArcFace
@@ -4021,7 +4063,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     for (size_t i = 0; i < entries.size(); ++i) {
       if (!entry_used[i]) {
         float s = score_matrix[i][prof_idx];
-        if (s >= 0.52f) { // Ambang batas kelayakan kecocokan
+        if (s >= 0.45f) { // Ambang batas kelayakan kecocokan
           entry_used[i] = true;
           current_assignment[prof_idx] = static_cast<int>(i);
           search_perm(prof_idx + 1, current_score + s);
@@ -4040,7 +4082,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   std::vector<bool> raw_has_face(entries.size(), false);
   for (size_t j = 0; j < registered_persons_.size(); ++j) {
     int assigned_entry = best_assignment[j];
-    if (assigned_entry >= 0 && score_matrix[assigned_entry][j] >= 0.52f) {
+    if (assigned_entry >= 0 && score_matrix[assigned_entry][j] >= 0.45f) {
       raw_recognized_names[assigned_entry] = registered_persons_[j].name;
       raw_match_scores[assigned_entry] = score_matrix[assigned_entry][j];
 
@@ -4161,8 +4203,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         const bool instant_confirm =
           raw_strong_face[i] ||
           (raw_has_face[i] && raw_match_scores[i] >= 0.68f) ||
-          (registered_persons_.size() <= 1 && raw_match_scores[i] >= 0.52f);
-        const int req_streak = (registered_persons_.size() >= 2 && !raw_has_face[i]) ? 6 : 2;
+          (registered_persons_.size() <= 1 && raw_match_scores[i] >= 0.45f);
+        const int req_streak = (registered_persons_.size() >= 2 && !raw_has_face[i]) ? 3 : 2;
         if (instant_confirm || mode_count >= req_streak || mem.candidate_streak >= req_streak) {
           mem.confirmed_name = (mode_count >= req_streak) ? mode_name : raw_name;
           mem.candidate_streak = 0;
