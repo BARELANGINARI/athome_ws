@@ -27,7 +27,7 @@ help_me_carry_node:
     strict_id_lock: true                      # True: kunci ketat target person agar tidak berpindah ke orang di samping saat following
     follow_stop_distance: 0.85                # Distance to stop following (meters)
     follow_start_distance: 1.00               # Distance to start moving forward (meters)
-    bag_stop_distance: 0.45                   # Distance to stop in front of bag (meters)
+    bag_stop_distance: 0.50                   # Distance to stop in front of bag (meters)
     max_follow_range: 2.5                     # Max detection range to follow (meters, filters background crowd)
     max_lost_time: 3.0                        # Watchdog safety timeout before reset (seconds)
     occlusion_timeout: 1.5                    # Kalman dead-reckoning window on occlusion (seconds)

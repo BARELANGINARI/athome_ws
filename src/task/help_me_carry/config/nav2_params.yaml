@@ -196,9 +196,10 @@ global_costmap:
       transform_tolerance: 0.5           # TF transform tolerance (s)
       plugins: ["static_layer", "inflation_layer"] # Costmap layers (peta SLAM statis + buffer dinding; tanpa obstacle_layer dinamis)
       static_layer:
-        plugin: "nav2_costmap_2d::StaticLayer" # Static map layer from map_server
+        plugin: "nav2_costmap_2d::StaticLayer" # Static map layer from map_server / raytraced /map_clean
+        map_topic: "/map_clean"          # Peta hasil raytracing real-time dari help_me_carry_node
         map_subscribe_transient_local: True # Transient local QoS for map
-        subscribe_to_updates: True       # Subscribe to /map_updates during SLAM
+        subscribe_to_updates: False      # Nonaktifkan /map_updates agar sel yang sudah di-clear tidak tertimpa balik
         track_unknown_space: true        # Pertahankan status unknown dari peta SLAM (-1 tetap unknown)
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer

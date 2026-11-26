@@ -17,6 +17,7 @@
 #include "geometry_msgs/msg/quaternion.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
@@ -25,6 +26,7 @@
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/float64.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/u_int8.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "tf2/time.h"
 #include "tf2_ros/buffer.h"
@@ -329,6 +331,8 @@ public:
       path_topic_, rclcpp::QoS(10));
     follow_status_pub_ = create_publisher<std_msgs::msg::String>(
       "/follow/status", rclcpp::QoS(10));
+    clean_map_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
+      "/map_clean", rclcpp::QoS(1).transient_local().reliable());
 
     clear_global_costmap_client_ = create_client<nav2_msgs::srv::ClearEntireCostmap>(
       "/global_costmap/clear_entirely_global_costmap");
@@ -338,6 +342,24 @@ public:
     cb_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     rclcpp::SubscriptionOptions sub_options;
     sub_options.callback_group = cb_group_;
+
+    helpmecarry_1_client_ = create_client<Trigger>(
+      "/arm/helpmecarry_1", rclcpp::ServicesQoS(), cb_group_);
+    helpmecarry_grasp_client_ = create_client<Trigger>(
+      "/arm/helpmecarry_grasp", rclcpp::ServicesQoS(), cb_group_);
+    helpmecarry_2_client_ = create_client<Trigger>(
+      "/arm/helpmecarry_2", rclcpp::ServicesQoS(), cb_group_);
+    lifter_down_client_ = create_client<Trigger>(
+      "/lifter/turun", rclcpp::ServicesQoS(), cb_group_);
+
+    lifter_state_sub_ = create_subscription<std_msgs::msg::UInt8>(
+      "/lifter_state", rclcpp::QoS(10),
+      [this](const std_msgs::msg::UInt8::SharedPtr msg) {
+        if (!msg) {return;}
+        lifter_state_.store(msg->data);
+        lifter_state_received_.store(true);
+      },
+      sub_options);
 
     cmd_vel_monitor_sub_ = create_subscription<geometry_msgs::msg::Twist>(
       cmd_vel_topic_, rclcpp::QoS(1),
@@ -530,6 +552,25 @@ public:
     watchdog_timer_ = create_wall_timer(
       std::chrono::milliseconds(500), [this]() { check_safety_watchdog(); });
 
+    map_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+      "/map", rclcpp::QoS(1).reliable(),
+      [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
+        if (!msg) return;
+        RCLCPP_INFO_ONCE(
+          get_logger(),
+          "\033[1;32m[MapClean]\033[0m Menerima /map (%ux%u), mulai publish /map_clean...",
+          msg->info.width, msg->info.height);
+        {
+          std::lock_guard<std::mutex> lock(raw_map_mutex_);
+          latest_raw_map_ = msg;
+        }
+        publish_cleaned_map();
+      },
+      sub_options);
+
+    map_clean_timer_ = create_wall_timer(
+      std::chrono::milliseconds(500), [this]() { publish_cleaned_map(); });
+
     RCLCPP_INFO(
       get_logger(),
       "help_me_carry_node siap! Jarak aman: %.2f m | XML BT: %s",
@@ -537,6 +578,99 @@ public:
   }
 
 private:
+  void publish_cleaned_map()
+  {
+    nav_msgs::msg::OccupancyGrid::SharedPtr raw_map;
+    {
+      std::lock_guard<std::mutex> lock(raw_map_mutex_);
+      raw_map = latest_raw_map_;
+    }
+    if (!raw_map || raw_map->data.empty() || raw_map->info.resolution <= 0.0f) {
+      return;
+    }
+
+    sensor_msgs::msg::LaserScan::SharedPtr scan;
+    {
+      std::lock_guard<std::mutex> lock(scan_mutex_);
+      scan = latest_scan_;
+    }
+
+    auto cleaned = *raw_map;
+    if (scan && !scan->ranges.empty()) {
+      try {
+        auto tf_map_laser = tf_buffer_->lookupTransform(
+          raw_map->header.frame_id.empty() ? frame_map_ : raw_map->header.frame_id,
+          scan->header.frame_id,
+          tf2::TimePointZero);
+
+        const double lx = tf_map_laser.transform.translation.x;
+        const double ly = tf_map_laser.transform.translation.y;
+        const auto & rq = tf_map_laser.transform.rotation;
+        const double lyaw = std::atan2(
+          2.0 * (rq.w * rq.z + rq.x * rq.y),
+          1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z));
+
+        const double res = static_cast<double>(cleaned.info.resolution);
+        const double ox = cleaned.info.origin.position.x;
+        const double oy = cleaned.info.origin.position.y;
+        const int width = static_cast<int>(cleaned.info.width);
+        const int height = static_cast<int>(cleaned.info.height);
+
+        const int x0 = static_cast<int>(std::floor((lx - ox) / res));
+        const int y0 = static_cast<int>(std::floor((ly - oy) / res));
+
+        if (x0 >= 0 && x0 < width && y0 >= 0 && y0 < height) {
+          constexpr double kMaxRaytraceRange = 8.0;
+          const int n = static_cast<int>(scan->ranges.size());
+          for (int i = 0; i < n; ++i) {
+            const float r = scan->ranges[i];
+            double clear_dist = 0.0;
+            if (std::isinf(r) && r > 0.0f) {
+              clear_dist = kMaxRaytraceRange;
+            } else if (std::isfinite(r) && r >= scan->range_min) {
+              clear_dist = std::min(static_cast<double>(r) - 0.12, kMaxRaytraceRange);
+            } else {
+              continue;
+            }
+            if (clear_dist <= 0.15) continue;
+
+            const double ang = lyaw + scan->angle_min + i * scan->angle_increment;
+            const double ex = lx + clear_dist * std::cos(ang);
+            const double ey = ly + clear_dist * std::sin(ang);
+            const int x1 = static_cast<int>(std::floor((ex - ox) / res));
+            const int y1 = static_cast<int>(std::floor((ey - oy) / res));
+
+            // Bresenham raytrace: clear any previously occupied (>0) cell along the free beam
+            int cx = x0;
+            int cy = y0;
+            const int dx = std::abs(x1 - x0);
+            const int dy = std::abs(y1 - y0);
+            const int sx = (x0 < x1) ? 1 : -1;
+            const int sy = (y0 < y1) ? 1 : -1;
+            int err = dx - dy;
+
+            while (true) {
+              if (cx >= 0 && cx < width && cy >= 0 && cy < height) {
+                const size_t idx = static_cast<size_t>(cy) * static_cast<size_t>(width) + static_cast<size_t>(cx);
+                if (cleaned.data[idx] > 0) {
+                  cleaned.data[idx] = 0;
+                }
+              }
+              if (cx == x1 && cy == y1) break;
+              const int e2 = 2 * err;
+              if (e2 > -dy) { err -= dy; cx += sx; }
+              if (e2 < dx)  { err += dx; cy += sy; }
+            }
+          }
+        }
+      } catch (const tf2::TransformException &) {
+        // TF belum siap, teruskan peta apa adanya
+      }
+    }
+
+    clean_map_pub_->publish(cleaned);
+  }
+
   void on_person_detected(const std_msgs::msg::String::SharedPtr msg)
   {
     if (!is_following_) {
@@ -1361,6 +1495,40 @@ private:
     }
   }
 
+  bool call_trigger_service(
+    const rclcpp::Client<Trigger>::SharedPtr & client,
+    const std::string & srv_name,
+    double timeout_sec,
+    std::string & out_msg)
+  {
+    if (!client) {
+      out_msg = "Service client " + srv_name + " is null.";
+      return false;
+    }
+    if (!client->wait_for_service(std::chrono::seconds(3))) {
+      out_msg = "Service " + srv_name + " unavailable.";
+      return false;
+    }
+    auto req = std::make_shared<Trigger::Request>();
+    auto fut = client->async_send_request(req);
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(timeout_sec));
+    while (rclcpp::ok()) {
+      if (fut.wait_for(std::chrono::milliseconds(50)) == std::future_status::ready) {
+        auto res = fut.get();
+        out_msg = res ? res->message : "";
+        return res && res->success;
+      }
+      if (std::chrono::steady_clock::now() >= deadline) {
+        out_msg = "Timeout waiting for service " + srv_name;
+        return false;
+      }
+    }
+    out_msg = "Interrupted while waiting for service " + srv_name;
+    return false;
+  }
+
   void handle_align_bag(
     const std::shared_ptr<Trigger::Request> /*req*/,
     std::shared_ptr<Trigger::Response> resp)
@@ -1466,67 +1634,148 @@ private:
       std::lock_guard<std::mutex>log(bag_mutex_);
       latest_gesture_ = "NONE";
     }
-    
-    resp->success = true;
 
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // 6. Approach bag
-    RCLCPP_INFO(get_logger(), "[Align Bag] Aligned with bag. Approaching to distance %.2f m...", bag_stop_distance_);
+    // 5a. Straighten arm (helpmecarry_1) before moving to bag coordinates
+    std::string srv_msg;
+    RCLCPP_INFO(get_logger(), "[Align Bag] Straightening arm (/arm/helpmecarry_1)...");
+    if (!call_trigger_service(helpmecarry_1_client_, "/arm/helpmecarry_1", 30.0, srv_msg)) {
+      resp->success = false;
+      resp->message = "Failed to straighten arm (/arm/helpmecarry_1): " + srv_msg;
+      RCLCPP_ERROR(get_logger(), "[Align Bag] %s", resp->message.c_str());
+      return;
+    }
+
+    // 5b. Lower lifter (/lifter/turun) before moving to bag coordinates
+    RCLCPP_INFO(get_logger(), "[Align Bag] Lowering lifter (/lifter/turun)...");
+    const auto lifter_down_start = now();
+    if (!call_trigger_service(lifter_down_client_, "/lifter/turun", 10.0, srv_msg)) {
+      resp->success = false;
+      resp->message = "Failed to lower lifter (/lifter/turun): " + srv_msg;
+      RCLCPP_ERROR(get_logger(), "[Align Bag] %s", resp->message.c_str());
+      return;
+    }
+
+    // 6. Lock bag world position after alignment and approach to bag_stop_distance_ (0.50 m)
+    double lock_bx = std::hypot(target_bag.x, target_bag.y);
+    double lock_by = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(bag_mutex_);
+      double best_front_d = 1e9;
+      for (const auto & b : latest_bags_) {
+        if (b.x <= 0.05) continue;
+        const double rel_y = -b.y;
+        const double d = std::hypot(b.x, rel_y);
+        if (std::abs(rel_y) < 0.6 && d < best_front_d) {
+          best_front_d = d;
+          lock_bx = b.x;
+          lock_by = rel_y;
+        }
+      }
+    }
+
+    double rx_w = 0.0, ry_w = 0.0, ryaw_w = 0.0;
+    const bool has_pose_w = get_robot_pose_world(rx_w, ry_w, ryaw_w);
     const auto t_approach = now();
     const double max_approach_sec = 10.0;
-    double last_known_dist = target_bag.x;
 
-    while (rclcpp::ok() && (now() - t_approach).seconds() < max_approach_sec) {
-      std::vector<Bag> current_bags;
-      {
-        std::lock_guard<std::mutex> lock(bag_mutex_);
-        current_bags = latest_bags_;
-      }
+    if (has_pose_w) {
+      const double bag_wx = rx_w + lock_bx * std::cos(ryaw_w) - lock_by * std::sin(ryaw_w);
+      const double bag_wy = ry_w + lock_bx * std::sin(ryaw_w) + lock_by * std::cos(ryaw_w);
+      RCLCPP_INFO(
+        get_logger(),
+        "[Align Bag] Locked bag world coord: (%.2f, %.2f) [rel=(%.2f, %.2f)]. Approaching to %.2f m...",
+        bag_wx, bag_wy, lock_bx, lock_by, bag_stop_distance_);
 
-      Bag chosen_bag{0.0, 0.0};
-      double min_d = 1e9;
-      bool found_front_bag = false;
-
-      for (const auto & b : current_bags) {
-        if (b.x <= 0.05) continue;
-        const double rel_y = -b.y; // +Y = left, -Y = right
-        const double d = std::hypot(b.x, rel_y);
-        // Prioritize bags in front of robot
-        if (std::abs(rel_y) < 0.8 && d < min_d) {
-          min_d = d;
-          chosen_bag = {b.x, rel_y};
-          found_front_bag = true;
+      while (rclcpp::ok() && (now() - t_approach).seconds() < max_approach_sec) {
+        double cur_x = 0.0, cur_y = 0.0, cur_yaw = 0.0;
+        if (!get_robot_pose_world(cur_x, cur_y, cur_yaw)) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          continue;
         }
-      }
 
-      if (found_front_bag) {
-        last_known_dist = min_d;
-        if (chosen_bag.x <= bag_stop_distance_ || min_d <= bag_stop_distance_) {
-          RCLCPP_INFO(get_logger(), "[Align Bag] In front of bag! Distance: %.2f m (target: %.2f m).", min_d, bag_stop_distance_);
+        const double dx_w = bag_wx - cur_x;
+        const double dy_w = bag_wy - cur_y;
+        const double dist_to_bag = std::hypot(dx_w, dy_w);
+        if (dist_to_bag <= bag_stop_distance_) {
+          RCLCPP_INFO(
+            get_logger(),
+            "[Align Bag] Reached locked bag distance: %.2f m (target: %.2f m).",
+            dist_to_bag, bag_stop_distance_);
           break;
         }
 
-        const double d_err = min_d - bag_stop_distance_;
-        double vx = std::clamp(0.40 * d_err, 0.08, 0.25);
-        const double angle_err = std::atan2(chosen_bag.y, chosen_bag.x);
-        double wz = std::clamp(0.80 * angle_err, -0.25, 0.25);
-
-        twist.linear.x = vx;
+        const double d_err = dist_to_bag - bag_stop_distance_;
+        const double angle_err = normalize_angle(std::atan2(dy_w, dx_w) - cur_yaw);
+        twist.linear.x = std::clamp(0.45 * d_err, 0.08, 0.25);
         twist.linear.y = 0.0;
-        twist.angular.z = wz;
+        twist.angular.z = std::clamp(0.90 * angle_err, -0.25, 0.25);
         cmd_vel_pub_->publish(twist);
-      } else {
-        if (last_known_dist <= bag_stop_distance_ + 0.15) {
-          RCLCPP_INFO(get_logger(), "[Align Bag] Bag close (%.2f m) near ZED FOV limit. Finished approach.", last_known_dist);
-          break;
-        }
-        twist.linear.x = 0.05;
-        twist.angular.z = 0.0;
-        cmd_vel_pub_->publish(twist);
-      }
 
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
+    } else {
+      // Fallback if TF/odom pose unavailable: visual approach
+      RCLCPP_WARN(
+        get_logger(),
+        "[Align Bag] World pose unavailable, falling back to visual approach (target: %.2f m)...",
+        bag_stop_distance_);
+      double last_known_dist = lock_bx;
+
+      while (rclcpp::ok() && (now() - t_approach).seconds() < max_approach_sec) {
+        std::vector<Bag> current_bags;
+        {
+          std::lock_guard<std::mutex> lock(bag_mutex_);
+          current_bags = latest_bags_;
+        }
+
+        Bag chosen_bag{0.0, 0.0};
+        double min_front_d = 1e9;
+        bool found_front_bag = false;
+
+        for (const auto & b : current_bags) {
+          if (b.x <= 0.05) continue;
+          const double rel_y = -b.y;
+          const double d = std::hypot(b.x, rel_y);
+          if (std::abs(rel_y) < 0.8 && d < min_front_d) {
+            min_front_d = d;
+            chosen_bag = {b.x, rel_y};
+            found_front_bag = true;
+          }
+        }
+
+        if (found_front_bag) {
+          last_known_dist = min_front_d;
+          if (chosen_bag.x <= bag_stop_distance_ || min_front_d <= bag_stop_distance_) {
+            RCLCPP_INFO(
+              get_logger(),
+              "[Align Bag] In front of bag! Distance: %.2f m (target: %.2f m).",
+              min_front_d, bag_stop_distance_);
+            break;
+          }
+
+          const double d_err = min_front_d - bag_stop_distance_;
+          const double angle_err = std::atan2(chosen_bag.y, chosen_bag.x);
+          twist.linear.x = std::clamp(0.40 * d_err, 0.08, 0.25);
+          twist.linear.y = 0.0;
+          twist.angular.z = std::clamp(0.80 * angle_err, -0.25, 0.25);
+          cmd_vel_pub_->publish(twist);
+        } else {
+          if (last_known_dist <= bag_stop_distance_ + 0.15) {
+            RCLCPP_INFO(
+              get_logger(),
+              "[Align Bag] Bag close (%.2f m) near ZED FOV limit. Finished approach.",
+              last_known_dist);
+            break;
+          }
+          twist.linear.x = 0.05;
+          twist.angular.z = 0.0;
+          cmd_vel_pub_->publish(twist);
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      }
     }
 
     // 7. Stop total
@@ -1535,9 +1784,61 @@ private:
     twist.angular.z = 0.0;
     cmd_vel_pub_->publish(twist);
 
+    // 8. Ensure lifter has finished lowering, then pause 2 seconds before grasping
+    RCLCPP_INFO(get_logger(), "[Align Bag] Waiting for lifter to finish lowering...");
+    const double min_lifter_wait_sec = 3.0;
+    const double max_lifter_wait_sec = 10.0;
+    while (rclcpp::ok()) {
+      const double elapsed = (now() - lifter_down_start).seconds();
+      if (lifter_state_received_.load()) {
+        if (lifter_state_.load() == 0 && elapsed >= 0.5) {
+          RCLCPP_INFO(
+            get_logger(),
+            "[Align Bag] Lifter confirmed down (/lifter_state=0) after %.2f s.",
+            elapsed);
+          break;
+        }
+      } else if (elapsed >= min_lifter_wait_sec) {
+        RCLCPP_WARN(
+          get_logger(),
+          "[Align Bag] /lifter_state not received; proceeding after %.2f s wait.",
+          elapsed);
+        break;
+      }
+      if (elapsed >= max_lifter_wait_sec) {
+        RCLCPP_WARN(
+          get_logger(),
+          "[Align Bag] Timeout waiting for /lifter_state==0 (latest=%u) after %.2f s; proceeding.",
+          static_cast<unsigned int>(lifter_state_.load()), elapsed);
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    RCLCPP_INFO(get_logger(), "[Align Bag] Pausing 2 seconds before grasping...");
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    // 9. Execute grasp motion (helpmecarry_grasp)
+    RCLCPP_INFO(get_logger(), "[Align Bag] Executing grasp motion (/arm/helpmecarry_grasp)...");
+    if (!call_trigger_service(helpmecarry_grasp_client_, "/arm/helpmecarry_grasp", 30.0, srv_msg)) {
+      resp->success = false;
+      resp->message = "Failed to grasp bag (/arm/helpmecarry_grasp): " + srv_msg;
+      RCLCPP_ERROR(get_logger(), "[Align Bag] %s", resp->message.c_str());
+      return;
+    }
+
+    // 10. Execute post-grasp motion (helpmecarry_2)
+    RCLCPP_INFO(get_logger(), "[Align Bag] Executing post-grasp motion (/arm/helpmecarry_2)...");
+    if (!call_trigger_service(helpmecarry_2_client_, "/arm/helpmecarry_2", 30.0, srv_msg)) {
+      resp->success = false;
+      resp->message = "Failed to execute /arm/helpmecarry_2: " + srv_msg;
+      RCLCPP_ERROR(get_logger(), "[Align Bag] %s", resp->message.c_str());
+      return;
+    }
+
     resp->success = true;
-    resp->message = std::string("Robot aligned and approached ") +
-                    (is_right ? "right" : "left") + " bag, then stopped.";
+    resp->message = std::string("Robot aligned, approached ") +
+                    (is_right ? "right" : "left") + " bag, and completed grasp sequence.";
     RCLCPP_INFO(get_logger(), "%s (success=%s)", resp->message.c_str(), resp->success ? "true" : "false");
   }
 
@@ -4078,6 +4379,11 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr follow_status_pub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr clean_map_pub_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
+  rclcpp::TimerBase::SharedPtr map_clean_timer_;
+  std::mutex raw_map_mutex_;
+  nav_msgs::msg::OccupancyGrid::SharedPtr latest_raw_map_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_monitor_sub_;
   std::mutex cmd_vel_mon_mutex_;
   geometry_msgs::msg::Twist monitored_cmd_vel_{};
@@ -4135,6 +4441,13 @@ private:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
   rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_global_costmap_client_;
   rclcpp::Client<nav2_msgs::srv::ClearEntireCostmap>::SharedPtr clear_local_costmap_client_;
+  rclcpp::Client<Trigger>::SharedPtr helpmecarry_1_client_;
+  rclcpp::Client<Trigger>::SharedPtr helpmecarry_grasp_client_;
+  rclcpp::Client<Trigger>::SharedPtr helpmecarry_2_client_;
+  rclcpp::Client<Trigger>::SharedPtr lifter_down_client_;
+  rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr lifter_state_sub_;
+  std::atomic<bool> lifter_state_received_{false};
+  std::atomic<uint8_t> lifter_state_{255};
 };
 
 int main(int argc, char ** argv)
