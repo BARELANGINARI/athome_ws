@@ -2686,7 +2686,7 @@ private:
         }
         speakAsync(
           "Your favorite drink is " + g_drink +
-          ". Is that correct? Please say yes, correct, or no, wrong.",
+          ". Is that correct or wrong?",
           [this]() {
             transitionTo(ReceptionistState::WAIT_CONFIRM_DRINK, "Waiting for drink confirmation");
           });
