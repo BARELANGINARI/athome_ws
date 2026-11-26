@@ -365,6 +365,7 @@ private:
   ReceptionistState after_return_living_room_state_{ReceptionistState::SEARCH_CHAIR};
   ReceptionistState after_scan_living_room_state_{ReceptionistState::SEARCH_CHAIR};
   bool return_yaw_only_{false};
+  bool g1_desc_announced_{false};
   int camera_width_{0};
 
   // Vision Perception Data
@@ -604,6 +605,7 @@ private:
     face_g1_retries_ = 0;
     face_g2_retries_ = 0;
     after_scan_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
+    g1_desc_announced_ = false;
 
     if (person_name_pub_) {
       std_msgs::msg::String m;
@@ -2768,20 +2770,19 @@ private:
           return;
         }
 
-        std::string escort_msg = "Please follow me to the living room.";
+        std::string g1_desc_msg;
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
           if (guest_idx_ == 2 && !guests_.empty()) {
-            // Optional Goal 2: deskripsikan Guest 1 ke Guest 2 SEBELUM tiba di living room
             const std::string g1_desc = formatPersonDescription(guests_[0]);
-            escort_msg += " The first guest is " + guests_[0].name + ".";
+            g1_desc_msg = "The first guest is " + guests_[0].name + ".";
             if (!g1_desc.empty()) {
-              escort_msg += " " + g1_desc + ".";
+              g1_desc_msg += " " + g1_desc + ".";
             }
           }
         }
 
-        speakAsync(escort_msg, [this]() {
+        speakAsync("Please follow me to the living room.", [this, g1_desc_msg]() {
           navigateTo("living_room", [this](bool success) {
             if (!success) return;
             search_chair_retries_ = 0;
@@ -2793,6 +2794,11 @@ private:
               ReceptionistState::SCAN_LIVING_ROOM,
               "Arrived at living_room; scanning room before offering seat");
           });
+          // Optional Goal 2: deskripsikan Guest 1 ke Guest 2 sambil robot bernavigasi ke living room
+          if (!g1_desc_msg.empty() && !g1_desc_announced_ && service_busy_.load()) {
+            g1_desc_announced_ = true;
+            speakAsync(g1_desc_msg);
+          }
         });
         break;
       }
