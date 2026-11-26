@@ -742,28 +742,6 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 };
-
-std::string jsonEscape(const std::string & s)
-{
-  std::ostringstream oss;
-  for (unsigned char c : s) {
-    switch (c) {
-      case '\\': oss << "\\\\"; break;
-      case '"': oss << "\\\""; break;
-      case '\n': oss << "\\n"; break;
-      case '\r': oss << "\\r"; break;
-      case '\t': oss << "\\t"; break;
-      default:
-        if (c < 0x20) {
-          oss << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(c);
-        } else {
-          oss << static_cast<char>(c);
-        }
-        break;
-    }
-  }
-  return oss.str();
-}
 }  // namespace athome_hri_cpp
 
 int main(int argc, char ** argv)

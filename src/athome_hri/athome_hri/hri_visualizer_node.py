@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import signal
 import sys
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -30,6 +31,30 @@ def load_yaml_ros_params(yaml_path: str) -> Dict[str, Any]:
     except Exception:
         pass
     return {}
+
+
+def resolve_default_yaml_path(stt_backend: str, explicit_path: str) -> str:
+    """Resolve explicit YAML path or fallback to package share/source config/params.yaml."""
+    if explicit_path:
+        p = Path(os.path.expanduser(explicit_path))
+        if p.is_file():
+            return str(p)
+    pkg = "athome_hri_cpp" if stt_backend == "cpp" else "athome_hri"
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        cand = Path(get_package_share_directory(pkg)) / "config" / "params.yaml"
+        if cand.is_file():
+            return str(cand)
+    except Exception:
+        pass
+    try:
+        src_cand = Path(__file__).resolve().parents[2] / pkg / "config" / "params.yaml"
+        if src_cand.is_file():
+            return str(src_cand)
+    except Exception:
+        pass
+    return explicit_path
 
 
 def parse_telemetry_array(data: Any) -> Optional[Dict[str, Any]]:
@@ -440,6 +465,21 @@ class HriAudioVisualizerWindow(QtWidgets.QMainWindow):
             f"tts_post_mute={post_mute}s | model={model_short}"
         )
 
+    def update_stream_status(self, pub_count: int) -> None:
+        """Update status badge when no telemetry frames have arrived recently."""
+        if self._last_msg_time > 0.0 and (time.monotonic() - self._last_msg_time) <= 1.5:
+            return
+        if pub_count <= 0:
+            self.lbl_state_badge.setText("NO PUBLISHER (/hri/audio_telemetry)")
+            self.lbl_state_badge.setStyleSheet(
+                "padding: 4px 10px; border-radius: 4px; font-weight: bold; background: #7c2d12; color: #fed7aa;"
+            )
+        else:
+            self.lbl_state_badge.setText(f"WAITING AUDIO ({pub_count} pub)")
+            self.lbl_state_badge.setStyleSheet(
+                "padding: 4px 10px; border-radius: 4px; font-weight: bold; background: #334155; color: #e2e8f0;"
+            )
+
     def handle_telemetry(self, tel: Dict[str, Any]) -> None:
         self._last_msg_time = time.monotonic()
         if tel["is_paused"]:
@@ -531,16 +571,18 @@ def main(args=None) -> None:
         return
 
     import rclpy
+    from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
+    from rclpy.utilities import remove_ros_args
     from std_msgs.msg import Float32MultiArray, String
 
     class _SignalBridge(QtCore.QObject):
-        telemetry_sig = QtCore.pyqtSignal(dict)
         tts_sig = QtCore.pyqtSignal(str)
         stt_event_sig = QtCore.pyqtSignal(dict)
         stt_transcript_sig = QtCore.pyqtSignal(str)
 
     rclpy.init(args=args)
+    qt_argv = remove_ros_args(args=sys.argv)
     node = Node("hri_visualizer")
     task = str(node.declare_parameter("task", os.environ.get("ATHOME_TASK", "all")).value)
     stt_backend = str(node.declare_parameter("stt_backend", "cpp").value)
@@ -551,23 +593,26 @@ def main(args=None) -> None:
     stt_transcript_topic = str(node.declare_parameter("stt_transcript_topic", "/hri/stt_transcript").value)
     tts_say_topic = str(node.declare_parameter("tts_say_topic", "/hri/tts_say").value)
 
-    active_yaml = cpp_params_file if stt_backend == "cpp" else py_params_file
+    raw_yaml = cpp_params_file if stt_backend == "cpp" else py_params_file
+    active_yaml = resolve_default_yaml_path(stt_backend, raw_yaml)
     yaml_params = load_yaml_ros_params(active_yaml)
 
-    app = QtWidgets.QApplication(sys.argv)
+    app = QtWidgets.QApplication(qt_argv)
     win = HriAudioVisualizerWindow(task=task, stt_backend=stt_backend, yaml_params=yaml_params)
     bridge = _SignalBridge()
-    bridge.telemetry_sig.connect(win.handle_telemetry)
     bridge.tts_sig.connect(win.handle_tts_say)
     bridge.stt_event_sig.connect(win.handle_stt_event)
     bridge.stt_transcript_sig.connect(win.handle_stt_transcript)
 
     has_events = [False]
+    tel_lock = threading.Lock()
+    latest_tel: list[Optional[Dict[str, Any]]] = [None]
 
     def _on_telemetry(msg: Float32MultiArray) -> None:
         parsed = parse_telemetry_array(msg.data)
         if parsed is not None:
-            bridge.telemetry_sig.emit(parsed)
+            with tel_lock:
+                latest_tel[0] = parsed
 
     def _on_tts(msg: String) -> None:
         if msg.data.strip():
@@ -586,20 +631,47 @@ def main(args=None) -> None:
         if not has_events[0] and msg.data.strip():
             bridge.stt_transcript_sig.emit(msg.data.strip())
 
-    node.create_subscription(Float32MultiArray, telemetry_topic, _on_telemetry, 10)
-    node.create_subscription(String, tts_say_topic, _on_tts, 10)
-    node.create_subscription(String, stt_events_topic, _on_event, 20)
-    node.create_subscription(String, stt_transcript_topic, _on_transcript, 10)
+    subs = [
+        node.create_subscription(Float32MultiArray, telemetry_topic, _on_telemetry, 10),
+        node.create_subscription(String, tts_say_topic, _on_tts, 10),
+        node.create_subscription(String, stt_events_topic, _on_event, 20),
+        node.create_subscription(String, stt_transcript_topic, _on_transcript, 10),
+    ]
 
-    def _spin_once() -> None:
-        if rclpy.ok():
-            rclpy.spin_once(node, timeout_sec=0.0)
-        else:
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+
+    def _spin_worker() -> None:
+        try:
+            executor.spin()
+        except Exception:
+            pass
+
+    ros_thread = threading.Thread(target=_spin_worker, name="HriVisualizerRosSpin", daemon=True)
+    ros_thread.start()
+
+    tick_count = [0]
+
+    def _ui_tick() -> None:
+        if not rclpy.ok():
             app.quit()
+            return
+        with tel_lock:
+            frame = latest_tel[0]
+            latest_tel[0] = None
+        if frame is not None:
+            win.handle_telemetry(frame)
+        tick_count[0] += 1
+        if tick_count[0] == 1 or tick_count[0] % 15 == 0:
+            try:
+                pub_cnt = node.count_publishers(telemetry_topic)
+            except Exception:
+                pub_cnt = 0
+            win.update_stream_status(pub_cnt)
 
-    ros_timer = QtCore.QTimer()
-    ros_timer.timeout.connect(_spin_once)
-    ros_timer.start(15)
+    ui_timer = QtCore.QTimer()
+    ui_timer.timeout.connect(_ui_tick)
+    ui_timer.start(30)
 
     def _sigint_handler(_sig: int, _frame: Any) -> None:
         app.quit()
@@ -610,10 +682,19 @@ def main(args=None) -> None:
     try:
         app.exec_()
     finally:
-        ros_timer.stop()
-        node.destroy_node()
+        ui_timer.stop()
+        try:
+            executor.shutdown(timeout_sec=0.5)
+        except Exception:
+            pass
         if rclpy.ok():
             rclpy.shutdown()
+        ros_thread.join(timeout=1.0)
+        _ = subs
+        try:
+            node.destroy_node()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
