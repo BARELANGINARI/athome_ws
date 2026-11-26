@@ -1666,9 +1666,69 @@ private:
       latest_gesture_ = "NONE";
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
-    // Lock bag world position BEFORE arm/lifter moves so camera view is unobstructed
+    // 5a-pre. Visual heading alignment: sesuaikan arah hadap sampai circle bag hijau (cx di target_cx)
+    const double target_cx = bag_frame_width_ * 0.5 + bag_crosshair_x_offset_px_;
+    const auto t_vis_align = now();
+    RCLCPP_INFO(
+      get_logger(),
+      "[Align Bag] Adjusting heading until bag circle is green (target_cx=%.1f px, deadband=%.1f px)...",
+      target_cx, bag_center_deadband_px_);
+
+    while (rclcpp::ok() && (now() - t_vis_align).seconds() < 5.0) {
+      std::vector<Bag> cur_bags;
+      rclcpp::Time b_time{0, 0, RCL_ROS_TIME};
+      {
+        std::lock_guard<std::mutex> lock(bag_mutex_);
+        cur_bags = latest_bags_;
+        b_time = latest_bag_time_;
+      }
+
+      if (b_time.nanoseconds() > 0 && (now() - b_time).seconds() <= 0.45) {
+        Bag align_bag;
+        double best_abs_err = 1e9;
+        bool found = false;
+        for (const auto & b : cur_bags) {
+          if (b.x <= 0.05 || !b.has_bbox) continue;
+          const double rel_y = -b.y;
+          if (std::abs(rel_y) < 0.8) {
+            const double abs_err = std::abs(b.cx - target_cx);
+            if (abs_err < best_abs_err) {
+              best_abs_err = abs_err;
+              align_bag = b;
+              found = true;
+            }
+          }
+        }
+
+        if (found) {
+          const double err_px_x = align_bag.cx - target_cx;
+          if (std::abs(err_px_x) <= bag_center_deadband_px_) {
+            RCLCPP_INFO(
+              get_logger(),
+              "[Align Bag] Bag circle is GREEN (cx=%.1f, err=%.1f px). Locking bag position!",
+              align_bag.cx, err_px_x);
+            break;
+          }
+          double raw_wz = std::clamp(-0.0020 * err_px_x, -0.25, 0.25);
+          if (std::abs(raw_wz) < 0.12) raw_wz = (err_px_x > 0.0) ? -0.12 : 0.12;
+          twist.linear.x = 0.0;
+          twist.linear.y = 0.0;
+          twist.angular.z = raw_wz;
+          cmd_vel_pub_->publish(twist);
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    twist.linear.x = 0.0;
+    twist.linear.y = 0.0;
+    twist.angular.z = 0.0;
+    cmd_vel_pub_->publish(twist);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    // Lock bag world position AFTER circle is green & BEFORE arm/lifter moves so camera view is unobstructed
     double lock_bx = std::hypot(target_bag.x, target_bag.y);
     double lock_by = 0.0;
     {
@@ -1706,7 +1766,6 @@ private:
 
     // 5b. Lower lifter (/lifter/turun) before moving to bag coordinates
     RCLCPP_INFO(get_logger(), "[Align Bag] Lowering lifter (/lifter/turun)...");
-    const auto lifter_down_start = now();
     if (!call_trigger_service(lifter_down_client_, "/lifter/turun", 10.0, srv_msg)) {
       resp->success = false;
       resp->message = "Failed to lower lifter (/lifter/turun): " + srv_msg;
@@ -1715,6 +1774,7 @@ private:
     }
 
     // 5c. Wait until /lifter_state == 0 (lifter at bottom) or 10s timeout before moving to bag
+    const auto lifter_down_start = now();
     RCLCPP_INFO(get_logger(), "[Align Bag] Waiting for lifter to reach bottom (/lifter_state == 0, timeout 10.0 s)...");
     const double max_lifter_wait_sec = 10.0;
     while (rclcpp::ok()) {
@@ -1739,7 +1799,6 @@ private:
     }
 
     // 6. Visual crosshair centering + lock-on-loss approach to bag_stop_distance_
-    const double target_cx = bag_frame_width_ * 0.5 + bag_crosshair_x_offset_px_;
     const auto t_approach = now();
     const double max_approach_sec = 10.0;
     double last_known_dist = lock_bx;
@@ -1767,15 +1826,36 @@ private:
       bool found_front_bag = false;
 
       if (bags_fresh) {
+        double cur_x = 0.0, cur_y = 0.0, cur_yaw = 0.0;
+        const bool have_pose = get_robot_pose_world(cur_x, cur_y, cur_yaw);
+
         for (const auto & b : current_bags) {
           if (b.x <= 0.05) continue;
           const double rel_y = -b.y;
-          const double d = std::hypot(b.x, rel_y);
-          if (std::abs(rel_y) < 0.8 && d < min_front_d) {
-            min_front_d = d;
-            chosen_bag = b;
-            chosen_bag.y = rel_y;
-            found_front_bag = true;
+
+          // Jika posisi world bag sudah di-lock, HANYA terima bag yang dekat (<= 0.40 m)
+          // dengan posisi bag terkunci agar tidak berpindah ke bag lain!
+          if (has_locked_world && have_pose) {
+            const double b_wx = cur_x + b.x * std::cos(cur_yaw) - rel_y * std::sin(cur_yaw);
+            const double b_wy = cur_y + b.x * std::sin(cur_yaw) + rel_y * std::cos(cur_yaw);
+            const double lock_diff = std::hypot(b_wx - bag_wx, b_wy - bag_wy);
+            if (lock_diff > 0.40) {
+              continue;
+            }
+            if (lock_diff < min_front_d) {
+              min_front_d = lock_diff;
+              chosen_bag = b;
+              chosen_bag.y = rel_y;
+              found_front_bag = true;
+            }
+          } else {
+            const double d = std::hypot(b.x, rel_y);
+            if (std::abs(rel_y) < 0.45 && d < min_front_d) {
+              min_front_d = d;
+              chosen_bag = b;
+              chosen_bag.y = rel_y;
+              found_front_bag = true;
+            }
           }
         }
       }
@@ -1784,7 +1864,7 @@ private:
         vision_lost_locked = false;
         last_known_dist = chosen_bag.x;
 
-        // Refresh locked world position while camera still sees the bag clearly
+        // Refresh locked world position ONLY for the same locked bag
         double cur_x = 0.0, cur_y = 0.0, cur_yaw = 0.0;
         if (get_robot_pose_world(cur_x, cur_y, cur_yaw)) {
           has_locked_world = true;
@@ -1796,7 +1876,7 @@ private:
         const bool x_centered = (std::abs(err_px_x) <= bag_center_deadband_px_);
         const double d_err = chosen_bag.x - bag_stop_distance_;
 
-        if (d_err <= 0.0 && x_centered) {
+        if (d_err <= 0.0 && std::abs(err_px_x) <= 12.0) {
           RCLCPP_INFO(
             get_logger(),
             "[Align Bag] Bag centered on crosshair & at target dist: x=%.2f m, cx=%.1f (err=%.1f px).",
@@ -1804,26 +1884,22 @@ private:
           break;
         }
 
-        if (x_centered) {
-          twist.linear.x = (d_err > 0.0) ? std::clamp(0.40 * d_err, 0.06, 0.20) : 0.0;
+        if (std::abs(err_px_x) > 15.0 || d_err <= 0.0) {
+          // Melenceng > 15 px atau sudah di jarak stop: tahan maju, putar hadap saja sampai masuk center
+          twist.linear.x = 0.0;
           twist.linear.y = 0.0;
-          twist.angular.z = 0.0;
-        } else {
-          // Tahan maju jika melenceng jauh (>35 px) agar bag masuk ke garis vertikal tengah dulu
-          if (std::abs(err_px_x) > 35.0 || d_err <= 0.0) {
-            twist.linear.x = 0.0;
+          if (x_centered) {
+            twist.angular.z = 0.0;
           } else {
-            twist.linear.x = std::clamp(0.25 * d_err, 0.06, 0.12);
+            double raw_wz = std::clamp(-0.0018 * err_px_x, -0.22, 0.22);
+            if (std::abs(raw_wz) < 0.12) raw_wz = (err_px_x > 0.0) ? -0.12 : 0.12;
+            twist.angular.z = raw_wz;
           }
-
-          // Positive err_px_x means bag is right of crosshair -> strafe right (-vy) & turn right (-wz)
-          double raw_vy = std::clamp(-0.0025 * err_px_x, -0.14, 0.14);
-          if (std::abs(raw_vy) < 0.08) raw_vy = (err_px_x > 0.0) ? -0.08 : 0.08;
-          double raw_wz = std::clamp(-0.0020 * err_px_x, -0.22, 0.22);
-          if (std::abs(raw_wz) < 0.12) raw_wz = (err_px_x > 0.0) ? -0.12 : 0.12;
-
-          twist.linear.y = raw_vy;
-          twist.angular.z = raw_wz;
+        } else {
+          // Sudah di koridor center: maju lurus ke bag terkunci dengan koreksi heading halus (tanpa sentakan)
+          twist.linear.x = std::clamp(0.40 * d_err, 0.06, 0.20);
+          twist.linear.y = 0.0;
+          twist.angular.z = x_centered ? 0.0 : std::clamp(-0.0010 * err_px_x, -0.10, 0.10);
         }
         cmd_vel_pub_->publish(twist);
       } else {
