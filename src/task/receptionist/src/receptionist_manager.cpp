@@ -126,7 +126,9 @@ struct PersonProfile {
   std::string gender{"unknown"};
   std::string shirt_color;
   std::string hair_color;
-  // TODO(atribut-4): tambahkan field atribut ke-4 di sini (mis. glasses / pants_color)
+  std::string pants_color;
+  bool has_hat{false};
+  bool has_glasses{false};
   std::vector<std::string> attributes;
 };
 
@@ -376,6 +378,10 @@ private:
   std::unordered_map<std::string, int> attr_gender_counts_;
   std::unordered_map<std::string, int> attr_shirt_counts_;
   std::unordered_map<std::string, int> attr_hair_counts_;
+  std::unordered_map<std::string, int> attr_pants_counts_;
+  int attr_hat_true_count_{0};
+  int attr_glasses_true_count_{0};
+  int attr_total_frames_{0};
   bool attributes_locked_from_scan_{false};
   std::string active_vision_reg_name_;
   std::string empty_seat_position_{"center"};
@@ -577,6 +583,9 @@ private:
     profile.gender = "unknown";
     profile.shirt_color.clear();
     profile.hair_color.clear();
+    profile.pants_color.clear();
+    profile.has_hat = false;
+    profile.has_glasses = false;
   }
 
   void initCurrentGuest(int idx)
@@ -609,6 +618,10 @@ private:
       attr_gender_counts_.clear();
       attr_shirt_counts_.clear();
       attr_hair_counts_.clear();
+      attr_pants_counts_.clear();
+      attr_hat_true_count_ = 0;
+      attr_glasses_true_count_ = 0;
+      attr_total_frames_ = 0;
       attributes_locked_from_scan_ = false;
       active_vision_reg_name_.clear();
       has_explicit_empty_seat_ = false;
@@ -986,6 +999,10 @@ private:
     std::unordered_map<std::string, int> gender_counts;
     std::unordered_map<std::string, int> shirt_counts;
     std::unordered_map<std::string, int> hair_counts;
+    std::unordered_map<std::string, int> pants_counts;
+    int hat_cnt = 0;
+    int glasses_cnt = 0;
+    int total_frames = 0;
     {
       std::lock_guard<std::mutex> v_lock(vision_mutex_);
       if (attributes_locked_from_scan_) {
@@ -994,6 +1011,10 @@ private:
       gender_counts = attr_gender_counts_;
       shirt_counts = attr_shirt_counts_;
       hair_counts = attr_hair_counts_;
+      pants_counts = attr_pants_counts_;
+      hat_cnt = attr_hat_true_count_;
+      glasses_cnt = attr_glasses_true_count_;
+      total_frames = attr_total_frames_;
     }
 
     auto pickConsensus = [](
@@ -1021,14 +1042,25 @@ private:
     int g_cnt = 0, g_tot = 0;
     int s_cnt = 0, s_tot = 0;
     int h_cnt = 0, h_tot = 0;
+    int p_cnt = 0, p_tot = 0;
     const std::string consensus_gender = pickConsensus(gender_counts, g_cnt, g_tot);
     const std::string consensus_shirt = pickConsensus(shirt_counts, s_cnt, s_tot);
     const std::string consensus_hair = pickConsensus(hair_counts, h_cnt, h_tot);
+    const std::string consensus_pants = pickConsensus(pants_counts, p_cnt, p_tot);
+    const bool consensus_hat =
+      (total_frames >= kMinAttrSamples && hat_cnt >= kMinAttrSamples &&
+       (static_cast<double>(hat_cnt) / static_cast<double>(total_frames)) >= kMinAttrConsensusRatio);
+    const bool consensus_glasses =
+      (total_frames >= kMinAttrSamples && glasses_cnt >= kMinAttrSamples &&
+       (static_cast<double>(glasses_cnt) / static_cast<double>(total_frames)) >= kMinAttrConsensusRatio);
 
     std::lock_guard<std::mutex> g_lock(guest_mutex_);
     current_guest_.gender = consensus_gender.empty() ? "unknown" : consensus_gender;
     current_guest_.shirt_color = consensus_shirt;
     current_guest_.hair_color = consensus_hair;
+    current_guest_.pants_color = consensus_pants;
+    current_guest_.has_hat = consensus_hat;
+    current_guest_.has_glasses = consensus_glasses;
 
     std::vector<std::string> attrs;
     if (current_guest_.gender == "male" || current_guest_.gender == "female") {
@@ -1037,19 +1069,32 @@ private:
     if (!current_guest_.shirt_color.empty()) {
       attrs.push_back(current_guest_.shirt_color);
     }
+    if (!current_guest_.pants_color.empty()) {
+      attrs.push_back(current_guest_.pants_color);
+    }
     if (!current_guest_.hair_color.empty()) {
       attrs.push_back(current_guest_.hair_color);
+    }
+    if (current_guest_.has_hat) {
+      attrs.push_back("wearing hat");
+    }
+    if (current_guest_.has_glasses) {
+      attrs.push_back("wearing glasses");
     }
     current_guest_.attributes = attrs;
 
     RCLCPP_INFO(
       get_logger(),
       "\033[1;32m[VISION]\033[0m G%d (id=%d) Consensus Profile -> "
-      "Gender='%s' (%d/%d), Shirt='%s' (%d/%d), Hair='%s' (%d/%d)",
+      "Gender='%s' (%d/%d), Shirt='%s' (%d/%d), Pants='%s' (%d/%d), "
+      "Hair='%s' (%d/%d), Hat=%s (%d/%d), Glasses=%s (%d/%d)",
       guest_idx_, person_id,
       current_guest_.gender.c_str(), g_cnt, g_tot,
       current_guest_.shirt_color.c_str(), s_cnt, s_tot,
-      current_guest_.hair_color.c_str(), h_cnt, h_tot);
+      current_guest_.pants_color.c_str(), p_cnt, p_tot,
+      current_guest_.hair_color.c_str(), h_cnt, h_tot,
+      current_guest_.has_hat ? "yes" : "no", hat_cnt, total_frames,
+      current_guest_.has_glasses ? "yes" : "no", glasses_cnt, total_frames);
   }
 
   static std::string formatPersonDescription(const PersonProfile & person)
@@ -1057,8 +1102,11 @@ private:
     const bool has_gender = !isPlaceholderAttr(person.gender) &&
                             (person.gender == "male" || person.gender == "female");
     const bool has_shirt = !isPlaceholderAttr(person.shirt_color);
+    const bool has_pants = !isPlaceholderAttr(person.pants_color);
     const bool has_hair = !isPlaceholderAttr(person.hair_color);
-    if (!has_gender && !has_shirt && !has_hair) {
+    const bool has_hat = person.has_hat;
+    const bool has_glasses = person.has_glasses;
+    if (!has_gender && !has_shirt && !has_pants && !has_hair && !has_hat && !has_glasses) {
       return "";
     }
 
@@ -1076,6 +1124,8 @@ private:
     if (has_gender) {
       parts.push_back(person.gender);
     }
+
+    std::vector<std::string> wearing_items;
     if (has_shirt) {
       std::string shirt = person.shirt_color;
       if (shirt.find("shirt") == std::string::npos &&
@@ -1087,8 +1137,38 @@ private:
       const std::string shirt_phrase =
         (shirt.find("attire") != std::string::npos || shirt.find("clothes") != std::string::npos)
         ? shirt : ("a " + shirt);
-      parts.push_back("wearing " + shirt_phrase);
+      wearing_items.push_back(shirt_phrase);
     }
+    if (has_pants) {
+      std::string pants = person.pants_color;
+      if (pants.find("pants") == std::string::npos &&
+          pants.find("trousers") == std::string::npos &&
+          pants.find("jeans") == std::string::npos &&
+          pants.find("shorts") == std::string::npos)
+      {
+        pants += " pants";
+      }
+      wearing_items.push_back(pants);
+    }
+    if (has_hat) {
+      wearing_items.push_back("a hat");
+    }
+    if (has_glasses) {
+      wearing_items.push_back("glasses");
+    }
+    if (!wearing_items.empty()) {
+      std::string wearing_str = wearing_items[0];
+      if (wearing_items.size() == 2) {
+        wearing_str += " and " + wearing_items[1];
+      } else if (wearing_items.size() >= 3) {
+        for (size_t i = 1; i + 1 < wearing_items.size(); ++i) {
+          wearing_str += ", " + wearing_items[i];
+        }
+        wearing_str += ", and " + wearing_items.back();
+      }
+      parts.push_back("wearing " + wearing_str);
+    }
+
     if (has_hair) {
       std::string hair = person.hair_color;
       if (hair.find("hair") == std::string::npos) {
@@ -1996,6 +2076,9 @@ private:
     }
     if (!parsed.empty()) {
       latest_attributes_ = parsed;
+      attr_total_frames_++;
+      bool frame_hat = false;
+      bool frame_glasses = false;
       for (const auto & a : parsed) {
         if (isPlaceholderAttr(a)) continue;
         std::string lower_a = a;
@@ -2007,11 +2090,29 @@ private:
                    lower_a.find("attire") != std::string::npos)
         {
           attr_shirt_counts_[a]++;
+        } else if (lower_a.find("pants") != std::string::npos ||
+                   lower_a.find("trousers") != std::string::npos ||
+                   lower_a.find("jeans") != std::string::npos)
+        {
+          attr_pants_counts_[a]++;
         } else if (lower_a.find("hair") != std::string::npos) {
           attr_hair_counts_[a]++;
+        } else if (lower_a.find("hat") != std::string::npos ||
+                   lower_a.find("cap") != std::string::npos)
+        {
+          if (lower_a.find("no ") == std::string::npos) {
+            frame_hat = true;
+          }
+        } else if (lower_a.find("glasses") != std::string::npos ||
+                   lower_a.find("eyewear") != std::string::npos)
+        {
+          if (lower_a.find("no ") == std::string::npos) {
+            frame_glasses = true;
+          }
         }
-        // TODO(atribut-4): tambahkan histogram atribut ke-4 di sini
       }
+      if (frame_hat) attr_hat_true_count_++;
+      if (frame_glasses) attr_glasses_true_count_++;
     }
   }
 
@@ -2255,6 +2356,10 @@ private:
             attr_gender_counts_.clear();
             attr_shirt_counts_.clear();
             attr_hair_counts_.clear();
+            attr_pants_counts_.clear();
+            attr_hat_true_count_ = 0;
+            attr_glasses_true_count_ = 0;
+            attr_total_frames_ = 0;
             attributes_locked_from_scan_ = false;
             temp_name = "__pending_guest_" + std::to_string(guest_idx_) + "__";
             active_vision_reg_name_ = temp_name;
