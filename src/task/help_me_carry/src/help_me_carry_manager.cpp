@@ -1052,7 +1052,7 @@ private:
         if (isOperatorInFront()) {
           RCLCPP_INFO(get_logger(), "\033[1;32m[HELP_ME_CARRY]\033[0m\n  Operator: In front");
           speakAsync(
-            "If you are ready? please guide me to the place, and say follow me!",
+            "If you are ready? please guide me to the place, and say, robot follow me!",
             [this]() {
               transitionTo(TaskState::WAIT_START_COMMAND, "Operator in front confirmed");
             });
