@@ -2250,7 +2250,7 @@ private:
       "no", "robot no", "bot no","obot no", "no robot", "o robot", "nope", "not correct", "wrong", "false", "incorrect",
     };
     static const std::vector<std::string> kYesPhrases = {
-      "yes", "yess", "robot yes", "bot yes", "obot yes", "yes robot", "es robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
+      "robot yes", "yes", "bot yes", "obot yes", "yes robot", "es robot",
     };
 
     bool has_no = false;
@@ -2824,6 +2824,25 @@ private:
           transitionTo(
             ReceptionistState::ALIGN_GUEST,
             "Guest detected at entrance; aligning heading and adjusting distance to 1.2m");
+          std::string temp_name;
+          {
+            std::lock_guard<std::mutex> lock(vision_mutex_);
+            latest_attributes_.clear();
+            attr_gender_counts_.clear();
+            attr_shirt_counts_.clear();
+            attr_hair_counts_.clear();
+            attributes_locked_from_scan_ = false;
+            temp_name = "__pending_guest_" + std::to_string(guest_idx_) + "__";
+            active_vision_reg_name_ = temp_name;
+          }
+          if (person_name_pub_) {
+            std_msgs::msg::String m;
+            m.data = temp_name;
+            person_name_pub_->publish(m);
+          }
+          transitionTo(
+            ReceptionistState::SCAN_GUEST_ATTRIBUTES,
+            "Guest detected at entrance; scanning face, gender, shirt color, and hair color silently");
         } else if (last_wait_prompt_time_.nanoseconds() == 0 ||
                    (now() - last_wait_prompt_time_).seconds() >= wait_guest_prompt_sec_)
         {

@@ -252,12 +252,14 @@ public:
     strict_id_lock_ = declare_parameter<bool>("strict_id_lock", true);
     stop_distance_ = declare_parameter<double>("follow_stop_distance", 0.5);
     start_distance_ = declare_parameter<double>("follow_start_distance", 0.7);
-    bag_stop_distance_ = declare_parameter<double>("bag_stop_distance", 0.45);
+    bag_stop_distance_ = declare_parameter<double>("bag_stop_distance", 0.60);
     bag_frame_width_ = declare_parameter<double>("bag_frame_width", 672.0);
     bag_frame_height_ = declare_parameter<double>("bag_frame_height", 376.0);
     bag_crosshair_x_offset_px_ = declare_parameter<double>("bag_crosshair_x_offset_px", 0.0);
     bag_crosshair_y_offset_px_ = declare_parameter<double>("bag_crosshair_y_offset_px", 0.0);
     bag_center_deadband_px_ = declare_parameter<double>("bag_center_deadband_px", 15.0);
+    bag_align_tol_left_px_ = declare_parameter<double>("bag_align_tol_left_px", 8.0);
+    bag_align_tol_right_px_ = declare_parameter<double>("bag_align_tol_right_px", 8.0);
     max_range_ = declare_parameter<double>("max_follow_range", 3.0);
     max_lost_time_ = declare_parameter<double>("max_lost_time", 3.0);
     occlusion_timeout_ = declare_parameter<double>("occlusion_timeout", 1.5);
@@ -1637,6 +1639,19 @@ private:
       }
     }
 
+    // Lock world position of the pointed target_bag immediately so all other bags are ignored
+    double bag_wx = 0.0, bag_wy = 0.0;
+    double rx_w = 0.0, ry_w = 0.0, ryaw_w = 0.0;
+    bool has_locked_world = get_robot_pose_world(rx_w, ry_w, ryaw_w);
+    if (has_locked_world) {
+      bag_wx = rx_w + target_bag.x * std::cos(ryaw_w) - target_bag.y * std::sin(ryaw_w);
+      bag_wy = ry_w + target_bag.x * std::sin(ryaw_w) + target_bag.y * std::cos(ryaw_w);
+      RCLCPP_INFO(
+        get_logger(),
+        "[Align Bag] Locked pointed bag world coordinate: (%.2f, %.2f). Ignoring other bags.",
+        bag_wx, bag_wy);
+    }
+
     // 4. Calculate rotation angle using vision yaw (/vision/yaw_deg)
     auto get_vision_yaw = [&]() {
       std::lock_guard<std::mutex> lock(bag_mutex_);
@@ -1668,15 +1683,16 @@ private:
 
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
-    // 5a-pre. Visual heading alignment: sesuaikan arah hadap sampai circle bag hijau (cx di target_cx)
+    // 5a-pre. Rotate on locked pointed bag with separate left/right tolerances
+    const double align_yaw_deadband_rad = 0.008;
     const double target_cx = bag_frame_width_ * 0.5 + bag_crosshair_x_offset_px_;
     const auto t_vis_align = now();
     RCLCPP_INFO(
       get_logger(),
-      "[Align Bag] Adjusting heading until bag circle is green (target_cx=%.1f px, deadband=%.1f px)...",
-      target_cx, bag_center_deadband_px_);
+      "[Align Bag] Rotating toward locked bag (target_cx=%.1f px, tol_left=%.1f px, tol_right=%.1f px)...",
+      target_cx, bag_align_tol_left_px_, bag_align_tol_right_px_);
 
-    while (rclcpp::ok() && (now() - t_vis_align).seconds() < 5.0) {
+    while (rclcpp::ok() && (now() - t_vis_align).seconds() < 8.0) {
       std::vector<Bag> cur_bags;
       rclcpp::Time b_time{0, 0, RCL_ROS_TIME};
       {
@@ -1687,36 +1703,76 @@ private:
 
       if (b_time.nanoseconds() > 0 && (now() - b_time).seconds() <= 0.45) {
         Bag align_bag;
-        double best_abs_err = 1e9;
+        double best_dist = 1e9;
         bool found = false;
+        double cur_x = 0.0, cur_y = 0.0, cur_yaw = 0.0;
+        const bool have_pose = get_robot_pose_world(cur_x, cur_y, cur_yaw);
+
         for (const auto & b : cur_bags) {
-          if (b.x <= 0.05 || !b.has_bbox) continue;
+          if (b.x <= 0.05) continue;
           const double rel_y = -b.y;
-          if (std::abs(rel_y) < 0.8) {
-            const double abs_err = std::abs(b.cx - target_cx);
-            if (abs_err < best_abs_err) {
-              best_abs_err = abs_err;
+          if (has_locked_world && have_pose) {
+            const double b_wx = cur_x + b.x * std::cos(cur_yaw) - rel_y * std::sin(cur_yaw);
+            const double b_wy = cur_y + b.x * std::sin(cur_yaw) + rel_y * std::cos(cur_yaw);
+            const double lock_diff = std::hypot(b_wx - bag_wx, b_wy - bag_wy);
+            if (lock_diff > 0.30) {
+              continue;
+            }
+            if (lock_diff < best_dist) {
+              best_dist = lock_diff;
               align_bag = b;
+              align_bag.y = rel_y;
+              found = true;
+            }
+          } else if (std::abs(rel_y) < 0.8) {
+            const double d = std::hypot(b.x, rel_y);
+            if (d < best_dist) {
+              best_dist = d;
+              align_bag = b;
+              align_bag.y = rel_y;
               found = true;
             }
           }
         }
 
         if (found) {
-          const double err_px_x = align_bag.cx - target_cx;
-          if (std::abs(err_px_x) <= bag_center_deadband_px_) {
-            RCLCPP_INFO(
-              get_logger(),
-              "[Align Bag] Bag circle is GREEN (cx=%.1f, err=%.1f px). Locking bag position!",
-              align_bag.cx, err_px_x);
-            break;
+          if (align_bag.has_bbox) {
+            const double err_px_x = align_bag.cx - target_cx;
+            // err_px_x < 0: bag on left (rotate left -> tol_left); err_px_x > 0: bag on right (rotate right -> tol_right)
+            const bool aligned =
+              (err_px_x >= -bag_align_tol_left_px_ && err_px_x <= bag_align_tol_right_px_);
+            if (aligned) {
+              RCLCPP_INFO(
+                get_logger(),
+                "[Align Bag] Locked bag aligned (cx=%.1f, err=%.1f px, tol=[-%.1f, +%.1f], x=%.2f m, y=%.2f m). Proceeding to approach!",
+                align_bag.cx, err_px_x, bag_align_tol_left_px_, bag_align_tol_right_px_,
+                align_bag.x, align_bag.y);
+              break;
+            }
+            double raw_wz = std::clamp(-0.0020 * err_px_x, -0.25, 0.25);
+            const double min_wz = (std::abs(err_px_x) <= 12.0) ? 0.06 : 0.11;
+            if (std::abs(raw_wz) < min_wz) raw_wz = (err_px_x > 0.0) ? -min_wz : min_wz;
+            twist.linear.x = 0.0;
+            twist.linear.y = 0.0;
+            twist.angular.z = raw_wz;
+            cmd_vel_pub_->publish(twist);
+          } else {
+            const double yaw_err = std::atan2(align_bag.y, align_bag.x);
+            if (std::abs(yaw_err) <= align_yaw_deadband_rad) {
+              RCLCPP_INFO(
+                get_logger(),
+                "[Align Bag] Heading aligned to bag coordinate (x=%.2f m, y=%.2f m, yaw_err=%.3f rad). Proceeding to approach!",
+                align_bag.x, align_bag.y, yaw_err);
+              break;
+            }
+            double raw_wz = std::clamp(1.2 * yaw_err, -0.25, 0.25);
+            const double min_wz = (std::abs(yaw_err) < 0.05) ? 0.07 : 0.12;
+            if (std::abs(raw_wz) < min_wz) raw_wz = (yaw_err > 0.0) ? min_wz : -min_wz;
+            twist.linear.x = 0.0;
+            twist.linear.y = 0.0;
+            twist.angular.z = raw_wz;
+            cmd_vel_pub_->publish(twist);
           }
-          double raw_wz = std::clamp(-0.0020 * err_px_x, -0.25, 0.25);
-          if (std::abs(raw_wz) < 0.12) raw_wz = (err_px_x > 0.0) ? -0.12 : 0.12;
-          twist.linear.x = 0.0;
-          twist.linear.y = 0.0;
-          twist.angular.z = raw_wz;
-          cmd_vel_pub_->publish(twist);
         }
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -1728,31 +1784,8 @@ private:
     cmd_vel_pub_->publish(twist);
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
 
-    // Lock bag world position AFTER circle is green & BEFORE arm/lifter moves so camera view is unobstructed
-    double lock_bx = std::hypot(target_bag.x, target_bag.y);
-    double lock_by = 0.0;
-    {
-      std::lock_guard<std::mutex> lock(bag_mutex_);
-      double best_front_d = 1e9;
-      for (const auto & b : latest_bags_) {
-        if (b.x <= 0.05) continue;
-        const double rel_y = -b.y;
-        const double d = std::hypot(b.x, rel_y);
-        if (std::abs(rel_y) < 0.6 && d < best_front_d) {
-          best_front_d = d;
-          lock_bx = b.x;
-          lock_by = rel_y;
-        }
-      }
-    }
-
-    double bag_wx = 0.0, bag_wy = 0.0;
-    double rx_w = 0.0, ry_w = 0.0, ryaw_w = 0.0;
-    bool has_locked_world = get_robot_pose_world(rx_w, ry_w, ryaw_w);
-    if (has_locked_world) {
-      bag_wx = rx_w + lock_bx * std::cos(ryaw_w) - lock_by * std::sin(ryaw_w);
-      bag_wy = ry_w + lock_bx * std::sin(ryaw_w) + lock_by * std::cos(ryaw_w);
-    }
+    // Keep the locked pointed bag position (fallback distance if world pose unavailable)
+    const double lock_bx = std::hypot(target_bag.x, target_bag.y);
 
     // 5a. Straighten arm (helpmecarry_1) before moving to bag coordinates
     std::string srv_msg;
@@ -1773,23 +1806,23 @@ private:
       return;
     }
 
-    // 5c. Wait until /lifter_state == 0 (lifter at bottom) or 10s timeout before moving to bag
+    // 5c. Wait until /lifter_state == 1 or 10s timeout before moving to bag
     const auto lifter_down_start = now();
-    RCLCPP_INFO(get_logger(), "[Align Bag] Waiting for lifter to reach bottom (/lifter_state == 0, timeout 10.0 s)...");
+    RCLCPP_INFO(get_logger(), "[Align Bag] Waiting for /lifter_state == 1 (timeout 10.0 s)...");
     const double max_lifter_wait_sec = 10.0;
     while (rclcpp::ok()) {
       const double elapsed = (now() - lifter_down_start).seconds();
-      if (lifter_state_received_.load() && lifter_state_.load() == 0 && elapsed >= 0.5) {
+      if (lifter_state_received_.load() && lifter_state_.load() == 1) {
         RCLCPP_INFO(
           get_logger(),
-          "[Align Bag] Lifter confirmed down (/lifter_state == 0) after %.2f s. Moving to bag...",
+          "[Align Bag] Lifter state confirmed (/lifter_state == 1) after %.2f s. Moving to bag...",
           elapsed);
         break;
       }
       if (elapsed >= max_lifter_wait_sec) {
         RCLCPP_WARN(
           get_logger(),
-          "[Align Bag] Timeout waiting for /lifter_state == 0 (received=%s, latest=%u) after %.2f s; proceeding to bag.",
+          "[Align Bag] Timeout waiting for /lifter_state == 1 (received=%s, latest=%u) after %.2f s; proceeding to bag.",
           lifter_state_received_.load() ? "true" : "false",
           static_cast<unsigned int>(lifter_state_.load()),
           elapsed);
@@ -1798,16 +1831,31 @@ private:
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    // 6. Visual crosshair centering + lock-on-loss approach to bag_stop_distance_
+    // 6. Coordinate-based approach + lock-on-loss to bag_stop_distance_
     const auto t_approach = now();
     const double max_approach_sec = 10.0;
     double last_known_dist = lock_bx;
     bool vision_lost_locked = false;
+    double smooth_vx = 0.0;
+    double smooth_wz = 0.0;
+    auto publish_smoothed_approach = [&](double raw_vx, double raw_wz) {
+      const double av = std::clamp(alpha_v_, 0.15, 0.50);
+      const double aw = std::clamp(alpha_w_, 0.15, 0.50);
+      smooth_vx = (1.0 - av) * smooth_vx + av * raw_vx;
+      smooth_wz = (1.0 - aw) * smooth_wz + aw * raw_wz;
+      if (std::abs(smooth_vx) < 0.015 && std::abs(raw_vx) < 0.01) smooth_vx = 0.0;
+      if (std::abs(smooth_wz) < 0.015 && std::abs(raw_wz) < 0.01) smooth_wz = 0.0;
+      geometry_msgs::msg::Twist cmd;
+      cmd.linear.x = smooth_vx;
+      cmd.linear.y = 0.0;
+      cmd.angular.z = smooth_wz;
+      cmd_vel_pub_->publish(cmd);
+    };
 
     RCLCPP_INFO(
       get_logger(),
-      "[Align Bag] Approaching bag with crosshair centering (target_cx=%.1f px, deadband=%.1f px, stop_dist=%.2f m)...",
-      target_cx, bag_center_deadband_px_, bag_stop_distance_);
+      "[Align Bag] Approaching bag using coordinates (stop_dist=%.2f m)...",
+      bag_stop_distance_);
 
     while (rclcpp::ok() && (now() - t_approach).seconds() < max_approach_sec) {
       std::vector<Bag> current_bags;
@@ -1833,13 +1881,13 @@ private:
           if (b.x <= 0.05) continue;
           const double rel_y = -b.y;
 
-          // Jika posisi world bag sudah di-lock, HANYA terima bag yang dekat (<= 0.40 m)
+          // Jika posisi world bag sudah di-lock, HANYA terima bag yang dekat (<= 0.30 m)
           // dengan posisi bag terkunci agar tidak berpindah ke bag lain!
           if (has_locked_world && have_pose) {
             const double b_wx = cur_x + b.x * std::cos(cur_yaw) - rel_y * std::sin(cur_yaw);
             const double b_wy = cur_y + b.x * std::sin(cur_yaw) + rel_y * std::cos(cur_yaw);
             const double lock_diff = std::hypot(b_wx - bag_wx, b_wy - bag_wy);
-            if (lock_diff > 0.40) {
+            if (lock_diff > 0.30) {
               continue;
             }
             if (lock_diff < min_front_d) {
@@ -1860,56 +1908,81 @@ private:
         }
       }
 
-      if (found_front_bag && chosen_bag.has_bbox) {
+      if (found_front_bag) {
         vision_lost_locked = false;
-        last_known_dist = chosen_bag.x;
+        const double bag_dist = std::hypot(chosen_bag.x, chosen_bag.y);
+        last_known_dist = bag_dist;
 
-        // Refresh locked world position ONLY for the same locked bag
-        double cur_x = 0.0, cur_y = 0.0, cur_yaw = 0.0;
-        if (get_robot_pose_world(cur_x, cur_y, cur_yaw)) {
-          has_locked_world = true;
-          bag_wx = cur_x + chosen_bag.x * std::cos(cur_yaw) - chosen_bag.y * std::sin(cur_yaw);
-          bag_wy = cur_y + chosen_bag.x * std::sin(cur_yaw) + chosen_bag.y * std::cos(cur_yaw);
-        }
+        const double d_err = bag_dist - bag_stop_distance_;
 
-        const double err_px_x = chosen_bag.cx - target_cx;
-        const bool x_centered = (std::abs(err_px_x) <= bag_center_deadband_px_);
-        const double d_err = chosen_bag.x - bag_stop_distance_;
+        if (chosen_bag.has_bbox) {
+          const double err_px_x = chosen_bag.cx - target_cx;
+          const bool px_aligned =
+            (err_px_x >= -bag_align_tol_left_px_ && err_px_x <= bag_align_tol_right_px_);
 
-        if (d_err <= 0.0 && std::abs(err_px_x) <= 12.0) {
-          RCLCPP_INFO(
-            get_logger(),
-            "[Align Bag] Bag centered on crosshair & at target dist: x=%.2f m, cx=%.1f (err=%.1f px).",
-            chosen_bag.x, chosen_bag.cx, err_px_x);
-          break;
-        }
+          if (d_err <= 0.0 && px_aligned) {
+            RCLCPP_INFO(
+              get_logger(),
+              "[Align Bag] Reached target distance & aligned to center line: dist=%.2f m, cx=%.1f (err=%.1f px).",
+              bag_dist, chosen_bag.cx, err_px_x);
+            break;
+          }
 
-        if (std::abs(err_px_x) > 15.0 || d_err <= 0.0) {
-          // Melenceng > 15 px atau sudah di jarak stop: tahan maju, putar hadap saja sampai masuk center
-          twist.linear.x = 0.0;
-          twist.linear.y = 0.0;
-          if (x_centered) {
-            twist.angular.z = 0.0;
+          if (err_px_x < -std::max(bag_align_tol_left_px_ * 2.0, 25.0) ||
+              err_px_x > std::max(bag_align_tol_right_px_ * 2.0, 25.0) ||
+              d_err <= 0.0) {
+            // Melenceng jauh dari center line atau sudah di jarak stop: tahan maju, putar hadap ke center line
+            twist.linear.x = 0.0;
+            twist.linear.y = 0.0;
+            if (px_aligned) {
+              twist.angular.z = 0.0;
+            } else {
+              double raw_wz = std::clamp(-0.0016 * err_px_x, -0.20, 0.20);
+              const double min_wz = (std::abs(err_px_x) <= 15.0) ? 0.06 : 0.10;
+              if (std::abs(raw_wz) < min_wz) raw_wz = (err_px_x > 0.0) ? -min_wz : min_wz;
+              twist.angular.z = raw_wz;
+            }
           } else {
-            double raw_wz = std::clamp(-0.0018 * err_px_x, -0.22, 0.22);
-            if (std::abs(raw_wz) < 0.12) raw_wz = (err_px_x > 0.0) ? -0.12 : 0.12;
-            twist.angular.z = raw_wz;
+            // Sudah di koridor center line: maju lurus, koreksi halus hanya jika keluar toleransi kiri/kanan
+            twist.linear.x = std::clamp(0.40 * d_err, 0.06, 0.20);
+            twist.linear.y = 0.0;
+            twist.angular.z = px_aligned ? 0.0 : std::clamp(-0.0008 * err_px_x, -0.08, 0.08);
           }
         } else {
-          // Sudah di koridor center: maju lurus ke bag terkunci dengan koreksi heading halus (tanpa sentakan)
-          twist.linear.x = std::clamp(0.40 * d_err, 0.06, 0.20);
-          twist.linear.y = 0.0;
-          twist.angular.z = x_centered ? 0.0 : std::clamp(-0.0010 * err_px_x, -0.10, 0.10);
+          const double yaw_err = std::atan2(chosen_bag.y, chosen_bag.x);
+          const bool yaw_centered = (std::abs(yaw_err) <= 0.03);
+          if (d_err <= 0.0 && yaw_centered) {
+            RCLCPP_INFO(
+              get_logger(),
+              "[Align Bag] Reached target distance from bag coordinate: dist=%.2f m (x=%.2f, y=%.2f, yaw_err=%.3f rad).",
+              bag_dist, chosen_bag.x, chosen_bag.y, yaw_err);
+            break;
+          }
+          if (std::abs(yaw_err) > 0.10 || d_err <= 0.0) {
+            twist.linear.x = 0.0;
+            twist.linear.y = 0.0;
+            if (yaw_centered) {
+              twist.angular.z = 0.0;
+            } else {
+              double raw_wz = std::clamp(1.0 * yaw_err, -0.20, 0.20);
+              if (std::abs(raw_wz) < 0.08) raw_wz = (yaw_err > 0.0) ? 0.08 : -0.08;
+              twist.angular.z = raw_wz;
+            }
+          } else {
+            twist.linear.x = std::clamp(0.40 * d_err, 0.06, 0.20);
+            twist.linear.y = 0.0;
+            twist.angular.z = yaw_centered ? 0.0 : std::clamp(0.5 * yaw_err, -0.08, 0.08);
+          }
         }
-        cmd_vel_pub_->publish(twist);
+        publish_smoothed_approach(twist.linear.x, twist.angular.z);
       } else {
         // Bag no longer visible (occluded by arm/lifter or blind zone):
-        // lock last bag & robot orientation and move straight without swaying left/right
+        // navigate toward locked world coordinate (bag_wx, bag_wy) up to bag_stop_distance_
         if (!vision_lost_locked) {
           vision_lost_locked = true;
           RCLCPP_INFO(
             get_logger(),
-            "[Align Bag] Bag occluded/lost near target. Locking last pose and finishing straight approach (vy=0, wz=0).");
+            "[Align Bag] Bag occluded/lost near target. Finishing approach using locked world coordinate.");
         }
 
         double cur_x = 0.0, cur_y = 0.0, cur_yaw = 0.0;
@@ -1917,18 +1990,20 @@ private:
           const double dx_w = bag_wx - cur_x;
           const double dy_w = bag_wy - cur_y;
           const double rel_x = dx_w * std::cos(cur_yaw) + dy_w * std::sin(cur_yaw);
-          if (rel_x <= bag_stop_distance_) {
+          const double rel_y = -dx_w * std::sin(cur_yaw) + dy_w * std::cos(cur_yaw);
+          const double dist = std::hypot(rel_x, rel_y);
+          if (rel_x <= bag_stop_distance_ || dist <= bag_stop_distance_) {
             RCLCPP_INFO(
               get_logger(),
-              "[Align Bag] Reached locked bag distance: rel_x=%.2f m (target: %.2f m).",
-              rel_x, bag_stop_distance_);
+              "[Align Bag] Reached locked bag distance: dist=%.2f m, rel_x=%.2f m (target: %.2f m).",
+              dist, rel_x, bag_stop_distance_);
             break;
           }
-          const double d_err = rel_x - bag_stop_distance_;
+          const double d_err = dist - bag_stop_distance_;
           twist.linear.x = std::clamp(0.40 * d_err, 0.06, 0.20);
           twist.linear.y = 0.0;
           twist.angular.z = 0.0;
-          cmd_vel_pub_->publish(twist);
+          publish_smoothed_approach(twist.linear.x, twist.angular.z);
         } else {
           if (last_known_dist <= bag_stop_distance_ + 0.15) {
             RCLCPP_INFO(
@@ -1940,7 +2015,7 @@ private:
           twist.linear.x = 0.05;
           twist.linear.y = 0.0;
           twist.angular.z = 0.0;
-          cmd_vel_pub_->publish(twist);
+          publish_smoothed_approach(twist.linear.x, twist.angular.z);
         }
       }
 
@@ -4418,12 +4493,14 @@ private:
   bool strict_id_lock_{true};
   double stop_distance_{0.5};
   double start_distance_{0.7};
-  double bag_stop_distance_{0.45};
+  double bag_stop_distance_{0.60};
   double bag_frame_width_{672.0};
   double bag_frame_height_{376.0};
   double bag_crosshair_x_offset_px_{0.0};
   double bag_crosshair_y_offset_px_{0.0};
   double bag_center_deadband_px_{15.0};
+  double bag_align_tol_left_px_{8.0};
+  double bag_align_tol_right_px_{8.0};
   double max_range_{3.0};
   double max_lost_time_{3.0};
   double occlusion_timeout_{1.5};

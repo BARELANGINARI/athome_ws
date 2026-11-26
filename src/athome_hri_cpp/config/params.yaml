@@ -19,7 +19,7 @@ stt_engine:
     vad_block_duration_sec: 0.03          # Durasi per frame VAD PortAudio (detik, default 0.03 = 30 ms)
     vad_speech_band_low_hz: 300.0         # Batas bawah frekuensi bandpass energi suara manusia (Hz)
     vad_speech_band_high_hz: 3400.0       # Batas atas frekuensi bandpass energi suara manusia (Hz)
-    threshold_dbfs: -20.0               # Floor ambang volume minimum (dBFS)
+    threshold_dbfs: -27.0               # Floor ambang volume minimum (dBFS)
     threshold_flatness: 0.40                # Ambang batas spectral flatness (0-1); tolak noise datar kipas/AC
     adaptive_vad_enabled: true                # true = threshold mengikuti noise floor ruangan + adaptive_snr_margin_db
     adaptive_snr_margin_db: 7.0                 # Margin SNR (dB) di atas noise floor saat adaptive_vad_enabled=true

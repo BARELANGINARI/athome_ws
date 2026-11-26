@@ -26,7 +26,7 @@ receptionist_node:
     odom_topic: "/odom"
     search_chair_ref_yaw: -1.57
     search_chair_angular_speed: 0.15
-    search_chair_timeout_sec: 60.0
+    search_chair_timeout_sec: 75.0
     search_chair_confirm_frames: 2
     search_chair_sweep_angle_deg: 30.0
     chair_max_dist: 2.0
@@ -77,7 +77,7 @@ receptionist_manager:
       shirt_color: "black"               # Warna pakaian Host
       hair_color: "black"                # Warna rambut Host
     camera_width: 1280                    # Lebar resolusi horizontal frame kamera (px)
-    global_timeout_sec: 360.0            # Batas waktu maksimal Receptionist sesuai rulebook (6 menit)
+    global_timeout_sec: 600.0            # Batas waktu maksimal Receptionist sesuai rulebook (6 menit)
     nav_service_timeout_sec: 50.0        # Watchdog service navigasi (> nav_timeout_sec)
     dialog_reprompt_sec: 12.0            # Jeda tunggu sebelum mengulang pertanyaan dialog STT (detik)
     wait_guest_prompt_sec: 8.0           # Interval sapaan saat menunggu tamu berdiri di depan pintu (detik)
