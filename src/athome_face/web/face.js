@@ -54,6 +54,36 @@
   let saccadeTimer = null;
   let scanTimer = null;
   let ws = null;
+  let refreshInterval = null;
+
+  function stopDisconnectRefreshLoop() {
+    if (refreshInterval !== null) {
+      clearInterval(refreshInterval);
+      refreshInterval = null;
+    }
+  }
+
+  function startDisconnectRefreshLoop() {
+    if (refreshInterval !== null) return;
+    refreshInterval = setInterval(async () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        stopDisconnectRefreshLoop();
+        return;
+      }
+      console.log("[AthomeFace] Disconnected, attempting web refresh...");
+      try {
+        const res = await fetch(window.location.href, {
+          method: "HEAD",
+          cache: "no-store"
+        });
+        if (res.ok) {
+          window.location.reload();
+        }
+      } catch (err) {
+        console.warn("[AthomeFace] Server unreachable, retrying refresh in 5s...");
+      }
+    }, 5000);
+  }
   let isSpeechActive = false;
   let subtitleTimer = null;
 
@@ -378,6 +408,7 @@
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
+        stopDisconnectRefreshLoop();
         wsDot.className = "dot connected";
         wsLabel.innerText = "ROS 2 CONNECTED";
         console.log("[AthomeFace] Connected to ROS 2 WebSocket on " + wsUrl);
@@ -386,12 +417,14 @@
       ws.onclose = () => {
         wsDot.className = "dot disconnected";
         wsLabel.innerText = "STANDALONE PREVIEW";
+        startDisconnectRefreshLoop();
         setTimeout(connectWebSocket, 3000);
       };
 
       ws.onerror = () => {
         wsDot.className = "dot disconnected";
         wsLabel.innerText = "STANDALONE PREVIEW";
+        startDisconnectRefreshLoop();
       };
 
       ws.onmessage = (event) => {
@@ -423,6 +456,7 @@
       };
     } catch (e) {
       console.log("[AthomeFace] Running in standalone preview mode.");
+      startDisconnectRefreshLoop();
     }
   }
 

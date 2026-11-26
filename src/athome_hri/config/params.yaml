@@ -19,8 +19,8 @@
     # -------------------------------------------------------------------------
     # 2. Voice Activity Detection / VAD (Penyaring awal suara vs hening di CPU)
     # -------------------------------------------------------------------------
-    threshold_dbfs: -23.5               # Batas volume minimum (atau floor) agar suara dianggap ucapan
-    threshold_flatness: 0.34                # Batas kerataan spektrum (0-1); lebih kecil = lebih ketat menolak noise datar (kipas/AC)
+    threshold_dbfs: -29.0               # Batas volume minimum (atau floor) agar suara dianggap ucapan
+    threshold_flatness: 0.38                # Batas kerataan spektrum (0-1); lebih kecil = lebih ketat menolak noise datar (kipas/AC)
     adaptive_vad_enabled: true                # true = threshold dBFS otomatis mengikuti noise floor ruangan + adaptive_snr_margin_db
     adaptive_snr_margin_db: 7.0                 # Margin SNR (dB) di atas noise floor ruangan saat adaptive_vad_enabled=true
     pre_roll_frames: 15                  # Jumlah frame (x30 ms = 450 ms) yang ikut direkam SEBELUM suara terdeteksi agar awal kata tidak terpotong

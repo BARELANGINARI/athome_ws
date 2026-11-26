@@ -558,18 +558,22 @@ public:
         if (!msg) return;
         RCLCPP_INFO_ONCE(
           get_logger(),
-          "\033[1;32m[MapClean]\033[0m Menerima /map (%ux%u), mulai publish /map_clean...",
+          "\033[1;32m[MapClean]\033[0m Menerima /map (%ux%u), mulai publish /map_clean (1 Hz)...",
           msg->info.width, msg->info.height);
+        bool first_map = false;
         {
           std::lock_guard<std::mutex> lock(raw_map_mutex_);
+          first_map = !latest_raw_map_;
           latest_raw_map_ = msg;
         }
-        publish_cleaned_map();
+        if (first_map) {
+          publish_cleaned_map();
+        }
       },
       sub_options);
 
     map_clean_timer_ = create_wall_timer(
-      std::chrono::milliseconds(500), [this]() { publish_cleaned_map(); });
+      std::chrono::milliseconds(1000), [this]() { publish_cleaned_map(); });
 
     RCLCPP_INFO(
       get_logger(),
@@ -1657,6 +1661,30 @@ private:
       return;
     }
 
+    // 5c. Wait until /lifter_state == 1 (or 10s timeout) before moving to bag position
+    RCLCPP_INFO(get_logger(), "[Align Bag] Waiting for /lifter_state == 1 (timeout 10.0 s)...");
+    const double max_lifter_wait_sec = 10.0;
+    while (rclcpp::ok()) {
+      const double elapsed = (now() - lifter_down_start).seconds();
+      if (lifter_state_received_.load() && lifter_state_.load() == 1) {
+        RCLCPP_INFO(
+          get_logger(),
+          "[Align Bag] Lifter confirmed (/lifter_state=1) after %.2f s.",
+          elapsed);
+        break;
+      }
+      if (elapsed >= max_lifter_wait_sec) {
+        RCLCPP_WARN(
+          get_logger(),
+          "[Align Bag] Timeout waiting for /lifter_state==1 (received=%s, latest=%u) after %.2f s; proceeding.",
+          lifter_state_received_.load() ? "true" : "false",
+          static_cast<unsigned int>(lifter_state_.load()),
+          elapsed);
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
     // 6. Lock bag world position after alignment and approach to bag_stop_distance_ (0.50 m)
     double lock_bx = std::hypot(target_bag.x, target_bag.y);
     double lock_by = 0.0;
@@ -1784,37 +1812,7 @@ private:
     twist.angular.z = 0.0;
     cmd_vel_pub_->publish(twist);
 
-    // 8. Ensure lifter has finished lowering, then pause 2 seconds before grasping
-    RCLCPP_INFO(get_logger(), "[Align Bag] Waiting for lifter to finish lowering...");
-    const double min_lifter_wait_sec = 3.0;
-    const double max_lifter_wait_sec = 10.0;
-    while (rclcpp::ok()) {
-      const double elapsed = (now() - lifter_down_start).seconds();
-      if (lifter_state_received_.load()) {
-        if (lifter_state_.load() == 0 && elapsed >= 0.5) {
-          RCLCPP_INFO(
-            get_logger(),
-            "[Align Bag] Lifter confirmed down (/lifter_state=0) after %.2f s.",
-            elapsed);
-          break;
-        }
-      } else if (elapsed >= min_lifter_wait_sec) {
-        RCLCPP_WARN(
-          get_logger(),
-          "[Align Bag] /lifter_state not received; proceeding after %.2f s wait.",
-          elapsed);
-        break;
-      }
-      if (elapsed >= max_lifter_wait_sec) {
-        RCLCPP_WARN(
-          get_logger(),
-          "[Align Bag] Timeout waiting for /lifter_state==0 (latest=%u) after %.2f s; proceeding.",
-          static_cast<unsigned int>(lifter_state_.load()), elapsed);
-        break;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-
+    // 8. Pause 2 seconds before grasping
     RCLCPP_INFO(get_logger(), "[Align Bag] Pausing 2 seconds before grasping...");
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
