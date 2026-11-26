@@ -1285,24 +1285,22 @@ private:
       // ------------------------------------------------------------------------
       case TaskState::PUT_DOWN_BAG:
         busy_ = true;
-        // Sequence: lifter down -> /arm/letakkan_tas -> lifter up -> speakAsync
-        moveLifter(false, [this]() {
+        // Sequence: lifter up -> /arm/letakkan_tas -> speakAsync
+        moveLifter(true, [this]() {
           callTrigger(
             put_down_bag_client_, "/arm/letakkan_tas",
             [this](bool success, const std::string & message) {
-              moveLifter(true, [this, success, message]() {
-                busy_ = false;
-                if (success) {
-                  speakAsync("I have placed the bag down. Task completed.", [this]() {
-                    transitionTo(TaskState::COMPLETED, "Bag placed down successfully");
-                  });
-                } else {
-                  RCLCPP_WARN(get_logger(), "Letakkan tas tidak berhasil: %s. Melanjutkan ke completed.", message.c_str());
-                  speakAsync("Task completed.", [this]() {
-                    transitionTo(TaskState::COMPLETED, "Task completed (fallback)");
-                  });
-                }
-              });
+              busy_ = false;
+              if (success) {
+                speakAsync("I have placed the bag down. Task completed.", [this]() {
+                  transitionTo(TaskState::COMPLETED, "Bag placed down successfully");
+                });
+              } else {
+                RCLCPP_WARN(get_logger(), "Letakkan tas tidak berhasil: %s. Melanjutkan ke completed.", message.c_str());
+                speakAsync("Task completed.", [this]() {
+                  transitionTo(TaskState::COMPLETED, "Task completed (fallback)");
+                });
+              }
             },
             30.0);
         });
