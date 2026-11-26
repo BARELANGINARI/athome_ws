@@ -5028,8 +5028,12 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         cv::rectangle(canvas, r, cv::Scalar(0, 69, 255), 2);
         const int cx = r.x + r.width / 2;
         const int cy = r.y + r.height / 2;
-        cv::circle(canvas, cv::Point(cx, cy), 6, cv::Scalar(0, 255, 0), -1);
-        cv::line(canvas, cv::Point(cx, cy), cv::Point(target_cx, target_cy), cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
+        const bool is_x_aligned = (std::abs(cx - target_cx) <= 10);
+        const cv::Scalar align_color = is_x_aligned ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 165, 255);
+        // Garis vertikal titik tengah bag untuk membandingkan kelurusan dengan garis vertikal tengah frame
+        cv::line(canvas, cv::Point(cx, std::max(0, r.y - 25)), cv::Point(cx, std::min(H - 1, r.y + r.height + 25)), align_color, 1, cv::LINE_AA);
+        cv::circle(canvas, cv::Point(cx, cy), 6, align_color, -1);
+        cv::line(canvas, cv::Point(cx, cy), cv::Point(target_cx, cy), align_color, 2, cv::LINE_AA);
       }
     }
 

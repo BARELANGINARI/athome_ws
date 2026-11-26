@@ -1804,14 +1804,26 @@ private:
           break;
         }
 
-        twist.linear.x = (d_err > 0.0) ? std::clamp(0.40 * d_err, 0.06, 0.22) : 0.0;
         if (x_centered) {
+          twist.linear.x = (d_err > 0.0) ? std::clamp(0.40 * d_err, 0.06, 0.20) : 0.0;
           twist.linear.y = 0.0;
           twist.angular.z = 0.0;
         } else {
+          // Tahan maju jika melenceng jauh (>35 px) agar bag masuk ke garis vertikal tengah dulu
+          if (std::abs(err_px_x) > 35.0 || d_err <= 0.0) {
+            twist.linear.x = 0.0;
+          } else {
+            twist.linear.x = std::clamp(0.25 * d_err, 0.06, 0.12);
+          }
+
           // Positive err_px_x means bag is right of crosshair -> strafe right (-vy) & turn right (-wz)
-          twist.linear.y = std::clamp(-0.0020 * err_px_x, -0.12, 0.12);
-          twist.angular.z = std::clamp(-0.0012 * err_px_x, -0.15, 0.15);
+          double raw_vy = std::clamp(-0.0025 * err_px_x, -0.14, 0.14);
+          if (std::abs(raw_vy) < 0.08) raw_vy = (err_px_x > 0.0) ? -0.08 : 0.08;
+          double raw_wz = std::clamp(-0.0020 * err_px_x, -0.22, 0.22);
+          if (std::abs(raw_wz) < 0.12) raw_wz = (err_px_x > 0.0) ? -0.12 : 0.12;
+
+          twist.linear.y = raw_vy;
+          twist.angular.z = raw_wz;
         }
         cmd_vel_pub_->publish(twist);
       } else {
