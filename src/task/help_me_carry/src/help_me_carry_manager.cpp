@@ -156,6 +156,8 @@ public:
       "/arm/helpmecarry_1", rclcpp::ServicesQoS(), callback_group_);
     adaptive_grasp_client_ = create_client<Trigger>(
       "/arm/helpmecarry_grasp", rclcpp::ServicesQoS(), callback_group_);
+    helpmecarry_2_client_ = create_client<Trigger>(
+      "/arm/helpmecarry_2", rclcpp::ServicesQoS(), callback_group_);
     put_down_bag_client_ = create_client<Trigger>(
       "/arm/letakkan_tas", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
@@ -295,6 +297,7 @@ private:
   TriggerClient::SharedPtr align_bag_client_;
   TriggerClient::SharedPtr grab_bag_client_;
   TriggerClient::SharedPtr adaptive_grasp_client_;
+  TriggerClient::SharedPtr helpmecarry_2_client_;
   TriggerClient::SharedPtr put_down_bag_client_;
   TriggerClient::SharedPtr homing_client_;
   TriggerClient::SharedPtr lifter_down_client_;
@@ -1244,7 +1247,7 @@ private:
       // ------------------------------------------------------------------------
       case TaskState::GRASP_BAG:
         busy_ = true;
-        // Sequence: /arm/helpmecarry_1 -> /lifter/turun -> /arm/helpmecarry_grasp -> /lifter/naik -> speakAsync
+        // Sequence: /arm/helpmecarry_1 -> /lifter/turun -> /arm/helpmecarry_grasp -> /arm/helpmecarry_2 -> /lifter/naik -> speakAsync
         callTrigger(
           grab_bag_client_, "/arm/helpmecarry_1",
           [this](bool motion_ok, const std::string & motion_msg) {
@@ -1265,13 +1268,9 @@ private:
               callTrigger(
                 adaptive_grasp_client_, "/arm/helpmecarry_grasp",
                 [this](bool grasp_ok, const std::string & grasp_msg) {
-                  moveLifter(true, [this, grasp_ok, grasp_msg]() {
-                    busy_ = false;
-                    if (grasp_ok) {
-                      speakAsync("I have the bag. I am returning to the starting point.", [this]() {
-                        transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
-                      });
-                    } else {
+                  if (!grasp_ok) {
+                    moveLifter(true, [this, grasp_msg]() {
+                      busy_ = false;
                       RCLCPP_WARN(
                         get_logger(),
                         "Motion /arm/helpmecarry_grasp gagal (%s). Mengaktifkan fallback bantuan operator...",
@@ -1281,8 +1280,32 @@ private:
                         [this]() {
                           transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
                         });
-                    }
-                  });
+                    });
+                    return;
+                  }
+                  callTrigger(
+                    helpmecarry_2_client_, "/arm/helpmecarry_2",
+                    [this](bool lift_motion_ok, const std::string & lift_motion_msg) {
+                      moveLifter(true, [this, lift_motion_ok, lift_motion_msg]() {
+                        busy_ = false;
+                        if (lift_motion_ok) {
+                          speakAsync("I have the bag. I am returning to the starting point.", [this]() {
+                            transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
+                          });
+                        } else {
+                          RCLCPP_WARN(
+                            get_logger(),
+                            "Motion /arm/helpmecarry_2 gagal (%s). Mengaktifkan fallback bantuan operator...",
+                            lift_motion_msg.c_str());
+                          speakAsync(
+                            "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
+                            [this]() {
+                              transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
+                            });
+                        }
+                      });
+                    },
+                    30.0);
                 },
                 20.0);
             });
