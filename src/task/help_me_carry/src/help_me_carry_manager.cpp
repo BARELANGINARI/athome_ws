@@ -153,9 +153,9 @@ public:
     align_bag_client_ = create_client<Trigger>(
       "/task/align_bag", rclcpp::ServicesQoS(), callback_group_);
     grab_bag_client_ = create_client<Trigger>(
-      "/arm/motion_task_1", rclcpp::ServicesQoS(), callback_group_);
+      "/arm/helpmecarry_1", rclcpp::ServicesQoS(), callback_group_);
     adaptive_grasp_client_ = create_client<Trigger>(
-      "/arm/adaptive_grasp", rclcpp::ServicesQoS(), callback_group_);
+      "/arm/helpmecarry_grasp", rclcpp::ServicesQoS(), callback_group_);
     put_down_bag_client_ = create_client<Trigger>(
       "/arm/letakkan_tas", rclcpp::ServicesQoS(), callback_group_);
     homing_client_ = create_client<Trigger>(
@@ -1244,15 +1244,15 @@ private:
       // ------------------------------------------------------------------------
       case TaskState::GRASP_BAG:
         busy_ = true;
-        // Sequence: /arm/motion_task_1 (grasp off) -> lifter down -> /arm/adaptive_grasp -> lifter up -> speakAsync
+        // Sequence: /arm/helpmecarry_1 -> /lifter/turun -> /arm/helpmecarry_grasp -> /lifter/naik -> speakAsync
         callTrigger(
-          grab_bag_client_, "/arm/motion_task_1",
+          grab_bag_client_, "/arm/helpmecarry_1",
           [this](bool motion_ok, const std::string & motion_msg) {
             if (!motion_ok) {
               busy_ = false;
               RCLCPP_WARN(
                 get_logger(),
-                "Motion arm/motion_task_1 gagal (%s). Mengaktifkan fallback bantuan operator...",
+                "Motion /arm/helpmecarry_1 gagal (%s). Mengaktifkan fallback bantuan operator...",
                 motion_msg.c_str());
               speakAsync(
                 "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
@@ -1263,7 +1263,7 @@ private:
             }
             moveLifter(false, [this]() {
               callTrigger(
-                adaptive_grasp_client_, "/arm/adaptive_grasp",
+                adaptive_grasp_client_, "/arm/helpmecarry_grasp",
                 [this](bool grasp_ok, const std::string & grasp_msg) {
                   moveLifter(true, [this, grasp_ok, grasp_msg]() {
                     busy_ = false;
@@ -1274,7 +1274,7 @@ private:
                     } else {
                       RCLCPP_WARN(
                         get_logger(),
-                        "Grasp otonom gagal (%s). Mengaktifkan fallback bantuan operator...",
+                        "Motion /arm/helpmecarry_grasp gagal (%s). Mengaktifkan fallback bantuan operator...",
                         grasp_msg.c_str());
                       speakAsync(
                         "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
@@ -1284,7 +1284,7 @@ private:
                     }
                   });
                 },
-                15.0);
+                20.0);
             });
           },
           30.0);

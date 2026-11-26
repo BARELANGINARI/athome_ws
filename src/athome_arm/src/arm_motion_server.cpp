@@ -172,6 +172,16 @@ public:
             std::bind(&ArmMotionServer::handleAmbilTas, this, std::placeholders::_1, std::placeholders::_2)
         );
 
+        helpmecarry_1_srv_ = this->create_service<std_srvs::srv::Trigger>(
+            "/arm/helpmecarry_1",
+            std::bind(&ArmMotionServer::handleHelpMeCarry1, this, std::placeholders::_1, std::placeholders::_2)
+        );
+
+        helpmecarry_grasp_srv_ = this->create_service<std_srvs::srv::Trigger>(
+            "/arm/helpmecarry_grasp",
+            std::bind(&ArmMotionServer::handleHelpMeCarryGrasp, this, std::placeholders::_1, std::placeholders::_2)
+        );
+
         ambil_tas_simple_srv_ = this->create_service<std_srvs::srv::Trigger>(
             "/arm/ambil_tas_simple",
             std::bind(&ArmMotionServer::handleAmbilTasSimple, this, std::placeholders::_1, std::placeholders::_2)
@@ -319,6 +329,8 @@ private:
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr target_point_sub_;
 
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_tas_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr helpmecarry_1_srv_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr helpmecarry_grasp_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_tas_simple_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr ambil_order_srv_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr release_gripper_srv_;
@@ -1135,6 +1147,44 @@ private:
             response->success = true;
             response->message = "Motion ambil_tas (without grasp) executed successfully.";
             RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m Ambil tas done", getTaskTag().c_str());
+        } else {
+            response->success = false;
+            response->message = err;
+            RCLCPP_ERROR(this->get_logger(), "%s\033[1;31m[ARM]\033[0m %s", getTaskTag().c_str(), err.c_str());
+        }
+    }
+
+    void handleHelpMeCarry1(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        std::lock_guard<std::mutex> lock(hardware_mutex_);
+
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m HelpMeCarry_1 start...", getTaskTag().c_str());
+        std::string err;
+        if (runMotionByName("helpmecarry_1", err)) {
+            response->success = true;
+            response->message = "Motion helpmecarry_1 executed successfully.";
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m HelpMeCarry_1 done", getTaskTag().c_str());
+        } else {
+            response->success = false;
+            response->message = err;
+            RCLCPP_ERROR(this->get_logger(), "%s\033[1;31m[ARM]\033[0m %s", getTaskTag().c_str(), err.c_str());
+        }
+    }
+
+    void handleHelpMeCarryGrasp(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> /*request*/,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+    {
+        std::lock_guard<std::mutex> lock(hardware_mutex_);
+
+        RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m HelpMeCarry_grasp start...", getTaskTag().c_str());
+        std::string err;
+        if (runMotionByName("helpmecarry_grasp", err)) {
+            response->success = true;
+            response->message = "Motion helpmecarry_grasp executed successfully.";
+            RCLCPP_INFO(this->get_logger(), "%s\033[1;35m[ARM]\033[0m HelpMeCarry_grasp done", getTaskTag().c_str());
         } else {
             response->success = false;
             response->message = err;
