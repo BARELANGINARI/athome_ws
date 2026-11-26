@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <future>
 #include <memory>
@@ -330,10 +331,20 @@ private:
   double nav_retry_cooldown_sec_{0.0};
 
   // State & Profile Store
+  struct CallbackScope {
+    std::atomic<int> & counter;
+    explicit CallbackScope(std::atomic<int> & c) : counter(c) { counter.fetch_add(1); }
+    ~CallbackScope() { counter.fetch_sub(1); }
+  };
+  struct CallbackExit {
+    std::atomic<int> & counter;
+    ~CallbackExit() { counter.fetch_sub(1); }
+  };
+
   std::atomic<ReceptionistState> state_{ReceptionistState::INIT};
   std::atomic<bool> speaking_{false};
   std::atomic<bool> service_busy_{false};
-  std::atomic<bool> in_callback_{false};
+  std::atomic<int> in_callback_depth_{0};
   std::atomic<bool> person_seen_{false};
   std::atomic<bool> standing_guest_seen_{false};
   std::atomic<int> nearest_person_id_{-1};
@@ -355,7 +366,7 @@ private:
   int camera_width_{0};
 
   // Vision Perception Data
-  std::mutex vision_mutex_;
+  mutable std::mutex vision_mutex_;
   std::vector<DetectedObject> latest_drinks_;
   rclcpp::Time last_drink_msg_time_{0, 0, RCL_ROS_TIME};
   std::vector<DetectedObject> table_drinks_snapshot_;
@@ -446,7 +457,7 @@ private:
   // ============================================================================
   bool isBusy() const
   {
-    return speaking_.load() || service_busy_.load() || in_callback_.load();
+    return speaking_.load() || service_busy_.load() || in_callback_depth_.load() > 0;
   }
 
   bool isVisionActive() const
@@ -588,9 +599,9 @@ private:
 
     person_seen_ = false;
     standing_guest_seen_ = false;
-    drinks_detected_on_arrival_ = false;
     {
       std::lock_guard<std::mutex> lock(vision_mutex_);
+      drinks_detected_on_arrival_ = false;
       table_drinks_snapshot_.clear();
       beverage_snapshot_locked_ = false;
       latest_drinks_.clear();
@@ -1095,14 +1106,26 @@ private:
 
   bool isPersonInFront() const
   {
-    return person_seen_.load() &&
-           (now() - last_person_seen_time_).seconds() < person_freshness_sec_;
+    if (!person_seen_.load()) return false;
+    rclcpp::Time seen_t(0, 0, RCL_ROS_TIME);
+    {
+      std::lock_guard<std::mutex> lock(vision_mutex_);
+      seen_t = last_person_seen_time_;
+    }
+    return seen_t.nanoseconds() > 0 &&
+           (now() - seen_t).seconds() < person_freshness_sec_;
   }
 
   bool isStandingGuestInFront() const
   {
-    return standing_guest_seen_.load() &&
-           (now() - last_standing_guest_seen_time_).seconds() < person_freshness_sec_;
+    if (!standing_guest_seen_.load()) return false;
+    rclcpp::Time seen_t(0, 0, RCL_ROS_TIME);
+    {
+      std::lock_guard<std::mutex> lock(vision_mutex_);
+      seen_t = last_standing_guest_seen_time_;
+    }
+    return seen_t.nanoseconds() > 0 &&
+           (now() - seen_t).seconds() < person_freshness_sec_;
   }
 
   // ============================================================================
@@ -1162,7 +1185,7 @@ private:
           msg->data.c_str(), active_tts_text_.c_str());
         return;
       }
-      in_callback_ = true;
+      in_callback_depth_.fetch_add(1);
       speaking_ = false;
       const std::string completed =
         (msg != nullptr && !msg->data.empty()) ? msg->data : active_tts_text_;
@@ -1176,11 +1199,11 @@ private:
       pending_tts_done_ = nullptr;
     }
 
+    CallbackExit cb_exit{in_callback_depth_};
     publishExpression(expressionForState(state_.load()));
     if (callback) {
       callback();
     }
-    in_callback_ = false;
   }
 
   bool isDialogWaitState(ReceptionistState s) const
@@ -1769,8 +1792,12 @@ private:
       return;
     }
 
+    const auto rx_time = now();
+    {
+      std::lock_guard<std::mutex> lock(vision_mutex_);
+      last_person_seen_time_ = rx_time;
+    }
     person_seen_ = true;
-    last_person_seen_time_ = now();
 
     {
       bool has_standing_guest = false;
@@ -1803,7 +1830,10 @@ private:
         if (kpos != std::string::npos) {
           std::vector<double> kc;
           kc.reserve(68);
-          std::stringstream kss(pitem.substr(kpos + 5));
+          const size_t kstart = kpos + 5;
+          const size_t kend = pitem.find('|', kstart);
+          std::stringstream kss(
+            (kend != std::string::npos) ? pitem.substr(kstart, kend - kstart) : pitem.substr(kstart));
           std::string tok;
           while (std::getline(kss, tok, ',')) {
             try { kc.push_back(std::stod(tok)); } catch (...) { kc.push_back(-1.0); }
@@ -1820,8 +1850,11 @@ private:
         }
       }
       if (has_standing_guest) {
+        {
+          std::lock_guard<std::mutex> lock(vision_mutex_);
+          last_standing_guest_seen_time_ = rx_time;
+        }
         standing_guest_seen_ = true;
-        last_standing_guest_seen_time_ = now();
       }
     }
 
@@ -2032,16 +2065,20 @@ private:
     double timeout_sec = 10.0)
   {
     if (!client) {
-      if (result) result(false, "Client is null");
+      if (result) {
+        CallbackScope cb_scope(in_callback_depth_);
+        result(false, "Client is null");
+      }
       return;
     }
 
     if (!client->service_is_ready()) {
-      if (!client->wait_for_service(1s)) {
-        RCLCPP_WARN(get_logger(), "Service %s belum tersedia.", service_name.c_str());
-        if (result) result(false, "Service not ready");
-        return;
+      RCLCPP_WARN(get_logger(), "Service %s belum tersedia.", service_name.c_str());
+      if (result) {
+        CallbackScope cb_scope(in_callback_depth_);
+        result(false, "Service not ready");
       }
+      return;
     }
 
     {
@@ -2063,12 +2100,13 @@ private:
           if (!service_busy_.load() || active_srv_name_ != service_name) {
             return;
           }
-          in_callback_ = true;
+          in_callback_depth_.fetch_add(1);
           service_busy_ = false;
           cb = std::move(pending_srv_result_);
           pending_srv_result_ = nullptr;
         }
 
+        CallbackExit cb_exit{in_callback_depth_};
         bool ok = false;
         std::string msg;
         try {
@@ -2081,7 +2119,6 @@ private:
         }
 
         if (cb) cb(ok, msg);
-        in_callback_ = false;
       });
   }
 
@@ -2127,6 +2164,7 @@ private:
       RCLCPP_WARN(
         get_logger(), "Service %s timeout (> %.1f s), releasing lock.",
         timed_out_srv_name.c_str(), srv_timeout_sec_);
+      CallbackScope cb_scope(in_callback_depth_);
       timed_out_srv_cb(false, "Service response timeout");
       return;
     }
@@ -2407,7 +2445,7 @@ private:
                 resetGuestProfileFields(current_guest_, guest_idx_);
               }
               if (guests_.size() >= static_cast<size_t>(guest_idx_)) {
-                guests_[static_cast<size_t>(guest_idx_ - 1)].name.clear();
+                guests_[static_cast<size_t>(guest_idx_ - 1)] = current_guest_;
               }
             }
             if (person_name_pub_ && !keep_locked_attrs) {
@@ -2557,8 +2595,13 @@ private:
           std::lock_guard<std::mutex> lock(guest_mutex_);
           fav_drink = current_guest_.drink;
         }
+        bool has_arrival_drinks = false;
+        {
+          std::lock_guard<std::mutex> v_lock(vision_mutex_);
+          has_arrival_drinks = drinks_detected_on_arrival_;
+        }
         std::string report;
-        if (drinks_detected_on_arrival_) {
+        if (has_arrival_drinks) {
           bool found_match = false;
           const std::string side = locateBeverageSide(fav_drink, found_match);
           if (found_match) {
@@ -2590,7 +2633,7 @@ private:
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
           if (guest_idx_ == 1) {
-            escort_msg += " Our host, " + host_.name + ", is waiting there.";
+            escort_msg += " A guest is waiting there.";
           } else if (guest_idx_ == 2 && !guests_.empty()) {
             // Optional Goal 2: deskripsikan Guest 1 ke Guest 2 SEBELUM tiba di living room
             const std::string g1_desc = formatPersonDescription(guests_[0]);
@@ -2729,7 +2772,9 @@ private:
           std::lock_guard<std::mutex> lock(guest_mutex_);
           if (guests_.size() < 2) {
             RCLCPP_ERROR(get_logger(), "Insufficient guest profiles (%zu < 2)!", guests_.size());
-            transitionTo(ReceptionistState::FINISH_TASK, "Skipped introductions (missing profile)");
+            clearLivingRoomLocks([this]() {
+              transitionTo(ReceptionistState::FINISH_TASK, "Skipped introductions (missing profile)");
+            });
             break;
           }
         }
@@ -2749,7 +2794,9 @@ private:
           {
             std::lock_guard<std::mutex> lock(guest_mutex_);
             if (guests_.size() < 2) {
-              transitionTo(ReceptionistState::FINISH_TASK, "Missing guest profile");
+              clearLivingRoomLocks([this]() {
+                transitionTo(ReceptionistState::FINISH_TASK, "Missing guest profile");
+              });
               return;
             }
             guest1 = guests_[0];
@@ -2772,7 +2819,9 @@ private:
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
           if (guests_.size() < 2) {
-            transitionTo(ReceptionistState::FINISH_TASK, "Skipped intro (missing profile)");
+            clearLivingRoomLocks([this]() {
+              transitionTo(ReceptionistState::FINISH_TASK, "Skipped intro (missing profile)");
+            });
             break;
           }
         }
@@ -2792,7 +2841,9 @@ private:
           {
             std::lock_guard<std::mutex> lock(guest_mutex_);
             if (guests_.size() < 2) {
-              transitionTo(ReceptionistState::FINISH_TASK, "Missing guest profile");
+              clearLivingRoomLocks([this]() {
+                transitionTo(ReceptionistState::FINISH_TASK, "Missing guest profile");
+              });
               return;
             }
             guest1 = guests_[0];
@@ -2816,7 +2867,9 @@ private:
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
           if (guests_.size() < 2) {
-            transitionTo(ReceptionistState::FINISH_TASK, "Skipped similarity evaluation");
+            clearLivingRoomLocks([this]() {
+              transitionTo(ReceptionistState::FINISH_TASK, "Skipped similarity evaluation");
+            });
             break;
           }
           all_people = {host_, guests_[0], guests_[1]};
