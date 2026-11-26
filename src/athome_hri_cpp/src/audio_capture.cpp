@@ -39,13 +39,15 @@ AudioCapture::AudioCapture(
   const VadConfig & config,
   UtteranceCallback on_utterance,
   PauseCheckCallback is_paused_fn,
-  MetricsCallback on_metrics)
+  MetricsCallback on_metrics,
+  VadDropCallback on_vad_drop)
 : configured_device_index_(device_index),
   target_sample_rate_(std::max(8000, config.sample_rate)),
   config_(config),
   on_utterance_(std::move(on_utterance)),
   is_paused_fn_(std::move(is_paused_fn)),
-  on_metrics_(std::move(on_metrics))
+  on_metrics_(std::move(on_metrics)),
+  on_vad_drop_(std::move(on_vad_drop))
 {
   target_block_size_ = std::max<size_t>(
     160, static_cast<size_t>(std::llround(target_sample_rate_ * config_.block_duration_sec)));
@@ -336,10 +338,18 @@ void AudioCapture::emitUtterance(bool force_emit)
     if (on_utterance_ && !full_audio.empty()) {
       on_utterance_(std::move(full_audio));
     }
+  } else if (active_voice_frames_ > 0 && on_vad_drop_) {
+    size_t total_samples = 0;
+    for (const auto & f : speech_buffer_) {
+      total_samples += f.size();
+    }
+    const double dur_sec = static_cast<double>(total_samples) / static_cast<double>(target_sample_rate_);
+    on_vad_drop_(VadDropInfo{active_voice_frames_, min_voice, dur_sec, segment_peak_dbfs_});
   }
   is_speaking_ = false;
   silence_counter_ = 0;
   active_voice_frames_ = 0;
+  segment_peak_dbfs_ = -100.0;
   speech_buffer_.clear();
 }
 
@@ -362,6 +372,7 @@ void AudioCapture::processFrame(const std::vector<float> & frame)
     is_speaking_ = false;
     silence_counter_ = 0;
     active_voice_frames_ = 0;
+    segment_peak_dbfs_ = -100.0;
     if (on_metrics_) {
       VadFrameMetrics m;
       m.dbfs = dbfs;
@@ -401,11 +412,13 @@ void AudioCapture::processFrame(const std::vector<float> & frame)
     if (!is_speaking_) {
       is_speaking_ = true;
       active_voice_frames_ = 0;
+      segment_peak_dbfs_ = -100.0;
       for (const auto & pre : pre_roll_buffer_) {
         speech_buffer_.push_back(pre);
       }
     }
     ++active_voice_frames_;
+    segment_peak_dbfs_ = std::max(segment_peak_dbfs_, dbfs_speech);
     speech_buffer_.push_back(frame);
     silence_counter_ = 0;
 

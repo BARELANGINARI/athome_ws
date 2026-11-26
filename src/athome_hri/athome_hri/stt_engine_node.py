@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import threading
 import time
@@ -87,6 +88,9 @@ class SttEngineNode(Node):
 
         self.transcript_pub = self.create_publisher(
             String, "/hri/stt_transcript", 10
+        )
+        self.stt_event_pub = self.create_publisher(
+            String, "/hri/stt_events", 20
         )
 
         self._tts_lock = threading.Lock()
@@ -298,21 +302,61 @@ class SttEngineNode(Node):
             throttle_duration_sec=1.0,
         )
 
+    def _publish_stt_event(self, payload: dict) -> None:
+        msg = String()
+        msg.data = json.dumps(payload, ensure_ascii=False)
+        self.stt_event_pub.publish(msg)
+
     async def _transcribe(self, audio_input: Union[np.ndarray, bytes]) -> None:
+        audio_sec = (
+            round(len(audio_input) / float(max(1, self._stt.sample_rate)), 3)
+            if isinstance(audio_input, np.ndarray)
+            else 0.0
+        )
         if self._is_mic_paused():
+            self._publish_stt_event({
+                "event": "dropped_tts_mute",
+                "status": "dropped",
+                "reason": "tts_echo_or_muted",
+                "raw_text": "",
+                "final_text": "",
+                "audio_sec": audio_sec,
+                "latency_sec": 0.0,
+                "rtf": 0.0,
+                "avg_logprob": None,
+                "no_speech_prob": None,
+            })
             return
         epoch = self._tts_epoch
         transcript = await asyncio.to_thread(self._stt.transcribe, audio_input)
+        ev = dict(self._stt.last_event) if self._stt.last_event else None
         if not transcript:
+            if ev is not None:
+                self._publish_stt_event(ev)
             return
         if self._tts_epoch != epoch or self._is_mic_paused():
             self.get_logger().info(
                 f"{self.task_header}\n  STT Dropped (TTS echo/stale): \"{transcript}\""
             )
+            drop_ev = ev or {
+                "raw_text": transcript,
+                "final_text": transcript,
+                "audio_sec": audio_sec,
+                "latency_sec": 0.0,
+                "rtf": 0.0,
+                "avg_logprob": None,
+                "no_speech_prob": None,
+            }
+            drop_ev["event"] = "dropped_tts_mute"
+            drop_ev["status"] = "dropped"
+            drop_ev["reason"] = "tts_echo_or_muted"
+            self._publish_stt_event(drop_ev)
             return
         message = String()
         message.data = transcript
         self.transcript_pub.publish(message)
+        if ev is not None:
+            self._publish_stt_event(ev)
         self.get_logger().info(f"{self.task_header}\n  STT: \"{transcript}\"")
 
     async def _on_audio(self, audio_input: Union[np.ndarray, bytes]) -> None:

@@ -29,10 +29,15 @@ struct WhisperAsrConfig
 struct AsrResult
 {
   std::string text;
+  std::string raw_text;
   std::string rejected_raw;
+  std::string reject_reason;
   double latency_sec{0.0};
   double audio_duration_sec{0.0};
   double rtf{0.0};
+  double avg_logprob{0.0};
+  double no_speech_prob{0.0};
+  bool has_scores{false};
   bool accepted{false};
 };
 

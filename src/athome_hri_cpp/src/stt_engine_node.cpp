@@ -5,9 +5,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <iomanip>
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -60,6 +62,27 @@ std::string makeTaskHeader(const std::string & task_mode)
     return "\033[1;34m[RESTAURANT]\033[0m";
   }
   return "\033[1;33m[HRI_CPP]\033[0m";
+}
+std::string jsonEscape(const std::string & s)
+{
+  std::ostringstream oss;
+  for (unsigned char c : s) {
+    switch (c) {
+      case '\\': oss << "\\\\"; break;
+      case '"': oss << "\\\""; break;
+      case '\n': oss << "\\n"; break;
+      case '\r': oss << "\\r"; break;
+      case '\t': oss << "\\t"; break;
+      default:
+        if (c < 0x20) {
+          oss << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(c);
+        } else {
+          oss << static_cast<char>(c);
+        }
+        break;
+    }
+  }
+  return oss.str();
 }
 }  // namespace
 
@@ -172,6 +195,7 @@ public:
 
     // 5. ROS 2 Publishers & Subscribers (Drop-in topics)
     transcript_pub_ = create_publisher<std_msgs::msg::String>("/hri/stt_transcript", 10);
+    stt_event_pub_ = create_publisher<std_msgs::msg::String>("/hri/stt_events", 20);
     tts_say_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_say", 10,
       std::bind(&SttEngineCppNode::onTtsSay, this, std::placeholders::_1));
@@ -189,7 +213,12 @@ public:
       vad_config_,
       [this](std::vector<float> && audio) { enqueueUtterance(std::move(audio)); },
       [this]() { return isMicPaused(); },
-      [this](const VadFrameMetrics & m) { onVadMetrics(m); });
+      [this](const VadFrameMetrics & m) { onVadMetrics(m); },
+      [this](const AudioCapture::VadDropInfo & d) {
+        publishSttEvent(
+          "vad_dropped_short", "dropped", "too_short_vad", "", "",
+          d.duration_sec, 0.0, 0.0, false, 0.0, 0.0, d.voice_frames, d.peak_dbfs);
+      });
 
     if (capture_->start()) {
       RCLCPP_INFO(
@@ -281,9 +310,58 @@ private:
     }
   }
 
+  void publishSttEvent(
+    const std::string & event,
+    const std::string & status,
+    const std::string & reason,
+    const std::string & raw_text,
+    const std::string & final_text,
+    double audio_sec,
+    double latency_sec,
+    double rtf,
+    bool has_scores,
+    double avg_logprob,
+    double no_speech_prob,
+    int voice_frames = 0,
+    double peak_dbfs = 0.0)
+  {
+    if (!stt_event_pub_) {
+      return;
+    }
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(3)
+        << "{\"event\":\"" << jsonEscape(event) << "\""
+        << ",\"status\":\"" << jsonEscape(status) << "\""
+        << ",\"reason\":\"" << jsonEscape(reason) << "\""
+        << ",\"raw_text\":\"" << jsonEscape(raw_text) << "\""
+        << ",\"final_text\":\"" << jsonEscape(final_text) << "\""
+        << ",\"audio_sec\":" << audio_sec
+        << ",\"latency_sec\":" << latency_sec
+        << ",\"rtf\":" << rtf;
+    if (has_scores) {
+      oss << ",\"avg_logprob\":" << avg_logprob
+          << ",\"no_speech_prob\":" << no_speech_prob;
+    } else {
+      oss << ",\"avg_logprob\":null,\"no_speech_prob\":null";
+    }
+    if (voice_frames > 0) {
+      oss << ",\"voice_frames\":" << voice_frames
+          << ",\"peak_dbfs\":" << std::setprecision(1) << peak_dbfs;
+    }
+    oss << "}";
+    std_msgs::msg::String msg;
+    msg.data = oss.str();
+    stt_event_pub_->publish(msg);
+  }
+
   void enqueueUtterance(std::vector<float> && audio)
   {
+    const double raw_dur = static_cast<double>(audio.size()) /
+      static_cast<double>(std::max(1, vad_config_.sample_rate));
     if (isMicPaused()) {
+      publishSttEvent(
+        "dropped_tts_mute", "dropped", "tts_echo_or_muted", "", "",
+        raw_dur, 0.0, 0.0, false, 0.0, 0.0);
       return;
     }
     {
@@ -311,7 +389,12 @@ private:
         asr_queue_.pop();
       }
 
+      const double orig_dur = static_cast<double>(item.audio.size()) /
+        static_cast<double>(std::max(1, vad_config_.sample_rate));
       if (item.epoch != tts_epoch_.load() || isMicPaused()) {
+        publishSttEvent(
+          "dropped_tts_mute", "dropped", "tts_echo_or_muted", "", "",
+          orig_dur, 0.0, 0.0, false, 0.0, 0.0);
         continue;
       }
 
@@ -325,11 +408,17 @@ private:
           RCLCPP_INFO(
             get_logger(), "%s\n  STT Dropped (Silero VAD: non-speech/too short)",
             task_header_.c_str());
+          publishSttEvent(
+            "dropped_silero_vad", "dropped", "silero_non_speech", "", "",
+            orig_dur, 0.0, 0.0, false, 0.0, 0.0);
           continue;
         }
       }
 
       if (item.epoch != tts_epoch_.load() || isMicPaused()) {
+        publishSttEvent(
+          "dropped_tts_mute", "dropped", "tts_echo_or_muted", "", "",
+          orig_dur, 0.0, 0.0, false, 0.0, 0.0);
         continue;
       }
 
@@ -340,18 +429,37 @@ private:
           RCLCPP_INFO(
             get_logger(), "%s\n  STT Dropped (TTS echo/stale): \"%s\"",
             task_header_.c_str(), res.text.c_str());
+          publishSttEvent(
+            "dropped_tts_mute", "dropped", "tts_echo_or_muted",
+            res.raw_text.empty() ? res.text : res.raw_text, res.text,
+            res.audio_duration_sec, res.latency_sec, res.rtf,
+            res.has_scores, res.avg_logprob, res.no_speech_prob);
           continue;
         }
         std_msgs::msg::String out;
         out.data = res.text;
         transcript_pub_->publish(out);
+        publishSttEvent(
+          "asr_accepted", "accepted", "ok",
+          res.raw_text.empty() ? res.text : res.raw_text, res.text,
+          res.audio_duration_sec, res.latency_sec, res.rtf,
+          res.has_scores, res.avg_logprob, res.no_speech_prob);
         RCLCPP_INFO(
           get_logger(), "%s\n  STT: \"%s\" (RTF: %.3f | Latency: %.2fs | Audio: %.2fs)",
           task_header_.c_str(), res.text.c_str(), res.rtf, res.latency_sec, res.audio_duration_sec);
-      } else if (!res.rejected_raw.empty()) {
-        RCLCPP_INFO(
-          get_logger(), "%s\n  STT Rejected (noise/hallucination): \"%s\"",
-          task_header_.c_str(), res.rejected_raw.c_str());
+      } else {
+        const std::string raw_dbg = !res.raw_text.empty() ? res.raw_text : res.rejected_raw;
+        publishSttEvent(
+          "asr_rejected", "rejected",
+          res.reject_reason.empty() ? "rejected" : res.reject_reason,
+          raw_dbg, "",
+          res.audio_duration_sec, res.latency_sec, res.rtf,
+          res.has_scores, res.avg_logprob, res.no_speech_prob);
+        if (!raw_dbg.empty()) {
+          RCLCPP_INFO(
+            get_logger(), "%s\n  STT Rejected (%s): \"%s\"",
+            task_header_.c_str(), res.reject_reason.c_str(), raw_dbg.c_str());
+        }
       }
     }
   }
@@ -544,11 +652,33 @@ private:
   std::queue<UtteranceItem> asr_queue_;
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr transcript_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr stt_event_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_say_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 };
 
+std::string jsonEscape(const std::string & s)
+{
+  std::ostringstream oss;
+  for (unsigned char c : s) {
+    switch (c) {
+      case '\\': oss << "\\\\"; break;
+      case '"': oss << "\\\""; break;
+      case '\n': oss << "\\n"; break;
+      case '\r': oss << "\\r"; break;
+      case '\t': oss << "\\t"; break;
+      default:
+        if (c < 0x20) {
+          oss << "\\u" << std::hex << std::setw(4) << std::setfill('0') << static_cast<int>(c);
+        } else {
+          oss << static_cast<char>(c);
+        }
+        break;
+    }
+  }
+  return oss.str();
+}
 }  // namespace athome_hri_cpp
 
 int main(int argc, char ** argv)
