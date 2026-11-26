@@ -1243,72 +1243,12 @@ private:
         break;
 
       // ------------------------------------------------------------------------
-      // State 7: GRASP_BAG - Pengambilan tas via Lengan Robot (+ Human Fallback)
+      // State 7: GRASP_BAG - Lanjut menuju RETURN_TO_START (pengambilan sudah di align_bag)
       // ------------------------------------------------------------------------
       case TaskState::GRASP_BAG:
-        busy_ = true;
-        // Sequence: /arm/helpmecarry_1 -> /lifter/turun -> /arm/helpmecarry_grasp -> /arm/helpmecarry_2 -> speakAsync
-        callTrigger(
-          grab_bag_client_, "/arm/helpmecarry_1",
-          [this](bool motion_ok, const std::string & motion_msg) {
-            if (!motion_ok) {
-              busy_ = false;
-              RCLCPP_WARN(
-                get_logger(),
-                "Motion /arm/helpmecarry_1 gagal (%s). Mengaktifkan fallback bantuan operator...",
-                motion_msg.c_str());
-              speakAsync(
-                "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
-                [this]() {
-                  transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
-                });
-              return;
-            }
-            moveLifter(false, [this]() {
-              callTrigger(
-                adaptive_grasp_client_, "/arm/helpmecarry_grasp",
-                [this](bool grasp_ok, const std::string & grasp_msg) {
-                  if (!grasp_ok) {
-                    moveLifter(true, [this, grasp_msg]() {
-                      busy_ = false;
-                      RCLCPP_WARN(
-                        get_logger(),
-                        "Motion /arm/helpmecarry_grasp gagal (%s). Mengaktifkan fallback bantuan operator...",
-                        grasp_msg.c_str());
-                      speakAsync(
-                        "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
-                        [this]() {
-                          transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
-                        });
-                    });
-                    return;
-                  }
-                  callTrigger(
-                    helpmecarry_2_client_, "/arm/helpmecarry_2",
-                    [this](bool lift_motion_ok, const std::string & lift_motion_msg) {
-                      busy_ = false;
-                      if (lift_motion_ok) {
-                        speakAsync("I have the bag. I am returning to the starting point.", [this]() {
-                          transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
-                        });
-                      } else {
-                        RCLCPP_WARN(
-                          get_logger(),
-                          "Motion /arm/helpmecarry_2 gagal (%s). Mengaktifkan fallback bantuan operator...",
-                          lift_motion_msg.c_str());
-                        speakAsync(
-                          "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
-                          [this]() {
-                            transitionTo(TaskState::RETURN_TO_START, "Bag handed over via human fallback");
-                          });
-                      }
-                    },
-                    30.0);
-                },
-                20.0);
-            });
-          },
-          30.0);
+        speakAsync("I have the bag. I am returning to the starting point.", [this]() {
+          transitionTo(TaskState::RETURN_TO_START, "Bag grasped");
+        });
         break;
 
       // ------------------------------------------------------------------------
