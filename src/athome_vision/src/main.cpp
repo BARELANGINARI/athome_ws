@@ -644,14 +644,15 @@ public:
     using_cuda_ = false;
     try {
       Ort::SessionOptions opts;
-      opts.SetIntraOpNumThreads(4);
+      opts.SetIntraOpNumThreads(2);
+      opts.SetInterOpNumThreads(1);
       opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
       try {
         OrtCUDAProviderOptions cuda_opts{};
         cuda_opts.device_id = 0;
         cuda_opts.cudnn_conv_algo_search = algo_search;
-        cuda_opts.do_copy_in_default_stream = 0;
+        cuda_opts.do_copy_in_default_stream = 1;
         opts.AppendExecutionProvider_CUDA(cuda_opts);
         using_cuda_ = true;
       } catch (const std::exception & e) {
@@ -2357,7 +2358,9 @@ private:
   void processDrinks(const cv::Mat & bgr, const sl::Mat & cloud);
   void processPersons(const cv::Mat & bgr, const sl::Mat & cloud);
   void processChairs(const cv::Mat & bgr, const sl::Mat & cloud);
-  void showPreview(const cv::Mat & bgr);
+  void showPreview(
+    const cv::Mat & bgr,
+    const std::unordered_map<int, cv::Rect> * live_bboxes = nullptr);
 
   std::string resolvePath(const std::string & path) const;
   void loadModels();
@@ -2420,6 +2423,7 @@ private:
   std::mutex frame_mutex_;
   std::condition_variable worker_cv_;
   std::atomic<bool> worker_running_{false};
+  std::atomic<bool> worker_busy_{false};
   bool has_new_frame_{false};
   cv::Mat worker_bgr_;
   sl::Mat worker_cloud_;
@@ -2753,6 +2757,7 @@ ZedNode::ZedNode()
     });
 
   sl::InitParameters init;
+  init.sdk_gpu_id = 0;
   std::string dm = get_parameter("depth_mode").as_string();
   std::transform(dm.begin(), dm.end(), dm.begin(), ::tolower);
   if (dm == "ultra") {
@@ -2808,10 +2813,10 @@ ZedNode::ZedNode()
   }
 
   sl::BodyTrackingParameters body_params;
-  body_params.detection_model = sl::BODY_TRACKING_MODEL::HUMAN_BODY_MEDIUM;
+  body_params.detection_model = sl::BODY_TRACKING_MODEL::HUMAN_BODY_FAST;
   body_params.body_format = sl::BODY_FORMAT::BODY_34;
   body_params.enable_tracking = true;
-  body_params.enable_body_fitting = true;
+  body_params.enable_body_fitting = false;
   if (enable_body_tracking_ && zed_.enableBodyTracking(body_params) != sl::ERROR_CODE::SUCCESS) {
     zed_.close();
     throw std::runtime_error("Enable body tracking failed");
@@ -4118,8 +4123,12 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   std::vector<EntryFeature> entry_feats(entries.size());
   for (size_t i = 0; i < entries.size(); ++i) {
     if (analyzer_.faceReady()) {
-      entry_feats[i].face_feat = analyzer_.faceEmbedding(
-        bgr, entries[i].bbox, entries[i].body->keypoint_2d);
+      auto mit = name_memory_.find(entries[i].id);
+      const bool already_confirmed = (mit != name_memory_.end() && !mit->second.confirmed_name.empty());
+      if (!already_confirmed || (person_attr_frame_ % 4 == 0)) {
+        entry_feats[i].face_feat = analyzer_.faceEmbedding(
+          bgr, entries[i].bbox, entries[i].body->keypoint_2d);
+      }
     }
     entry_feats[i].torso_hsv = zed_vision::extractTorsoColor(bgr, entries[i].bbox);
     entry_feats[i].has_torso = (entries[i].bbox.width > 20 && entries[i].bbox.height > 40);
@@ -4257,8 +4266,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
                 : (is_host_prof && entries[i].range_m >= 1.3 ? std::max(th, 0.38f) : effective_claim_th));
           if (entries[i].is_sitting || entries[i].range_m > 1.6) {
             req_claim_th = attr_matches
-              ? std::max(0.35f, th - 0.04f)
-              : std::max(0.38f, th);
+              ? std::max(0.28f, th - 0.10f)
+              : std::max(0.32f, th - 0.06f);
           }
           if (f_sim < req_claim_th) {
             veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
@@ -4267,7 +4276,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
               prof.name.c_str(), f_sim, req_claim_th);
           } else if (other_best >= th) {
             // Jaga margin minimum agar dua orang yang duduk tidak mudah tertukar
-            const float req_margin = attr_matches ? 0.03f : ((entries[i].is_sitting || entries[i].range_m >= 1.4) ? 0.04f : 0.08f);
+            const float req_margin = attr_matches ? 0.03f : ((entries[i].is_sitting || entries[i].range_m >= 1.4) ? 0.05f : 0.08f);
             if (face_margin < req_margin) {
               veto = true; // Wajah ambigu antara dua profil -> jangan tebak nama baru
             }
@@ -4297,13 +4306,13 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       }
 
-      // Penalti konflik warna baju & gender (hard veto hanya jika klaim baru multi-profil tanpa wajah kuat)
+      // Penalti konflik warna baju & gender (hard veto hanya jika berdiri & klaim baru multi-profil tanpa wajah kuat)
       float attr_penalty = 0.0f;
       if (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
           prof.clothing_color != entry_feats[i].shirt_color &&
           (!has_face || f_sim < strong_th || face_margin < 0.10f))
       {
-        if (!has_continuity && registered_persons_.size() >= 2 && !has_face) {
+        if (!has_continuity && registered_persons_.size() >= 2 && !has_face && !entries[i].is_sitting) {
           veto = true;
         } else {
           attr_penalty += 0.20f;
@@ -4313,7 +4322,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           prof.gender != entry_feats[i].gender &&
           (!has_face || f_sim < strong_th || face_margin < 0.10f))
       {
-        if (!has_continuity && registered_persons_.size() >= 2 && !has_face) {
+        if (!has_continuity && registered_persons_.size() >= 2 && !has_face && !entries[i].is_sitting) {
           veto = true;
         } else {
           attr_penalty += 0.15f;
@@ -5331,7 +5340,9 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
   empty_seat_publisher_->publish(seat_msg);
 }
 
-void ZedNode::showPreview(const cv::Mat & bgr)
+void ZedNode::showPreview(
+  const cv::Mat & bgr,
+  const std::unordered_map<int, cv::Rect> * live_bboxes)
 {
   if (!debug_window_ || bgr.empty()) return;
 
@@ -5376,6 +5387,27 @@ void ZedNode::showPreview(const cv::Mat & bgr)
       snap_bags = disp_bags_;
       snap_drinks = disp_drinks_;
       snap_chairs = disp_chairs_;
+    }
+
+    if (live_bboxes != nullptr && !live_bboxes->empty()) {
+      for (auto & p : snap_persons) {
+        auto it = live_bboxes->find(p.id);
+        if (it != live_bboxes->end() && it->second.width > 0 && it->second.height > 0) {
+          const int dx = (it->second.x + it->second.width / 2) - (p.bbox.x + p.bbox.width / 2);
+          const int dy = (it->second.y + it->second.height / 2) - (p.bbox.y + p.bbox.height / 2);
+          auto shiftRect = [&](cv::Rect & rc) {
+            if (rc.width > 0 && rc.height > 0) {
+              rc.x += dx;
+              rc.y += dy;
+            }
+          };
+          shiftRect(p.shirt_bbox);
+          shiftRect(p.pants_bbox);
+          shiftRect(p.hat_bbox);
+          shiftRect(p.glasses_bbox);
+          p.bbox = it->second;
+        }
+      }
     }
 
     for (size_t i = 0; i < std::min<size_t>(4, snap_persons.size()); ++i) {
@@ -5649,30 +5681,38 @@ void ZedNode::loop()
     cv::cvtColor(bgra, bgr, cv::COLOR_BGRA2BGR);
     if (bgr.empty()) return;
 
-    if (zed_.retrieveMeasure(zed_point_cloud_, sl::MEASURE::XYZ, sl::MEM::CPU) !=
-        sl::ERROR_CODE::SUCCESS)
-    {
-      return;
-    }
-
     sl::Bodies cap_bodies;
+    std::unordered_map<int, cv::Rect> live_bboxes;
     if (enable_body_tracking_) {
       if (zed_.retrieveBodies(cap_bodies, body_runtime_parameters_) != sl::ERROR_CODE::SUCCESS) {
         return;
       }
+      for (const auto & body : cap_bodies.body_list) {
+        if (body.keypoint_2d.size() < 34) continue;
+        cv::Rect live_r;
+        if (zed_vision::computeBbox(body.keypoint_2d, bgr.cols, bgr.rows, live_r)) {
+          live_bboxes[body.id] = live_r;
+        }
+      }
     }
 
-    {
-      std::lock_guard<std::mutex> lk(frame_mutex_);
-      bgr.copyTo(worker_bgr_);
-      zed_point_cloud_.copyTo(worker_cloud_, sl::COPY_TYPE::CPU_CPU);
-      worker_bodies_ = std::move(cap_bodies);
-      has_new_frame_ = true;
+    // Hanya download point cloud GPU->CPU saat inference worker siap menerima frame baru,
+    // agar loop kamera + showPreview tetap mulus 30 FPS tanpa patah-patah.
+    if (!worker_busy_.load()) {
+      if (zed_.retrieveMeasure(zed_point_cloud_, sl::MEASURE::XYZ, sl::MEM::CPU) ==
+          sl::ERROR_CODE::SUCCESS)
+      {
+        std::lock_guard<std::mutex> lk(frame_mutex_);
+        bgr.copyTo(worker_bgr_);
+        zed_point_cloud_.copyTo(worker_cloud_, sl::COPY_TYPE::CPU_CPU);
+        worker_bodies_ = std::move(cap_bodies);
+        has_new_frame_ = true;
+        worker_cv_.notify_one();
+      }
     }
-    worker_cv_.notify_one();
 
-    // Tampilkan preview langsung di 30 FPS tanpa menunggu inferensi YOLO/atribut
-    showPreview(bgr);
+    // Tampilkan preview langsung di 30 FPS dengan sinkronisasi bbox live frame ini
+    showPreview(bgr, &live_bboxes);
   } catch (const std::exception & e) {
     RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
       "Vision loop exception: %s", e.what());
@@ -5691,13 +5731,17 @@ void ZedNode::inferenceWorkerLoop()
       });
       if (!worker_running_.load() || !rclcpp::ok()) break;
       if (!has_new_frame_) continue;
+      worker_busy_ = true;
       worker_bgr_.copyTo(bgr);
       worker_cloud_.copyTo(cloud, sl::COPY_TYPE::CPU_CPU);
       bodies_ = std::move(worker_bodies_);
       has_new_frame_ = false;
     }
 
-    if (bgr.empty()) continue;
+    if (bgr.empty()) {
+      worker_busy_ = false;
+      continue;
+    }
 
     try {
       latest_operator_found_ = false;
@@ -5727,6 +5771,9 @@ void ZedNode::inferenceWorkerLoop()
       RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
         "Inference worker exception: %s", e.what());
     }
+    worker_busy_ = false;
+    // Beri jeda singkat agar ZED SDK grab() di GPU RTX 2060 tidak berebut resource
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
   }
 }
 

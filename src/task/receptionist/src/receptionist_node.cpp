@@ -1836,18 +1836,39 @@ public:
       }
     }
 
-    // Jika kursi belum terdeteksi (baik di FOV awal maupun via locked yaw), lakukan sweep scanning terbatas
+    // Jika kursi belum terdeteksi (baik di FOV awal maupun via locked yaw), lakukan sweep scanning
+    // dan langsung berhenti seketika begitu kursi kosong terlihat di kamera!
     if (!chair_found) {
       const double sweep_rad = search_chair_sweep_angle_deg_ * M_PI / 180.0;
       double cur_yaw = 0.0;
       if (getRobotYaw(cur_yaw)) {
         for (double offset : {sweep_rad, -sweep_rad}) {
-          if (!rclcpp::ok() || !is_searching_chair_.load()) break;
-          rotateToAbsYaw(normalize_angle(cur_yaw + offset), is_searching_chair_,
-            align_chair_tolerance_rad_, align_chair_p_gain_,
-            align_chair_min_speed_, align_chair_max_speed_, 3.5, "SWEEP_CHAIR");
+          if (!rclcpp::ok() || !is_searching_chair_.load() || chair_found) break;
+          const double target_yaw = normalize_angle(cur_yaw + offset);
+          auto sweep_start = now();
+          while (rclcpp::ok() && is_searching_chair_.load()) {
+            EmptyChairTarget t = get_current_empty_chair();
+            if (t.valid && t.dist < chair_max_dist_) {
+              chair_found = true;
+              current_target = t;
+              stopRobot();
+              break;
+            }
+            if ((now() - sweep_start).seconds() > 3.5) break;
+            double now_yaw = 0.0;
+            if (!getRobotYaw(now_yaw)) break;
+            const double y_err = normalize_angle(target_yaw - now_yaw);
+            if (std::abs(y_err) <= align_chair_tolerance_rad_) break;
+            double spd = std::clamp(std::abs(align_chair_p_gain_ * y_err),
+              align_chair_min_speed_, align_chair_max_speed_);
+            geometry_msgs::msg::Twist tw;
+            tw.angular.z = (y_err >= 0.0) ? spd : -spd;
+            cmd_vel_pub_->publish(tw);
+            loop_rate.sleep();
+          }
           stopRobot();
-          for (int i = 0; i < 15 && rclcpp::ok() && is_searching_chair_.load(); ++i) {
+          if (chair_found) break;
+          for (int i = 0; i < 10 && rclcpp::ok() && is_searching_chair_.load(); ++i) {
             EmptyChairTarget t = get_current_empty_chair();
             if (t.valid && t.dist < chair_max_dist_) {
               chair_found = true;
@@ -1901,10 +1922,14 @@ public:
 
           if (std::abs(err) <= align_chair_tolerance_rad_) {
             centered_frames++;
-            if (centered_frames >= 5) { // Terpusat stabil selama ~250 ms
+            geometry_msgs::msg::Twist stop_twist;
+            cmd_vel_pub_->publish(stop_twist);
+            if (centered_frames >= 3) { // Terpusat stabil selama ~150 ms
               aligned = true;
               break;
             }
+            loop_rate.sleep();
+            continue;
           } else {
             centered_frames = 0;
           }

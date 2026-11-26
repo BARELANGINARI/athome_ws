@@ -45,7 +45,7 @@ vision:
     chair_model: ""
     enable_chair: true
     enable_bag: true
-    host_name: "Revaldo"
+    host_name: "Fahri"
     host_photo: "models/receptionist/host.jpg"
     host_shirt_color: "black"
     host_gender: "male"
