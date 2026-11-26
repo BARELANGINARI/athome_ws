@@ -25,11 +25,11 @@ receptionist_node:
     empty_seat_topic: "/vision/empty_seat" # Topik kursi kosong
     odom_topic: "/odom"                    # Topik odometri robot
     search_chair_ref_yaw: -1.57            # Sudut acuan kursi
-    search_chair_angular_speed: 0.15       # Kecepatan putar kursi
+    search_chair_angular_speed: 0.12       # Kecepatan putar kursi (lebih lambat agar tidak motion blur)
     search_chair_timeout_sec: 75.0         # Timeout cari kursi
     search_chair_confirm_frames: 2         # Frame konfirmasi kursi
     search_chair_sweep_angle_deg: 30.0     # Sudut sapuan kursi
-    chair_max_dist: 2.0                    # Jarak maksimal kursi
+    chair_max_dist: 3.0                    # Jarak maksimal kursi
     align_chair_p_gain: 1.5                # Gain lurus kursi
     align_chair_min_speed: 0.10            # Kecepatan min kursi
     align_chair_max_speed: 0.20            # Kecepatan maks kursi
@@ -169,6 +169,7 @@ vision:
     enable_body_tracking: true             # Aktifkan tracking tubuh
     enable_chair: true                     # Aktifkan deteksi kursi
     chair_model: ""                        # Path model kursi
+    chair_max_dist: 3.0                    # Jarak maks kursi (meter)
     enable_drinks: true                    # Aktifkan deteksi minuman
     botol_model: "models/receptionist/water.onnx" # Model botol air
     soda_model: "models/receptionist/soda.onnx" # Model kaleng soda
@@ -181,7 +182,8 @@ vision:
     enable_yolo: true                      # Aktifkan detektor YOLO
     yolo_model: "models/receptionist/yolov8n_sim.onnx" # Model YOLO utama
     yolo_classes: "models/receptionist/coco_names.txt" # Label kelas YOLO
-    yolo_conf: 0.25                        # Ambang skor YOLO
+    yolo_conf: 0.20                        # Ambang skor YOLO
+    yolo_stride: 2                         # Interval frame inferensi YOLO (lebih responsif saat rotate)
     face_detect_model: "models/receptionist/face_detection_yunet.onnx" # Model deteksi wajah
     face_detect_conf: 0.40                 # Ambang skor wajah
     face_model: "models/receptionist/arcface_w600k_r50.onnx" # Model pengenalan wajah
@@ -193,6 +195,7 @@ vision:
     hair_labels: "models/receptionist/hair_names.txt" # Label warna rambut
     hat_model: "models/receptionist/hat.onnx" # Model deteksi topi
     glasses_model: "models/receptionist/glasses.onnx" # Model deteksi kacamata
+    accessory_conf: 0.18               # Confidence threshold deteksi topi & kacamata (YOLO-World)
     debug_window: true                     # Tampilkan jendela preview
     mirror: false                          # Cermin tampilan preview
     host_name: "Yesaya"                    # Nama host utama

@@ -3281,7 +3281,6 @@ private:
     double         locked_slot_wx = 0.0;
     double         locked_slot_wy = 0.0;
     bool           has_queue_vector = false;
-    bool           queue_in_slot_align = false;
     double         queue_unit_wx = 0.0;
     double         queue_unit_wy = 0.0;
     double         queue_yaw_w = 0.0;
@@ -3402,7 +3401,6 @@ private:
           is_homing_queuing_ = false;
           queue_engaged      = false;
           has_queue_vector   = false;
-          queue_in_slot_align = false;
           locked_queue_id    = -1;
           has_locked_world   = false;
           queue_completed    = true;
@@ -3713,7 +3711,6 @@ private:
             has_locked_slot = true;
             queue_yaw_w = std::atan2(queue_unit_wy, queue_unit_wx);
             has_queue_vector = true;
-            queue_in_slot_align = false;
 
             RCLCPP_INFO(
               get_logger(),
@@ -3734,7 +3731,6 @@ private:
             locked_slot_wy = b_wy - queue_unit_wy * homing_queue_distance_;
             has_locked_slot = true;
             has_queue_vector = true;
-            queue_in_slot_align = false;
           }
 
           closest_dist = cands[best_back_idx].dist;
@@ -4426,7 +4422,6 @@ private:
           is_homing_queuing_ = false;
           queue_engaged      = false;
           has_queue_vector   = false;
-          queue_in_slot_align = false;
           locked_queue_id    = -1;
           has_locked_world   = false;
           queue_completed    = true;

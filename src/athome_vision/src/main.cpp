@@ -1330,18 +1330,18 @@ public:
     if (bgr.empty()) return cv::Rect();
 
     // Gunakan keypoint kepala/bahu ZED BODY_34 jika tersedia (kpt[26]=HEAD, kpt[5]=L_SHOULDER, kpt[12]=R_SHOULDER)
+    // Buat ROI persegi agar tidak terdistorsi saat di-resize ke 640x640 oleh YOLO
     if (kpt.size() > 26 && validKeypoint(kpt[26])) {
-      float span = 80.0f;
+      float span = 90.0f;
       if (validKeypoint(kpt[5]) && validKeypoint(kpt[12])) {
-        span = std::max(span, std::abs(kpt[12].x - kpt[5].x) * 0.95f);
+        span = std::max(span, std::abs(kpt[12].x - kpt[5].x) * 1.05f);
       } else if (bbox.width > 10) {
-        span = std::max(span, static_cast<float>(bbox.width) * 0.65f);
+        span = std::max(span, static_cast<float>(bbox.width) * 0.70f);
       }
-      const int hw = static_cast<int>(span * 1.15f);
-      const int hh = static_cast<int>(span * 1.25f);
-      const int hx = static_cast<int>(kpt[26].x - hw * 0.5f);
-      const int hy = static_cast<int>(kpt[26].y - hh * 0.60f);
-      cv::Rect roi(hx, hy, hw, hh);
+      const int side = static_cast<int>(span * 1.35f);
+      const int hx = static_cast<int>(kpt[26].x - side * 0.50f);
+      const int hy = static_cast<int>(kpt[26].y - side * 0.62f);
+      cv::Rect roi(hx, hy, side, side);
       roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
       if (roi.width >= 20 && roi.height >= 20) return roi;
     }
@@ -2529,7 +2529,7 @@ ZedNode::ZedNode()
   declare_parameter("enable_drinks", true);
   declare_parameter("chair_model", std::string(""));
   declare_parameter("enable_chair", true);
-  declare_parameter("chair_max_dist", 2.0);
+  declare_parameter("chair_max_dist", 3.0);
   declare_parameter("chair_labels", std::vector<std::string>{"chair", "couch", "sofa", "bench"});
   declare_parameter("enable_bag", true);
   declare_parameter("gender_model", std::string("models/genderage.onnx"));
@@ -2539,7 +2539,7 @@ ZedNode::ZedNode()
   declare_parameter("hair_labels", std::string("models/hair_names.txt"));
   declare_parameter("hat_model", std::string("models/hat.onnx"));
   declare_parameter("glasses_model", std::string("models/glasses.onnx"));
-  declare_parameter("accessory_conf", 0.45);
+  declare_parameter("accessory_conf", 0.18);
   declare_parameter("face_model", std::string("models/arcface_w600k_r50.onnx"));
   declare_parameter("face_threshold", 0.40);
   declare_parameter("face_detect_model", std::string("models/face_detection_yunet.onnx"));
@@ -3650,10 +3650,18 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   std::vector<bool> entry_facing_back(entries.size(), false);
   if (is_receptionist_) {
     const bool run_attr_infer = (person_attr_frame_++ % 3 == 0);
+    static std::unordered_map<int, cv::Rect> hat_bbox_cache;
+    static std::unordered_map<int, cv::Rect> glasses_bbox_cache;
+    static std::unordered_map<int, rclcpp::Time> hat_hit_time;
+    static std::unordered_map<int, rclcpp::Time> glasses_hit_time;
+
     auto detectAccessory = [&](
       YoloDetector & detector,
       std::unordered_map<int, ShirtColorMemory> & mem_map,
+      std::unordered_map<int, cv::Rect> & bbox_cache,
+      std::unordered_map<int, rclcpp::Time> & hit_time_map,
       int person_id, const cv::Rect & head_roi,
+      float min_score, int min_yes_cnt, bool is_hat,
       cv::Rect & out_bbox) -> bool
     {
       if (!detector.ready()) return false;
@@ -3661,23 +3669,69 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       if (run_attr_infer && head_roi.width >= 20 && head_roi.height >= 20) {
         std::vector<YoloDetection> found;
         detector.detect(bgr(head_roi), {}, found);
-        if (!found.empty()) {
-          auto best_it = std::max_element(found.begin(), found.end(),
-            [](const YoloDetection & a, const YoloDetection & b) { return a.score < b.score; });
-          out_bbox = best_it->rect;
-          out_bbox.x += head_roi.x;
-          out_bbox.y += head_roi.y;
-          out_bbox &= cv::Rect(0, 0, bgr.cols, bgr.rows);
-          raw_val = "yes";
+        const YoloDetection * best_det = nullptr;
+        for (const auto & det : found) {
+          if (det.score < min_score) continue;
+          if (is_hat) {
+            // Topi harus berada di bagian atas kepala & tidak menutupi seluruh wajah (hindari false positive rambut mengembang)
+            const float rel_cy = (det.rect.y + det.rect.height * 0.5f) / static_cast<float>(head_roi.height);
+            const float rel_h  = static_cast<float>(det.rect.height) / static_cast<float>(head_roi.height);
+            const float rel_w  = static_cast<float>(det.rect.width) / static_cast<float>(head_roi.width);
+            if (rel_cy > 0.55f || rel_h > 0.65f || rel_w < 0.25f) continue;
+          }
+          if (!best_det || det.score > best_det->score) {
+            best_det = &det;
+          }
+        }
+        if (best_det != nullptr) {
+          cv::Rect det_rect = best_det->rect;
+          det_rect.x += head_roi.x;
+          det_rect.y += head_roi.y;
+          det_rect &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+          if (det_rect.width > 0 && det_rect.height > 0) {
+            auto cit = bbox_cache.find(person_id);
+            if (cit != bbox_cache.end() && cit->second.width > 0) {
+              // Smoothing bbox ringan agar tidak bergetar
+              det_rect.x = static_cast<int>(0.5f * cit->second.x + 0.5f * det_rect.x);
+              det_rect.y = static_cast<int>(0.5f * cit->second.y + 0.5f * det_rect.y);
+              det_rect.width = static_cast<int>(0.5f * cit->second.width + 0.5f * det_rect.width);
+              det_rect.height = static_cast<int>(0.5f * cit->second.height + 0.5f * det_rect.height);
+            }
+            bbox_cache[person_id] = det_rect;
+            hit_time_map[person_id] = current_time;
+            raw_val = "yes";
+          } else {
+            raw_val = "no";
+          }
         } else {
           raw_val = "no";
         }
       }
+
       if (!raw_val.empty()) {
-        return updateAttributeVote(mem_map, person_id, raw_val, current_time) == "yes";
+        updateAttributeVote(mem_map, person_id, raw_val, current_time);
       }
-      auto it = mem_map.find(person_id);
-      return (it != mem_map.end() && !it->second.history.empty() && it->second.history.back() == "yes");
+
+      // Hitung jumlah "yes" dalam jendela history + hysteresis waktu (1.5 detik) agar tidak hilang-timbul
+      int yes_cnt = 0;
+      auto mit = mem_map.find(person_id);
+      if (mit != mem_map.end()) {
+        for (const auto & v : mit->second.history) {
+          if (v == "yes") yes_cnt++;
+        }
+      }
+      auto hit_it = hit_time_map.find(person_id);
+      const bool recent_hit = (hit_it != hit_time_map.end() &&
+        (current_time - hit_it->second).seconds() < 1.5);
+      const bool active = (yes_cnt >= min_yes_cnt) || (yes_cnt >= 2 && recent_hit);
+
+      if (active) {
+        auto bit = bbox_cache.find(person_id);
+        if (bit != bbox_cache.end() && bit->second.width > 0 && bit->second.height > 0) {
+          out_bbox = bit->second;
+        }
+      }
+      return active;
     };
     for (size_t i = 0; i < entries.size(); ++i) {
       const auto & e = entries[i];
@@ -3713,8 +3767,12 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
 
       if (hat_yolo_.ready() || glasses_yolo_.ready()) {
         const cv::Rect head_roi = AttributeAnalyzer::computeHeadAccessoryRoi(bgr, e.bbox, kpt2d);
-        entry_has_hat[i] = detectAccessory(hat_yolo_, hat_memory_, e.id, head_roi, entry_hat_bboxes[i]);
-        entry_has_glasses[i] = detectAccessory(glasses_yolo_, glasses_memory_, e.id, head_roi, entry_glasses_bboxes[i]);
+        entry_has_hat[i] = detectAccessory(
+          hat_yolo_, hat_memory_, hat_bbox_cache, hat_hit_time, e.id, head_roi,
+          0.32f, 3, true, entry_hat_bboxes[i]);
+        entry_has_glasses[i] = detectAccessory(
+          glasses_yolo_, glasses_memory_, glasses_bbox_cache, glasses_hit_time, e.id, head_roi,
+          0.18f, 2, false, entry_glasses_bboxes[i]);
       }
 
       if (i == 0 || !pending_register_name_.empty() || !registered_persons_.empty()) {
@@ -4185,17 +4243,24 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
             : (registered_persons_.size() <= 1
                 ? th
                 : (is_host_prof && entries[i].range_m >= 1.3 ? std::max(th, 0.38f) : effective_claim_th));
-          if (entries[i].is_sitting) {
-            req_claim_th = std::max(th - 0.03f, req_claim_th - 0.03f);
+          if (entries[i].is_sitting || entries[i].range_m > 1.6) {
+            req_claim_th = attr_matches
+              ? std::max(0.26f, th - 0.12f)
+              : std::max(0.32f, th - 0.06f);
           }
           if (f_sim < req_claim_th) {
-            veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
-            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
-              "[FACE] '%s' similarity %.3f < %.3f (veto)",
-              prof.name.c_str(), f_sim, req_claim_th);
-          } else if (other_best >= th) {
+            // Jika duduk dan baju+gender cocok, jangan langsung hard-veto; biarkan joint search_perm menilai
+            const bool sitting_attr_ok = entries[i].is_sitting && attr_matches &&
+              (prof.gender.empty() || entry_feats[i].gender.empty() || prof.gender == entry_feats[i].gender);
+            if (!sitting_attr_ok) {
+              veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
+              RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+                "[FACE] '%s' similarity %.3f < %.3f (veto)",
+                prof.name.c_str(), f_sim, req_claim_th);
+            }
+          } else if (other_best >= th && !(entries[i].is_sitting && attr_matches)) {
             // Jaga margin minimum agar dua orang yang duduk tidak mudah tertukar
-            const float req_margin = attr_matches ? 0.02f : ((entries[i].is_sitting || entries[i].range_m >= 1.4) ? 0.04f : 0.08f);
+            const float req_margin = attr_matches ? 0.02f : ((entries[i].is_sitting || entries[i].range_m >= 1.4) ? 0.03f : 0.08f);
             if (face_margin < req_margin) {
               veto = true; // Wajah ambigu antara dua profil -> jangan tebak nama baru
             }
@@ -4219,7 +4284,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
                                  prof.gender == entry_feats[i].gender;
           const bool strong_attr_match = cloth_ok && gender_ok;
 
-          if (!strong_attr_match) {
+          if (!strong_attr_match && !entries[i].is_sitting) {
             veto = true;
           }
         }
@@ -4481,8 +4546,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       }
     } else {
-      // Wajah menoleh/tertutup sementara; tahan nama di kursi hingga 5.0 detik agar tidak blink
-      if (!mem.confirmed_name.empty() && (current_time - mem.last_seen).seconds() < 5.0) {
+      // Wajah menoleh/tertutup sementara; tahan nama di kursi hingga 8.0 detik saat duduk (5.0s berdiri) agar tidak blink
+      const double hold_sec = entries[i].is_sitting ? 8.0 : 5.0;
+      if (!mem.confirmed_name.empty() && (current_time - mem.last_seen).seconds() < hold_sec) {
         // Pertahankan mem.confirmed_name
       } else {
         mem.confirmed_name.clear();
@@ -4996,15 +5062,26 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
     return;
   }
 
+  static rclcpp::Time last_chair_hit_time(0, 0, RCL_ROS_TIME);
   std::vector<YoloDetection> dets = last_chair_dets_;
   if ((chair_frame_++ % yolo_stride_) == (2 % yolo_stride_)) {
-    dets.clear();
+    std::vector<YoloDetection> fresh_dets;
     if (chair_yolo_.ready()) {
-      chair_yolo_.detect(bgr, {}, dets);
+      chair_yolo_.detect(bgr, {}, fresh_dets);
     } else if (enable_yolo_ && yolo_.ready()) {
-      yolo_.detect(bgr, chair_labels_, dets);
+      yolo_.detect(bgr, chair_labels_, fresh_dets);
     }
-    last_chair_dets_ = dets;
+    if (!fresh_dets.empty()) {
+      dets = fresh_dets;
+      last_chair_dets_ = fresh_dets;
+      last_chair_hit_time = now();
+    } else if ((now() - last_chair_hit_time).seconds() < 1.5) {
+      // Pertahankan deteksi kursi terakhir hingga 1.5s jika YOLO miss sesaat saat robot berputar
+      dets = last_chair_dets_;
+    } else {
+      dets.clear();
+      last_chair_dets_.clear();
+    }
   }
 
   struct ActiveChair
@@ -5046,7 +5123,7 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
         continue;
       }
     } else {
-      if (det.rect.area() < 5000 || det.rect.height < 60) {
+      if (det.rect.area() < 2500 || det.rect.height < 45) {
         continue;
       }
     }

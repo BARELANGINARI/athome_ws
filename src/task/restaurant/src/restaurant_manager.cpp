@@ -1644,7 +1644,7 @@ private:
     }
 
     std::vector<std::string> segments = {raw_lower};
-    for (const std::string & delim : {",", " and ", " with ", " plus ", " also ", " dan ", " sama "}) {
+    for (const std::string_view delim : {",", " and ", " with ", " plus ", " also ", " dan ", " sama "}) {
       std::vector<std::string> next_segs;
       for (const auto & seg : segments) {
         size_t start = 0;
@@ -1680,7 +1680,7 @@ private:
             break;
           }
         }
-        for (const std::string & art : {"a ", "an ", "the ", "one ", "some "}) {
+        for (const std::string_view art : {"a ", "an ", "the ", "one ", "some "}) {
           if (seg.rfind(art, 0) == 0) {
             seg = trimString(seg.substr(art.size()));
           }
