@@ -102,11 +102,11 @@ controller_server:
       # DWB Local Planner Parameters (3-wheel omni)
       debug_trajectory_details: False    # Disable heavy debug logging to prevent loop rate dropping from 20Hz to 3Hz
       min_vel_x: 0.0                     # KUNCI MUTLAK: 0.0 m/s (DILARANG MUNDUR! Robot hanya boleh maju ke depan menghadap path)
-      max_vel_x: 0.45                    # Max forward velocity (m/s)
+      max_vel_x: 0.70                    # Max forward velocity (m/s)
       min_vel_y: -0.12                   # Min lateral strafe velocity (-0.12 m/s) cukup lincah untuk sidestep rintangan tanpa membuat robot jalan kepiting
       max_vel_y: 0.12                    # Max lateral strafe velocity (+0.12 m/s)
       min_speed_xy: 0.05                 # Min translational speed (m/s, mencegah micro-speed di bawah deadband motor)
-      max_speed_xy: 0.45                 # Max translational speed (m/s)
+      max_speed_xy: 0.70                 # Max translational speed (m/s)
       max_vel_theta: 1.8                 # Max angular velocity dinaikkan ke 1.8 rad/s agar manuver hadap saat melaju juga gesit
       min_speed_theta: 0.15              # Min angular velocity (rad/s, dinaikkan ke 0.15 agar PWM motor di atas deadband motor dan tidak freeze di lantai)
       acc_lim_x: 1.2                     # Translation X acceleration limit (m/s^2)

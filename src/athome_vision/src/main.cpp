@@ -3875,11 +3875,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       }
 
       const bool same_tracker_id = (prof.last_tracking_id >= 0 && prof.last_tracking_id == entries[i].id);
-      const bool recent_seen = ((current_time - prof.last_seen).seconds() <= 6.0);
+      const bool recent_seen = ((current_time - prof.last_seen).seconds() <= 2.5);
       const double spatial_dist = (prof.has_last_pos && entries[i].has_depth)
         ? std::hypot(entries[i].x - prof.last_x, entries[i].y - prof.last_y)
         : 999.0;
-      const bool near_anchor = (prof.has_last_pos && entries[i].has_depth && recent_seen && spatial_dist < 0.50);
+      const bool near_anchor = (prof.has_last_pos && entries[i].has_depth && recent_seen && spatial_dist < 0.35);
       const bool is_sticky = (!mem_confirmed[i].empty() && prof.name == mem_confirmed[i]);
       const bool has_continuity = (same_tracker_id || near_anchor || is_sticky);
 
@@ -3897,7 +3897,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
                 ? th
                 : (is_host_prof && entries[i].range_m >= 1.3 ? std::max(th, 0.38f) : effective_claim_th));
           if (entries[i].is_sitting) {
-            req_claim_th = std::max(th - 0.05f, req_claim_th - 0.05f);
+            req_claim_th = std::max(th - 0.03f, req_claim_th - 0.03f);
           }
           if (f_sim < req_claim_th) {
             veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
@@ -3905,8 +3905,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
               "[FACE] '%s' similarity %.3f < %.3f (veto)",
               prof.name.c_str(), f_sim, req_claim_th);
           } else if (other_best >= th) {
-            // Longgarkan margin ambiguitas untuk orang yang duduk/jarak jauh agar tidak drop ke 'Guest'
-            const float req_margin = attr_matches ? 0.01f : ((entries[i].is_sitting || entries[i].range_m >= 1.4) ? 0.02f : 0.08f);
+            // Jaga margin minimum agar dua orang yang duduk tidak mudah tertukar
+            const float req_margin = attr_matches ? 0.02f : ((entries[i].is_sitting || entries[i].range_m >= 1.4) ? 0.04f : 0.08f);
             if (face_margin < req_margin) {
               veto = true; // Wajah ambigu antara dua profil -> jangan tebak nama baru
             }
@@ -3970,18 +3970,18 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         }
 
         if (is_sticky) {
-          score_matrix[i][j] += 0.40f; // Sticky inertia mencegah flip-flop pada orang yang sudah terkonfirmasi
+          score_matrix[i][j] += 0.18f; // Sticky inertia ringan agar tidak mengalahkan skor wajah ArcFace
         }
         if (near_anchor) {
-          score_matrix[i][j] += 0.25f;
+          score_matrix[i][j] += 0.10f;
         } else if (prof.has_last_pos && entries[i].has_depth && recent_seen &&
                    spatial_dist > 1.15 && !same_tracker_id && (!has_face || f_sim < strong_th))
         {
-          score_matrix[i][j] -= 0.40f;
+          score_matrix[i][j] -= 0.25f;
         }
 
         if (same_tracker_id) {
-          score_matrix[i][j] += 0.20f;
+          score_matrix[i][j] += 0.10f;
         }
       }
     }
@@ -4027,6 +4027,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   std::vector<std::string> raw_recognized_names(entries.size(), "");
   std::vector<float> raw_match_scores(entries.size(), -100.0f);
   std::vector<bool> raw_strong_face(entries.size(), false);
+  std::vector<bool> raw_has_face(entries.size(), false);
   for (size_t j = 0; j < registered_persons_.size(); ++j) {
     int assigned_entry = best_assignment[j];
     if (assigned_entry >= 0 && score_matrix[assigned_entry][j] >= 0.52f) {
@@ -4035,6 +4036,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
 
       auto & prof = registered_persons_[j];
       const bool has_face_match = (!entry_feats[assigned_entry].face_feat.empty() && !prof.feature.empty());
+      raw_has_face[assigned_entry] = has_face_match;
       const float f_sim = has_face_match ? face_sim[assigned_entry][j] : -1.0f;
       const float other_best = has_face_match ? bestOtherFaceSim(assigned_entry, j) : -1.0f;
       const float margin = f_sim - other_best;
@@ -4145,13 +4147,14 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           mem.candidate_name = raw_name;
           mem.candidate_streak = 1;
         }
-        // Konfirmasi awal: langsung jika skor kuat / hanya 1 profil terdaftar, atau modus >= 2 frame
+        // Konfirmasi awal: jika >= 2 profil terdaftar, utamakan konfirmasi berbasis wajah agar tidak tertukar
         const bool instant_confirm =
           raw_strong_face[i] ||
-          raw_match_scores[i] >= 0.68f ||
+          (raw_has_face[i] && raw_match_scores[i] >= 0.68f) ||
           (registered_persons_.size() <= 1 && raw_match_scores[i] >= 0.52f);
-        if (instant_confirm || mode_count >= 2 || mem.candidate_streak >= 2) {
-          mem.confirmed_name = (mode_count >= 2) ? mode_name : raw_name;
+        const int req_streak = (registered_persons_.size() >= 2 && !raw_has_face[i]) ? 6 : 2;
+        if (instant_confirm || mode_count >= req_streak || mem.candidate_streak >= req_streak) {
+          mem.confirmed_name = (mode_count >= req_streak) ? mode_name : raw_name;
           mem.candidate_streak = 0;
           mem.last_seen = current_time;
         }
@@ -4159,8 +4162,8 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         mem.candidate_streak = 0;
         mem.last_seen = current_time;
       } else {
-        // Hysteresis: ganti label terkunci HANYA jika nama baru mendominasi >= 70% jendela
-        // (minimal 8 frame di riwayat) atau >= 5 frame dengan kecocokan wajah sangat kuat.
+        // Hysteresis: ganti label terkunci jika nama baru mendominasi >= 70% jendela
+        // atau >= 3 frame dengan kecocokan wajah sangat kuat (koreksi cepat bila sempat tertukar).
         if (raw_name == mem.candidate_name) {
           mem.candidate_streak++;
         } else {
@@ -4170,7 +4173,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
 
         const int win_size = static_cast<int>(mem.history.size());
         const bool mode_dominant = (win_size >= 8 && mode_count * 10 >= win_size * 7);
-        const bool strong_override = (raw_strong_face[i] && mode_count >= 5);
+        const bool strong_override = (raw_strong_face[i] && mode_count >= 3);
         if (mode_dominant || strong_override) {
           mem.confirmed_name = mode_name;
           mem.candidate_streak = 0;
@@ -4440,7 +4443,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     } else {
       ss << "nan,nan,nan";
     }
-    ss << "|id=" << entry.id << "|sitting=" << (person.is_sitting ? "1" : "0") << "|back=" << (is_facing_back ? "1" : "0") << "|kpt=";
+    ss << "|id=" << entry.id << "|sitting=" << (person.is_sitting ? "1" : "0")
+       << "|standing=" << (person.is_standing_posture ? "1" : "0")
+       << "|back=" << (is_facing_back ? "1" : "0") << "|kpt=";
     for (size_t k = 0; k < 34; ++k) {
       if (k > 0) ss << ",";
       if (k < points.size() && std::isfinite(points[k].x) && std::isfinite(points[k].y)) {

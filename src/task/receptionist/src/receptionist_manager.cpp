@@ -352,6 +352,7 @@ private:
   std::atomic<bool> service_busy_{false};
   std::atomic<bool> in_callback_{false};
   std::atomic<bool> person_seen_{false};
+  std::atomic<bool> standing_guest_seen_{false};
   std::atomic<int> nearest_person_id_{-1};
 
   std::mutex guest_mutex_;
@@ -395,6 +396,7 @@ private:
   rclcpp::Time state_enter_time_;
   rclcpp::Time last_wait_prompt_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_person_seen_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_standing_guest_seen_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time tts_cooldown_until_{0, 0, RCL_ROS_TIME};
   rclcpp::Time tts_started_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_nav_fail_time_{0, 0, RCL_ROS_TIME};
@@ -602,6 +604,7 @@ private:
     }
 
     person_seen_ = false;
+    standing_guest_seen_ = false;
     drinks_detected_on_arrival_ = false;
     {
       std::lock_guard<std::mutex> lock(vision_mutex_);
@@ -639,6 +642,7 @@ private:
         next_state == ReceptionistState::INTRODUCE_G1_TO_G2)
     {
       person_seen_ = false;
+    standing_guest_seen_ = false;
       last_wait_prompt_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
       std::lock_guard<std::mutex> lock(vision_mutex_);
       if (next_state == ReceptionistState::ASK_DRINK) {
@@ -1414,6 +1418,12 @@ private:
            (now() - last_person_seen_time_).seconds() < person_freshness_sec_;
   }
 
+  bool isStandingGuestInFront() const
+  {
+    return standing_guest_seen_.load() &&
+           (now() - last_standing_guest_seen_time_).seconds() < person_freshness_sec_;
+  }
+
   // ============================================================================
   // HELPER TEXT-TO-SPEECH (TTS) & SPEECH-TO-TEXT (STT) SLOT PARSING
   // ============================================================================
@@ -2107,7 +2117,7 @@ private:
       "no", "robot no", "bot no","obot no", "no robot", "o robot", "nope", "not correct", "wrong", "false", "incorrect",
     };
     static const std::vector<std::string> kYesPhrases = {
-      "yes", , "robot yes", "bot yes", "obot yes", "yes robot", "es robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
+      "yes", "robot yes", "bot yes", "obot yes", "yes robot", "es robot", "yeah", "yep", "correct", "right", "sure", "true", "exactly",
     };
 
     bool has_no = false;
@@ -2194,6 +2204,60 @@ private:
 
     person_seen_ = true;
     last_person_seen_time_ = now();
+
+    // Cek apakah ada orang berdiri (bukan duduk dan bukan Host) untuk deteksi tamu di pintu
+    {
+      bool has_standing_guest = false;
+      std::string host_lower = host_.name;
+      std::transform(host_lower.begin(), host_lower.end(), host_lower.begin(), ::tolower);
+      std::stringstream pss(message->data);
+      std::string pitem;
+      while (std::getline(pss, pitem, ';')) {
+        if (pitem.empty()) continue;
+        std::string pitem_lower = pitem;
+        std::transform(pitem_lower.begin(), pitem_lower.end(), pitem_lower.begin(), ::tolower);
+        const auto colon_pos = pitem_lower.find(':');
+        const std::string plabel_lower = (colon_pos != std::string::npos) ? pitem_lower.substr(0, colon_pos) : pitem_lower;
+        const bool is_seated = (pitem_lower.find("sitting=1") != std::string::npos ||
+                                plabel_lower.find("seated") != std::string::npos ||
+                                plabel_lower.find("sitting") != std::string::npos ||
+                                plabel_lower.find("duduk") != std::string::npos);
+        const bool is_host = (!host_lower.empty() && plabel_lower.find(host_lower) != std::string::npos);
+        const bool is_standing_3d = (pitem_lower.find("standing=1") != std::string::npos);
+        bool is_tall_bbox = false;
+        const auto bbar = pitem.find('|');
+        if (colon_pos != std::string::npos && bbar != std::string::npos && bbar > colon_pos) {
+          int bx = 0, by = 0, bw = 0, bh = 0;
+          if (std::sscanf(pitem.substr(colon_pos + 1, bbar - colon_pos - 1).c_str(), "%d,%d,%d,%d", &bx, &by, &bw, &bh) == 4) {
+            is_tall_bbox = (bw > 0 && bh >= static_cast<int>(bw * 1.70));
+          }
+        }
+        bool has_lower_kpt = false;
+        const auto kpos = pitem_lower.find("|kpt=");
+        if (kpos != std::string::npos) {
+          std::vector<double> kc;
+          kc.reserve(68);
+          std::stringstream kss(pitem.substr(kpos + 5));
+          std::string tok;
+          while (std::getline(kss, tok, ',')) {
+            try { kc.push_back(std::stod(tok)); } catch (...) { kc.push_back(-1.0); }
+          }
+          auto kv = [&](size_t idx) -> bool {
+            return (idx * 2 + 1) < kc.size() && kc[idx * 2] >= 0.0 && kc[idx * 2 + 1] >= 0.0;
+          };
+          has_lower_kpt = (kv(18) || kv(22)) && (kv(19) || kv(23));
+        }
+        const bool is_fullbody_standing = !is_seated && (is_standing_3d || (has_lower_kpt && is_tall_bbox));
+        if (is_fullbody_standing && !is_host) {
+          has_standing_guest = true;
+          break;
+        }
+      }
+      if (has_standing_guest) {
+        standing_guest_seen_ = true;
+        last_standing_guest_seen_time_ = now();
+      }
+    }
 
     std::lock_guard<std::mutex> lock(vision_mutex_);
     const std::string & data = message->data;
@@ -2614,7 +2678,7 @@ private:
         if ((now() - state_enter_time_).seconds() < vision_initial_settle_sec_) {
           return;
         }
-        if (isPersonInFront()) {
+        if (isStandingGuestInFront()) {
           transitionTo(
             ReceptionistState::ALIGN_GUEST,
             "Guest detected at entrance; aligning heading and adjusting distance to 1.2m");
