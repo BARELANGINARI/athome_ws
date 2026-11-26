@@ -96,7 +96,7 @@ install(TARGETS vision record
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
-set(ARCFACE_MODEL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/models/arcface_w600k_r50.onnx")
+set(ARCFACE_MODEL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/models/receptionist/arcface_w600k_r50.onnx")
 if(NOT EXISTS "${ARCFACE_MODEL_PATH}")
   message(STATUS "ArcFace model not found at ${ARCFACE_MODEL_PATH}, running install_arcface_model.sh...")
   execute_process(

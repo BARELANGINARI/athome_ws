@@ -717,7 +717,7 @@ private:
     has_new_utterance_ = false;
     state_ = next_state;
 
-    // Sinkronisasi ekspresi mata robot ke HMI (athome_face)
+    // Sinkronisasi ekspresi mata robot ke HMI (athome_face_display)
     publishExpression(expressionForState(next_state));
   }
 

@@ -2,7 +2,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODEL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)/models"
+MODEL_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)/models/receptionist"
 TARGET_MODEL="${MODEL_DIR}/arcface_w600k_r50.onnx"
 LOCAL_CACHE="${HOME}/.insightface/models/buffalo_l/w600k_r50.onnx"
 URL="https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip"

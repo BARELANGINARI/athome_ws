@@ -20,7 +20,7 @@ if command -v terminator >/dev/null 2>&1; then
     echo " Meluncurkan Help Me Carry dalam Layout Grid (Terminator)..."
     echo " [Kiri Atas   ] Hardware (STM32 & RPLiDAR)"
     echo " [Tengah Atas ] Motion   (SLAM, Nav2, Follower & RViz)"
-    echo " [Kanan Atas  ] Face     (athome_face)"
+    echo " [Kanan Atas  ] Face     (athome_face_display)"
     echo " [Kiri Bawah  ] Camera   (ZED Vision & IMU)"
     echo " [Tengah Bawah] HRI      (Speech & Web Dashboard)"
     echo " [Kanan Bawah ] Arm      (Dynamixel Arm Motion Server)"
@@ -47,5 +47,5 @@ else
     sleep 1
     gnome-terminal --tab --working-directory="${WS_DIR}" --title="Arm" -- bash -c "${SETUP} && sleep 5 && ros2 launch athome_arm arm.launch.py task:=help_me_carry; exec bash"
     sleep 1
-    gnome-terminal --tab --working-directory="${WS_DIR}" --title="Face" -- bash -c "${SETUP} && sleep 6 && ros2 launch athome_face face.launch.py; exec bash"
+    gnome-terminal --tab --working-directory="${WS_DIR}" --title="Face" -- bash -c "${SETUP} && sleep 6 && ros2 launch athome_face_display face.launch.py; exec bash"
 fi

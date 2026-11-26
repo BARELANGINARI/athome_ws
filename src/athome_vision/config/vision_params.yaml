@@ -11,8 +11,8 @@ vision:
     enable_yolo: true
     debug_window: false
     mirror: true
-    yolo_model: "models/paper_bag.onnx"
-    yolo_classes: "models/paper_bag_classes.txt"
+    yolo_model: "models/help_me_carry/paper_bag.onnx"
+    yolo_classes: "models/help_me_carry/paper_bag_classes.txt"
     yolo_conf: 0.35
     bag_conf: 0.35
     yolo_nms: 0.45
@@ -20,21 +20,24 @@ vision:
     yolo_stride: 3
     yolo_min_area: 250.0
     bag_labels: ["bag", "paper_bag", "backpack", "handbag", "suitcase"]
-    face_detect_model: "models/face_detection_yunet.onnx"
+    face_detect_model: "models/receptionist/face_detection_yunet.onnx"
     face_detect_conf: 0.30
-    gender_model: "models/genderage.onnx"
-    color_model: "models/color_model.onnx"
-    color_labels: "models/color_names.txt"
-    hair_model: "models/hair_model.onnx"
-    hair_labels: "models/hair_names.txt"
-    face_model: "models/arcface_w600k_r50.onnx"
+    gender_model: "models/receptionist/genderage.onnx"
+    color_model: "models/receptionist/color_model.onnx"
+    color_labels: "models/receptionist/color_names.txt"
+    hair_model: "models/receptionist/hair_model.onnx"
+    hair_labels: "models/receptionist/hair_names.txt"
+    hat_model: "models/receptionist/hat.onnx"
+    glasses_model: "models/receptionist/glasses.onnx"
+    accessory_conf: 0.45
+    face_model: "models/receptionist/arcface_w600k_r50.onnx"
     face_threshold: 0.40
-    botol_model: "models/water.onnx"
-    soda_model: "models/soda.onnx"
-    cracker_model: "models/crackerbox.onnx"
-    pringles_model: "models/pringles.onnx"
-    sugarbox_model: "models/sugarbox.onnx"
-    milk_model: "models/milk.onnx"
+    botol_model: "models/receptionist/water.onnx"
+    soda_model: "models/receptionist/soda.onnx"
+    cracker_model: "models/restaurant/crackerbox.onnx"
+    pringles_model: "models/restaurant/pringles.onnx"
+    sugarbox_model: "models/restaurant/sugarbox.onnx"
+    milk_model: "models/receptionist/milk.onnx"
     drink_min_area: 180.0
     drink_conf: 0.48
     water_conf: 0.25
@@ -43,7 +46,7 @@ vision:
     enable_chair: true
     enable_bag: true
     host_name: "Revaldo"
-    host_photo: "models/host.jpg"
+    host_photo: "models/receptionist/host.jpg"
     host_shirt_color: "black"
     host_gender: "male"
     host_hair_color: "black"

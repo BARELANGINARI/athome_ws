@@ -2,92 +2,91 @@ receptionist_node:
   ros__parameters:
     # Waypoints
     door:
-      x: 1.33
-      y: 0.0
-      yaw: 180.0
+      x: 1.33                              # Posisi X pintu
+      y: 0.0                               # Posisi Y pintu
+      yaw: 180.0                           # Sudut hadap pintu
     beverage_area:
-      x: 1.9
-      y: 2.1
-      yaw: 270.0
+      x: 1.9                               # Posisi X minuman
+      y: 2.1                               # Posisi Y minuman
+      yaw: 270.0                           # Sudut hadap minuman
     living_room:
-      x: 2.4
-      y: -0.25
-      yaw: -130.0
+      x: 2.4                               # Posisi X tamu
+      y: -0.25                             # Posisi Y tamu
+      yaw: -130.0                          # Sudut hadap tamu
 
     # Operational settings
-    global_frame: "map"
-    announce_topic: "/receptionist/status"
-    nav_timeout_sec: 45.0
+    global_frame: "map"                    # Frame peta global
+    announce_topic: "/receptionist/status" # Topik status task
+    nav_timeout_sec: 45.0                  # Batas waktu navigasi
 
     # Search chair settings
-    cmd_vel_topic: "cmd_vel"
-    chair_topic: "/vision/chair_detections"
-    empty_seat_topic: "/vision/empty_seat"
-    odom_topic: "/odom"
-    search_chair_ref_yaw: -1.57
-    search_chair_angular_speed: 0.15
-    search_chair_timeout_sec: 75.0
-    search_chair_confirm_frames: 2
-    search_chair_sweep_angle_deg: 30.0
-    chair_max_dist: 2.0
-    align_chair_p_gain: 1.5
-    align_chair_min_speed: 0.10
-    align_chair_max_speed: 0.20
-    align_chair_tolerance_rad: 0.035
-    camera_width: 1280
+    cmd_vel_topic: "cmd_vel"               # Topik kecepatan robot
+    chair_topic: "/vision/chair_detections" # Topik deteksi kursi
+    empty_seat_topic: "/vision/empty_seat" # Topik kursi kosong
+    odom_topic: "/odom"                    # Topik odometri robot
+    search_chair_ref_yaw: -1.57            # Sudut acuan kursi
+    search_chair_angular_speed: 0.15       # Kecepatan putar kursi
+    search_chair_timeout_sec: 75.0         # Timeout cari kursi
+    search_chair_confirm_frames: 2         # Frame konfirmasi kursi
+    search_chair_sweep_angle_deg: 30.0     # Sudut sapuan kursi
+    chair_max_dist: 2.0                    # Jarak maksimal kursi
+    align_chair_p_gain: 1.5                # Gain lurus kursi
+    align_chair_min_speed: 0.10            # Kecepatan min kursi
+    align_chair_max_speed: 0.20            # Kecepatan maks kursi
+    align_chair_tolerance_rad: 0.035       # Toleransi sudut kursi
+    camera_width: 1280                     # Lebar piksel kamera
 
-    guest_door_distance: 1.5
-    guest_door_distance_min: 1.35
-    guest_door_step_back_speed: 0.22
-    guest_door_timeout_sec: 15.0
-    guest_door_align_tolerance: 0.07
-    guest_approach_distance: 0.7
-    guest_approach_speed: 0.50
-    guest_approach_timeout_sec: 15.0
+    guest_door_distance: 1.5               # Jarak tamu pintu
+    guest_door_distance_min: 1.35          # Jarak min pintu
+    guest_door_step_back_speed: 0.22       # Kecepatan mundur pintu
+    guest_door_timeout_sec: 15.0           # Timeout mundur pintu
+    guest_door_align_tolerance: 0.07       # Toleransi lurus pintu
+    guest_approach_distance: 0.7           # Jarak dekati tamu
+    guest_approach_speed: 0.50             # Kecepatan dekati tamu
+    guest_approach_timeout_sec: 15.0       # Timeout dekati tamu
 
     # Face person settings
-    host_name: "Yesaya"
-    person_label_topic: "/vision/person_label"
-    guest_1_name_topic: "/vision/guest_1_name"
-    guest_2_name_topic: "/vision/guest_2_name"
-    host_seated_max_dist: 2.0
-    face_person_angular_speed: 0.30
-    face_person_timeout_sec: 25.0
-    face_person_p_gain: 1.2
-    face_person_min_speed: 0.15
-    face_person_max_speed: 0.30
-    face_person_tolerance_rad: 0.045
+    host_name: "Yesaya"                    # Nama host utama
+    person_label_topic: "/vision/person_label" # Topik deteksi orang
+    guest_1_name_topic: "/vision/guest_1_name" # Topik nama tamu1
+    guest_2_name_topic: "/vision/guest_2_name" # Topik nama tamu2
+    host_seated_max_dist: 2.0              # Jarak maks host
+    face_person_angular_speed: 0.30        # Kecepatan hadap orang
+    face_person_timeout_sec: 25.0          # Timeout hadap orang
+    face_person_p_gain: 1.2                # Gain hadap orang
+    face_person_min_speed: 0.15            # Kecepatan min orang
+    face_person_max_speed: 0.30            # Kecepatan maks orang
+    face_person_tolerance_rad: 0.045       # Toleransi sudut orang
 
-    # Relative 90-degree turn settings (/receptionist/left dan /receptionist/right)
-    turn_90_angular_speed: 0.30
-    turn_90_min_speed: 0.14
-    turn_90_max_speed: 0.55
-    turn_90_tolerance_rad: 0.04
-    turn_90_timeout_sec: 15.0
-    turn_90_p_gain: 1.5
+    # Relative 90-degree turn settings
+    turn_90_angular_speed: 0.30            # Kecepatan belok kanan/kiri
+    turn_90_min_speed: 0.14                # Kecepatan min belok
+    turn_90_max_speed: 0.55                # Kecepatan maks belok
+    turn_90_tolerance_rad: 0.04            # Toleransi sudut belok
+    turn_90_timeout_sec: 15.0              # Timeout belok robot
+    turn_90_p_gain: 1.5                    # Gain belok robot
 
 receptionist_manager:
   ros__parameters:
-    # Parameter Host & Konfigurasi Task (WAJIB ada di file YAML ini; tidak ada default di C++)
     host:
-      name: "Yesaya"                       # Nama Host yang duduk di living room
-      drink: "Coke"                      # Minuman favorit Host
-      interest: "Robotics"               # Hobi/minat utama Host
-      gender: "male"                     # Gender Host ("male" / "female")
-      shirt_color: "black"               # Warna pakaian Host
-      hair_color: "black"                # Warna rambut Host
-    camera_width: 1280                    # Lebar resolusi horizontal frame kamera (px)
-    global_timeout_sec: 600.0            # Batas waktu maksimal Receptionist sesuai rulebook (6 menit)
-    nav_service_timeout_sec: 50.0        # Watchdog service navigasi (> nav_timeout_sec)
-    dialog_reprompt_sec: 12.0            # Jeda tunggu sebelum mengulang pertanyaan dialog STT (detik)
-    wait_guest_prompt_sec: 8.0           # Interval sapaan saat menunggu tamu berdiri di depan pintu (detik)
-    vision_initial_settle_sec: 1.2       # Waktu stabilisasi kamera setelah robot berhenti navigasi (detik)
-    min_sit_wait_sec: 4.0                # Waktu tunggu minimal sebelum mengecek tamu duduk di kursi (detik)
-    person_freshness_sec: 2.0            # Batas umur deteksi orang terakhir dianggap masih valid (detik)
-    tts_min_timeout_sec: 4.0             # Watchdog minimal durasi ucapan TTS (detik)
-    tts_sec_per_word: 0.5                # Estimasi durasi ucapan TTS per kata (detik/kata)
-    tts_timeout_margin_sec: 2.0          # Margin tambahan untuk latensi audio TTS (detik)
-    nav_retry_cooldown_sec: 2.0          # Jeda sebelum mengulang navigasi yang gagal (detik)
+      name: "Yesaya"                       # Nama host utama
+      drink: "Coke"                        # Minuman favorit host
+      interest: "Robotics"                 # Minat hobi host
+      gender: "male"                       # Gender profil host
+      shirt_color: "black"                 # Warna baju host
+      hair_color: "black"                  # Warna rambut host
+    camera_width: 1280                     # Lebar piksel kamera
+    global_timeout_sec: 600.0              # Batas waktu task
+    nav_service_timeout_sec: 50.0          # Timeout layanan navigasi
+    dialog_reprompt_sec: 12.0              # Jeda ulang pertanyaan
+    wait_guest_prompt_sec: 8.0             # Interval sapaan tamu
+    vision_initial_settle_sec: 1.2         # Jeda stabilisasi kamera
+    min_sit_wait_sec: 4.0                  # Tunggu cek duduk
+    person_freshness_sec: 2.0              # Umur valid deteksi
+    tts_min_timeout_sec: 4.0               # Durasi min TTS
+    tts_sec_per_word: 0.5                  # Durasi per kata
+    tts_timeout_margin_sec: 2.0            # Margin latensi TTS
+    nav_retry_cooldown_sec: 2.0            # Jeda ulang navigasi
     # Daftar entitas Setup Days (bisa diubah tanpa compile ulang)
     known_names:
       - "adel"
@@ -159,48 +158,46 @@ receptionist_manager:
 
 vision:
   ros__parameters:
-    task: "receptionist"
-    camera_fps: 30.0
-    camera_resolution: "hd720"           # Resolusi ZED untuk Receptionist: hd720 (1280x720) untuk akurasi jarak jauh
-    depth_mode: "performance"
-    publish_yaw: false
-    yaw_360: true
-    depth_minimum_distance: 30.0
-    person_max_dist: 2.0
-    enable_body_tracking: true
-    enable_chair: true
-    chair_model: ""
-    enable_drinks: true
-    botol_model: "models/water.onnx"
-    cracker_model: "models/crackerbox.onnx"
-    soda_model: "models/soda.onnx"
-    pringles_model: "models/pringles.onnx"
-    sugarbox_model: "models/sugarbox.onnx"
-    milk_model: "models/milk.onnx"
-    drink_min_area: 180.0
-    drink_conf: 0.48
-    water_conf: 0.25
-    drink_max_dist: 2.5
-    enable_bag: false
-    enable_yolo: true
-    yolo_model: "models/yolov8n_sim.onnx"
-    yolo_classes: "models/coco_names.txt"
-    yolo_conf: 0.25
-    face_detect_model: "models/face_detection_yunet.onnx"
-    face_detect_conf: 0.40
-    face_model: "models/arcface_w600k_r50.onnx"
-    face_threshold: 0.40
-    gender_model: "models/genderage.onnx"
-    color_model: "models/color_model.onnx"
-    color_labels: "models/color_names.txt"
-    hair_model: "models/hair_model.onnx"
-    hair_labels: "models/hair_names.txt"
-    debug_window: true
-    mirror: false
-    # Profil Host (hanya foto yang digunakan untuk ekstraksi wajah, atribut lainnya dari YAML ini)
-    host_name: "Yesaya"                 # Nama Host
-    host_photo: "models/host.jpg"        # Foto wajah Host untuk ekstraksi fitur biometrik
-    host_shirt_color: ""                 # Kosongkan agar tidak veto jika warna baju berbeda/pencahayaan berubah
-    host_gender: ""                      # Kosongkan agar tidak veto jika prediksi gender berbeda
-    host_hair_color: ""                  # Kosongkan agar pencocokan murni dari foto wajah host.jpg & warna baju
+    task: "receptionist"                   # Mode task vision
+    camera_fps: 30.0                       # Frame rate kamera
+    camera_resolution: "hd720"             # Resolusi kamera ZED
+    depth_mode: "performance"              # Mode kedalaman ZED
+    publish_yaw: false                     # Publikasi yaw IMU
+    yaw_360: true                          # Format yaw 0-360
+    depth_minimum_distance: 30.0           # Jarak depth minimal
+    person_max_dist: 2.0                   # Jarak maks orang
+    enable_body_tracking: true             # Aktifkan tracking tubuh
+    enable_chair: true                     # Aktifkan deteksi kursi
+    chair_model: ""                        # Path model kursi
+    enable_drinks: true                    # Aktifkan deteksi minuman
+    botol_model: "models/receptionist/water.onnx" # Model botol air
+    soda_model: "models/receptionist/soda.onnx" # Model kaleng soda
+    milk_model: "models/receptionist/milk.onnx" # Model kotak susu
+    drink_min_area: 180.0                  # Luas min minuman
+    drink_conf: 0.48                       # Ambang skor minuman
+    water_conf: 0.25                       # Ambang skor air
+    drink_max_dist: 2.5                    # Jarak maks minuman
+    enable_bag: false                      # Nonaktifkan deteksi tas
+    enable_yolo: true                      # Aktifkan detektor YOLO
+    yolo_model: "models/receptionist/yolov8n_sim.onnx" # Model YOLO utama
+    yolo_classes: "models/receptionist/coco_names.txt" # Label kelas YOLO
+    yolo_conf: 0.25                        # Ambang skor YOLO
+    face_detect_model: "models/receptionist/face_detection_yunet.onnx" # Model deteksi wajah
+    face_detect_conf: 0.40                 # Ambang skor wajah
+    face_model: "models/receptionist/arcface_w600k_r50.onnx" # Model pengenalan wajah
+    face_threshold: 0.40                   # Ambang kemiripan wajah
+    gender_model: "models/receptionist/genderage.onnx" # Model deteksi gender
+    color_model: "models/receptionist/color_model.onnx" # Model warna pakaian
+    color_labels: "models/receptionist/color_names.txt" # Label warna pakaian
+    hair_model: "models/receptionist/hair_model.onnx" # Model warna rambut
+    hair_labels: "models/receptionist/hair_names.txt" # Label warna rambut
+    hat_model: "models/receptionist/hat.onnx" # Model deteksi topi
+    glasses_model: "models/receptionist/glasses.onnx" # Model deteksi kacamata
+    debug_window: true                     # Tampilkan jendela preview
+    mirror: false                          # Cermin tampilan preview
+    host_name: "Yesaya"                    # Nama host utama
+    host_photo: "models/receptionist/host.jpg" # Foto wajah host
+    host_shirt_color: ""                   # Warna baju host
+    host_gender: ""                        # Gender profil host
+    host_hair_color: ""                    # Warna rambut host
 

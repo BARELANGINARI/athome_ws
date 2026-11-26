@@ -3,88 +3,79 @@
 # =============================================================================
 restaurant_node:
   ros__parameters:
-    # -------------------------------------------------------------------------
     # 1. Homing / Origin Settings
-    # -------------------------------------------------------------------------
-    origin_x: 0.0                        # Koordinat X titik awal robot (meter)
-    origin_y: 0.0                        # Koordinat Y titik awal robot (meter)
-    origin_yaw: 0.0                      # Sudut hadap awal robot (rad)
-    global_frame: "map"                  # Global map frame
-    base_frame: "base_link"              # Robot base frame
+    origin_x: 0.0                        # Posisi X awal
+    origin_y: 0.0                        # Posisi Y awal
+    origin_yaw: 0.0                      # Sudut hadap awal
+    global_frame: "map"                  # Frame peta global
+    base_frame: "base_link"              # Frame dasar robot
 
-    # -------------------------------------------------------------------------
     # 2. Customer Order / Person Navigation Settings
-    # -------------------------------------------------------------------------
-    order_topic: "/vision/order"           # Topik input posisi orang / pelanggan dari kamera
-    order_frame: "base_link"             # Frame acuan koordinat: "base_link" (relatif kamera) atau "map" (global)
-    standoff_distance: 1.0              # Jarak henti ideal di depan pelanggan (meter)
-    adaptive_standoff_enabled: true      # Aktifkan penyesuaian jarak henti adaptif jika titik goal mepet dinding/rintangan
-    adaptive_standoff_min: 1.0          # Jarak henti minimal (meter) - saat area terbuka
-    adaptive_standoff_max: 1.6          # Jarak henti maksimal (meter) - saat orang mepet dinding
-    adaptive_standoff_step: 0.05         # Resolusi langkah mundur saat mencari ruang bebas (meter)
-    costmap_obstacle_threshold: 60       # Nilai batas cost costmap (0-100) aman dari dinding/rintangan
-    costmap_topic: "/global_costmap/costmap" # Topik global costmap Nav2
-    robot_radius: 0.24                   # Radius fisik robot untuk pengecekan safety costmap (meter)
-    auto_navigate: false                 # false: tunggu service /go_to_order, true: langsung jalan saat topik publish
-    nav_timeout_sec: 120.0               # Batas waktu navigasi Nav2 sebelum timeout (detik)
+    order_topic: "/vision/order"         # Topik posisi order
+    order_frame: "base_link"             # Frame koordinat order
+    standoff_distance: 1.0               # Jarak henti pelanggan
+    adaptive_standoff_enabled: true      # Jarak henti adaptif
+    adaptive_standoff_min: 1.0           # Jarak adaptif minimal
+    adaptive_standoff_max: 1.6           # Jarak adaptif maksimal
+    adaptive_standoff_step: 0.05         # Langkah mundur adaptif
+    costmap_obstacle_threshold: 60       # Ambang batas rintangan
+    costmap_topic: "/global_costmap/costmap" # Topik costmap global
+    robot_radius: 0.24                   # Radius fisik robot
+    auto_navigate: false                 # Navigasi otomatis order
+    nav_timeout_sec: 120.0               # Batas waktu navigasi
 
-    # -------------------------------------------------------------------------
     # 3. Customer Search Rotation Settings
-    # -------------------------------------------------------------------------
-    search_sweep_angle_deg: 90.0         # Sudut rotasi pencarian kiri dan kanan (derajat)
-    search_angular_speed: 0.35           # Kecepatan sudut rotasi pencarian (rad/s)
-    search_hold_time_sec: 0.5            # Durasi diam sejenak di ujung kiri/kanan (detik)
-    search_timeout_sec: 35.0             # Batas waktu timeout pencarian (detik)
+    search_sweep_angle_deg: 90.0         # Sudut sapuan pencarian
+    search_angular_speed: 0.35           # Kecepatan putar pencarian
+    search_hold_time_sec: 0.5            # Jeda ujung sapuan
+    search_timeout_sec: 35.0             # Batas waktu pencarian
     cmd_vel_topic: "/cmd_vel"            # Topik kecepatan robot
-    gesture_topic: "/vision/gesture"     # Topik gestur dari kamera
+    gesture_topic: "/vision/gesture"     # Topik gestur kamera
 
-    # -------------------------------------------------------------------------
     # 4. Heading Alignment to Person BBox Settings
-    # -------------------------------------------------------------------------
-    align_to_person_enabled: true        # Aktifkan penyesuaian arah hadap ke bbox orang setelah sampai di tujuan
-    person_label_topic: "/vision/person_label" # Topik deteksi orang & bbox dari kamera
-    align_timeout_sec: 10.0              # Batas waktu penyesuaian arah hadap (detik)
-    align_tolerance_px: 30.0             # Toleransi selisih piksel tengah bbox terhadap tengah kamera (px)
-    align_p_gain: 0.6                    # Proportional gain untuk kecepatan sudut rotasi
-    align_min_speed: 0.12                # Kecepatan rotasi minimum untuk mengatasi friksi (rad/s)
-    align_max_speed: 0.35                # Kecepatan rotasi maksimum (rad/s)
-    camera_image_width: 672.0            # Lebar resolusi kamera dalam piksel (ZED VGA: 672 px)
-    align_invert_direction: false        # Inversi arah putar (true jika kamera terpasang terbalik)
-    barman_max_distance: 0.75             # Jarak maksimal deteksi barman (meter)
-    barman_search_angular_speed: 0.25    # Kecepatan putar saat mencari barman (rad/s)
-    barman_align_timeout_sec: 15.0       # Batas waktu mencari & meluruskan ke barman (detik)
+    align_to_person_enabled: true        # Luruskan ke pelanggan
+    person_label_topic: "/vision/person_label" # Topik deteksi orang
+    align_timeout_sec: 10.0              # Batas waktu pelurusan
+    align_tolerance_px: 30.0             # Toleransi piksel tengah
+    align_p_gain: 0.6                    # Gain putar pelurusan
+    align_min_speed: 0.12                # Kecepatan putar minimal
+    align_max_speed: 0.35                # Kecepatan putar maksimal
+    camera_image_width: 672.0            # Lebar piksel kamera
+    align_invert_direction: false        # Balik arah putar
+    barman_max_distance: 0.75            # Jarak maks barman
+    barman_search_angular_speed: 0.25    # Kecepatan cari barman
+    barman_align_timeout_sec: 15.0       # Timeout lurus barman
 
 # =============================================================================
 # Restaurant Task Manager FSM Parameters
 # =============================================================================
 restaurant_manager:
   ros__parameters:
-    origin_x: 0.0                        # Koordinat X titik awal robot / barman (meter)
-    origin_y: 0.0                        # Koordinat Y titik awal robot / barman (meter)
-    origin_yaw: 0.0                      # Sudut hadap awal robot (rad)
-    capture_tf_origin_on_init: true      # Otomatis simpan posisi awal robot via TF map->base_link saat start
-    global_frame: "map"                  # Frame peta navigasi
-    base_frame: "base_link"              # Frame acuan robot
-    order_frame: "base_link"             # Frame acuan koordinat pesanan pelanggan
-    customer_standoff_distance: 1.0     # Jarak henti aman di depan pelanggan (meter)
-    object_standoff_distance: 0.45       # Jarak henti di depan meja objek (meter)
-    adaptive_standoff_enabled: true      # Aktifkan penyesuaian jarak henti adaptif jika titik goal mepet dinding/rintangan
-    adaptive_standoff_min: 1.0          # Jarak henti minimal (meter) - saat area terbuka
-    adaptive_standoff_max: 1.6          # Jarak henti maksimal (meter) - saat orang mepet dinding
-    adaptive_standoff_step: 0.05         # Resolusi langkah mundur saat mencari ruang bebas (meter)
-    costmap_obstacle_threshold: 60       # Nilai batas cost costmap (0-100) aman dari dinding/rintangan
-    costmap_topic: "/global_costmap/costmap" # Topik global costmap Nav2
-    robot_radius: 0.24                   # Radius fisik robot untuk pengecekan safety costmap (meter)
-    nav_timeout_sec: 120.0               # Batas waktu navigasi Nav2 sebelum timeout (detik)
-    order1_detect_timeout_sec: 8.0       # Timeout deteksi visual order 1 di meja (detik)
-    max_customers: 2                     # Jumlah maksimal pelanggan yang dilayani dalam 1 sesi
-    # Hri Mode
-    global_timeout_sec: 900.0            # Batas waktu total seluruh task Restaurant (detik, 15 menit)
-    dialog_reprompt_sec: 10.0            # Waktu reprompt dialog jika pelanggan tidak merespons (detik)
-    wave_reprompt_sec: 5.0              # Interval pemanggilan ajakan melambaikan tangan (detik)
-    tts_min_timeout_sec: 4.0             # Watchdog minimal durasi ucapan TTS (detik)
-    tts_sec_per_word: 0.5                # Estimasi durasi ucapan per kata (detik/kata)
-    tts_timeout_margin_sec: 2.0          # Margin latensi sintesis dan output audio TTS (detik)
-    nav_retry_cooldown_sec: 2.0          # Waktu tunggu jeda sebelum mengulang navigasi yang gagal (detik)
-    tray_wait_sec: 5.0                  # Lama jeda diam menunggu barman menaruh order ke tray sebelum bertanya konfirmasi (detik)
-    tts_post_delay_sec: 0.25             # Jeda setelah TTS selesai berbicara sebelum callback/state berikutnya berjalan (detik)
+    origin_x: 0.0                        # Posisi X barman
+    origin_y: 0.0                        # Posisi Y barman
+    origin_yaw: 0.0                      # Sudut hadap awal
+    capture_tf_origin_on_init: true      # Simpan posisi awal
+    global_frame: "map"                  # Frame peta global
+    base_frame: "base_link"              # Frame dasar robot
+    order_frame: "base_link"             # Frame koordinat order
+    customer_standoff_distance: 1.0      # Jarak henti pelanggan
+    object_standoff_distance: 0.45       # Jarak henti meja
+    adaptive_standoff_enabled: true      # Jarak henti adaptif
+    adaptive_standoff_min: 1.0           # Jarak adaptif minimal
+    adaptive_standoff_max: 1.6           # Jarak adaptif maksimal
+    adaptive_standoff_step: 0.05         # Langkah mundur adaptif
+    costmap_obstacle_threshold: 60       # Ambang batas rintangan
+    costmap_topic: "/global_costmap/costmap" # Topik costmap global
+    robot_radius: 0.24                   # Radius fisik robot
+    nav_timeout_sec: 120.0               # Batas waktu navigasi
+    order1_detect_timeout_sec: 8.0       # Timeout deteksi order1
+    max_customers: 2                     # Maksimal jumlah pelanggan
+    global_timeout_sec: 900.0            # Batas waktu task
+    dialog_reprompt_sec: 10.0            # Jeda ulang dialog
+    wave_reprompt_sec: 5.0               # Interval ajakan melambai
+    tts_min_timeout_sec: 4.0             # Durasi min TTS
+    tts_sec_per_word: 0.5                # Durasi per kata
+    tts_timeout_margin_sec: 2.0          # Margin latensi TTS
+    nav_retry_cooldown_sec: 2.0          # Jeda ulang navigasi
+    tray_wait_sec: 5.0                   # Tunggu taruh tray
+    tts_post_delay_sec: 0.25             # Jeda setelah TTS

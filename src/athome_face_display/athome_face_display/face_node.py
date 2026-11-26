@@ -17,10 +17,10 @@ from websockets.server import WebSocketServerProtocol
 
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] [athome_face]: %(message)s",
+    format="[%(asctime)s] [%(levelname)s] [athome_face_display]: %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("athome_face")
+logger = logging.getLogger("athome_face_display")
 
 
 class ReusableTCPServer(socketserver.TCPServer):
@@ -73,7 +73,7 @@ class RobotFaceNode(Node):
 
         try:
             from ament_index_python.packages import get_package_share_directory
-            share_web = Path(get_package_share_directory("athome_face")) / "web"
+            share_web = Path(get_package_share_directory("athome_face_display")) / "web"
             if (share_web / "index.html").is_file():
                 return share_web
         except Exception:

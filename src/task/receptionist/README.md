@@ -13,7 +13,7 @@ ros2 launch receptionist hardware.launch.py
 ros2 launch receptionist motion.launch.py
 ros2 launch receptionist hri.launch.py
 ros2 launch receptionist camera.launch.py
-ros2 launch athome_face face.launch.py
+ros2 launch athome_face_display face.launch.py
 
 ### All-in-One (Semua di 1 terminal):
 ros2 launch receptionist receptionist.launch.py hri:=true

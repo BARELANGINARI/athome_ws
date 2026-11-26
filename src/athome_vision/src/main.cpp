@@ -576,6 +576,9 @@ struct PrevPerson
   int id{-1};
   cv::Rect bbox;
   cv::Rect shirt_bbox;
+  cv::Rect pants_bbox;
+  cv::Rect hat_bbox;
+  cv::Rect glasses_bbox;
   bool has_pos{false};
   double x_m{0.0}, y_m{0.0}, range_m{0.0};
   bool is_sitting{false};
@@ -583,7 +586,9 @@ struct PrevPerson
   bool is_standing_posture{false};
   bool is_facing_back{false};
   std::vector<cv::Point2f> kpt;
-  std::string clothing, hair, gender, name;
+  std::string clothing, pants, hair, gender, name;
+  bool has_hat{false};
+  bool has_glasses{false};
 };
 
 struct PrevBag
@@ -1117,25 +1122,98 @@ public:
     return cv::Rect();
   }
 
-  std::string clothingColor(
+  static cv::Rect computePantsRoi(
+    const cv::Mat & bgr, const cv::Rect & bbox, const std::vector<sl::float2> & kpt)
+  {
+    if (bgr.empty()) return cv::Rect();
+
+    // 1. Jika keypoint pinggul tersedia (BODY_34: kpt[18]=LEFT_HIP, kpt[22]=RIGHT_HIP,
+    //    kpt[19]=LEFT_KNEE, kpt[23]=RIGHT_KNEE)
+    if (kpt.size() > 23 && validKeypoint(kpt[18]) && validKeypoint(kpt[22])) {
+      const float hx = (kpt[18].x + kpt[22].x) * 0.5f;
+      const float hy = (kpt[18].y + kpt[22].y) * 0.5f;
+      const float hip_w = std::abs(kpt[22].x - kpt[18].x);
+
+      if (hip_w > 10.0f) {
+        float min_x = std::min(kpt[18].x, kpt[22].x);
+        float max_x = std::max(kpt[18].x, kpt[22].x);
+        float knee_y_sum = 0.0f;
+        int knee_cnt = 0;
+
+        if (validKeypoint(kpt[19])) {
+          min_x = std::min(min_x, kpt[19].x);
+          max_x = std::max(max_x, kpt[19].x);
+          knee_y_sum += kpt[19].y;
+          knee_cnt++;
+        }
+        if (validKeypoint(kpt[23])) {
+          min_x = std::min(min_x, kpt[23].x);
+          max_x = std::max(max_x, kpt[23].x);
+          knee_y_sum += kpt[23].y;
+          knee_cnt++;
+        }
+
+        int px = 0, py = 0, pw = 0, ph = 0;
+        if (knee_cnt > 0) {
+          const float ky = knee_y_sum / static_cast<float>(knee_cnt);
+          const float leg_dy = std::max(0.0f, ky - hy);
+          const float cx = (min_x + max_x) * 0.5f;
+          const float fpw = std::max(hip_w * 1.15f, (max_x - min_x) * 0.90f);
+          pw = static_cast<int>(fpw);
+          px = static_cast<int>(cx - fpw * 0.5f);
+          py = static_cast<int>(hy + std::max(2.0f, leg_dy * 0.08f));
+          ph = static_cast<int>(std::max({hip_w * 0.85f, leg_dy * 1.05f, 16.0f}));
+        } else {
+          pw = static_cast<int>(hip_w * 1.20f);
+          ph = static_cast<int>(hip_w * 1.35f);
+          px = static_cast<int>(hx - pw * 0.5f);
+          py = static_cast<int>(hy + hip_w * 0.10f);
+        }
+
+        cv::Rect roi(px, py, pw, ph);
+        roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+        if (bbox.width > 10 && bbox.height > 10) {
+          roi &= bbox;
+        }
+        if (roi.width >= 10 && roi.height >= 10) return roi;
+      }
+    }
+
+    // 2. Fallback jika keypoint pinggul tidak terdeteksi, gunakan proporsi bagian bawah bbox
+    if (bbox.width > 10 && bbox.height > 10) {
+      const int pw = std::max(10, static_cast<int>(bbox.width * 0.55f));
+      const int ph = std::max(10, static_cast<int>(bbox.height * 0.34f));
+      const int px = std::clamp(bbox.x + static_cast<int>(bbox.width * 0.225f), 0, bgr.cols - pw);
+      const int py = std::clamp(bbox.y + static_cast<int>(bbox.height * 0.52f), 0, bgr.rows - ph);
+
+      cv::Rect roi(px, py, pw, ph);
+      roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+      if (roi.width >= 10 && roi.height >= 10) return roi;
+    }
+
+    return cv::Rect();
+  }
+
+  std::string detectGarmentColor(
     const cv::Mat & bgr, const cv::Rect & roi,
+    const std::string & suffix, const std::string & fallback,
     const sl::Mat * cloud = nullptr,
     const cv::Vec3f & wb_gain = cv::Vec3f(1.0f, 1.0f, 1.0f))
   {
-    if (bgr.empty() || roi.width <= 5 || roi.height <= 5) return "casual attire";
+    if (bgr.empty() || roi.width <= 5 || roi.height <= 5) return fallback;
 
     cv::Rect safe_roi = roi & cv::Rect(0, 0, bgr.cols, bgr.rows);
-    if (safe_roi.area() <= 0) return "casual attire";
+    if (safe_roi.area() <= 0) return fallback;
 
     cv::Mat cropped = zed_vision::applyWhiteBalance(bgr(safe_roi), wb_gain);
     cv::Mat depth_mask = (cloud != nullptr)
       ? zed_vision::buildTorsoDepthMask(safe_roi, *cloud)
       : cv::Mat();
 
-    // 1. Cari warna dominan torso (tahan bayangan gelap, teks/logo dada, lampu ruangan, & background)
+    // 1. Cari warna dominan (tahan bayangan gelap, teks/logo, lampu ruangan, & background)
     const zed_vision::DominantColorInfo dom =
       zed_vision::analyzeDominantShirtColor(cropped, depth_mask);
-    if (!dom.valid) return "casual attire";
+    if (!dom.valid) return fallback;
 
     std::string chosen_color = dom.name;
 
@@ -1214,12 +1292,29 @@ public:
       }
     }
 
-    if (chosen_color.find("shirt") == std::string::npos &&
+    if (!suffix.empty() &&
+        chosen_color.find(suffix) == std::string::npos &&
         chosen_color.find("clothes") == std::string::npos)
     {
-      chosen_color += " shirt";
+      chosen_color += " " + suffix;
     }
     return chosen_color;
+  }
+
+  std::string clothingColor(
+    const cv::Mat & bgr, const cv::Rect & roi,
+    const sl::Mat * cloud = nullptr,
+    const cv::Vec3f & wb_gain = cv::Vec3f(1.0f, 1.0f, 1.0f))
+  {
+    return detectGarmentColor(bgr, roi, "shirt", "casual attire", cloud, wb_gain);
+  }
+
+  std::string pantsColor(
+    const cv::Mat & bgr, const cv::Rect & roi,
+    const sl::Mat * cloud = nullptr,
+    const cv::Vec3f & wb_gain = cv::Vec3f(1.0f, 1.0f, 1.0f))
+  {
+    return detectGarmentColor(bgr, roi, "pants", "", cloud, wb_gain);
   }
 
   std::string clothingColor(
@@ -1227,6 +1322,42 @@ public:
   {
     const cv::Rect roi = computeShirtRoi(bgr, bbox, kpt);
     return clothingColor(bgr, roi);
+  }
+
+  static cv::Rect computeHeadAccessoryRoi(
+    const cv::Mat & bgr, const cv::Rect & bbox, const std::vector<sl::float2> & kpt)
+  {
+    if (bgr.empty()) return cv::Rect();
+
+    // Gunakan keypoint kepala/bahu ZED BODY_34 jika tersedia (kpt[26]=HEAD, kpt[5]=L_SHOULDER, kpt[12]=R_SHOULDER)
+    if (kpt.size() > 26 && validKeypoint(kpt[26])) {
+      float span = 80.0f;
+      if (validKeypoint(kpt[5]) && validKeypoint(kpt[12])) {
+        span = std::max(span, std::abs(kpt[12].x - kpt[5].x) * 0.95f);
+      } else if (bbox.width > 10) {
+        span = std::max(span, static_cast<float>(bbox.width) * 0.65f);
+      }
+      const int hw = static_cast<int>(span * 1.15f);
+      const int hh = static_cast<int>(span * 1.25f);
+      const int hx = static_cast<int>(kpt[26].x - hw * 0.5f);
+      const int hy = static_cast<int>(kpt[26].y - hh * 0.60f);
+      cv::Rect roi(hx, hy, hw, hh);
+      roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+      if (roi.width >= 20 && roi.height >= 20) return roi;
+    }
+
+    if (bbox.width > 10 && bbox.height > 10) {
+      const int pad_x = static_cast<int>(bbox.width * 0.10f);
+      const int top_pad = static_cast<int>(bbox.height * 0.10f);
+      const int hx = bbox.x - pad_x;
+      const int hy = bbox.y - top_pad;
+      const int hw = bbox.width + 2 * pad_x;
+      const int hh = static_cast<int>(bbox.height * 0.45f);
+      cv::Rect roi(hx, hy, hw, hh);
+      roi &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+      if (roi.width >= 20 && roi.height >= 20) return roi;
+    }
+    return cv::Rect();
   }
 
   std::string hairColor(
@@ -2296,6 +2427,8 @@ private:
   YoloDetector soda_yolo_;
   YoloDetector milk_yolo_;
   YoloDetector chair_yolo_;
+  YoloDetector hat_yolo_;
+  YoloDetector glasses_yolo_;
 
   bool enable_yolo_{true};
   bool enable_bag_{true};
@@ -2321,6 +2454,9 @@ private:
   std::unordered_map<int, BackMemory> back_memory_;
   std::unordered_map<int, PersonNameMemory> name_memory_;
   std::unordered_map<int, ShirtColorMemory> shirt_color_memory_;
+  std::unordered_map<int, ShirtColorMemory> pants_color_memory_;
+  std::unordered_map<int, ShirtColorMemory> hat_memory_;
+  std::unordered_map<int, ShirtColorMemory> glasses_memory_;
   std::unordered_map<int, GenderMemory> gender_memory_;
   std::string task_mode_{"all"};
   bool is_help_me_carry_{false};
@@ -2401,6 +2537,9 @@ ZedNode::ZedNode()
   declare_parameter("color_labels", std::string("models/color_names.txt"));
   declare_parameter("hair_model", std::string("models/hair_model.onnx"));
   declare_parameter("hair_labels", std::string("models/hair_names.txt"));
+  declare_parameter("hat_model", std::string("models/hat.onnx"));
+  declare_parameter("glasses_model", std::string("models/glasses.onnx"));
+  declare_parameter("accessory_conf", 0.45);
   declare_parameter("face_model", std::string("models/arcface_w600k_r50.onnx"));
   declare_parameter("face_threshold", 0.40);
   declare_parameter("face_detect_model", std::string("models/face_detection_yunet.onnx"));
@@ -2735,20 +2874,48 @@ std::string ZedNode::resolvePath(const std::string & path) const
 {
   if (path.empty()) return "";
   if (std::filesystem::path(path).is_absolute()) return path;
-  try {
-    const std::string share =
-      ament_index_cpp::get_package_share_directory("athome_vision") + "/" + path;
-    if (std::filesystem::exists(share)) return share;
-  } catch (...) {
+
+  auto tryResolve = [](const std::string & rel) -> std::string {
+    if (rel.empty()) return "";
+    try {
+      const std::string share =
+        ament_index_cpp::get_package_share_directory("athome_vision") + "/" + rel;
+      if (std::filesystem::exists(share)) return share;
+    } catch (...) {
+    }
+    if (std::filesystem::exists(rel)) return rel;
+    if (std::filesystem::exists("src/athome_vision/" + rel)) return "src/athome_vision/" + rel;
+    const std::string ws0 = "/home/dell/Documents/athome_ws/src/athome_vision/" + rel;
+    if (std::filesystem::exists(ws0)) return ws0;
+    const std::string ws = "/home/dell/Desktop/athome_ws/src/athome_vision/" + rel;
+    if (std::filesystem::exists(ws)) return ws;
+    const std::string ws2 = "/home/dell/Downloads/athome_ws/src/athome_vision/" + rel;
+    if (std::filesystem::exists(ws2)) return ws2;
+    return "";
+  };
+
+  std::string found = tryResolve(path);
+  if (!found.empty()) return found;
+
+  // Jika path berbentuk "models/<file>" tanpa subfolder task, cari di folder task terkait
+  if (path.rfind("models/", 0) == 0 && path.find('/', 7) == std::string::npos) {
+    const std::string fname = path.substr(7);
+    std::vector<std::string> task_dirs;
+    if (is_receptionist_ && !is_restaurant_ && !is_help_me_carry_) {
+      task_dirs = {"receptionist", "restaurant", "help_me_carry"};
+    } else if (is_restaurant_ && !is_receptionist_ && !is_help_me_carry_) {
+      task_dirs = {"restaurant", "receptionist", "help_me_carry"};
+    } else if (is_help_me_carry_ && !is_receptionist_ && !is_restaurant_) {
+      task_dirs = {"help_me_carry", "receptionist", "restaurant"};
+    } else {
+      task_dirs = {"receptionist", "restaurant", "help_me_carry"};
+    }
+    for (const auto & dir : task_dirs) {
+      found = tryResolve("models/" + dir + "/" + fname);
+      if (!found.empty()) return found;
+    }
   }
-  if (std::filesystem::exists(path)) return path;
-  if (std::filesystem::exists("src/athome_vision/" + path)) return "src/athome_vision/" + path;
-  const std::string ws0 = "/home/dell/Documents/athome_ws/src/athome_vision/" + path;
-  if (std::filesystem::exists(ws0)) return ws0;
-  const std::string ws = "/home/dell/Desktop/athome_ws/src/athome_vision/" + path;
-  if (std::filesystem::exists(ws)) return ws;
-  const std::string ws2 = "/home/dell/Downloads/athome_ws/src/athome_vision/" + path;
-  if (std::filesystem::exists(ws2)) return ws2;
+
   return "share/athome_vision/" + path;
 }
 
@@ -2874,6 +3041,23 @@ void ZedNode::loadModels()
   if (enable_chair_) {
     loadYolo(chair_yolo_, get_parameter("chair_model").as_string(),
       {}, "chair", conf, nms, size);
+  }
+
+  if (is_receptionist_) {
+    const float acc_conf = static_cast<float>(get_parameter("accessory_conf").as_double());
+    auto loadOptionalAccessory = [&](YoloDetector & det, const std::string & param_name, const std::string & label) {
+      const std::string path = resolvePath(get_parameter(param_name).as_string());
+      if (!path.empty() && std::filesystem::exists(path)) {
+        std::string err;
+        if (det.load(path, "", acc_conf, nms, size, label, &err)) {
+          RCLCPP_INFO(get_logger(), "Accessory YOLO (%s) loaded: %s", label.c_str(), path.c_str());
+        } else {
+          RCLCPP_WARN(get_logger(), "Accessory YOLO (%s) load error: %s", label.c_str(), err.c_str());
+        }
+      }
+    };
+    loadOptionalAccessory(hat_yolo_, "hat_model", "hat");
+    loadOptionalAccessory(glasses_yolo_, "glasses_model", "glasses");
   }
 
   // Atribut tamu & pelanggan (warna pakaian, gender, face/nama) untuk task receptionist & restaurant
@@ -3196,10 +3380,10 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
   if (enable_drinks_ && (drink_frame_++ % yolo_stride_) == (1 % yolo_stride_)) {
     dets.clear();
     std::vector<YoloDetector *> active_detectors;
-    if (is_receptionist_) {
-      // Receptionist: deteksi soda, milk, dan water
+    if (is_receptionist_ && !is_restaurant_) {
+      // Receptionist: HANYA deteksi soda, milk, dan water
       active_detectors = {&soda_yolo_, &milk_yolo_, &botol_yolo_};
-    } else if (is_restaurant_) {
+    } else if (is_restaurant_ && !is_receptionist_) {
       // Restaurant: HANYA deteksi soda, pringles, sugar, cracker, dan milk
       active_detectors = {&soda_yolo_, &pringles_yolo_, &sugarbox_yolo_, &cracker_yolo_, &milk_yolo_};
     } else {
@@ -3223,6 +3407,16 @@ void ZedNode::processDrinks(const cv::Mat & bgr, const sl::Mat & cloud)
               item.label == "mineral_water" || item.label == "mineral water")
           {
             item.label = "water";
+          }
+
+          if (is_receptionist_ && !is_restaurant_) {
+            if (item.label != "milk" && item.label != "water" && item.label != "soda") continue;
+          } else if (is_restaurant_ && !is_receptionist_) {
+            if (item.label != "soda" && item.label != "pringles" &&
+                item.label != "sugar" && item.label != "cracker" && item.label != "milk")
+            {
+              continue;
+            }
           }
 
           const int area = item.rect.width * item.rect.height;
@@ -3442,14 +3636,49 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   const auto current_time = now();
   const cv::Vec3f wb_gain = zed_vision::computeWhiteBalanceGain(bgr);
 
-  // Ekstraksi atribut warna baju, rambut, gender (7-frame majority voting) sekali per orang
+  // Ekstraksi atribut warna baju, warna celana, aksesoris kepala, rambut, gender (7-frame majority voting)
   std::vector<cv::Rect> entry_shirt_rois(entries.size());
+  std::vector<cv::Rect> entry_pants_rois(entries.size());
+  std::vector<cv::Rect> entry_hat_bboxes(entries.size());
+  std::vector<cv::Rect> entry_glasses_bboxes(entries.size());
   std::vector<std::string> entry_clothes(entries.size());
+  std::vector<std::string> entry_pants(entries.size());
+  std::vector<bool> entry_has_hat(entries.size(), false);
+  std::vector<bool> entry_has_glasses(entries.size(), false);
   std::vector<std::string> entry_hairs(entries.size());
   std::vector<std::string> entry_genders(entries.size());
   std::vector<bool> entry_facing_back(entries.size(), false);
   if (is_receptionist_) {
     const bool run_attr_infer = (person_attr_frame_++ % 3 == 0);
+    auto detectAccessory = [&](
+      YoloDetector & detector,
+      std::unordered_map<int, ShirtColorMemory> & mem_map,
+      int person_id, const cv::Rect & head_roi,
+      cv::Rect & out_bbox) -> bool
+    {
+      if (!detector.ready()) return false;
+      std::string raw_val;
+      if (run_attr_infer && head_roi.width >= 20 && head_roi.height >= 20) {
+        std::vector<YoloDetection> found;
+        detector.detect(bgr(head_roi), {}, found);
+        if (!found.empty()) {
+          auto best_it = std::max_element(found.begin(), found.end(),
+            [](const YoloDetection & a, const YoloDetection & b) { return a.score < b.score; });
+          out_bbox = best_it->rect;
+          out_bbox.x += head_roi.x;
+          out_bbox.y += head_roi.y;
+          out_bbox &= cv::Rect(0, 0, bgr.cols, bgr.rows);
+          raw_val = "yes";
+        } else {
+          raw_val = "no";
+        }
+      }
+      if (!raw_val.empty()) {
+        return updateAttributeVote(mem_map, person_id, raw_val, current_time) == "yes";
+      }
+      auto it = mem_map.find(person_id);
+      return (it != mem_map.end() && !it->second.history.empty() && it->second.history.back() == "yes");
+    };
     for (size_t i = 0; i < entries.size(); ++i) {
       const auto & e = entries[i];
       const auto & kpt2d = e.body->keypoint_2d;
@@ -3467,6 +3696,25 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         auto cit = shirt_color_memory_.find(e.id);
         entry_clothes[i] = (cit != shirt_color_memory_.end() && !cit->second.history.empty())
           ? cit->second.history.back() : raw_cloth;
+      }
+
+      entry_pants_rois[i] = AttributeAnalyzer::computePantsRoi(bgr, e.bbox, kpt2d);
+      std::string raw_pants;
+      if (run_attr_infer && entry_pants_rois[i].width > 5 && entry_pants_rois[i].height > 5) {
+        raw_pants = analyzer_.pantsColor(bgr, entry_pants_rois[i], &cloud, wb_gain);
+      }
+      if (!raw_pants.empty()) {
+        entry_pants[i] = updateAttributeVote(pants_color_memory_, e.id, raw_pants, current_time);
+      } else {
+        auto pit = pants_color_memory_.find(e.id);
+        entry_pants[i] = (pit != pants_color_memory_.end() && !pit->second.history.empty())
+          ? pit->second.history.back() : "";
+      }
+
+      if (hat_yolo_.ready() || glasses_yolo_.ready()) {
+        const cv::Rect head_roi = AttributeAnalyzer::computeHeadAccessoryRoi(bgr, e.bbox, kpt2d);
+        entry_has_hat[i] = detectAccessory(hat_yolo_, hat_memory_, e.id, head_roi, entry_hat_bboxes[i]);
+        entry_has_glasses[i] = detectAccessory(glasses_yolo_, glasses_memory_, e.id, head_roi, entry_glasses_bboxes[i]);
       }
 
       if (i == 0 || !pending_register_name_.empty() || !registered_persons_.empty()) {
@@ -3649,19 +3897,19 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     const bool feature_has_landmarks = !feature.empty();
     const PersonEntry * target = &entries[target_idx];
 
-    // Simpan foto capture pelanggan / tamu untuk HMI Display (athome_face)
+    // Simpan foto capture pelanggan / tamu untuk HMI Display (athome_face_display)
     try {
       cv::Rect crop_roi = analyzer_.faceCropRegion(
         target->bbox, target->body->keypoint_2d, bgr.cols, bgr.rows, bgr);
       if (crop_roi.width > 20 && crop_roi.height > 20) {
         cv::Mat crop_img = bgr(crop_roi).clone();
         std::vector<std::string> save_dirs = {
-          "src/athome_face/web/captures",
-          "/home/dell/Documents/athome_ws/src/athome_face/web/captures",
-          "/home/dell/Downloads/athome_ws/src/athome_face/web/captures"
+          "src/athome_face_display/web/captures",
+          "/home/dell/Documents/athome_ws/src/athome_face_display/web/captures",
+          "/home/dell/Downloads/athome_ws/src/athome_face_display/web/captures"
         };
         try {
-          const std::string share_path = ament_index_cpp::get_package_share_directory("athome_face");
+          const std::string share_path = ament_index_cpp::get_package_share_directory("athome_face_display");
           save_dirs.push_back(share_path + "/web/captures");
         } catch (...) {}
 
@@ -4291,6 +4539,27 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       ++it;
     }
   }
+  for (auto it = pants_color_memory_.begin(); it != pants_color_memory_.end(); ) {
+    if ((current_time - it->second.last_seen).seconds() > 5.0) {
+      it = pants_color_memory_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (auto it = hat_memory_.begin(); it != hat_memory_.end(); ) {
+    if ((current_time - it->second.last_seen).seconds() > 5.0) {
+      it = hat_memory_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  for (auto it = glasses_memory_.begin(); it != glasses_memory_.end(); ) {
+    if ((current_time - it->second.last_seen).seconds() > 5.0) {
+      it = glasses_memory_.erase(it);
+    } else {
+      ++it;
+    }
+  }
   for (auto it = gender_memory_.begin(); it != gender_memory_.end(); ) {
     if ((current_time - it->second.last_seen).seconds() > 5.0) {
       it = gender_memory_.erase(it);
@@ -4369,6 +4638,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     person.shirt_bbox = is_receptionist_
       ? entry_shirt_rois[idx]
       : AttributeAnalyzer::computeShirtRoi(bgr, entry.bbox, points);
+    person.pants_bbox = is_receptionist_
+      ? entry_pants_rois[idx]
+      : AttributeAnalyzer::computePantsRoi(bgr, entry.bbox, points);
     person.has_pos = entry.has_depth;
     person.x_m = entry.x;
     person.y_m = entry.y;
@@ -4425,6 +4697,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
 
     if (is_receptionist_) {
       person.clothing = entry_clothes[idx];
+      person.pants = entry_pants[idx];
+      person.has_hat = entry_has_hat[idx];
+      person.has_glasses = entry_has_glasses[idx];
+      person.hat_bbox = entry_hat_bboxes[idx];
+      person.glasses_bbox = entry_glasses_bboxes[idx];
       const bool classify = (first_person || !pending_register_name_.empty() || !recognized_name.empty());
       if (classify) {
         person.hair = entry_hairs[idx];
@@ -4513,7 +4790,10 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     // alih-alih selalu mengambil entries[0] (first_person).
     std::string pub_gender;
     std::string pub_cloth;
+    std::string pub_pants;
     std::string pub_hair;
+    bool pub_hat = false;
+    bool pub_glasses = false;
     bool bound_to_registered = false;
 
     const std::string target_name = !pending_register_name_.empty()
@@ -4549,7 +4829,10 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         const size_t tidx = static_cast<size_t>(target_entry_idx);
         pub_gender = entry_genders[tidx];
         pub_cloth = entry_clothes[tidx];
+        pub_pants = entry_pants[tidx];
         pub_hair = entry_hairs[tidx];
+        pub_hat = entry_has_hat[tidx];
+        pub_glasses = entry_has_glasses[tidx];
         if (target_prof != nullptr) {
           if ((pub_gender.empty() || pub_gender == "unknown") && !target_prof->gender.empty()) {
             pub_gender = target_prof->gender;
@@ -4573,7 +4856,10 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     if (!bound_to_registered) {
       pub_gender = preview_persons_.front().gender;
       pub_cloth = preview_persons_.front().clothing;
+      pub_pants = preview_persons_.front().pants;
       pub_hair = preview_persons_.front().hair;
+      pub_hat = preview_persons_.front().has_hat;
+      pub_glasses = preview_persons_.front().has_glasses;
     }
 
     if (pub_gender.empty()) pub_gender = "person";
@@ -4581,7 +4867,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     if (pub_hair.empty()) pub_hair = "dark hair";
 
     std_msgs::msg::String attr_msg;
-    attr_msg.data = pub_gender + ", " + pub_cloth + ", " + pub_hair;
+    attr_msg.data = pub_gender + ", " + pub_cloth;
+    if (!pub_pants.empty()) attr_msg.data += ", " + pub_pants;
+    attr_msg.data += ", " + pub_hair;
+    if (pub_hat) attr_msg.data += ", wearing hat";
+    if (pub_glasses) attr_msg.data += ", wearing glasses";
     attributes_publisher_->publish(attr_msg);
   }
 
@@ -5029,6 +5319,37 @@ void ZedNode::showPreview(const cv::Mat & bgr)
             banner(p.clothing, shirt_r.x, shirt_r.y, cv::Scalar(255, 0, 0),
               cv::Scalar(180, 0, 0), cv::Scalar(255, 255, 255), 0.48, 1);
           }
+        }
+      }
+
+      // Bbox warna magenta di area celana untuk deteksi warna celana (Hanya di Receptionist)
+      if (is_receptionist_ && p.pants_bbox.width > 0 && p.pants_bbox.height > 0) {
+        cv::Rect pants_r = flipRect(p.pants_bbox);
+        pants_r &= cv::Rect(0, 0, W, H);
+        if (pants_r.width > 0 && pants_r.height > 0) {
+          cv::rectangle(canvas, pants_r, cv::Scalar(255, 0, 255), 2);
+          if (!p.pants.empty()) {
+            banner(p.pants, pants_r.x, pants_r.y, cv::Scalar(255, 0, 255),
+              cv::Scalar(160, 0, 160), cv::Scalar(255, 255, 255), 0.48, 1);
+          }
+        }
+      }
+
+      // Bbox aksesoris kepala: topi & kacamata (Hanya di Receptionist)
+      if (is_receptionist_ && p.has_hat && p.hat_bbox.width > 0 && p.hat_bbox.height > 0) {
+        cv::Rect hat_r = flipRect(p.hat_bbox) & cv::Rect(0, 0, W, H);
+        if (hat_r.width > 0 && hat_r.height > 0) {
+          cv::rectangle(canvas, hat_r, cv::Scalar(0, 200, 255), 2);
+          banner("hat", hat_r.x, hat_r.y, cv::Scalar(0, 200, 255),
+            cv::Scalar(0, 140, 180), cv::Scalar(255, 255, 255), 0.45, 1);
+        }
+      }
+      if (is_receptionist_ && p.has_glasses && p.glasses_bbox.width > 0 && p.glasses_bbox.height > 0) {
+        cv::Rect gl_r = flipRect(p.glasses_bbox) & cv::Rect(0, 0, W, H);
+        if (gl_r.width > 0 && gl_r.height > 0) {
+          cv::rectangle(canvas, gl_r, cv::Scalar(255, 255, 0), 2);
+          banner("glasses", gl_r.x, gl_r.y, cv::Scalar(255, 255, 0),
+            cv::Scalar(160, 160, 0), cv::Scalar(0, 0, 0), 0.45, 1);
         }
       }
 

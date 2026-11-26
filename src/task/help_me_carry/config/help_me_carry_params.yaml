@@ -1,146 +1,127 @@
 help_me_carry_node:
   ros__parameters:
-    # -------------------------------------------------------------
     # 1. TOPICS & FRAMES
-    # -------------------------------------------------------------
-    person_topic: "/vision/person_label"         # Topic for vision person detections
-    person_back_topic: "/vision/person_back"     # Topic for back-facing person detections
-    gesture_topic: "/vision/gesture"             # Topic for pointing gesture detections
-    bag_topic: "/vision/bag_detections"          # Topic for YOLO paper bag detections
-    # yaw_topic: "/vision/yaw_deg"                 # Topic for IMU yaw data (sebelumnya vision)
-    yaw_topic: "/yaw"                            # Topic for IMU yaw data (Razor IMU via nucleo /yaw)
-    cmd_vel_topic: "/cmd_vel"                 # Topic for base velocity commands
-    nav_cmd_vel_topic: "/nav_cmd_vel"         # Topic input kecepatan navigasi Nav2
-    path_topic: "/following_path"             # Topic for RViz following trajectory
-    plan_topic: "/plan"                       # Topic for Nav2 global plan
-    goal_update_topic: "/goal_update"         # Topic for Nav2 dynamic goal updates
-    action_name: "navigate_to_pose"           # Nav2 NavigateToPose action server
-    frame_map: "map"                          # Global map frame
-    frame_base: "base_link"                   # Robot base frame
-    scan_topic: "/scan"                       # Topic for 2D LiDAR LaserScan input
-    target_index: 0                           # Target person tracking index (default: 0)
-    follow_bt_xml: ""                         # Custom Nav2 BT XML path (empty = auto-detect)
+    person_topic: "/vision/person_label"      # Topik deteksi orang
+    person_back_topic: "/vision/person_back"  # Topik orang membelakangi
+    gesture_topic: "/vision/gesture"          # Topik gestur tunjuk
+    bag_topic: "/vision/bag_detections"       # Topik deteksi tas
+    yaw_topic: "/yaw"                         # Topik data yaw
+    cmd_vel_topic: "/cmd_vel"                 # Topik kecepatan robot
+    nav_cmd_vel_topic: "/nav_cmd_vel"         # Topik kecepatan Nav2
+    path_topic: "/following_path"             # Topik jalur ikut
+    plan_topic: "/plan"                       # Topik rencana global
+    goal_update_topic: "/goal_update"         # Topik pembaruan tujuan
+    action_name: "navigate_to_pose"           # Server aksi Nav2
+    frame_map: "map"                          # Frame peta global
+    frame_base: "base_link"                   # Frame dasar robot
+    scan_topic: "/scan"                       # Topik scan LiDAR
+    target_index: 0                           # Indeks target orang
+    follow_bt_xml: ""                         # Path BT kustom
 
-    # -------------------------------------------------------------
     # 2. FOLLOWING DISTANCES & TIMEOUTS
-    # -------------------------------------------------------------
-    strict_id_lock: true                      # True: kunci ketat target person agar tidak berpindah ke orang di samping saat following
-    follow_stop_distance: 0.85                # Distance to stop following (meters)
-    follow_start_distance: 1.00               # Distance to start moving forward (meters)
-    bag_stop_distance: 0.45                  # Distance to stop in front of bag (meters)
-    bag_frame_width: 672.0                    # Camera frame width (px) for bbox crosshair centering
-    bag_frame_height: 376.0                   # Camera frame height (px) for bbox crosshair centering
-    bag_crosshair_x_offset_px: 0.0            # Horizontal crosshair offset from frame center (px)
-    bag_crosshair_y_offset_px: 0.0            # Vertical crosshair offset from frame center (px)
-    bag_center_deadband_px: 3.0               # Deadband around crosshair center (px) to prevent oscillation
-    bag_align_tol_left_px: 8.0                # Tolerance when rotating left toward bag (cx < target_cx, px)
-    bag_align_tol_right_px: 8.0               # Tolerance when rotating right toward bag (cx > target_cx, px)
-    max_follow_range: 2.5                     # Max detection range to follow (meters, filters background crowd)
-    max_lost_time: 3.0                        # Watchdog safety timeout before reset (seconds)
-    occlusion_timeout: 1.5                    # Kalman dead-reckoning window on occlusion (seconds)
+    strict_id_lock: true                      # Kunci ID target
+    follow_stop_distance: 0.85                # Jarak berhenti ikut
+    follow_start_distance: 1.00               # Jarak mulai ikut
+    bag_stop_distance: 0.45                   # Jarak berhenti tas
+    bag_frame_width: 672.0                    # Lebar frame tas
+    bag_frame_height: 376.0                   # Tinggi frame tas
+    bag_crosshair_x_offset_px: 0.0            # Offset X target
+    bag_crosshair_y_offset_px: 0.0            # Offset Y target
+    bag_center_deadband_px: 3.0               # Deadband tengah tas
+    bag_align_tol_left_px: 8.0                # Toleransi kiri tas
+    bag_align_tol_right_px: 8.0               # Toleransi kanan tas
+    max_follow_range: 2.5                     # Jarak maks ikut
+    max_lost_time: 3.0                        # Timeout target hilang
+    occlusion_timeout: 1.5                    # Timeout prediksi oklusi
 
-    # -------------------------------------------------------------
     # 3. VELOCITY LIMITS & PID GAINS
-    # -------------------------------------------------------------
-    min_vx: 0.08                              # Minimum forward speed when moving (m/s)
-    max_vx: 0.55                              # Maximum forward speed (m/s, dinaikkan dari 0.32 agar mampu mengimbangi langkah jalan normal)
-    max_vy: 0.28                              # Maximum lateral strafe speed (m/s)
-    max_wz: 0.75                              # Maximum angular rotation speed (rad/s, dinaikkan dari 0.40 agar responsif saat belokan tajam)
-    occlusion_max_vx: 0.30                    # Capped forward speed during Kalman dead-reckoning (m/s)
-    kp_dist: 0.55                             # Proportional gain for forward distance error
-    kp_yaw: 0.85                              # Proportional gain for yaw heading error
-    kd_yaw: 0.15                              # Derivative damping gain for yaw rate
-    deadband_moving: 0.04                     # Heading deadband when robot is moving (rad, ~2.3 deg)
-    deadband_stop: 0.12                       # Heading deadband when robot is stopped (rad, ~6.9 deg)
+    min_vx: 0.08                              # Kecepatan maju minimal
+    max_vx: 0.55                              # Kecepatan maju maksimal
+    max_vy: 0.28                              # Kecepatan geser maksimal
+    max_wz: 0.75                              # Kecepatan putar maksimal
+    occlusion_max_vx: 0.30                    # Kecepatan saat oklusi
+    kp_dist: 0.55                             # Gain jarak maju
+    kp_yaw: 0.85                              # Gain sudut hadap
+    kd_yaw: 0.15                              # Gain redaman sudut
+    deadband_moving: 0.04                     # Deadband saat bergerak
+    deadband_stop: 0.12                       # Deadband saat diam
 
-    # -------------------------------------------------------------
     # 4. LOW-PASS FILTERING & SMOOTHING
-    # -------------------------------------------------------------
-    alpha_v: 0.35                             # Slew-rate smoothing factor for linear velocities (0-1)
-    alpha_w: 0.40                             # Slew-rate smoothing factor for angular velocity (0-1)
-    bearing_beta: 0.35                        # Low-pass filter weight for raw vision bearing (0-1)
+    alpha_v: 0.35                             # Filter kecepatan linear
+    alpha_w: 0.40                             # Filter kecepatan sudut
+    bearing_beta: 0.35                        # Filter arah kamera
 
-    # -------------------------------------------------------------
     # 5. LIDAR OBSTACLE & SAFETY CORRIDOR
-    # -------------------------------------------------------------
-    enable_avoidance: true                    # Enable real-time LiDAR obstacle avoidance
-    obstacle_distance: 0.85                   # Distance threshold to start slowing down (meters, dinaikkan +10cm agar avoidance lebih berjarak)
-    footprint_radius: 0.24                    # Robot self-footprint radius filter (meters)
-    min_stop_x: 0.48                          # Hard safety braking distance from robot center (meters, dinaikkan +10cm)
-    corridor_width: 0.32                      # Front danger corridor half-width (|y| in meters)
-    bypass_theta_offset_deg: 10.0             # Diagonal yaw offset during lateral bypass (degrees)
-    peeking_avoid_dist: 1.10                  # Distance threshold to trigger peeking avoidance when person occluded (meters)
-    peeking_strafe_speed: 0.22                # Lateral strafe speed during peeking (m/s)
-    peeking_timeout: 4.0                      # Max duration for peeking avoidance maneuver before timeout (seconds)
+    enable_avoidance: true                    # Aktifkan hindar rintangan
+    obstacle_distance: 0.85                   # Jarak mulai perlambat
+    footprint_radius: 0.24                    # Radius bodi robot
+    min_stop_x: 0.48                          # Jarak rem darurat
+    corridor_width: 0.32                      # Lebar koridor aman
+    bypass_theta_offset_deg: 10.0             # Sudut hindar samping
+    peeking_avoid_dist: 1.10                  # Jarak intip halangan
+    peeking_strafe_speed: 0.22                # Kecepatan geser intip
+    peeking_timeout: 4.0                      # Timeout manuver intip
 
-    # -------------------------------------------------------------
     # 6. KALMAN FILTER TUNING & LIDAR FUSION
-    # -------------------------------------------------------------
-    enable_lidar_fusion: true                 # Enable 360 LiDAR leg tracking fallback
-    kf_lidar_noise: 0.25                      # Measurement noise standard deviation for LiDAR leg updates (meters)
-    lidar_leg_gate: 0.60                      # Gate radius for LiDAR leg clustering association (meters)
-    min_lidar_fusion_dist: 1.2                # Min distance for LiDAR fusion (meters, ignores strangers <1.2m)
-    kf_process_noise: 1.2                     # Kalman process noise covariance (motion uncertainty)
-    kf_measurement_noise: 0.15                # Kalman measurement noise standard deviation (meters)
+    enable_lidar_fusion: true                 # Aktifkan fusi LiDAR
+    kf_lidar_noise: 0.25                      # Noise pengukuran LiDAR
+    lidar_leg_gate: 0.60                      # Gate kluster kaki
+    min_lidar_fusion_dist: 1.2                # Jarak min fusi
+    kf_process_noise: 1.2                     # Noise proses Kalman
+    kf_measurement_noise: 0.15                # Noise ukur Kalman
 
-    # -------------------------------------------------------------
     # 7. STEP BACK (MUNDUR) PARAMETERS
-    # -------------------------------------------------------------
-    step_back_person_distance: 1.6            # Target distance to person to stop moving back (meters)
-    step_back_speed: 0.25                     # Backward speed magnitude (m/s)
-    step_back_timeout: 30.0                   # Max duration for step back motion (seconds)
-    step_back_target_bags: 2                  # Target number of bags to detect before stopping (count)
-    step_back_bag_keep_sec: 1.0               # Duration to keep moving backward after target bags detected (seconds)
+    step_back_person_distance: 1.6            # Jarak mundur orang
+    step_back_speed: 0.25                     # Kecepatan gerak mundur
+    step_back_timeout: 30.0                   # Timeout gerak mundur
+    step_back_target_bags: 2                  # Target jumlah tas
+    step_back_bag_keep_sec: 1.0               # Jeda mundur tas
 
-    # -------------------------------------------------------------
-    # 8. HOMING QUEUEING & SEARCH (ANTRI & CARI ANTRIAN SAAT HOMING)
-    # -------------------------------------------------------------
-    homing_queue_enabled: true                # true = aktifkan perilaku antri saat /homing, false = matikan (langsung ke origin tanpa antri)
-    homing_queue_search_enabled: true         # true = aktifkan fungsi search sweep (+-20 deg kiri & kanan setiap 5s), false = matikan search sweep
-    homing_queue_start_delay: 5.0             # Durasi awal (detik) fokus navigasi homing dulu sebelum search aktif (0.0 = langsung aktif)
-    homing_queue_distance: 1.00               # Jarak target STOP di belakang orang antrian (1.0 meter)
-    homing_queue_resume_distance: 2.00        # Jarak batas antri CRAWL — jika > ini setelah antri, langsung resume Nav2 (meter)
-    homing_queue_corridor: 1.20               # Lebar toleransi koridor path homing (meter) — orang dianggap menghalangi jika jarak ke path <= ini
-    homing_queue_max_detect_dist: 2.50        # Jarak maksimal deteksi orang (< 2.5 meter dari robot)
-    homing_queue_min_persons: 2               # Jumlah minimal orang berdekatan untuk dianggap antrian (butuh minimal 2 orang back)
-    homing_queue_inter_dist: 2.00             # Jarak maksimal x, y antar orang agar dianggap antrian (meter)
-    homing_queue_crawl_speed: 0.14            # Kecepatan crawl mengikuti antrian (m/s) — torsi cukup untuk mengatasi stiction roda omni
-    homing_queue_wait_duration: 60.0          # Durasi diam antri (detik) sebelum antrian selesai & Nav2 homing lanjut
-    homing_queue_clear_hysteresis: 3.0        # Detik orang tidak terdeteksi sebelum resume Nav2 (buffer anti-flicker)
-    homing_timeout: 300.0                     # Batas waktu maksimal eksekusi navigasi homing (detik)
+    # 8. HOMING QUEUEING & SEARCH
+    homing_queue_enabled: true                # Aktifkan antri pulang
+    homing_queue_search_enabled: true         # Aktifkan sapuan antrian
+    homing_queue_start_delay: 5.0             # Jeda awal pulang
+    homing_queue_distance: 1.00               # Jarak henti antrian
+    homing_queue_resume_distance: 2.00        # Jarak lanjut pulang
+    homing_queue_corridor: 1.20               # Lebar koridor antrian
+    homing_queue_max_detect_dist: 2.50        # Jarak maks antrian
+    homing_queue_min_persons: 2               # Jumlah min antrian
+    homing_queue_inter_dist: 2.00             # Jarak antar orang
+    homing_queue_crawl_speed: 0.14            # Kecepatan maju antrian
+    homing_queue_wait_duration: 60.0          # Durasi tunggu antrian
+    homing_queue_clear_hysteresis: 3.0        # Jeda antrian kosong
+    homing_timeout: 300.0                     # Batas waktu pulang
 
-    # -------------------------------------------------------------
     # 9. LIDAR SPECKLE / OUTLIER FILTER
-    # -------------------------------------------------------------
-    filtered_scan_topic: "/scan_filtered"     # Output topic LaserScan yang sudah dibersihkan dari speckle
-    speckle_filter_enabled: true              # Aktifkan penyaringan speckle/outlier titik kecil (kaki/noise)
-    speckle_min_points: 3                     # Titik terisolasi < 3 (hanya 1-4 titik) dianggap speckle/noise & diabaikan
-    speckle_neighbor_dist: 0.15               # Jarak Euclidean maksimal antar titik bertetangga (meter) dalam satu kluster
-    speckle_max_range: 12.0                   # Jarak maksimal pemindaian yang difilter (meter)
+    filtered_scan_topic: "/scan_filtered"     # Topik scan bersih
+    speckle_filter_enabled: true              # Aktifkan filter noise
+    speckle_min_points: 3                     # Titik min kluster
+    speckle_neighbor_dist: 0.15               # Jarak antar titik
+    speckle_max_range: 12.0                   # Jarak maks filter
 
 # =============================================================
 # 9. HELP ME CARRY MANAGER (TASK FSM ORCHESTRATOR)
 # =============================================================
 help_me_carry_manager:
   ros__parameters:
-    global_timeout_sec: 600.0                 # Batas waktu total task Help Me Carry (detik)
-    operator_timeout_sec: 5.0                 # Waktu hilang operator sebelum masuk recovery (detik)
-    follow_grace_period_sec: 2.0              # Toleransi abaikan status LOST di awal follow (detik)
-    arrived_grace_period_sec: 5.0             # Jeda waktu abaikan perintah 'arrived' di awal follow (detik)
-    tts_min_timeout_sec: 4.0                  # Watchdog timeout minimal TTS (detik)
-    tts_sec_per_word: 0.5                     # Estimasi durasi ucapan per kata untuk TTS (detik/kata)
-    tts_timeout_margin_sec: 2.0               # Margin tambahan latensi sintesis & pemutaran suara (detik)
-    follow_prompt_interval_sec: 3.0           # Interval pengingat pada state follow (detik)
-    lifter_move_wait_sec: 3.0                 # Lama tunggu gerakan lifter turun/naik sebelum aksi berikutnya (detik)
+    global_timeout_sec: 600.0                 # Batas waktu task
+    operator_timeout_sec: 5.0                 # Timeout operator hilang
+    follow_grace_period_sec: 2.0              # Masa tenggang awal
+    arrived_grace_period_sec: 5.0             # Masa tenggang tiba
+    tts_min_timeout_sec: 4.0                  # Durasi min TTS
+    tts_sec_per_word: 0.5                     # Durasi per kata
+    tts_timeout_margin_sec: 2.0               # Margin latensi TTS
+    follow_prompt_interval_sec: 3.0           # Interval pengingat ikut
+    lifter_move_wait_sec: 3.0                 # Tunggu gerak lifter
 
 help_me_carry_orchestrator:
   ros__parameters:
-    global_timeout_sec: 600.0
-    operator_timeout_sec: 5.0
-    follow_grace_period_sec: 2.0
-    arrived_grace_period_sec: 5.0
-    tts_min_timeout_sec: 4.0
-    tts_sec_per_word: 0.5
-    tts_timeout_margin_sec: 2.0
-    follow_prompt_interval_sec: 3.0
-    lifter_move_wait_sec: 3.0
+    global_timeout_sec: 600.0                 # Batas waktu task
+    operator_timeout_sec: 5.0                 # Timeout operator hilang
+    follow_grace_period_sec: 2.0              # Masa tenggang awal
+    arrived_grace_period_sec: 5.0             # Masa tenggang tiba
+    tts_min_timeout_sec: 4.0                  # Durasi min TTS
+    tts_sec_per_word: 0.5                     # Durasi per kata
+    tts_timeout_margin_sec: 2.0               # Margin latensi TTS
+    follow_prompt_interval_sec: 3.0           # Interval pengingat ikut
+    lifter_move_wait_sec: 3.0                 # Tunggu gerak lifter

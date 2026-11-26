@@ -2,7 +2,7 @@ import os
 from glob import glob
 from setuptools import find_packages, setup
 
-package_name = "athome_face"
+package_name = "athome_face_display"
 
 setup(
     name=package_name,
@@ -23,7 +23,7 @@ setup(
     license="MIT",
     entry_points={
         "console_scripts": [
-            "face_node = athome_face.face_node:main",
+            "face_node = athome_face_display.face_node:main",
         ],
     },
 )

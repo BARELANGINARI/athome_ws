@@ -1,4 +1,4 @@
-# athome_face
+# athome_face_display
 
 Package ekspresi wajah robot (Robot Face Interface) untuk **Barelang Inari** (RoboCup@Home). Mengatur animasi mata dan ekspresi emosi robot pada layar LCD kepala robot menggunakan antarmuka Web GUI berbasis HTML5 Canvas/SVG dan WebSocket bridge.
 
@@ -18,19 +18,19 @@ Package ekspresi wajah robot (Robot Face Interface) untuk **Barelang Inari** (Ro
 ### 1. Build Package
 ```bash
 cd ~/Documents/athome-ws
-colcon build --packages-select athome_face --symlink-install
+colcon build --packages-select athome_face_display --symlink-install
 source install/setup.bash
 ```
 
 ### 2. Menjalankan Server Face
 ```bash
-ros2 launch athome_face face.launch.py
+ros2 launch athome_face_display face.launch.py
 ```
 Akses manual melalui browser di: `http://localhost:8080`.
 
 ### 3. Membuka Otomatis di Layar LCD Robot (Kiosk Mode Fullscreen)
 ```bash
-ros2 launch athome_face face.launch.py browser:=true kiosk:=true
+ros2 launch athome_face_display face.launch.py browser:=true kiosk:=true
 ```
 
 Argumen launch:

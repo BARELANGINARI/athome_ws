@@ -32,7 +32,7 @@ def generate_launch_description():
             description="Browser binary to launch: auto, firefox, chromium, google-chrome",
         ),
         Node(
-            package="athome_face",
+            package="athome_face_display",
             executable="face_node",
             name="robot_face_node",
             output="screen",

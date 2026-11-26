@@ -23,10 +23,11 @@ def get_output_paths():
     ws_dir = os.path.abspath(os.path.join(script_dir, "../../../.."))
 
     paths = [
+        os.path.join(ws_dir, "src/athome_vision/models/receptionist/host.jpg"),
         os.path.join(ws_dir, "src/athome_vision/models/host.jpg"),
         os.path.join(ws_dir, "models/host.jpg"),
     ]
-    share_dir = os.path.join(ws_dir, "install/athome_vision/share/athome_vision/models")
+    share_dir = os.path.join(ws_dir, "install/athome_vision/share/athome_vision/models/receptionist")
     if os.path.exists(share_dir):
         paths.append(os.path.join(share_dir, "host.jpg"))
     return paths
@@ -36,9 +37,11 @@ def get_yunet_model_path():
     script_dir = os.path.dirname(os.path.realpath(__file__))
     ws_dir = os.path.abspath(os.path.join(script_dir, "../../../.."))
     candidates = [
+        os.path.join(ws_dir, "src/athome_vision/models/receptionist/face_detection_yunet.onnx"),
         os.path.join(ws_dir, "src/athome_vision/models/face_detection_yunet.onnx"),
+        os.path.join(ws_dir, "models/receptionist/face_detection_yunet.onnx"),
         os.path.join(ws_dir, "models/face_detection_yunet.onnx"),
-        "/home/dell/Documents/athome_ws/src/athome_vision/models/face_detection_yunet.onnx",
+        "/home/dell/Documents/athome_ws/src/athome_vision/models/receptionist/face_detection_yunet.onnx",
     ]
     for c in candidates:
         if os.path.exists(c):

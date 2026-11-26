@@ -4,7 +4,7 @@ echo "Menghentikan semua proses Receptionist & Arm..."
 
 pkill -f "ros2 launch receptionist" 2>/dev/null || true
 pkill -f "ros2 launch athome_arm" 2>/dev/null || true
-pkill -f "ros2 launch athome_face" 2>/dev/null || true
+pkill -f "ros2 launch athome_face_display" 2>/dev/null || true
 pkill -f "receptionist_node" 2>/dev/null || true
 pkill -f "receptionist_manager" 2>/dev/null || true
 pkill -f "arm_motion_server" 2>/dev/null || true
