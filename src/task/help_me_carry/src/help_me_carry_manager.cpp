@@ -1221,18 +1221,29 @@ private:
                 callTrigger(
                   align_bag_client_, "/task/align_bag",
                   [this](bool success, const std::string & message) {
+                    busy_ = false;  // Lepas kunci FSM sebelum state baru / speakAsync
                     if (success) {
                       transitionTo(TaskState::GRASP_BAG, "Bag aligned");
+                    } else if (message == "Service response timeout") {
+                      RCLCPP_WARN(
+                        get_logger(),
+                        "Align bag timeout (> 150s): %s. Mengaktifkan fallback bantuan operator...",
+                        message.c_str());
+                      speakAsync(
+                        "I could not grasp the bag automatically. Please hand the bag to me, then I will return to the starting point.",
+                        [this]() {
+                          transitionTo(TaskState::RETURN_TO_START, "Align/grasp timeout human fallback");
+                        });
                     } else {
                       RCLCPP_WARN(get_logger(), "Align bag gagal: %s", message.c_str());
-                      bag_prompt_sent_ = false;
                       gesture_confirmed_ = false;
                       detected_gesture_ = "NONE";
+                      state_enter_time_ = now();
                       publishExpression(expressionForState(TaskState::WAIT_BAG_POINTING));
+                      speakAsync("I could not find the bag. Please point to the bag again.");
                     }
-                    busy_ = false;  // Lepas kunci FSM setelah state baru siap
                   },
-                  25.0);
+                  150.0);
               });
           } else if ((now() - state_enter_time_).seconds() > 30.0) {
             state_enter_time_ = now();
