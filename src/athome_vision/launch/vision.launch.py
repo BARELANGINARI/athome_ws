@@ -56,7 +56,7 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_chair', default_value='true', description='Enable chair detection and empty/occupied classification'),
         DeclareLaunchArgument('chair_max_dist', default_value='3.0', description='Maximum distance (m) to detect and bbox chair'),
         DeclareLaunchArgument('enable_bag', default_value='true', description='Enable luggage bag detection (for Help Me Carry)'),
-        DeclareLaunchArgument('host_name', default_value='Revaldo', description='Default host name for pre-registration'),
+        DeclareLaunchArgument('host_name', default_value='Fahri', description='Default host name for pre-registration'),
         DeclareLaunchArgument('host_photo', default_value='models/host.jpg', description='Optional photo of the host to pre-register face'),
         DeclareLaunchArgument('host_shirt_color', default_value='black shirt', description='Default host shirt color'),
         DeclareLaunchArgument('host_gender', default_value='male', description='Default host gender'),

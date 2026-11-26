@@ -31,9 +31,9 @@ receptionist_node:
     search_chair_sweep_angle_deg: 30.0     # Sudut sapuan kursi
     chair_max_dist: 3.0                    # Jarak maksimal kursi
     align_chair_p_gain: 1.5                # Gain lurus kursi
-    align_chair_min_speed: 0.10            # Kecepatan min kursi
-    align_chair_max_speed: 0.20            # Kecepatan maks kursi
-    align_chair_tolerance_rad: 0.035       # Toleransi sudut kursi
+    align_chair_min_speed: 0.08            # Kecepatan min kursi
+    align_chair_max_speed: 0.18            # Kecepatan maks kursi
+    align_chair_tolerance_rad: 0.08        # Toleransi sudut kursi (~4.5 deg agar tidak overshoot bolak-balik)
     camera_width: 1280                     # Lebar piksel kamera
 
     guest_door_distance: 1.5               # Jarak tamu pintu
@@ -46,7 +46,7 @@ receptionist_node:
     guest_approach_timeout_sec: 15.0       # Timeout dekati tamu
 
     # Face person settings
-    host_name: "Yesaya"                    # Nama host utama
+    host_name: "Fahri"                     # Nama host utama
     person_label_topic: "/vision/person_label" # Topik deteksi orang
     guest_1_name_topic: "/vision/guest_1_name" # Topik nama tamu1
     guest_2_name_topic: "/vision/guest_2_name" # Topik nama tamu2
@@ -69,7 +69,7 @@ receptionist_node:
 receptionist_manager:
   ros__parameters:
     host:
-      name: "Yesaya"                       # Nama host utama
+      name: "Fahri"                        # Nama host utama
       drink: "Coke"                        # Minuman favorit host
       interest: "Robotics"                 # Minat hobi host
       gender: "male"                       # Gender profil host
@@ -198,7 +198,7 @@ vision:
     accessory_conf: 0.18               # Confidence threshold deteksi topi & kacamata (YOLO-World)
     debug_window: true                     # Tampilkan jendela preview
     mirror: false                          # Cermin tampilan preview
-    host_name: "Yesaya"                    # Nama host utama
+    host_name: "Fahri"                     # Nama host utama
     host_photo: "models/receptionist/host.jpg" # Foto wajah host
     host_shirt_color: ""                   # Warna baju host
     host_gender: ""                        # Gender profil host
