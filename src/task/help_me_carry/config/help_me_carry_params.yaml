@@ -28,6 +28,11 @@ help_me_carry_node:
     follow_stop_distance: 0.85                # Distance to stop following (meters)
     follow_start_distance: 1.00               # Distance to start moving forward (meters)
     bag_stop_distance: 0.50                   # Distance to stop in front of bag (meters)
+    bag_frame_width: 672                      # Camera frame width (px) for bbox crosshair centering
+    bag_frame_height: 376                     # Camera frame height (px) for bbox crosshair centering
+    bag_crosshair_x_offset_px: 0.0            # Horizontal crosshair offset from frame center (px)
+    bag_crosshair_y_offset_px: 0.0            # Vertical crosshair offset from frame center (px)
+    bag_center_deadband_px: 15.0              # Deadband around crosshair center (px) to prevent oscillation
     max_follow_range: 2.5                     # Max detection range to follow (meters, filters background crowd)
     max_lost_time: 3.0                        # Watchdog safety timeout before reset (seconds)
     occlusion_timeout: 1.5                    # Kalman dead-reckoning window on occlusion (seconds)

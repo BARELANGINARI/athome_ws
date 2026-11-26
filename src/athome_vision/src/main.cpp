@@ -5011,6 +5011,13 @@ void ZedNode::showPreview(const cv::Mat & bgr)
     }
 
     if (enable_bag_) {
+      // Gambar garis crosshair horizontal & vertikal sinkron sebagai target center arm/gripper
+      const int target_cx = W / 2;
+      const int target_cy = H / 2;
+      cv::line(canvas, cv::Point(target_cx, 0), cv::Point(target_cx, H), cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+      cv::line(canvas, cv::Point(0, target_cy), cv::Point(W, target_cy), cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+      cv::circle(canvas, cv::Point(target_cx, target_cy), 8, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+
       for (size_t i = 0; i < std::min<size_t>(2, snap_bags.size()); ++i) {
         const auto & b = snap_bags[i];
         if (b.has_pos && b.range_m > bag_max_dist_) continue;
@@ -5021,8 +5028,8 @@ void ZedNode::showPreview(const cv::Mat & bgr)
         cv::rectangle(canvas, r, cv::Scalar(0, 69, 255), 2);
         const int cx = r.x + r.width / 2;
         const int cy = r.y + r.height / 2;
-        cv::circle(canvas, cv::Point(cx, cy), 5, cv::Scalar(155, 0, 0), -1);
-        cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), cv::Scalar(0, 69, 255), 3);
+        cv::circle(canvas, cv::Point(cx, cy), 6, cv::Scalar(0, 255, 0), -1);
+        cv::line(canvas, cv::Point(cx, cy), cv::Point(target_cx, target_cy), cv::Scalar(0, 255, 0), 2, cv::LINE_AA);
       }
     }
 
