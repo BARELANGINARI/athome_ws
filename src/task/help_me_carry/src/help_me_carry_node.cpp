@@ -225,6 +225,7 @@ public:
     bt_xml_ = declare_parameter<std::string>("follow_bt_xml", "");
 
     // Distances & Timeouts
+    strict_id_lock_ = declare_parameter<bool>("strict_id_lock", true);
     stop_distance_ = declare_parameter<double>("follow_stop_distance", 0.5);
     start_distance_ = declare_parameter<double>("follow_start_distance", 0.7);
     bag_stop_distance_ = declare_parameter<double>("bag_stop_distance", 0.45);
@@ -271,7 +272,8 @@ public:
     kf_ = help_me_carry::PersonKalmanFilter(kf_process_noise_, kf_measurement_noise_);
     enable_lidar_fusion_ = declare_parameter<bool>("enable_lidar_fusion", true);
     kf_lidar_noise_ = declare_parameter<double>("kf_lidar_noise", 0.25);
-    lidar_leg_gate_ = declare_parameter<double>("lidar_leg_gate", 0.90);
+    lidar_leg_gate_ = declare_parameter<double>("lidar_leg_gate", 0.60);
+    min_lidar_fusion_dist_ = declare_parameter<double>("min_lidar_fusion_dist", 1.2);
 
     // Homing Queueing & Search Parameters
     homing_queue_enabled_ = declare_parameter<bool>("homing_queue_enabled", true);
@@ -624,23 +626,26 @@ private:
         if (locked_it != candidates.end()) {
           // Validate spatial consistency via Kalman gate
           const double dist_to_kf = kf_.distance_to(locked_it->rel_x, locked_it->rel_y);
-          const double gate_radius = kf_.get_gate_radius(1.2, 2.5);
+          const double gate_radius = kf_.get_gate_radius(0.95, 1.8);
           if (dist_to_kf <= gate_radius) {
             target_it = locked_it;
           } else {
             RCLCPP_WARN_THROTTLE(
               get_logger(), *get_clock(), 1000,
-              "[FOLLOW] ID %d detected outside KF gate (dist=%.2f m > gate=%.2f m). Seeking re-lock...",
+              "[FOLLOW] ID %d detected outside KF gate (dist=%.2f m > gate=%.2f m). Holding lock...",
               locked_person_id_, dist_to_kf, gate_radius);
           }
         }
 
         // 2. If locked ID not found (occluded or changed by ZED):
-        // Find candidate nearest to Kalman Filter estimate (Spatial Association)
+        // With strict_id_lock_, only re-lock to the verified operator (or a lone unambiguous candidate)
         if (target_it == candidates.end()) {
           double min_kf_dist = 999.0;
           auto best_cand = candidates.end();
           for (auto it = candidates.begin(); it != candidates.end(); ++it) {
+            if (strict_id_lock_ && !it->is_operator && candidates.size() > 1) {
+              continue;
+            }
             const double d = kf_.distance_to(it->rel_x, it->rel_y);
             if (d < min_kf_dist) {
               min_kf_dist = d;
@@ -648,8 +653,10 @@ private:
             }
           }
 
-          // Check if nearest candidate is within Kalman gate radius
-          const double re_gate_radius = kf_.get_gate_radius(0.85, 2.0);
+          // Check if nearest eligible candidate is within tight Kalman gate radius
+          const double re_gate_radius = strict_id_lock_
+            ? (best_cand != candidates.end() && best_cand->is_operator ? kf_.get_gate_radius(0.65, 1.3) : 0.55)
+            : kf_.get_gate_radius(0.85, 2.0);
           if (best_cand != candidates.end() && min_kf_dist <= re_gate_radius) {
             RCLCPP_INFO(
               get_logger(),
@@ -668,11 +675,17 @@ private:
           return c.is_operator;
         });
         if (target_it == candidates.end()) {
-          auto closest_it = std::min_element(candidates.begin(), candidates.end(), [](const Candidate & a, const Candidate & b) {
-            return a.dist < b.dist;
-          });
-          if (closest_it != candidates.end() && closest_it->dist <= 2.5) {
-            target_it = closest_it;
+          // Only fall back to non-operator closest person if never locked yet,
+          // or if strict_id_lock_ is disabled, or if there is only one unambiguous person in front.
+          const bool allow_generic_fallback =
+            !strict_id_lock_ || locked_person_id_ < 0 || candidates.size() == 1;
+          if (allow_generic_fallback) {
+            auto closest_it = std::min_element(candidates.begin(), candidates.end(), [](const Candidate & a, const Candidate & b) {
+              return a.dist < b.dist;
+            });
+            if (closest_it != candidates.end() && closest_it->dist <= 2.5) {
+              target_it = closest_it;
+            }
           }
         }
 
@@ -873,9 +886,13 @@ private:
         const auto clusters = extract_leg_clusters(scan, laser_tx, laser_ty, laser_yaw);
         double best_gate_dist = 999.0;
         const LegCluster * best_cluster = nullptr;
-        const double gate_rad = std::max(lidar_leg_gate_, kf_.get_gate_radius(0.6, 2.0));
+        const double gate_rad = std::min(lidar_leg_gate_, kf_.get_gate_radius(0.45, 0.90));
 
         for (const auto & cl : clusters) {
+          const double cluster_range = std::hypot(cl.x, cl.y);
+          if (cluster_range < min_lidar_fusion_dist_) {
+            continue;
+          }
           const double d = kf_.distance_to(cl.x, cl.y);
           if (d <= gate_rad && d < best_gate_dist) {
             best_gate_dist = d;
@@ -3961,6 +3978,7 @@ private:
   std::string frame_map_;
   std::string frame_base_;
   int target_index_{0};
+  bool strict_id_lock_{true};
   double stop_distance_{0.5};
   double start_distance_{0.7};
   double bag_stop_distance_{0.45};
@@ -4005,7 +4023,8 @@ private:
   help_me_carry::PersonKalmanFilter kf_{1.2, 0.15};
   bool enable_lidar_fusion_{true};
   double kf_lidar_noise_{0.25};
-  double lidar_leg_gate_{0.90};
+  double lidar_leg_gate_{0.60};
+  double min_lidar_fusion_dist_{1.2};
 
   int locked_person_id_{-1};
   std::atomic<bool> is_following_{false};

@@ -2081,6 +2081,7 @@ private:
   {
     bool active{false};
     int stable_id{0};
+    int last_zed_id{-1};
     double x{0.0}, y{0.0}, vx{0.0}, vy{0.0};
     cv::Scalar torso_hsv{0, 0, 0};
     bool has_color{false};
@@ -3479,7 +3480,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     if (dt <= 4.0) {
       const double pred_x = op_mem_.x + op_mem_.vx * std::min(dt, 2.0);
       const double pred_y = op_mem_.y + op_mem_.vy * std::min(dt, 2.0);
-      const double max_match_dist = 1.0 + 0.8 * dt;
+      const double max_match_dist = 0.65 + 0.6 * std::min(dt, 1.5);
       double best_cost = std::numeric_limits<double>::infinity();
       for (size_t i = 0; i < entries.size(); ++i) {
         const auto & cand = entries[i];
@@ -3489,11 +3490,17 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         double color_penalty = 0.0;
         if (op_mem_.has_color) {
           const cv::Scalar cand_hsv = zed_vision::extractTorsoColor(bgr, cand.bbox);
-          const double dh = std::abs(cand_hsv[0] - op_mem_.torso_hsv[0]);
+          const double dh = std::min(
+            std::abs(cand_hsv[0] - op_mem_.torso_hsv[0]),
+            180.0 - std::abs(cand_hsv[0] - op_mem_.torso_hsv[0]));
           const double ds = std::abs(cand_hsv[1] - op_mem_.torso_hsv[1]);
-          color_penalty = (dh / 180.0) * 0.5 + (ds / 255.0) * 0.3;
+          color_penalty = (dh / 90.0) * 0.8 + (ds / 255.0) * 0.5;
+          if (entries.size() > 1 && cand.id != op_mem_.last_zed_id && color_penalty > 0.65 && dist_diff > 0.45) {
+            continue;
+          }
         }
-        const double cost = dist_diff + color_penalty;
+        const double id_bonus = (op_mem_.last_zed_id >= 0 && cand.id == op_mem_.last_zed_id) ? -0.35 : 0.0;
+        const double cost = dist_diff + color_penalty + id_bonus;
         if (cost < best_cost) {
           best_cost = cost;
           op_match_idx = static_cast<int>(i);
@@ -3502,6 +3509,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     } else {
       op_mem_.active = false;
       op_mem_.has_color = false;
+      op_mem_.last_zed_id = -1;
     }
   }
 
@@ -3509,6 +3517,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     op_match_idx = 0;
     op_mem_.active = true;
     op_mem_.stable_id = 0;
+    op_mem_.last_zed_id = entries[0].id;
     op_mem_.vx = op_mem_.vy = 0.0;
     entries[0].label = "operator";
     if (entries[0].has_depth) {
@@ -3523,6 +3532,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   if (op_match_idx >= 0 && op_match_idx < static_cast<int>(entries.size())) {
     if (op_match_idx > 0) std::swap(entries[0], entries[static_cast<size_t>(op_match_idx)]);
     auto & op = entries.front();
+    op_mem_.last_zed_id = op.id;
     op.id = op_mem_.stable_id;
     op.label = "operator";
     if (op.has_depth) {

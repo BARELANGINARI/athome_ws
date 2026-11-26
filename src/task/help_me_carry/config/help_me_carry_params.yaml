@@ -24,7 +24,7 @@ help_me_carry_node:
     # -------------------------------------------------------------
     # 2. FOLLOWING DISTANCES & TIMEOUTS
     # -------------------------------------------------------------
-    strict_id_lock: false                     # False: gunakan filter spasial kontinuitas (anti-hijack) agar tidak terkecoh switch ID di vision
+    strict_id_lock: true                      # True: kunci ketat target person agar tidak berpindah ke orang di samping saat following
     follow_stop_distance: 0.85                # Distance to stop following (meters)
     follow_start_distance: 1.00               # Distance to start moving forward (meters)
     bag_stop_distance: 0.45                   # Distance to stop in front of bag (meters)
@@ -71,7 +71,7 @@ help_me_carry_node:
     # -------------------------------------------------------------
     enable_lidar_fusion: true                 # Enable 360 LiDAR leg tracking fallback
     kf_lidar_noise: 0.25                      # Measurement noise standard deviation for LiDAR leg updates (meters)
-    lidar_leg_gate: 0.90                      # Minimum gate radius for LiDAR leg clustering association (meters)
+    lidar_leg_gate: 0.60                      # Gate radius for LiDAR leg clustering association (meters)
     min_lidar_fusion_dist: 1.2                # Min distance for LiDAR fusion (meters, ignores strangers <1.2m)
     kf_process_noise: 1.2                     # Kalman process noise covariance (motion uncertainty)
     kf_measurement_noise: 0.15                # Kalman measurement noise standard deviation (meters)
