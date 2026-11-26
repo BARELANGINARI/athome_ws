@@ -2772,36 +2772,38 @@ private:
           return;
         }
 
-        std::string g1_desc_msg;
+        std::string escort_msg = "Please follow me to the living room.";
+        bool include_g1_desc = false;
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
-          if (guest_idx_ == 2 && !guests_.empty()) {
+          if (guest_idx_ == 2 && !guests_.empty() && !g1_desc_announced_) {
             const std::string g1_desc = formatPersonDescription(guests_[0]);
-            g1_desc_msg = "The first guest is " + guests_[0].name + ".";
+            escort_msg += " The first guest is " + guests_[0].name + ".";
             if (!g1_desc.empty()) {
-              g1_desc_msg += " " + g1_desc + ".";
+              escort_msg += " " + g1_desc + ".";
             }
+            include_g1_desc = true;
           }
         }
 
-        speakAsync("Please follow me to the living room.", [this, g1_desc_msg]() {
-          navigateTo("living_room", [this](bool success) {
-            if (!success) return;
-            search_chair_retries_ = 0;
-            face_g1_retries_ = 0;
-            face_g2_retries_ = 0;
-            // Langsung cari kursi setelah scan ruang tamu (intro baru setelah kedua tamu duduk)
-            after_scan_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
-            transitionTo(
-              ReceptionistState::SCAN_LIVING_ROOM,
-              "Arrived at living_room; scanning room before offering seat");
-          });
-          // Optional Goal 2: deskripsikan Guest 1 ke Guest 2 sambil robot bernavigasi ke living room
-          if (!g1_desc_msg.empty() && !g1_desc_announced_ && service_busy_.load()) {
-            g1_desc_announced_ = true;
-            speakAsync(g1_desc_msg);
-          }
+        navigateTo("living_room", [this](bool success) {
+          if (!success) return;
+          search_chair_retries_ = 0;
+          face_g1_retries_ = 0;
+          face_g2_retries_ = 0;
+          // Langsung cari kursi setelah scan ruang tamu (intro baru setelah kedua tamu duduk)
+          after_scan_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
+          transitionTo(
+            ReceptionistState::SCAN_LIVING_ROOM,
+            "Arrived at living_room; scanning room before offering seat");
         });
+        // Optional Goal 2: ucapkan ajakan + deskripsi Guest 1 secara paralel sejak navigasi dimulai
+        if (service_busy_.load()) {
+          if (include_g1_desc) {
+            g1_desc_announced_ = true;
+          }
+          speakAsync(escort_msg);
+        }
         break;
       }
 
