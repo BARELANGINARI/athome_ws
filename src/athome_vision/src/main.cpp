@@ -4243,17 +4243,24 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
             : (registered_persons_.size() <= 1
                 ? th
                 : (is_host_prof && entries[i].range_m >= 1.3 ? std::max(th, 0.38f) : effective_claim_th));
-          if (entries[i].is_sitting) {
-            req_claim_th = std::max(th - 0.03f, req_claim_th - 0.03f);
+          if (entries[i].is_sitting || entries[i].range_m > 1.6) {
+            req_claim_th = attr_matches
+              ? std::max(0.26f, th - 0.12f)
+              : std::max(0.32f, th - 0.06f);
           }
           if (f_sim < req_claim_th) {
-            veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
-            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
-              "[FACE] '%s' similarity %.3f < %.3f (veto)",
-              prof.name.c_str(), f_sim, req_claim_th);
-          } else if (other_best >= th) {
+            // Jika duduk dan baju+gender cocok, jangan langsung hard-veto; biarkan joint search_perm menilai
+            const bool sitting_attr_ok = entries[i].is_sitting && attr_matches &&
+              (prof.gender.empty() || entry_feats[i].gender.empty() || prof.gender == entry_feats[i].gender);
+            if (!sitting_attr_ok) {
+              veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
+              RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+                "[FACE] '%s' similarity %.3f < %.3f (veto)",
+                prof.name.c_str(), f_sim, req_claim_th);
+            }
+          } else if (other_best >= th && !(entries[i].is_sitting && attr_matches)) {
             // Jaga margin minimum agar dua orang yang duduk tidak mudah tertukar
-            const float req_margin = attr_matches ? 0.02f : ((entries[i].is_sitting || entries[i].range_m >= 1.4) ? 0.04f : 0.08f);
+            const float req_margin = attr_matches ? 0.02f : ((entries[i].is_sitting || entries[i].range_m >= 1.4) ? 0.03f : 0.08f);
             if (face_margin < req_margin) {
               veto = true; // Wajah ambigu antara dua profil -> jangan tebak nama baru
             }
@@ -4277,7 +4284,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
                                  prof.gender == entry_feats[i].gender;
           const bool strong_attr_match = cloth_ok && gender_ok;
 
-          if (!strong_attr_match) {
+          if (!strong_attr_match && !entries[i].is_sitting) {
             veto = true;
           }
         }
@@ -4539,8 +4546,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       }
     } else {
-      // Wajah menoleh/tertutup sementara; tahan nama di kursi hingga 5.0 detik agar tidak blink
-      if (!mem.confirmed_name.empty() && (current_time - mem.last_seen).seconds() < 5.0) {
+      // Wajah menoleh/tertutup sementara; tahan nama di kursi hingga 8.0 detik saat duduk (5.0s berdiri) agar tidak blink
+      const double hold_sec = entries[i].is_sitting ? 8.0 : 5.0;
+      if (!mem.confirmed_name.empty() && (current_time - mem.last_seen).seconds() < hold_sec) {
         // Pertahankan mem.confirmed_name
       } else {
         mem.confirmed_name.clear();
@@ -5067,8 +5075,8 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
       dets = fresh_dets;
       last_chair_dets_ = fresh_dets;
       last_chair_hit_time = now();
-    } else if ((now() - last_chair_hit_time).seconds() < 0.8) {
-      // Pertahankan deteksi kursi terakhir hingga 0.8s jika YOLO miss sesaat agar tidak kedap-kedip
+    } else if ((now() - last_chair_hit_time).seconds() < 1.5) {
+      // Pertahankan deteksi kursi terakhir hingga 1.5s jika YOLO miss sesaat saat robot berputar
       dets = last_chair_dets_;
     } else {
       dets.clear();
@@ -5115,7 +5123,7 @@ void ZedNode::processChairs(const cv::Mat & bgr, const sl::Mat & cloud)
         continue;
       }
     } else {
-      if (det.rect.area() < 5000 || det.rect.height < 60) {
+      if (det.rect.area() < 2500 || det.rect.height < 45) {
         continue;
       }
     }
