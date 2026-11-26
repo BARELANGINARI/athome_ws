@@ -63,6 +63,11 @@ def generate_launch_description():
             default_value='~/athome_hri_logs',
             description='Directory where per-trial HRI log files are saved.',
         ),
+        DeclareLaunchArgument(
+            'enable_visualizer',
+            default_value='true',
+            description='Launch real-time HRI audio & parameter visualizer GUI.',
+        ),
 
         # 1a. Speech-to-Text (ASR) Node - C++ (athome_hri_cpp)
         Node(
@@ -87,7 +92,10 @@ def generate_launch_description():
             name='stt_engine',
             output='screen',
             emulate_tty=True,
-            parameters=[LaunchConfiguration('params_file')],
+            parameters=[
+                LaunchConfiguration('params_file'),
+                {'enable_visualizer': False},
+            ],
             condition=IfCondition(
                 PythonExpression(["'", LaunchConfiguration('stt_backend'), "' == 'python'"])
             ),
@@ -130,6 +138,24 @@ def generate_launch_description():
             }],
             condition=IfCondition(
                 PythonExpression(["'", LaunchConfiguration('enable_hri_logger'), "' == 'true'"])
+            ),
+        ),
+
+        # 5. Real-Time HRI Audio & Parameter Visualizer GUI
+        Node(
+            package='athome_hri',
+            executable='hri_visualizer_node',
+            name='hri_visualizer',
+            output='screen',
+            emulate_tty=True,
+            parameters=[{
+                'task': 'restaurant',
+                'stt_backend': LaunchConfiguration('stt_backend'),
+                'cpp_params_file': LaunchConfiguration('cpp_params_file'),
+                'py_params_file': LaunchConfiguration('params_file'),
+            }],
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration('enable_visualizer'), "' == 'true'"])
             ),
         ),
     ])

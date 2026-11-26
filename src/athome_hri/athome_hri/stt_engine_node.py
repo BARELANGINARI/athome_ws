@@ -8,7 +8,7 @@ from typing import Union
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Float32MultiArray, String
 
 from athome_hri.audio_io import (
     LocalMicListener,
@@ -91,6 +91,9 @@ class SttEngineNode(Node):
         )
         self.stt_event_pub = self.create_publisher(
             String, "/hri/stt_events", 20
+        )
+        self.audio_telemetry_pub = self.create_publisher(
+            Float32MultiArray, "/hri/audio_telemetry", 10
         )
 
         self._tts_lock = threading.Lock()
@@ -287,6 +290,41 @@ class SttEngineNode(Node):
                 self._tts_post_mute_until = time.monotonic() + self._tts_post_mute_sec
 
     def _on_metrics(self, m: VadFrameMetrics) -> None:
+        if self.audio_telemetry_pub.get_subscription_count() > 0:
+            eff_thr = self._listener.threshold_dbfs
+            if self._listener.adaptive_vad_enabled and not m.is_paused:
+                eff_thr = max(
+                    self._listener.threshold_dbfs,
+                    min(-12.0, self._listener._noise_floor_dbfs + self._listener.adaptive_snr_margin_db),
+                )
+            is_voice = (
+                (not m.is_paused)
+                and (m.dbfs_speech > eff_thr)
+                and (m.flatness < self._listener.threshold_flatness)
+            )
+            flags = (1 if is_voice else 0) | (2 if m.is_speaking else 0) | (4 if m.is_paused else 0)
+            msg = Float32MultiArray()
+            header = [
+                float(self._listener.sample_rate),
+                float(m.dbfs),
+                float(m.dbfs_speech),
+                float(self._listener.threshold_dbfs),
+                float(eff_thr),
+                float(self._listener._noise_floor_dbfs),
+                float(m.flatness),
+                float(self._listener.threshold_flatness),
+                float(self._listener.BANDPASS_LOWCUT),
+                float(self._listener.BANDPASS_HIGHCUT),
+                1.0 if self._listener.adaptive_vad_enabled else 0.0,
+                float(self._listener.adaptive_snr_margin_db),
+                -12.0,
+                float(self._stt.vad_threshold),
+                float(flags),
+                float(self._stt.highpass_hz),
+            ]
+            msg.data = header + m.signal.astype(np.float32).tolist()
+            self.audio_telemetry_pub.publish(msg)
+
         if self._enable_visualizer:
             self._visualizer.push_frame(m)
         if not self._enable_live_meter:

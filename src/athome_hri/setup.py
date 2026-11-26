@@ -53,6 +53,7 @@ setup(
             'stt_engine_node = athome_hri.stt_engine_node:main',
             'tts_engine_node = athome_hri.tts_engine_node:main',
             'hri_logger_node = athome_hri.hri_logger_node:main',
+            'hri_visualizer_node = athome_hri.hri_visualizer_node:main',
         ],
     },
 )

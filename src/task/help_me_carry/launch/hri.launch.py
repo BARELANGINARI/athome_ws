@@ -55,6 +55,12 @@ def generate_launch_description():
         description="Directory where per-trial HRI log files are saved.",
     )
 
+    enable_visualizer_arg = DeclareLaunchArgument(
+        "enable_visualizer",
+        default_value="true",
+        description="Launch real-time HRI audio & parameter visualizer GUI.",
+    )
+
     return LaunchDescription([
         SetEnvironmentVariable('RCUTILS_CONSOLE_OUTPUT_FORMAT', '[{severity}] {message}'),
         SetEnvironmentVariable('RCUTILS_COLORIZED_OUTPUT', '1'),
@@ -65,6 +71,7 @@ def generate_launch_description():
         task_params_file_arg,
         enable_hri_logger_arg,
         hri_log_dir_arg,
+        enable_visualizer_arg,
         Node(
             package="athome_hri_cpp",
             executable="stt_engine_node",
@@ -85,7 +92,10 @@ def generate_launch_description():
             name="stt_engine",
             output="screen",
             emulate_tty=True,
-            parameters=[LaunchConfiguration("params_file")],
+            parameters=[
+                LaunchConfiguration("params_file"),
+                {"enable_visualizer": False},
+            ],
             condition=IfCondition(
                 PythonExpression(["'", LaunchConfiguration("stt_backend"), "' == 'python'"])
             ),
@@ -118,6 +128,22 @@ def generate_launch_description():
             }],
             condition=IfCondition(
                 PythonExpression(["'", LaunchConfiguration("enable_hri_logger"), "' == 'true'"])
+            ),
+        ),
+        Node(
+            package="athome_hri",
+            executable="hri_visualizer_node",
+            name="hri_visualizer",
+            output="screen",
+            emulate_tty=True,
+            parameters=[{
+                "task": "help_me_carry",
+                "stt_backend": LaunchConfiguration("stt_backend"),
+                "cpp_params_file": LaunchConfiguration("cpp_params_file"),
+                "py_params_file": LaunchConfiguration("params_file"),
+            }],
+            condition=IfCondition(
+                PythonExpression(["'", LaunchConfiguration("enable_visualizer"), "' == 'true'"])
             ),
         ),
     ])

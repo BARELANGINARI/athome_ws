@@ -44,6 +44,8 @@ struct VadFrameMetrics
   bool is_voice{false};
   bool is_speaking{false};
   bool is_paused{false};
+  const float * samples{nullptr};
+  size_t num_samples{0};
 };
 
 /**

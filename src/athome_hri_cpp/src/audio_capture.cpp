@@ -381,6 +381,8 @@ void AudioCapture::processFrame(const std::vector<float> & frame)
       m.noise_floor_dbfs = noise_floor_dbfs_;
       m.flatness = flatness;
       m.is_paused = true;
+      m.samples = frame.data();
+      m.num_samples = frame.size();
       on_metrics_(m);
     }
     return;
@@ -450,6 +452,8 @@ void AudioCapture::processFrame(const std::vector<float> & frame)
     m.is_voice = frame_is_voice;
     m.is_speaking = is_speaking_;
     m.is_paused = false;
+    m.samples = frame.data();
+    m.num_samples = frame.size();
     on_metrics_(m);
   }
 }

@@ -16,6 +16,7 @@
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
 
 #include "athome_hri_cpp/audio_capture.hpp"
@@ -194,8 +195,25 @@ public:
     }
 
     // 5. ROS 2 Publishers & Subscribers (Drop-in topics)
+    {
+      std::lock_guard<std::mutex> lock(telemetry_cfg_mutex_);
+      telemetry_cfg_.sample_rate = static_cast<float>(sample_rate);
+      telemetry_cfg_.threshold_dbfs = static_cast<float>(vad_config_.threshold_dbfs);
+      telemetry_cfg_.threshold_flatness = static_cast<float>(vad_config_.threshold_flatness);
+      telemetry_cfg_.speech_band_low_hz = static_cast<float>(vad_config_.speech_band_low_hz);
+      telemetry_cfg_.speech_band_high_hz = static_cast<float>(vad_config_.speech_band_high_hz);
+      telemetry_cfg_.adaptive_vad_enabled = vad_config_.adaptive_vad_enabled ? 1.0f : 0.0f;
+      telemetry_cfg_.adaptive_snr_margin_db = static_cast<float>(vad_config_.adaptive_snr_margin_db);
+      telemetry_cfg_.adaptive_max_threshold_dbfs =
+        static_cast<float>(vad_config_.adaptive_max_threshold_dbfs);
+      telemetry_cfg_.stt_vad_threshold = nvad_cfg.threshold;
+      telemetry_cfg_.highpass_hz = static_cast<float>(highpass_hz);
+    }
+
     transcript_pub_ = create_publisher<std_msgs::msg::String>("/hri/stt_transcript", 10);
     stt_event_pub_ = create_publisher<std_msgs::msg::String>("/hri/stt_events", 20);
+    audio_telemetry_pub_ =
+      create_publisher<std_msgs::msg::Float32MultiArray>("/hri/audio_telemetry", 10);
     tts_say_sub_ = create_subscription<std_msgs::msg::String>(
       "/hri/tts_say", 10,
       std::bind(&SttEngineCppNode::onTtsSay, this, std::placeholders::_1));
@@ -466,6 +484,41 @@ private:
 
   void onVadMetrics(const VadFrameMetrics & m)
   {
+    if (audio_telemetry_pub_ && audio_telemetry_pub_->get_subscription_count() > 0 &&
+        m.samples != nullptr && m.num_samples > 0)
+    {
+      TelemetryParamSnapshot snap;
+      {
+        std::lock_guard<std::mutex> lock(telemetry_cfg_mutex_);
+        snap = telemetry_cfg_;
+      }
+      const uint32_t flags =
+        (m.is_voice ? 1u : 0u) |
+        (m.is_speaking ? 2u : 0u) |
+        (m.is_paused ? 4u : 0u);
+
+      std_msgs::msg::Float32MultiArray msg;
+      msg.data.reserve(16 + m.num_samples);
+      msg.data.push_back(snap.sample_rate);
+      msg.data.push_back(static_cast<float>(m.dbfs));
+      msg.data.push_back(static_cast<float>(m.dbfs_speech));
+      msg.data.push_back(snap.threshold_dbfs);
+      msg.data.push_back(static_cast<float>(m.effective_threshold_dbfs));
+      msg.data.push_back(static_cast<float>(m.noise_floor_dbfs));
+      msg.data.push_back(static_cast<float>(m.flatness));
+      msg.data.push_back(snap.threshold_flatness);
+      msg.data.push_back(snap.speech_band_low_hz);
+      msg.data.push_back(snap.speech_band_high_hz);
+      msg.data.push_back(snap.adaptive_vad_enabled);
+      msg.data.push_back(snap.adaptive_snr_margin_db);
+      msg.data.push_back(snap.adaptive_max_threshold_dbfs);
+      msg.data.push_back(snap.stt_vad_threshold);
+      msg.data.push_back(static_cast<float>(flags));
+      msg.data.push_back(snap.highpass_hz);
+      msg.data.insert(msg.data.end(), m.samples, m.samples + m.num_samples);
+      audio_telemetry_pub_->publish(msg);
+    }
+
     if (!enable_live_meter_.load()) {
       return;
     }
@@ -616,8 +669,36 @@ private:
     if (asr_dirty && asr_) {
       asr_->updateRuntimeConfig(lang, beam, temp, no_sp, log_p, ent, prompt, dedup_n, min_chars, bl);
     }
+    {
+      std::lock_guard<std::mutex> lock(telemetry_cfg_mutex_);
+      telemetry_cfg_.sample_rate = static_cast<float>(sample_rate);
+      telemetry_cfg_.threshold_dbfs = static_cast<float>(vad_config_.threshold_dbfs);
+      telemetry_cfg_.threshold_flatness = static_cast<float>(vad_config_.threshold_flatness);
+      telemetry_cfg_.speech_band_low_hz = static_cast<float>(vad_config_.speech_band_low_hz);
+      telemetry_cfg_.speech_band_high_hz = static_cast<float>(vad_config_.speech_band_high_hz);
+      telemetry_cfg_.adaptive_vad_enabled = vad_config_.adaptive_vad_enabled ? 1.0f : 0.0f;
+      telemetry_cfg_.adaptive_snr_margin_db = static_cast<float>(vad_config_.adaptive_snr_margin_db);
+      telemetry_cfg_.adaptive_max_threshold_dbfs =
+        static_cast<float>(vad_config_.adaptive_max_threshold_dbfs);
+      telemetry_cfg_.stt_vad_threshold = nv_thresh;
+      telemetry_cfg_.highpass_hz = static_cast<float>(highpass_hz);
+    }
     return result;
   }
+
+  struct TelemetryParamSnapshot
+  {
+    float sample_rate{16000.0f};
+    float threshold_dbfs{-24.0f};
+    float threshold_flatness{0.38f};
+    float speech_band_low_hz{300.0f};
+    float speech_band_high_hz{3400.0f};
+    float adaptive_vad_enabled{1.0f};
+    float adaptive_snr_margin_db{7.0f};
+    float adaptive_max_threshold_dbfs{-10.0f};
+    float stt_vad_threshold{0.52f};
+    float highpass_hz{120.0f};
+  };
 
   struct UtteranceItem
   {
@@ -651,8 +732,12 @@ private:
   std::condition_variable asr_cv_;
   std::queue<UtteranceItem> asr_queue_;
 
+  std::mutex telemetry_cfg_mutex_;
+  TelemetryParamSnapshot telemetry_cfg_;
+
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr transcript_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr stt_event_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr audio_telemetry_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_say_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tts_done_sub_;
   OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
