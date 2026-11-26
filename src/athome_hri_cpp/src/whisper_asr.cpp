@@ -236,12 +236,14 @@ AsrResult WhisperAsr::transcribe(const std::vector<float> & audio_16k)
 {
   AsrResult res;
   if (audio_16k.empty()) {
+    res.reject_reason = "empty_audio";
     return res;
   }
   res.audio_duration_sec = static_cast<double>(audio_16k.size()) / 16000.0;
 
 #ifdef HAVE_WHISPER_CPP
   if (!impl_->ready || impl_->ctx == nullptr) {
+    res.reject_reason = "not_ready";
     return res;
   }
 
@@ -269,19 +271,25 @@ AsrResult WhisperAsr::transcribe(const std::vector<float> & audio_16k)
   wparams.initial_prompt = config_.initial_prompt.empty() ? nullptr : config_.initial_prompt.c_str();
 
   if (whisper_full(impl_->ctx, wparams, audio_16k.data(), static_cast<int>(audio_16k.size())) != 0) {
+    res.reject_reason = "whisper_error";
     return res;
   }
 
   std::ostringstream joined;
+  std::ostringstream all_raw;
+  double max_no_speech = 0.0;
+  double sum_seg_logprob = 0.0;
+  int seg_score_count = 0;
+  bool had_no_speech_reject = false;
+  bool had_logprob_reject = false;
+
   const int n_segments = whisper_full_n_segments(impl_->ctx);
+  const whisper_token eot_tok = whisper_token_eot(impl_->ctx);
   for (int i = 0; i < n_segments; ++i) {
     const float no_speech = whisper_full_get_segment_no_speech_prob(impl_->ctx, i);
-    if (no_speech >= config_.no_speech_threshold) {
-      continue;
-    }
+    max_no_speech = std::max(max_no_speech, static_cast<double>(no_speech));
 
     const int n_tokens = whisper_full_n_tokens(impl_->ctx, i);
-    const whisper_token eot_tok = whisper_token_eot(impl_->ctx);
     double sum_logprob = 0.0;
     int text_tokens = 0;
     for (int j = 0; j < n_tokens; ++j) {
@@ -294,44 +302,75 @@ AsrResult WhisperAsr::transcribe(const std::vector<float> & audio_16k)
     }
     const double avg_logprob =
       (text_tokens > 0) ? (sum_logprob / static_cast<double>(text_tokens)) : 0.0;
-    if (text_tokens > 0 && avg_logprob < static_cast<double>(config_.log_prob_threshold)) {
-      continue;
+    if (text_tokens > 0) {
+      sum_seg_logprob += avg_logprob;
+      ++seg_score_count;
     }
 
     const char * seg_text = whisper_full_get_segment_text(impl_->ctx, i);
-    if (seg_text != nullptr) {
-      const std::string t = trim(seg_text);
-      if (!t.empty()) {
-        if (joined.tellp() > 0) {
-          joined << ' ';
-        }
-        joined << t;
+    const std::string t = (seg_text != nullptr) ? trim(seg_text) : "";
+    if (!t.empty()) {
+      if (all_raw.tellp() > 0) {
+        all_raw << ' ';
       }
+      all_raw << t;
+    }
+
+    if (no_speech >= config_.no_speech_threshold) {
+      had_no_speech_reject = true;
+      continue;
+    }
+    if (text_tokens > 0 && avg_logprob < static_cast<double>(config_.log_prob_threshold)) {
+      had_logprob_reject = true;
+      continue;
+    }
+
+    if (!t.empty()) {
+      if (joined.tellp() > 0) {
+        joined << ' ';
+      }
+      joined << t;
     }
   }
 
   const auto t1 = std::chrono::steady_clock::now();
   res.latency_sec = std::chrono::duration<double>(t1 - t0).count();
   res.rtf = (res.audio_duration_sec > 0.0) ? (res.latency_sec / res.audio_duration_sec) : 0.0;
+  res.raw_text = trim(all_raw.str());
+  res.no_speech_prob = max_no_speech;
+  if (seg_score_count > 0) {
+    res.avg_logprob = sum_seg_logprob / static_cast<double>(seg_score_count);
+    res.has_scores = true;
+  }
 
   std::string raw_text = trim(joined.str());
   if (raw_text.empty()) {
+    res.rejected_raw = res.raw_text;
+    res.reject_reason = had_no_speech_reject
+      ? "no_speech_prob"
+      : (had_logprob_reject ? "low_logprob" : "empty_whisper");
     return res;
   }
 
   std::string deduped = deduplicateNgrams(raw_text, config_.dedup_max_ngram);
   const std::string cleaned = toLowerCleaned(deduped);
 
-  if (!deduped.empty() &&
-      static_cast<int>(cleaned.size()) >= std::max(1, config_.min_transcript_chars) &&
-      blacklist_.find(cleaned) == blacklist_.end())
-  {
+  if (deduped.empty()) {
+    res.rejected_raw = res.raw_text;
+    res.reject_reason = "empty_after_dedup";
+  } else if (static_cast<int>(cleaned.size()) < std::max(1, config_.min_transcript_chars)) {
+    res.rejected_raw = std::move(deduped);
+    res.reject_reason = "min_chars";
+  } else if (blacklist_.find(cleaned) != blacklist_.end()) {
+    res.rejected_raw = std::move(deduped);
+    res.reject_reason = "blacklist";
+  } else {
     res.text = std::move(deduped);
     res.accepted = true;
-  } else {
-    res.rejected_raw = std::move(deduped);
-    res.accepted = false;
+    res.reject_reason = "ok";
   }
+#else
+  res.reject_reason = "not_ready";
 #endif
   return res;
 }

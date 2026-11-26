@@ -160,6 +160,7 @@ class SpeechToText:
             highpass_hz=self.highpass_hz,
         )
         self.whisper: Optional["WhisperModel"] = None
+        self.last_event: Optional[dict] = None
         self._lock = threading.Lock()
 
         if not HAS_WHISPER:
@@ -323,6 +324,7 @@ class SpeechToText:
         Menerima array float32 numpy (16 kHz) dari mikrofon lokal atau raw bytes (.wav/.webm)
         dari WebSocket, lalu mengembalikan teks transkripsi yang telah difilter secara thread-safe.
         """
+        self.last_event = None
         if self.whisper is None or audio_input is None:
             return ""
         if isinstance(audio_input, np.ndarray) and audio_input.size == 0:
@@ -345,6 +347,19 @@ class SpeechToText:
                 if HAS_NEURAL_VAD:
                     gated_audio = self._apply_neural_vad(enhanced_audio)
                     if gated_audio.size == 0:
+                        orig_dur = len(enhanced_audio) / float(self.sample_rate)
+                        self.last_event = {
+                            "event": "dropped_silero_vad",
+                            "status": "dropped",
+                            "reason": "silero_non_speech",
+                            "raw_text": "",
+                            "final_text": "",
+                            "audio_sec": round(orig_dur, 3),
+                            "latency_sec": 0.0,
+                            "rtf": 0.0,
+                            "avg_logprob": None,
+                            "no_speech_prob": None,
+                        }
                         logger.debug("[ASR] Rejected by Neural VAD (non-speech/noise).")
                         return ""
                     audio_source = gated_audio
@@ -391,21 +406,41 @@ class SpeechToText:
                 pass
 
             with self._lock:
-                segments, _ = self.whisper.transcribe(
+                segments_iter, _ = self.whisper.transcribe(
                     audio_source,
                     **transcribe_kwargs,
                 )
+                segments = list(segments_iter)
 
-                # Filter ketat: no_speech rendah, logprob memadai, dan bebas loop (compression_ratio)
-                valid_text = [
-                    seg.text.strip()
-                    for seg in segments
-                    if (
-                        seg.no_speech_prob < self.no_speech_threshold
-                        and seg.avg_logprob >= self.log_prob_threshold
-                        and seg.compression_ratio < self.compression_ratio_threshold
-                    )
-                ]
+            all_raw_texts = []
+            valid_text = []
+            max_no_speech = 0.0
+            logprobs = []
+            had_no_speech_reject = False
+            had_logprob_reject = False
+            had_comp_reject = False
+
+            for seg in segments:
+                seg_txt = seg.text.strip()
+                if seg_txt:
+                    all_raw_texts.append(seg_txt)
+                max_no_speech = max(max_no_speech, float(seg.no_speech_prob))
+                logprobs.append(float(seg.avg_logprob))
+                if seg.no_speech_prob >= self.no_speech_threshold:
+                    had_no_speech_reject = True
+                    continue
+                if seg.avg_logprob < self.log_prob_threshold:
+                    had_logprob_reject = True
+                    continue
+                if seg.compression_ratio >= self.compression_ratio_threshold:
+                    had_comp_reject = True
+                    continue
+                if seg_txt:
+                    valid_text.append(seg_txt)
+
+            raw_text = " ".join(all_raw_texts).strip()
+            mean_logprob = (sum(logprobs) / len(logprobs)) if logprobs else None
+            nosp_val = max_no_speech if segments else None
 
             text = " ".join(valid_text).strip()
             # 4. Post-processing deduplikasi n-gram (buang pengulangan kata/frasa identik)
@@ -419,8 +454,20 @@ class SpeechToText:
             if (
                 text
                 and cleaned_check not in self.hallucination_blacklist
-                and len(cleaned_check) > 2
+                and len(cleaned_check) >= 2
             ):
+                self.last_event = {
+                    "event": "asr_accepted",
+                    "status": "accepted",
+                    "reason": "ok",
+                    "raw_text": raw_text or text,
+                    "final_text": text,
+                    "audio_sec": round(dur, 3),
+                    "latency_sec": round(proc_time, 3),
+                    "rtf": round(rtf, 3),
+                    "avg_logprob": round(mean_logprob, 3) if mean_logprob is not None else None,
+                    "no_speech_prob": round(nosp_val, 3) if nosp_val is not None else None,
+                }
                 metrics_str = (
                     f"RTF: {rtf:.3f} | Latency: {proc_time:.2f}s | Audio: {dur:.2f}s"
                     if dur > 0
@@ -431,21 +478,48 @@ class SpeechToText:
                     self.on_asr_result(f'"{text}"', metrics_str)
                 return text
 
-            if text:
+            if not text:
+                if had_no_speech_reject:
+                    rej_reason = "no_speech_prob"
+                elif had_logprob_reject:
+                    rej_reason = "low_logprob"
+                elif had_comp_reject:
+                    rej_reason = "compression_ratio"
+                else:
+                    rej_reason = "empty_whisper"
+            elif cleaned_check in self.hallucination_blacklist:
+                rej_reason = "blacklist"
+            else:
+                rej_reason = "min_chars"
+
+            self.last_event = {
+                "event": "asr_rejected",
+                "status": "rejected",
+                "reason": rej_reason,
+                "raw_text": raw_text or text,
+                "final_text": "",
+                "audio_sec": round(dur, 3),
+                "latency_sec": round(proc_time, 3),
+                "rtf": round(rtf, 3),
+                "avg_logprob": round(mean_logprob, 3) if mean_logprob is not None else None,
+                "no_speech_prob": round(nosp_val, 3) if nosp_val is not None else None,
+            }
+
+            if raw_text or text:
                 logger.info(
-                    "[ASR] Rejected - noise/hallucination Raw: %s (%.2fs)",
-                    text,
+                    "[ASR] Rejected (%s) Raw: %s (%.2fs)",
+                    rej_reason,
+                    raw_text or text,
                     proc_time,
                 )
                 if self.on_asr_result:
                     self.on_asr_result(
-                        f"[Rejected: {text}]",
-                        f"Noise/Hallucination ({proc_time:.2f}s)",
+                        f"[Rejected: {raw_text or text}]",
+                        f"{rej_reason} ({proc_time:.2f}s)",
                     )
             return ""
         except Exception as exc:
             logger.error("Transcription failed: %s", exc)
-            return ""
             return ""
         finally:
             if temp_path and os.path.exists(temp_path):

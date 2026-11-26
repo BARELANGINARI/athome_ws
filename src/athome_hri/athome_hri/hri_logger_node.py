@@ -1,13 +1,14 @@
-"""ROS 2 node for logging per-trial HRI robot prompts and user STT transcripts."""
+"""ROS 2 node for logging complete per-trial HRI robot prompts and STT pipeline events."""
 
 import csv
 from datetime import datetime
+import json
 import os
 from pathlib import Path
 import re
 import threading
 import time
-from typing import Optional
+from typing import Any, Dict, Optional
 
 _TRIAL_PATTERN = re.compile(r"^trial_(\d+)_.*\.(txt|csv)$")
 
@@ -31,8 +32,36 @@ def _sanitize_task_name(task: str) -> str:
     return cleaned or "general"
 
 
+def _fmt_num(val: Any, digits: int = 3) -> str:
+    if val is None or val == "":
+        return ""
+    try:
+        return f"{float(val):.{digits}f}"
+    except (TypeError, ValueError):
+        return ""
+
+
 class HriSessionLogger:
-    """Writes per-trial HRI conversation logs to both human-readable .txt and structured .csv."""
+    """Writes per-trial HRI conversation and STT telemetry logs to .txt and .csv."""
+
+    CSV_HEADER = [
+        "timestamp",
+        "turn",
+        "event_type",
+        "status",
+        "reason",
+        "task",
+        "stt_backend",
+        "question",
+        "raw_text",
+        "final_text",
+        "audio_sec",
+        "latency_sec",
+        "rtf",
+        "avg_logprob",
+        "no_speech_prob",
+        "response_delay_sec",
+    ]
 
     def __init__(self, log_dir: str, task: str = "general", stt_backend: str = "unknown") -> None:
         self.log_dir = Path(os.path.expanduser(log_dir)).resolve()
@@ -53,10 +82,13 @@ class HriSessionLogger:
         self._turn = 0
         self._robot_count = 0
         self._user_count = 0
+        self._rejected_count = 0
+        self._dropped_count = 0
         self._current_question = ""
         self._question_mono: Optional[float] = None
         self._tts_done_mono: Optional[float] = None
         self._current_question_answered = False
+        self._stt_events_active = False
         self._closed = False
 
         self._txt_file = self.txt_path.open("w", encoding="utf-8")
@@ -75,25 +107,34 @@ class HriSessionLogger:
         )
         self._txt_file.flush()
 
-        self._csv_writer.writerow([
-            "timestamp",
-            "turn",
-            "task",
-            "stt_backend",
-            "question",
-            "user_transcript",
-            "response_delay_sec",
-        ])
+        self._csv_writer.writerow(self.CSV_HEADER)
         self._csv_file.flush()
+
+    def _compute_delay_locked(self, mono: float) -> str:
+        if not self._current_question:
+            return ""
+        ref_mono = self._tts_done_mono if self._tts_done_mono is not None else self._question_mono
+        if ref_mono is None:
+            return ""
+        return f"{max(0.0, mono - ref_mono):.2f}"
 
     def _write_unanswered_question_locked(self, dt: datetime) -> None:
         if self._current_question and not self._current_question_answered:
             self._csv_writer.writerow([
                 dt.isoformat(timespec="milliseconds"),
                 "",
+                "robot_prompt_unanswered",
+                "unanswered",
+                "",
                 self.task,
                 self.stt_backend,
                 self._current_question,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
                 "",
                 "",
             ])
@@ -125,13 +166,111 @@ class HriSessionLogger:
             self._txt_file.write(f"[{dt.strftime('%H:%M:%S.%f')[:-3]}] [ROBOT] {cleaned}\n")
             self._txt_file.flush()
 
-    def record_tts_done(self, now_mono: Optional[float] = None) -> None:
-        """Mark when TTS playback finished so user response delay can be measured accurately."""
+    def record_tts_done(
+        self,
+        now_dt: Optional[datetime] = None,
+        now_mono: Optional[float] = None,
+    ) -> None:
+        """Mark when TTS playback finished and log the timestamp."""
+        dt = now_dt or datetime.now()
         mono = time.monotonic() if now_mono is None else now_mono
         with self._lock:
             if self._closed or not self._current_question:
                 return
             self._tts_done_mono = mono
+            self._txt_file.write(f"[{dt.strftime('%H:%M:%S.%f')[:-3]}] [TTS_DONE]\n")
+            self._txt_file.flush()
+
+    def record_stt_event(
+        self,
+        payload: Dict[str, Any],
+        now_dt: Optional[datetime] = None,
+        now_mono: Optional[float] = None,
+    ) -> None:
+        """Log a structured STT pipeline event (accepted, rejected, or dropped)."""
+        dt = now_dt or datetime.now()
+        mono = time.monotonic() if now_mono is None else now_mono
+
+        event_type = str(payload.get("event", "unknown")).strip() or "unknown"
+        status = str(payload.get("status", "unknown")).strip() or "unknown"
+        reason = str(payload.get("reason", "")).strip()
+        raw_text = str(payload.get("raw_text", "") or "").strip()
+        final_text = str(payload.get("final_text", "") or "").strip()
+
+        audio_s = _fmt_num(payload.get("audio_sec"), 2)
+        lat_s = _fmt_num(payload.get("latency_sec"), 2)
+        rtf_s = _fmt_num(payload.get("rtf"), 3)
+        logp_s = _fmt_num(payload.get("avg_logprob"), 3)
+        nosp_s = _fmt_num(payload.get("no_speech_prob"), 3)
+
+        with self._lock:
+            if self._closed:
+                return
+            self._stt_events_active = True
+            delay_str = self._compute_delay_locked(mono)
+            turn_val: Any = ""
+
+            if event_type == "asr_accepted" and final_text:
+                self._turn += 1
+                self._user_count += 1
+                self._current_question_answered = True
+                turn_val = self._turn
+                tag = "[USER:ACCEPTED]"
+            elif status == "rejected" or event_type == "asr_rejected":
+                self._rejected_count += 1
+                tag = "[STT:REJECTED]"
+            else:
+                self._dropped_count += 1
+                tag = "[STT:DROPPED] "
+
+            self._csv_writer.writerow([
+                dt.isoformat(timespec="milliseconds"),
+                turn_val,
+                event_type,
+                status,
+                reason,
+                self.task,
+                self.stt_backend,
+                self._current_question,
+                raw_text,
+                final_text,
+                audio_s,
+                lat_s,
+                rtf_s,
+                logp_s,
+                nosp_s,
+                delay_str,
+            ])
+            self._csv_file.flush()
+
+            details = []
+            if reason and reason != "ok":
+                details.append(f"reason={reason}")
+            if raw_text and raw_text != final_text:
+                details.append(f'raw="{raw_text}"')
+            if audio_s:
+                details.append(f"audio={audio_s}s")
+            if lat_s:
+                details.append(f"lat={lat_s}s")
+            if rtf_s and float(rtf_s) > 0.0:
+                details.append(f"rtf={rtf_s}")
+            if logp_s:
+                details.append(f"logp={logp_s}")
+            if nosp_s:
+                details.append(f"nosp={nosp_s}")
+            if payload.get("voice_frames"):
+                details.append(f"frames={payload.get('voice_frames')}")
+            if payload.get("peak_dbfs") is not None and event_type == "vad_dropped_short":
+                details.append(f"peak={_fmt_num(payload.get('peak_dbfs'), 1)}dBFS")
+            if delay_str:
+                details.append(f"delay={delay_str}s")
+
+            body_text = final_text or raw_text or f"({event_type})"
+            detail_str = f" ({' | '.join(details)})" if details else ""
+            self._txt_file.write(
+                f"[{dt.strftime('%H:%M:%S.%f')[:-3]}] {tag} {body_text}{detail_str}\n"
+            )
+            self._txt_file.flush()
 
     def record_user_transcript(
         self,
@@ -139,7 +278,7 @@ class HriSessionLogger:
         now_dt: Optional[datetime] = None,
         now_mono: Optional[float] = None,
     ) -> None:
-        """Log a recognized user transcript from /hri/stt_transcript paired with current prompt."""
+        """Fallback logger for /hri/stt_transcript when /hri/stt_events is not active."""
         cleaned = (text or "").strip()
         if not cleaned:
             return
@@ -147,28 +286,30 @@ class HriSessionLogger:
         mono = time.monotonic() if now_mono is None else now_mono
 
         with self._lock:
-            if self._closed:
+            if self._closed or self._stt_events_active:
                 return
             self._turn += 1
             self._user_count += 1
             self._current_question_answered = True
-
-            ref_mono = self._tts_done_mono if self._tts_done_mono is not None else self._question_mono
-            if ref_mono is not None:
-                delay_sec = max(0.0, mono - ref_mono)
-                delay_str = f"{delay_sec:.2f}"
-                delay_note = f" (delay: {delay_str}s)"
-            else:
-                delay_str = ""
-                delay_note = ""
+            delay_str = self._compute_delay_locked(mono)
+            delay_note = f" (delay: {delay_str}s)" if delay_str else ""
 
             self._csv_writer.writerow([
                 dt.isoformat(timespec="milliseconds"),
                 self._turn,
+                "asr_accepted",
+                "accepted",
+                "ok",
                 self.task,
                 self.stt_backend,
                 self._current_question,
                 cleaned,
+                cleaned,
+                "",
+                "",
+                "",
+                "",
+                "",
                 delay_str,
             ])
             self._csv_file.flush()
@@ -187,9 +328,11 @@ class HriSessionLogger:
             self._write_unanswered_question_locked(dt)
             self._txt_file.write(
                 "------------------------------------------------------------------------\n"
-                f"End Time               : {dt.isoformat(timespec='seconds')}\n"
-                f"Total Robot Prompts    : {self._robot_count}\n"
-                f"Total User Transcripts : {self._user_count}\n"
+                f"End Time                  : {dt.isoformat(timespec='seconds')}\n"
+                f"Total Robot Prompts       : {self._robot_count}\n"
+                f"Total Accepted Transcripts: {self._user_count}\n"
+                f"Total Rejected ASR        : {self._rejected_count}\n"
+                f"Total Dropped Mic Events  : {self._dropped_count}\n"
                 "========================================================================\n"
             )
             self._txt_file.flush()
@@ -217,6 +360,9 @@ def main(args=None) -> None:
             stt_topic = str(
                 self.declare_parameter("stt_transcript_topic", "/hri/stt_transcript").value
             )
+            stt_events_topic = str(
+                self.declare_parameter("stt_events_topic", "/hri/stt_events").value
+            )
 
             self.session_logger = HriSessionLogger(
                 log_dir=log_dir,
@@ -226,6 +372,7 @@ def main(args=None) -> None:
 
             self.create_subscription(String, tts_say_topic, self._on_tts_say, 10)
             self.create_subscription(String, tts_done_topic, self._on_tts_done, 10)
+            self.create_subscription(String, stt_events_topic, self._on_stt_event, 20)
             self.create_subscription(String, stt_topic, self._on_stt_transcript, 10)
 
             self.get_logger().info(
@@ -239,6 +386,14 @@ def main(args=None) -> None:
 
         def _on_tts_done(self, _msg: String) -> None:
             self.session_logger.record_tts_done()
+
+        def _on_stt_event(self, msg: String) -> None:
+            try:
+                payload = json.loads(msg.data)
+                if isinstance(payload, dict):
+                    self.session_logger.record_stt_event(payload)
+            except Exception as exc:
+                self.get_logger().warn(f"Gagal parse /hri/stt_events JSON: {exc}")
 
         def _on_stt_transcript(self, msg: String) -> None:
             self.session_logger.record_user_transcript(msg.data)

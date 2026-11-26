@@ -57,16 +57,26 @@ struct VadFrameMetrics
 class AudioCapture
 {
 public:
+  struct VadDropInfo
+  {
+    int voice_frames{0};
+    int min_required_frames{0};
+    double duration_sec{0.0};
+    double peak_dbfs{-100.0};
+  };
+
   using UtteranceCallback = std::function<void(std::vector<float> &&)>;
   using PauseCheckCallback = std::function<bool()>;
   using MetricsCallback = std::function<void(const VadFrameMetrics &)>;
+  using VadDropCallback = std::function<void(const VadDropInfo &)>;
 
   AudioCapture(
     int device_index,
     const VadConfig & config,
     UtteranceCallback on_utterance,
     PauseCheckCallback is_paused_fn,
-    MetricsCallback on_metrics = nullptr);
+    MetricsCallback on_metrics = nullptr,
+    VadDropCallback on_vad_drop = nullptr);
   ~AudioCapture();
 
   AudioCapture(const AudioCapture &) = delete;
@@ -102,6 +112,7 @@ private:
   UtteranceCallback on_utterance_;
   PauseCheckCallback is_paused_fn_;
   MetricsCallback on_metrics_;
+  VadDropCallback on_vad_drop_;
 
   void * pa_stream_{nullptr};
   bool pa_initialized_{false};
@@ -122,6 +133,7 @@ private:
   bool is_speaking_{false};
   int silence_counter_{0};
   int active_voice_frames_{0};
+  double segment_peak_dbfs_{-100.0};
   double noise_floor_dbfs_{-50.0};
   std::deque<std::vector<float>> pre_roll_buffer_;
   std::vector<std::vector<float>> speech_buffer_;
