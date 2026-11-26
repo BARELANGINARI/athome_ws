@@ -1700,19 +1700,6 @@ public:
             return embedFace(aligned);
           }
         }
-
-        // Fallback untuk posisi serong/menyamping (eye_dist sempit): gunakan crop bbox wajah dari YuNet
-        const int pad_x = static_cast<int>(df.bbox.width * 0.10f);
-        const int pad_y = static_cast<int>(df.bbox.height * 0.10f);
-        cv::Rect fbox(
-          df.bbox.x - pad_x, df.bbox.y - pad_y,
-          df.bbox.width + 2 * pad_x, df.bbox.height + 2 * pad_y);
-        fbox &= cv::Rect(0, 0, bgr.cols, bgr.rows);
-        if (fbox.width >= 16 && fbox.height >= 16) {
-          cv::Mat resized;
-          cv::resize(bgr(fbox), resized, cv::Size(112, 112), 0, 0, cv::INTER_LINEAR);
-          return embedFace(resized);
-        }
       }
     }
 
@@ -1732,19 +1719,6 @@ public:
       }
     }
 
-    // 3. Fallback terakhir untuk posisi sangat menyamping jika bukan membelakangi kamera:
-    // gunakan ROI kepala dari ZED keypoint
-    if (!kpt.empty() && kpt.size() > 26 &&
-        std::isfinite(kpt[26].x) && std::isfinite(kpt[26].y) &&
-        kpt[26].x > 0.0f && kpt[26].y > 0.0f)
-    {
-      cv::Rect head_roi = faceRegion(bbox, kpt, bgr.cols, bgr.rows);
-      if (head_roi.width >= 20 && head_roi.height >= 20) {
-        cv::Mat resized;
-        cv::resize(bgr(head_roi), resized, cv::Size(112, 112), 0, 0, cv::INTER_LINEAR);
-        return embedFace(resized);
-      }
-    }
     return {};
   }
 
@@ -1964,10 +1938,8 @@ public:
   }
 
 private:
-  std::vector<float> embedFace(const cv::Mat & image)
+  std::vector<float> runSingleFaceEmbed(const cv::Mat & image)
   {
-    if (!face_.ready() || image.empty()) return {};
-
     const double scale = is_arcface_ ? (1.0 / 127.5) : 1.0;
     const cv::Scalar mean = is_arcface_ ? cv::Scalar(127.5, 127.5, 127.5) : cv::Scalar(0, 0, 0);
     cv::Mat blob = cv::dnn::blobFromImage(
@@ -1990,6 +1962,43 @@ private:
       feature[static_cast<size_t>(i)] *= inv_norm;
     }
     return feature;
+  }
+
+  std::vector<float> embedFace(const cv::Mat & image)
+  {
+    if (!face_.ready() || image.empty()) return {};
+
+    // Normalisasi pencahayaan ringan (CLAHE pada channel L) + flip-average (TTA)
+    cv::Mat enhanced = image;
+    if (image.channels() == 3) {
+      cv::Mat lab;
+      cv::cvtColor(image, lab, cv::COLOR_BGR2Lab);
+      std::vector<cv::Mat> ch(3);
+      cv::split(lab, ch);
+      auto clahe = cv::createCLAHE(2.0, cv::Size(4, 4));
+      clahe->apply(ch[0], ch[0]);
+      cv::merge(ch, lab);
+      cv::cvtColor(lab, enhanced, cv::COLOR_Lab2BGR);
+    }
+
+    std::vector<float> f1 = runSingleFaceEmbed(enhanced);
+    if (f1.empty()) return {};
+
+    cv::Mat flipped;
+    cv::flip(enhanced, flipped, 1);
+    std::vector<float> f2 = runSingleFaceEmbed(flipped);
+    if (f2.size() != f1.size()) return f1;
+
+    float norm_sq = 0.0f;
+    for (size_t i = 0; i < f1.size(); ++i) {
+      f1[i] = f1[i] + f2[i];
+      norm_sq += f1[i] * f1[i];
+    }
+    const float inv_norm = 1.0f / std::sqrt(std::max(norm_sq, 1e-6f));
+    for (size_t i = 0; i < f1.size(); ++i) {
+      f1[i] *= inv_norm;
+    }
+    return f1;
   }
 
   static bool faceLandmarks(
@@ -4039,6 +4048,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           }
         }
         p.has_face_verified = true;
+        if (feature_has_landmarks && p.feature_samples >= 2) {
+          p.locked = true;
+        }
       }
     };
 
@@ -4245,22 +4257,17 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
                 : (is_host_prof && entries[i].range_m >= 1.3 ? std::max(th, 0.38f) : effective_claim_th));
           if (entries[i].is_sitting || entries[i].range_m > 1.6) {
             req_claim_th = attr_matches
-              ? std::max(0.26f, th - 0.12f)
-              : std::max(0.32f, th - 0.06f);
+              ? std::max(0.35f, th - 0.04f)
+              : std::max(0.38f, th);
           }
           if (f_sim < req_claim_th) {
-            // Jika duduk dan baju+gender cocok, jangan langsung hard-veto; biarkan joint search_perm menilai
-            const bool sitting_attr_ok = entries[i].is_sitting && attr_matches &&
-              (prof.gender.empty() || entry_feats[i].gender.empty() || prof.gender == entry_feats[i].gender);
-            if (!sitting_attr_ok) {
-              veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
-              RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
-                "[FACE] '%s' similarity %.3f < %.3f (veto)",
-                prof.name.c_str(), f_sim, req_claim_th);
-            }
-          } else if (other_best >= th && !(entries[i].is_sitting && attr_matches)) {
+            veto = true; // Klaim identitas baru butuh keyakinan wajah >= req_claim_th
+            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+              "[FACE] '%s' similarity %.3f < %.3f (veto)",
+              prof.name.c_str(), f_sim, req_claim_th);
+          } else if (other_best >= th) {
             // Jaga margin minimum agar dua orang yang duduk tidak mudah tertukar
-            const float req_margin = attr_matches ? 0.02f : ((entries[i].is_sitting || entries[i].range_m >= 1.4) ? 0.03f : 0.08f);
+            const float req_margin = attr_matches ? 0.03f : ((entries[i].is_sitting || entries[i].range_m >= 1.4) ? 0.04f : 0.08f);
             if (face_margin < req_margin) {
               veto = true; // Wajah ambigu antara dua profil -> jangan tebak nama baru
             }
