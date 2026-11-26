@@ -1294,28 +1294,68 @@ private:
       // ------------------------------------------------------------------------
       // State 9: PUT_DOWN_BAG - Meletakkan tas di titik awal
       // ------------------------------------------------------------------------
-      case TaskState::PUT_DOWN_BAG:
+      case TaskState::PUT_DOWN_BAG: {
         busy_ = true;
-        // Sequence: lifter up -> /arm/letakkan_tas -> speakAsync
-        moveLifter(true, [this]() {
-          callTrigger(
-            put_down_bag_client_, "/arm/letakkan_tas",
-            [this](bool success, const std::string & message) {
-              busy_ = false;
-              if (success) {
-                speakAsync("I have placed the bag down. Task completed.", [this]() {
-                  transitionTo(TaskState::COMPLETED, "Bag placed down successfully");
-                });
-              } else {
-                RCLCPP_WARN(get_logger(), "Letakkan tas tidak berhasil: %s. Melanjutkan ke completed.", message.c_str());
-                speakAsync("Task completed.", [this]() {
-                  transitionTo(TaskState::COMPLETED, "Task completed (fallback)");
-                });
-              }
-            },
-            30.0);
-        });
+        // Parallel: lifter up (/lifter/naik) + /arm/letakkan_tas bersamaan -> speakAsync
+        struct PutDownSync
+        {
+          std::atomic<int> remaining{2};
+          std::mutex mtx;
+          bool arm_ok{false};
+          std::string arm_msg;
+        };
+        auto sync = std::make_shared<PutDownSync>();
+
+        auto onPartDone = [this, sync]() {
+          if (sync->remaining.fetch_sub(1) == 1) {
+            busy_ = false;
+            bool ok = false;
+            std::string msg;
+            {
+              std::lock_guard<std::mutex> lk(sync->mtx);
+              ok = sync->arm_ok;
+              msg = sync->arm_msg;
+            }
+            if (ok) {
+              speakAsync("I have placed the bag down. Task completed.", [this]() {
+                transitionTo(TaskState::COMPLETED, "Bag placed down successfully");
+              });
+            } else {
+              RCLCPP_WARN(
+                get_logger(),
+                "Letakkan tas tidak berhasil: %s. Melanjutkan ke completed.", msg.c_str());
+              speakAsync("Task completed.", [this]() {
+                transitionTo(TaskState::COMPLETED, "Task completed (fallback)");
+              });
+            }
+          }
+        };
+
+        // 1. Picu lifter naik langsung tanpa memakai slot callTrigger()
+        if (lifter_cmd_pub_) {
+          std_msgs::msg::UInt8 cmd;
+          cmd.data = 1;
+          lifter_cmd_pub_->publish(cmd);
+        }
+        if (lifter_up_client_ && lifter_up_client_->service_is_ready()) {
+          lifter_up_client_->async_send_request(std::make_shared<Trigger::Request>());
+        }
+        scheduleLifterWait(1, onPartDone);
+
+        // 2. Jalankan /arm/letakkan_tas secara paralel
+        callTrigger(
+          put_down_bag_client_, "/arm/letakkan_tas",
+          [sync, onPartDone](bool success, const std::string & message) {
+            {
+              std::lock_guard<std::mutex> lk(sync->mtx);
+              sync->arm_ok = success;
+              sync->arm_msg = message;
+            }
+            onPartDone();
+          },
+          30.0);
         break;
+      }
 
       case TaskState::COMPLETED:
       case TaskState::ABORTED:
