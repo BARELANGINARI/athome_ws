@@ -2947,7 +2947,7 @@ private:
           }
 
           const std::string text =
-            guest1.name + ", this is " + guest2.name + ". " +
+            "hello, " + guest1.name + ", this is " + guest2.name + ". " +
             guest2.name + "'s favorite drink is " + guest2.drink +
             ", and interest is " + guest2.interest + ".";
 
@@ -2994,7 +2994,7 @@ private:
           }
 
           const std::string text =
-            guest2.name + ", this is " + guest1.name + ". " +
+            "hello, " + guest2.name + ", this is " + guest1.name + ". " +
             guest1.name + "'s favorite drink is " + guest1.drink +
             ", and interest is " + guest1.interest + ".";
 
