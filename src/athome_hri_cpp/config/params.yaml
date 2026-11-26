@@ -19,16 +19,16 @@ stt_engine:
     vad_block_duration_sec: 0.03          # Durasi per frame VAD PortAudio (detik, default 0.03 = 30 ms)
     vad_speech_band_low_hz: 300.0         # Batas bawah frekuensi bandpass energi suara manusia (Hz)
     vad_speech_band_high_hz: 3400.0       # Batas atas frekuensi bandpass energi suara manusia (Hz)
-    threshold_dbfs: -27.0               # Floor ambang volume minimum (dBFS)
+    threshold_dbfs: -22.0               # Floor ambang volume minimum (dBFS)
     threshold_flatness: 0.40                # Ambang batas spectral flatness (0-1); tolak noise datar kipas/AC
     adaptive_vad_enabled: true                # true = threshold mengikuti noise floor ruangan + adaptive_snr_margin_db
     adaptive_snr_margin_db: 7.0                 # Margin SNR (dB) di atas noise floor saat adaptive_vad_enabled=true
-    adaptive_max_threshold_dbfs: -24.0               # Batas atas ambang adaptif agar tidak terlalu tinggi saat sangat bising (dBFS)
+    adaptive_max_threshold_dbfs: -18.5               # Batas atas ambang adaptif agar tidak terlalu tinggi saat sangat bising (dBFS)
     adaptive_noise_alpha_up: 0.10         # Kecepatan adaptasi noise floor naik saat background makin ramai (0-1)
     adaptive_noise_alpha_down: 0.15       # Kecepatan adaptasi noise floor turun saat ruangan kembali tenang (0-1)
     pre_roll_frames: 15                  # 15 x 30 ms = 450 ms pre-roll agar awal kata tidak terpotong
-    hangover_frames: 12                  # 22 x 30 ms = 660 ms jeda hening agar jeda kalimat carrier tidak terpotong
-    min_speech_frames: 11                  # 5 x 30 ms = 150 ms durasi minimal ucapan valid (kata singkat seperti Yes/No)
+    hangover_frames: 18                  # 22 x 30 ms = 660 ms jeda hening agar jeda kalimat carrier tidak terpotong
+    min_speech_frames: 5                  # 5 x 30 ms = 150 ms durasi minimal ucapan valid (kata singkat seperti Yes/No)
     max_speech_frames: 233                 # 233 x 30 ms = 7.0 detik batas maks segmen (cegah macet saat bising)
 
     # -------------------------------------------------------------------------
@@ -45,7 +45,7 @@ stt_engine:
     # 4. Neural VAD Gate (Silero VAD via ONNX Runtime CPU — 1 Thread)
     # -------------------------------------------------------------------------
     stt_silero_vad_model_path: "models/silero_vad.onnx"  # Path relatif terhadap share/athome_hri_cpp atau path absolut
-    stt_vad_threshold: 0.75                # Ambang probabilitas ucapan Silero VAD (0-1)
+    stt_vad_threshold: 0.55                # Ambang probabilitas ucapan Silero VAD (0-1)
     stt_vad_min_speech_ms: 120                 # Durasi minimal segmen ucapan (ms)
     stt_vad_silence_ms: 350                 # Durasi jeda hening pemisah segmen (ms)
     stt_vad_speech_pad_ms: 300                 # Padding awal/akhir segmen ucapan (ms)
@@ -59,8 +59,8 @@ stt_engine:
     stt_language: "en"                    # Kode bahasa ("en", "id", dll)
     stt_beam_size: 2                   # Beam width decoding (1-5)
     stt_temperature: 0.0                  # 0.0 = deterministik, matikan fallback temperatur tinggi
-    stt_no_speech_threshold: 0.4                 # Tolak segmen jika no_speech_prob >= 0.6
-    stt_log_prob_threshold: -0.65               # Tolak segmen jika rata-rata log-prob < -1.0
+    stt_no_speech_threshold: 0.6                 # Tolak segmen jika no_speech_prob >= 0.6
+    stt_log_prob_threshold: -1.05               # Tolak segmen jika rata-rata log-prob < -1.0
     stt_entropy_threshold: 2.2            # Setara compression_ratio di whisper.cpp untuk tolak loop repetitif
     stt_initial_prompt: ""                # Kosongkan agar tidak terjadi prompt leakage saat ruangan bising
 
@@ -99,5 +99,5 @@ stt_engine:
     # 7. Sinkronisasi TTS Mute Watchdog
     # -------------------------------------------------------------------------
     tts_speaking_timeout_sec: 20.0        # Watchdog pembuka mute mic otomatis jika /hri/tts_done terlewat
-    tts_post_mute_sec: 0.8                 # Lama mic tetap dimute setelah /hri/tts_done agar gema/ekor speaker tidak terekam
+    tts_post_mute_sec: 0.45                 # Lama mic tetap dimute setelah /hri/tts_done agar gema/ekor speaker tidak terekam
     task: "all"                           # Label log terminal: receptionist / help_me_carry / restaurant / all
