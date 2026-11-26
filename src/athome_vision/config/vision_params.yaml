@@ -29,7 +29,7 @@ vision:
     hair_labels: "models/receptionist/hair_names.txt"
     hat_model: "models/receptionist/hat.onnx"
     glasses_model: "models/receptionist/glasses.onnx"
-    accessory_conf: 0.45
+    accessory_conf: 0.18
     face_model: "models/receptionist/arcface_w600k_r50.onnx"
     face_threshold: 0.40
     botol_model: "models/receptionist/water.onnx"
@@ -56,6 +56,6 @@ vision:
     # Distance limits (meters) - Objects beyond these ranges will not be detected/bboxed
     person_max_dist: 2.5
     person_seated_max_dist: 3.0
-    chair_max_dist: 2.0
+    chair_max_dist: 3.0
     bag_max_dist: 2.0
     drink_max_dist: 2.5

@@ -54,7 +54,7 @@ def generate_launch_description():
         DeclareLaunchArgument('enable_drinks', default_value='true', description='Enable bottle & cracker detection for receptionist'),
         DeclareLaunchArgument('chair_model', default_value='', description='Optional path to custom chair ONNX model'),
         DeclareLaunchArgument('enable_chair', default_value='true', description='Enable chair detection and empty/occupied classification'),
-        DeclareLaunchArgument('chair_max_dist', default_value='2.0', description='Maximum distance (m) to detect and bbox chair'),
+        DeclareLaunchArgument('chair_max_dist', default_value='3.0', description='Maximum distance (m) to detect and bbox chair'),
         DeclareLaunchArgument('enable_bag', default_value='true', description='Enable luggage bag detection (for Help Me Carry)'),
         DeclareLaunchArgument('host_name', default_value='Revaldo', description='Default host name for pre-registration'),
         DeclareLaunchArgument('host_photo', default_value='models/host.jpg', description='Optional photo of the host to pre-register face'),
