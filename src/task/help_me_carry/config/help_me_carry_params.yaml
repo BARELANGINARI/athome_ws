@@ -20,7 +20,7 @@ help_me_carry_node:
 
     # 2. FOLLOWING DISTANCES & TIMEOUTS
     strict_id_lock: true                      # Kunci ID target
-    follow_stop_distance: 0.85                # Jarak berhenti ikut
+    follow_stop_distance: 0.70                # Jarak berhenti ikut
     follow_start_distance: 1.00               # Jarak mulai ikut
     bag_stop_distance: 0.45                   # Jarak berhenti tas
     bag_frame_width: 672.0                    # Lebar frame tas
@@ -47,8 +47,8 @@ help_me_carry_node:
     deadband_stop: 0.12                       # Deadband saat diam
 
     # 4. LOW-PASS FILTERING & SMOOTHING
-    alpha_v: 0.35                             # Filter kecepatan linear
-    alpha_w: 0.40                             # Filter kecepatan sudut
+    alpha_v: 0.22                             # Filter kecepatan linear (diturunkan agar akselerasi/deselerasi lebih halus)
+    alpha_w: 0.25                             # Filter kecepatan sudut (diturunkan agar rotasi lebih halus)
     bearing_beta: 0.35                        # Filter arah kamera
 
     # 5. LIDAR OBSTACLE & SAFETY CORRIDOR
@@ -80,11 +80,11 @@ help_me_carry_node:
     # 8. HOMING QUEUEING & SEARCH
     homing_queue_enabled: true                # Aktifkan antri pulang
     homing_queue_search_enabled: true         # Aktifkan sapuan antrian
-    homing_queue_start_delay: 5.0             # Jeda awal pulang
-    homing_queue_distance: 1.10               # Jarak henti & koordinat slot antrian
-    homing_queue_resume_distance: 2.00        # Jarak lanjut pulang
+    homing_queue_start_delay: .0             # Jeda awal pulang
+    homing_queue_distance: 1.0               # Jarak henti & koordinat slot antrian
+    homing_queue_resume_distance: 1.8        # Jarak lanjut pulang
     homing_queue_corridor: 1.20               # Lebar koridor antrian
-    homing_queue_max_detect_dist: 2.50        # Jarak maks antrian
+    homing_queue_max_detect_dist: 2.30        # Jarak maks antrian
     homing_queue_min_persons: 2               # Jumlah min antrian
     homing_queue_inter_dist: 2.00             # Jarak antar orang
     homing_queue_crawl_speed: 0.14            # Kecepatan maju antrian

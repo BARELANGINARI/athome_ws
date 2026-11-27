@@ -272,6 +272,7 @@ private:
   int homing_retry_count_{0};
 
   int follow_prompt_count_{0};
+  bool follow_walk_slowly_spoken_{false};
   rclcpp::Time follow_prompt_next_time_{0, 0, RCL_ROS_TIME};
 
   // ----------------------------------------------------------------------------
@@ -374,6 +375,7 @@ private:
       arrived_requested_ = false;
       tracker_lost_ = false;
       follow_prompt_count_ = 0;
+      follow_walk_slowly_spoken_ = false;
       follow_prompt_next_time_ =
         now() + rclcpp::Duration::from_seconds(follow_prompt_interval_sec_);
     }
@@ -1072,7 +1074,7 @@ private:
         if (follow_requested_.exchange(false)) {
           // Ucapkan konfirmasi DULU, baru robot mulai bergerak setelah TTS selesai
           speakAsync(
-            "Okay, I am following you. Please walk slowly so that I can follow you from behind.",
+            "Okay, I am following you.",
             [this]() {
               busy_ = true;
               callTrigger(
@@ -1098,6 +1100,11 @@ private:
       // (Grace period: abaikan perintah tiba di awal agar tidak salah transisi)
       // ------------------------------------------------------------------------
       case TaskState::FOLLOW_OPERATOR:
+        if (!follow_walk_slowly_spoken_ && !speaking_.load()) {
+          follow_walk_slowly_spoken_ = true;
+          speakAsync("Please walk slowly so that I can follow you from behind.");
+          break;
+        }
         // Ingatkan operator maksimal 3 kali dengan jeda follow_prompt_interval_sec_ setelah TTS selesai
         if (follow_prompt_count_ < 3 && !speaking_.load() && now() >= follow_prompt_next_time_) {
           ++follow_prompt_count_;

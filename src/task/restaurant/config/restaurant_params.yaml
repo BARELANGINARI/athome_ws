@@ -43,7 +43,7 @@ restaurant_node:
     camera_image_width: 672.0            # Lebar piksel kamera
     align_invert_direction: false        # Balik arah putar
     barman_max_distance: 0.75            # Jarak maks barman
-    barman_search_angular_speed: 0.25    # Kecepatan cari barman
+    barman_search_angular_speed: 0.50    # Kecepatan cari barman
     barman_align_timeout_sec: 15.0       # Timeout lurus barman
 
 # =============================================================================

@@ -3357,31 +3357,24 @@ void ZedNode::processBags(const cv::Mat & bgr, const sl::Mat & cloud)
     const float aspect = static_cast<float>(det.rect.width) / static_cast<float>(std::max(1, det.rect.height));
     if (aspect > 3.5f || aspect < 0.25f) continue;
 
-    const float centroid_bagX = det.rect.x + det.rect.width * 0.5f;
-    const float centroid_bagY = det.rect.y + det.rect.height * 0.5f;
     sl::float4 point{NAN, NAN, NAN, NAN};
-
-    if (centroid_bagX >= 0 && centroid_bagX < cloud.getWidth() &&
-        centroid_bagY >= 0 && centroid_bagY < cloud.getHeight())
-    {
-      cloud.getValue(static_cast<int>(centroid_bagX), static_cast<int>(centroid_bagY), &point);
-    }
+    cv::Rect core_rect(
+      det.rect.x + static_cast<int>(det.rect.width * 0.25f),
+      det.rect.y + static_cast<int>(det.rect.height * 0.25f),
+      std::max(4, static_cast<int>(det.rect.width * 0.50f)),
+      std::max(4, static_cast<int>(det.rect.height * 0.50f)));
+    core_rect &= cv::Rect(0, 0, static_cast<int>(cloud.getWidth()), static_cast<int>(cloud.getHeight()));
 
     double x = 0.0, y = 0.0, z = 0.0;
     bool ok = false;
 
-    if (std::isfinite(point.z)) {
+    if ((core_rect.area() > 0 && zed_vision::get3dCoordinates(core_rect, cloud, point) && std::isfinite(point.z)) ||
+        (zed_vision::get3dCoordinates(det.rect, cloud, point) && std::isfinite(point.z)))
+    {
       x = (point.x + zed_vision::kOffsetX) / zed_vision::kOffsetScale;
       y = (-point.y + zed_vision::kOffsetY) / zed_vision::kOffsetScale;
       z = (point.z + zed_vision::kOffsetZ) / zed_vision::kOffsetScale;
       ok = true;
-    } else {
-      if (zed_vision::get3dCoordinates(det.rect, cloud, point) && std::isfinite(point.z)) {
-        x = (point.x + zed_vision::kOffsetX) / zed_vision::kOffsetScale;
-        y = (-point.y + zed_vision::kOffsetY) / zed_vision::kOffsetScale;
-        z = (point.z + zed_vision::kOffsetZ) / zed_vision::kOffsetScale;
-        ok = true;
-      }
     }
 
     // Filter dimensi fisik 3D: gunakan forward distance (x) yang valid.
@@ -3637,7 +3630,14 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     entry.body = &body;
     entry.id = body.id;
     entry.bbox = bbox;
-    entry.has_depth = zed_vision::get3dWithOffset(bbox, cloud, entry.x, entry.y, entry.z);
+    if (std::isfinite(body.position.x) && std::isfinite(body.position.y) && std::isfinite(body.position.z)) {
+      entry.x = (body.position.x + zed_vision::kOffsetX) / zed_vision::kOffsetScale;
+      entry.y = (-body.position.y + zed_vision::kOffsetY) / zed_vision::kOffsetScale;
+      entry.z = (body.position.z + zed_vision::kOffsetZ) / zed_vision::kOffsetScale;
+      entry.has_depth = true;
+    } else {
+      entry.has_depth = zed_vision::get3dWithOffset(bbox, cloud, entry.x, entry.y, entry.z);
+    }
     entry.range_m = (entry.has_depth && std::isfinite(entry.x) && std::isfinite(entry.y))
       ? std::hypot(entry.x, entry.y)
       : (1e6 - static_cast<double>(bbox.area()));

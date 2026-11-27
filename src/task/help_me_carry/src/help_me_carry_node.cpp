@@ -969,7 +969,7 @@ private:
         }
 
         if (front_obstacle_detected) {
-          const double flank_safe_margin = footprint_radius_ + 0.12;
+          const double flank_safe_margin = footprint_radius_ + 0.08;
           const bool left_safe = (min_flank_left >= flank_safe_margin);
           const bool right_safe = (min_flank_right >= flank_safe_margin);
           const double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
@@ -1380,7 +1380,7 @@ private:
             }
           }
 
-          const double flank_safe_margin = footprint_radius_ + 0.12;
+          const double flank_safe_margin = footprint_radius_ + 0.08;
           const bool left_safe = (min_flank_left >= flank_safe_margin);
           const bool right_safe = (min_flank_right >= flank_safe_margin);
 
@@ -1418,14 +1418,17 @@ private:
               target_vy = 0.12;
               status_str = "AVOIDING RIGHT FLANK";
             } else if (!left_safe && !right_safe) {
-              target_vy = 0.0;
+              // Lorong sempit/pintu: wall-centering proporsional menuju tengah celah
+              target_vy = std::clamp(0.50 * (min_flank_left - min_flank_right), -0.10, 0.10);
+              status_str = "CENTERING IN NARROW CORRIDOR";
             }
           }
 
-          // Proteksi sisi kiri/kanan absolut sebelum clamp akhir
-          if (target_vy > 0.0 && !left_safe) {
+          // Proteksi sisi kiri/kanan absolut sebelum clamp akhir (batas mepet ekstrem 0.28m)
+          const double hard_flank_limit = footprint_radius_ + 0.04;
+          if (target_vy > 0.0 && min_flank_left < hard_flank_limit) {
             target_vy = 0.0;
-          } else if (target_vy < 0.0 && !right_safe) {
+          } else if (target_vy < 0.0 && min_flank_right < hard_flank_limit) {
             target_vy = 0.0;
           }
 
@@ -3515,9 +3518,11 @@ private:
             const double py_b = -p.y;
             const double d = std::hypot(px_b, py_b);
 
-            // Syarat 1: Orang berada dalam jarak <= max_detect dan di depan robot (px_b > 0.10 m)
+            // Syarat 1: Orang berada dalam jarak < max_detect dan di depan robot (px_b > 0.10 m)
+            // Saat queue_engaged, gunakan homing_queue_resume_distance_ (mis. 2.0m) agar jika
+            // orang menjauh melewati batas resume_distance, robot segera keluar dari antrian dan lanjut homing.
             const double max_detect = queue_engaged
-              ? std::max(3.50, homing_queue_resume_distance_ + 1.0)
+              ? homing_queue_resume_distance_
               : std::max(2.50, homing_queue_max_detect_dist_);
             if (px_b <= 0.10 || d >= max_detect) {
               continue;
@@ -3581,20 +3586,60 @@ private:
 
         size_t best_back_idx = cands.size();
         if (!is_queue_nav_to_slot_.load() && need_lock_closest_at_slot) {
-          // Tiba di koordinat antrian: pilih & kunci orang paling dekat yang terdeteksi saat ini
-          double best_back_dist = 1e9;
-          for (size_t i = 0; i < cands.size(); ++i) {
-            if (cands[i].is_back && cands[i].dist < best_back_dist) {
-              best_back_dist = cands[i].dist;
-              best_back_idx = i;
+          // Tiba di koordinat antrian: prioritaskan /vision/person_back orang terdekat
+          double pb_x = 0.0, pb_y = 0.0;
+          bool has_pb = false;
+          {
+            std::lock_guard<std::mutex> b_lock(person_back_mutex_);
+            if (has_back_person_ && (now() - latest_back_time_).seconds() < 1.5) {
+              pb_x = latest_back_x_;
+              pb_y = -latest_back_y_;
+              const double pb_d = std::hypot(pb_x, pb_y);
+              if (pb_x > 0.10 && pb_d < homing_queue_resume_distance_) {
+                has_pb = true;
+              }
             }
           }
-          if (best_back_idx == cands.size()) {
-            double best_any_dist = 1e9;
+
+          if (has_pb) {
+            double best_pb_err = 0.85;
             for (size_t i = 0; i < cands.size(); ++i) {
-              if (cands[i].dist < best_any_dist) {
-                best_any_dist = cands[i].dist;
+              const double err = std::hypot(cands[i].px_b - pb_x, cands[i].py_b - pb_y);
+              if (err < best_pb_err) {
+                best_pb_err = err;
                 best_back_idx = i;
+              }
+            }
+            if (best_back_idx == cands.size()) {
+              // Gunakan koordinat /vision/person_back langsung jika belum ada di cands
+              closest_x = pb_x;
+              closest_y = pb_y;
+              closest_dist = std::hypot(pb_x, pb_y);
+              person_in_corridor = true;
+              need_lock_closest_at_slot = false;
+              RCLCPP_INFO(
+                get_logger(),
+                "\033[1;32m[Homing Queue]\033[0m Mengunci person_back terdekat langsung: "
+                "pos=(%.2f, %.2f), jarak=%.2fm.",
+                closest_x, closest_y, closest_dist);
+            }
+          }
+
+          if (best_back_idx == cands.size() && need_lock_closest_at_slot) {
+            double best_back_dist = 1e9;
+            for (size_t i = 0; i < cands.size(); ++i) {
+              if (cands[i].is_back && cands[i].dist < best_back_dist) {
+                best_back_dist = cands[i].dist;
+                best_back_idx = i;
+              }
+            }
+            if (best_back_idx == cands.size()) {
+              double best_any_dist = 1e9;
+              for (size_t i = 0; i < cands.size(); ++i) {
+                if (cands[i].dist < best_any_dist) {
+                  best_any_dist = cands[i].dist;
+                  best_back_idx = i;
+                }
               }
             }
           }
@@ -3602,18 +3647,16 @@ private:
             need_lock_closest_at_slot = false;
             RCLCPP_INFO(
               get_logger(),
-              "\033[1;32m[Homing Queue]\033[0m Mengunci orang paling dekat di koordinat antrian: "
+              "\033[1;32m[Homing Queue]\033[0m Mengunci person_back paling dekat di koordinat antrian: "
               "ID=%d, jarak=%.2fm, is_back=%s.",
               cands[best_back_idx].id, cands[best_back_idx].dist,
               cands[best_back_idx].is_back ? "true" : "false");
           }
         } else {
-          // Prioritas 1: cocokkan ID yang sudah dikunci saat inisiasi
+          // Prioritas 1: cocokkan ID yang sudah dikunci (harus tetap terdeteksi back dalam < resume_distance)
           if (locked_queue_id != -1) {
             for (size_t i = 0; i < cands.size(); ++i) {
-              if (cands[i].id == locked_queue_id &&
-                  (cands[i].is_back || std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by) < 1.00))
-              {
+              if (cands[i].id == locked_queue_id && cands[i].is_back) {
                 best_back_idx = i;
                 break;
               }
@@ -3625,18 +3668,6 @@ private:
             double best_ref_err = 0.90;
             for (size_t i = 0; i < cands.size(); ++i) {
               if (!cands[i].is_back) continue;
-              const double err = std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by);
-              if (err < best_ref_err) {
-                best_ref_err = err;
-                best_back_idx = i;
-              }
-            }
-          }
-
-          // Prioritas 3: toleransi jika flag is_back drop sesaat pada jarak dekat
-          if (best_back_idx == cands.size()) {
-            double best_ref_err = 0.85;
-            for (size_t i = 0; i < cands.size(); ++i) {
               const double err = std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by);
               if (err < best_ref_err) {
                 best_ref_err = err;
