@@ -3247,6 +3247,7 @@ private:
     bool           has_locked_slot = false;
     double         locked_slot_wx = 0.0;
     double         locked_slot_wy = 0.0;
+    double         locked_slot_yaw = 0.0;
     bool           has_queue_vector = false;
     double         queue_unit_wx = 0.0;
     double         queue_unit_wy = 0.0;
@@ -3770,6 +3771,7 @@ private:
           }
           if (has_locked_slot && has_locked_world) {
             const double face_yaw = std::atan2(locked_queue_wy - locked_slot_wy, locked_queue_wx - locked_slot_wx);
+            locked_slot_yaw = face_yaw;
             const double qz = std::sin(face_yaw * 0.5);
             const double qw = std::cos(face_yaw * 0.5);
             if (send_pose_goal_to_nav2(locked_slot_wx, locked_slot_wy, qz, qw, nav_promise, nav_future, "slot antrian")) {
@@ -3928,11 +3930,12 @@ private:
         double rx_w = 0.0, ry_w = 0.0, ryaw_w = 0.0;
         if (has_locked_slot && get_robot_pose_world(rx_w, ry_w, ryaw_w)) {
           const double d_slot = std::hypot(locked_slot_wx - rx_w, locked_slot_wy - ry_w);
+          const double slot_yaw_err = std::abs(normalize_angle(locked_slot_yaw - ryaw_w));
           RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 1000,
-            "\033[1;36m[Homing Queue Nav2]\033[0m Menuju koordinat slot antrian (%.2f, %.2f) | sisa jarak=%.2fm",
-            locked_slot_wx, locked_slot_wy, d_slot);
-          if (d_slot <= 0.20) {
+            "\033[1;36m[Homing Queue Nav2]\033[0m Menuju koordinat slot antrian (%.2f, %.2f) | sisa jarak=%.2fm | yaw_err=%.1f°",
+            locked_slot_wx, locked_slot_wy, d_slot, slot_yaw_err * 180.0 / M_PI);
+          if (d_slot <= 0.20 && slot_yaw_err <= 0.15) {
             cancel_homing_nav2_goal();
             is_queue_nav_to_slot_ = false;
             is_homing_queuing_ = true;
