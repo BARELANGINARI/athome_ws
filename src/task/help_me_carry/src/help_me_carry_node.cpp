@@ -4090,7 +4090,7 @@ private:
             "\033[1;36m[Homing Queue Nav2]\033[0m Menuju koordinat slot antrian (%.2f, %.2f) | sisa jarak=%.2fm | yaw_err=%.1f° | front=%.2fm",
             locked_slot_wx, locked_slot_wy, d_slot, slot_yaw_err * 180.0 / M_PI, min_front_slot_x);
 
-          if (d_slot <= 0.20 && slot_yaw_err <= 0.15) {
+          if (d_slot <= 0.10 && slot_yaw_err <= 0.15) {
             cancel_homing_nav2_goal();
             nav_goal_active_ = false;
             is_queue_nav_to_slot_ = false;
@@ -4240,7 +4240,7 @@ private:
             cmd_wz = (yaw_err > 0.0) ? 0.10 : -0.10;
           }
         }
-        if (person_in_corridor && dist_err > 0.25 && std::abs(yaw_err) < 0.55) {
+        if (person_in_corridor && dist_err > 0.10 && std::abs(yaw_err) < 0.55) {
           cmd_vx = std::clamp(0.40 * dist_err, homing_queue_crawl_speed_, 0.22);
           cmd_vx *= std::max(0.25, std::cos(yaw_err));
           queue_motion_status = "HOMING_QUEUING_FOLLOWING_FORWARD";

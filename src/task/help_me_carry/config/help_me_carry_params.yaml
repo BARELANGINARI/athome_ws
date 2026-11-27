@@ -53,7 +53,7 @@ help_me_carry_node:
 
     # 5. LIDAR OBSTACLE & SAFETY CORRIDOR
     enable_avoidance: true                    # Aktifkan hindar rintangan
-    obstacle_distance: 0.85                   # Jarak mulai perlambat
+    obstacle_distance: 0.7                   # Jarak mulai perlambat
     footprint_radius: 0.24                    # Radius bodi robot
     min_stop_x: 0.48                          # Jarak rem darurat
     corridor_width: 0.32                      # Lebar koridor aman
@@ -81,7 +81,7 @@ help_me_carry_node:
     homing_queue_enabled: true                # Aktifkan antri pulang
     homing_queue_search_enabled: true         # Aktifkan sapuan antrian
     homing_queue_start_delay: 5.0             # Jeda awal pulang
-    homing_queue_distance: 1.30               # Jarak henti & koordinat slot antrian
+    homing_queue_distance: 1.10               # Jarak henti & koordinat slot antrian
     homing_queue_resume_distance: 2.00        # Jarak lanjut pulang
     homing_queue_corridor: 1.20               # Lebar koridor antrian
     homing_queue_max_detect_dist: 2.50        # Jarak maks antrian
