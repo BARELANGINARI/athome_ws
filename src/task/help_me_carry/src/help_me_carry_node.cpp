@@ -3239,6 +3239,7 @@ private:
     bool           queue_completed = false;
     bool           has_reached_queue_stop = false;
     bool           queue_engaged = false;
+    bool           need_lock_closest_at_slot = false;
     int            locked_queue_id = -1;
     bool           has_locked_world = false;
     double         locked_queue_wx = 0.0;
@@ -3322,17 +3323,20 @@ private:
       {
         const auto res_code = nav_future.get();
         if (is_queue_nav_to_slot_.load()) {
-          // Nav2 menuju koordinat slot antrian selesai -> masuk mode antri & hadapkan ke orang terdekat
+          // Nav2 menuju koordinat slot antrian selesai -> masuk mode antri & kunci orang terdekat yang terdeteksi
           nav_goal_active_ = false;
           is_queue_nav_to_slot_ = false;
           is_homing_queuing_ = true;
+          locked_queue_id = -1;
+          has_locked_world = false;
+          need_lock_closest_at_slot = true;
           last_corridor_person_time = now();
           geometry_msgs::msg::Twist stop_twist;
           cmd_vel_pub_->publish(stop_twist);
           RCLCPP_INFO(
             get_logger(),
             "\033[1;32m[Homing Queue Nav2]\033[0m Nav2 tiba/selesai menuju koordinat slot antrian (code=%d). "
-            "Masuk mode antri & menyesuaikan arah hadap ke orang terdekat!",
+            "Masuk mode antri & mengunci orang terdekat!",
             static_cast<int>(res_code));
         } else {
           nav_result   = res_code;
@@ -3487,39 +3491,68 @@ private:
         }
 
         size_t best_back_idx = cands.size();
-        // Prioritas 1: cocokkan ID yang sudah dikunci saat inisiasi
-        if (locked_queue_id != -1) {
+        if (!is_queue_nav_to_slot_.load() && need_lock_closest_at_slot) {
+          // Tiba di koordinat antrian: pilih & kunci orang paling dekat yang terdeteksi saat ini
+          double best_back_dist = 1e9;
           for (size_t i = 0; i < cands.size(); ++i) {
-            if (cands[i].id == locked_queue_id &&
-                (cands[i].is_back || std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by) < 1.00))
-            {
-              best_back_idx = i;
-              break;
-            }
-          }
-        }
-
-        // Prioritas 2: kandidat is_back terdekat dengan posisi target terkunci sebelumnya
-        if (best_back_idx == cands.size()) {
-          double best_ref_err = 0.90;
-          for (size_t i = 0; i < cands.size(); ++i) {
-            if (!cands[i].is_back) continue;
-            const double err = std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by);
-            if (err < best_ref_err) {
-              best_ref_err = err;
+            if (cands[i].is_back && cands[i].dist < best_back_dist) {
+              best_back_dist = cands[i].dist;
               best_back_idx = i;
             }
           }
-        }
+          if (best_back_idx == cands.size()) {
+            double best_any_dist = 1e9;
+            for (size_t i = 0; i < cands.size(); ++i) {
+              if (cands[i].dist < best_any_dist) {
+                best_any_dist = cands[i].dist;
+                best_back_idx = i;
+              }
+            }
+          }
+          if (best_back_idx < cands.size()) {
+            need_lock_closest_at_slot = false;
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;32m[Homing Queue]\033[0m Mengunci orang paling dekat di koordinat antrian: "
+              "ID=%d, jarak=%.2fm, is_back=%s.",
+              cands[best_back_idx].id, cands[best_back_idx].dist,
+              cands[best_back_idx].is_back ? "true" : "false");
+          }
+        } else {
+          // Prioritas 1: cocokkan ID yang sudah dikunci saat inisiasi
+          if (locked_queue_id != -1) {
+            for (size_t i = 0; i < cands.size(); ++i) {
+              if (cands[i].id == locked_queue_id &&
+                  (cands[i].is_back || std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by) < 1.00))
+              {
+                best_back_idx = i;
+                break;
+              }
+            }
+          }
 
-        // Prioritas 3: toleransi jika flag is_back drop sesaat pada jarak dekat
-        if (best_back_idx == cands.size()) {
-          double best_ref_err = 0.85;
-          for (size_t i = 0; i < cands.size(); ++i) {
-            const double err = std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by);
-            if (err < best_ref_err) {
-              best_ref_err = err;
-              best_back_idx = i;
+          // Prioritas 2: kandidat is_back terdekat dengan posisi target terkunci sebelumnya
+          if (best_back_idx == cands.size()) {
+            double best_ref_err = 0.90;
+            for (size_t i = 0; i < cands.size(); ++i) {
+              if (!cands[i].is_back) continue;
+              const double err = std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by);
+              if (err < best_ref_err) {
+                best_ref_err = err;
+                best_back_idx = i;
+              }
+            }
+          }
+
+          // Prioritas 3: toleransi jika flag is_back drop sesaat pada jarak dekat
+          if (best_back_idx == cands.size()) {
+            double best_ref_err = 0.85;
+            for (size_t i = 0; i < cands.size(); ++i) {
+              const double err = std::hypot(cands[i].px_b - ref_bx, cands[i].py_b - ref_by);
+              if (err < best_ref_err) {
+                best_ref_err = err;
+                best_back_idx = i;
+              }
             }
           }
         }
@@ -3742,6 +3775,7 @@ private:
             if (send_pose_goal_to_nav2(locked_slot_wx, locked_slot_wy, qz, qw, nav_promise, nav_future, "slot antrian")) {
               is_queue_nav_to_slot_ = true;
               is_homing_queuing_ = false;
+              need_lock_closest_at_slot = true;
               RCLCPP_INFO(
                 get_logger(),
                 "\033[1;32m[Homing Queue Nav2]\033[0m Mengirim Nav2 menuju koordinat slot antrian (%.2f, %.2f) "
@@ -3902,12 +3936,16 @@ private:
             cancel_homing_nav2_goal();
             is_queue_nav_to_slot_ = false;
             is_homing_queuing_ = true;
+            locked_queue_id = -1;
+            has_locked_world = false;
+            need_lock_closest_at_slot = true;
+            last_corridor_person_time = now();
             geometry_msgs::msg::Twist stop_twist;
             cmd_vel_pub_->publish(stop_twist);
             RCLCPP_INFO(
               get_logger(),
               "\033[1;32m[Homing Queue Nav2]\033[0m Tiba di koordinat slot antrian (sisa=%.2fm). "
-              "Masuk mode antri & hadapkan robot ke orang terdekat!",
+              "Masuk mode antri & mengunci orang terdekat!",
               d_slot);
           }
         }
