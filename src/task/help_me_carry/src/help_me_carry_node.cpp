@@ -918,6 +918,8 @@ private:
         double right_clearance = 0.0;
         int left_count = 0;
         int right_count = 0;
+        double min_flank_left = 999.0;
+        double min_flank_right = 999.0;
 
         const int num_readings = static_cast<int>(scan->ranges.size());
         for (int i = 0; i < num_readings; ++i) {
@@ -935,6 +937,15 @@ private:
           // Filter pantulan bodi robot
           if (std::hypot(obs_x, obs_y) < footprint_radius_) {
             continue;
+          }
+
+          // Evaluasi jarak sisi samping kiri & kanan bodi robot
+          if (std::abs(obs_x) < (footprint_radius_ + 0.25)) {
+            if (obs_y > 0.0 && obs_y < min_flank_left) {
+              min_flank_left = obs_y;
+            } else if (obs_y < 0.0 && -obs_y < min_flank_right) {
+              min_flank_right = -obs_y;
+            }
           }
 
           // Deteksi obstacle di koridor depan
@@ -958,9 +969,17 @@ private:
         }
 
         if (front_obstacle_detected) {
+          const double flank_safe_margin = footprint_radius_ + 0.12;
+          const bool left_safe = (min_flank_left >= flank_safe_margin);
+          const bool right_safe = (min_flank_right >= flank_safe_margin);
           const double avg_left = (left_count > 0) ? (left_clearance / left_count) : 0.0;
           const double avg_right = (right_count > 0) ? (right_clearance / right_count) : 0.0;
-          const bool strafe_left = (avg_left >= avg_right);
+          bool strafe_left = (avg_left >= avg_right);
+          if (strafe_left && !left_safe && right_safe) {
+            strafe_left = false;
+          } else if (!strafe_left && !right_safe && left_safe) {
+            strafe_left = true;
+          }
 
           if (!is_peeking_avoidance_) {
             is_peeking_avoidance_ = true;
@@ -988,7 +1007,12 @@ private:
             const double cur_yaw = get_robot_heading();
             const double yaw_err = normalize_angle(peeking_target_yaw_ - cur_yaw);
             const double target_wz = std::clamp(1.5 * yaw_err, -max_wz_, max_wz_);
-            const double target_vy = peeking_dodge_left_ ? peeking_strafe_speed_ : -peeking_strafe_speed_;
+            double target_vy = peeking_dodge_left_ ? peeking_strafe_speed_ : -peeking_strafe_speed_;
+            if (target_vy > 0.0 && !left_safe) {
+              target_vy = 0.0;
+            } else if (target_vy < 0.0 && !right_safe) {
+              target_vy = 0.0;
+            }
             const double target_vx = 0.0; // Berhenti maju agar tidak menabrak rintangan depan
 
             current_cmd_vx_ = (1.0 - alpha_v_) * current_cmd_vx_ + alpha_v_ * target_vx;
@@ -1276,6 +1300,9 @@ private:
 
           double rep_y = 0.0;
           double min_front_x = 999.0;
+          double min_flank_left = 999.0;
+          double min_flank_right = 999.0;
+          double min_rear_dist = 999.0;
           double left_clearance = 0.0;
           double right_clearance = 0.0;
           int left_count = 0;
@@ -1302,12 +1329,34 @@ private:
               continue;
             }
 
-            // 2. Evaluate ONLY front sector in base_link (-75 deg to +75 deg)
+            // 1b. FILTER OPERATOR: Do not treat operator's legs as obstacle
+            if (std::abs(angle_base - direct_bearing) < 0.30 && std::abs(r - direct_dist) < 0.40) {
+              continue;
+            }
+
+            // 2. Evaluasi jarak sisi KIRI & KANAN bodi robot (sepanjang area samping bodi)
+            if (std::abs(obs_x) < (footprint_radius_ + 0.25)) {
+              if (obs_y > 0.0 && obs_y < min_flank_left) {
+                min_flank_left = obs_y;
+              } else if (obs_y < 0.0 && -obs_y < min_flank_right) {
+                min_flank_right = -obs_y;
+              }
+            }
+
+            // 3. Evaluasi jarak sektor BELAKANG robot
+            if (obs_x < -0.10 && std::abs(obs_y) < (corridor_width_ + 0.10)) {
+              const double d_rear = std::hypot(obs_x, obs_y);
+              if (d_rear < min_rear_dist) {
+                min_rear_dist = d_rear;
+              }
+            }
+
+            // 4. Evaluate front sector in base_link (-75 deg to +75 deg) for forward obstacle & strafe
             if (angle_base < -1.30 || angle_base > 1.30) {
               continue;
             }
 
-            // 3. Evaluate left vs right front clearance
+            // 5. Evaluate left vs right front clearance
             if (angle_base > 0.15 && angle_base < 1.20) {
               left_clearance += std::min(r, 2.0f);
               left_count++;
@@ -1316,12 +1365,7 @@ private:
               right_count++;
             }
 
-            // 4. FILTER OPERATOR: Do not treat operator's legs as obstacle
-            if (std::abs(angle_base - direct_bearing) < 0.30 && std::abs(r - direct_dist) < 0.40) {
-              continue;
-            }
-
-            // 5. Danger corridor in front of robot
+            // 6. Danger corridor in front of robot
             if (obs_x > footprint_radius_ && obs_x < obstacle_distance_ && std::abs(obs_y) < corridor_width_) {
               obstacle_detected = true;
               if (obs_x < min_front_x) {
@@ -1335,6 +1379,10 @@ private:
               rep_y -= weight * std::sin(angle_base);
             }
           }
+
+          const double flank_safe_margin = footprint_radius_ + 0.12;
+          const bool left_safe = (min_flank_left >= flank_safe_margin);
+          const bool right_safe = (min_flank_right >= flank_safe_margin);
 
           if (obstacle_detected) {
             // 1. HARD SAFETY STOP / BRAKING:
@@ -1354,8 +1402,41 @@ private:
             }
 
             double avoid_vy = std::clamp(0.22 * rep_y, -max_vy_, max_vy_);
+            if (avoid_vy > 0.0 && !left_safe) {
+              avoid_vy = right_safe ? -0.14 : 0.0;
+            } else if (avoid_vy < 0.0 && !right_safe) {
+              avoid_vy = left_safe ? 0.14 : 0.0;
+            }
             target_vy = avoid_vy;
             status_str = "AVOIDING WALL/OBSTACLE";
+          } else {
+            // Proteksi aktif sisi kiri & kanan meski jalur depan bersih (menjauh jika dinding/meja mepet di samping)
+            if (!left_safe && right_safe) {
+              target_vy = -0.12;
+              status_str = "AVOIDING LEFT FLANK";
+            } else if (!right_safe && left_safe) {
+              target_vy = 0.12;
+              status_str = "AVOIDING RIGHT FLANK";
+            } else if (!left_safe && !right_safe) {
+              target_vy = 0.0;
+            }
+          }
+
+          // Proteksi sisi kiri/kanan absolut sebelum clamp akhir
+          if (target_vy > 0.0 && !left_safe) {
+            target_vy = 0.0;
+          } else if (target_vy < 0.0 && !right_safe) {
+            target_vy = 0.0;
+          }
+
+          // Proteksi sektor belakang: jika rintangan terlalu mepet di belakang, tahan agar tidak mundur & batasi putaran tajam
+          if (min_rear_dist < (footprint_radius_ + 0.12)) {
+            if (target_vx < 0.0) {
+              target_vx = 0.0;
+            }
+            if (min_rear_dist < (footprint_radius_ + 0.08)) {
+              target_wz = std::clamp(target_wz, -0.35, 0.35);
+            }
           }
         }
       }

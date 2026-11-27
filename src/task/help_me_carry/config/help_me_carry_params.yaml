@@ -81,7 +81,7 @@ help_me_carry_node:
     homing_queue_enabled: true                # Aktifkan antri pulang
     homing_queue_search_enabled: true         # Aktifkan sapuan antrian
     homing_queue_start_delay: 5.0             # Jeda awal pulang
-    homing_queue_distance: 1.00               # Jarak henti antrian
+    homing_queue_distance: 1.20               # Jarak henti antrian
     homing_queue_resume_distance: 2.00        # Jarak lanjut pulang
     homing_queue_corridor: 1.20               # Lebar koridor antrian
     homing_queue_max_detect_dist: 2.50        # Jarak maks antrian
