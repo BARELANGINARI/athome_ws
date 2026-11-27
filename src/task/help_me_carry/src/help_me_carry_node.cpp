@@ -4028,6 +4028,18 @@ private:
             queue_slot_progress_time = now();
           }
 
+          // Cek apakah Nav2 masih aktif menggerakkan robot (agar tidak dianggap stuck saat sedang memutar/berjalan)
+          double nav_vx = 0.0, nav_vy = 0.0, nav_wz = 0.0;
+          {
+            std::lock_guard<std::mutex> lock(cmd_vel_mon_mutex_);
+            nav_vx = monitored_cmd_vel_.linear.x;
+            nav_vy = monitored_cmd_vel_.linear.y;
+            nav_wz = monitored_cmd_vel_.angular.z;
+          }
+          if (std::abs(nav_vx) > 0.03 || std::abs(nav_vy) > 0.03 || std::abs(nav_wz) > 0.08) {
+            queue_slot_progress_time = now();
+          }
+
           // Cek jarak rintangan depan via LiDAR untuk mendeteksi slot terhalang / mepet
           double min_front_slot_x = 999.0;
           if (enable_avoidance_) {
@@ -4069,9 +4081,9 @@ private:
           const double no_progress_sec = (now() - queue_slot_progress_time).seconds();
           const double nav_slot_elapsed = (now() - queue_nav_to_slot_start).seconds();
           const bool slot_blocked_or_stuck =
-            (d_slot <= 0.85 && no_progress_sec >= 2.0) ||
-            (min_front_slot_x <= (min_stop_x_ + 0.10) && no_progress_sec >= 1.5) ||
-            (nav_slot_elapsed >= 10.0);
+            (nav_slot_elapsed >= 3.0 && d_slot <= 0.65 && no_progress_sec >= 2.5) ||
+            (nav_slot_elapsed >= 3.0 && min_front_slot_x <= (min_stop_x_ + 0.05) && no_progress_sec >= 2.5) ||
+            (nav_slot_elapsed >= 15.0);
 
           RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 1000,
