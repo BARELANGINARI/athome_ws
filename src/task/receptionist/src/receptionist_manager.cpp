@@ -3010,7 +3010,7 @@ private:
         });
         if (service_busy_.load() && !look_camera_g1_announced_) {
           look_camera_g1_announced_ = true;
-          speakAsync("Please look to my camera.")
+          speakAsync("Please look to my camera.");
         }
         break;
       }
@@ -3061,7 +3061,7 @@ private:
         });
         if (service_busy_.load() && !look_camera_g2_announced_) {
           look_camera_g2_announced_ = true;
-          speakAsync("Please look to my camera.")
+          speakAsync("Please look to my camera.");
         }
         break;
       }
