@@ -2445,6 +2445,7 @@ private:
   YoloDetector chair_yolo_;
   YoloDetector hat_yolo_;
   YoloDetector glasses_yolo_;
+  float hat_conf_{0.60f};
 
   bool enable_yolo_{true};
   bool enable_bag_{true};
@@ -2556,6 +2557,7 @@ ZedNode::ZedNode()
   declare_parameter("hat_model", std::string("models/hat.onnx"));
   declare_parameter("glasses_model", std::string("models/glasses.onnx"));
   declare_parameter("accessory_conf", 0.18);
+  declare_parameter("hat_conf", 0.60);
   declare_parameter("face_model", std::string("models/arcface_w600k_r50.onnx"));
   declare_parameter("face_threshold", 0.40);
   declare_parameter("face_detect_model", std::string("models/face_detection_yunet.onnx"));
@@ -3065,19 +3067,20 @@ void ZedNode::loadModels()
 
   if (is_receptionist_) {
     const float acc_conf = static_cast<float>(get_parameter("accessory_conf").as_double());
-    auto loadOptionalAccessory = [&](YoloDetector & det, const std::string & param_name, const std::string & label) {
+    hat_conf_ = static_cast<float>(get_parameter("hat_conf").as_double());
+    auto loadOptionalAccessory = [&](YoloDetector & det, const std::string & param_name, const std::string & label, float model_conf) {
       const std::string path = resolvePath(get_parameter(param_name).as_string());
       if (!path.empty() && std::filesystem::exists(path)) {
         std::string err;
-        if (det.load(path, "", acc_conf, nms, size, label, &err)) {
-          RCLCPP_INFO(get_logger(), "Accessory YOLO (%s) loaded: %s", label.c_str(), path.c_str());
+        if (det.load(path, "", model_conf, nms, size, label, &err)) {
+          RCLCPP_INFO(get_logger(), "Accessory YOLO (%s) loaded (conf=%.2f): %s", label.c_str(), model_conf, path.c_str());
         } else {
           RCLCPP_WARN(get_logger(), "Accessory YOLO (%s) load error: %s", label.c_str(), err.c_str());
         }
       }
     };
-    loadOptionalAccessory(hat_yolo_, "hat_model", "hat");
-    loadOptionalAccessory(glasses_yolo_, "glasses_model", "glasses");
+    loadOptionalAccessory(hat_yolo_, "hat_model", "hat", hat_conf_);
+    loadOptionalAccessory(glasses_yolo_, "glasses_model", "glasses", acc_conf);
   }
 
   // Atribut tamu & pelanggan (warna pakaian, gender, face/nama) untuk task receptionist & restaurant
@@ -3733,7 +3736,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
             const float rel_cy = (det.rect.y + det.rect.height * 0.5f) / static_cast<float>(head_roi.height);
             const float rel_h  = static_cast<float>(det.rect.height) / static_cast<float>(head_roi.height);
             const float rel_w  = static_cast<float>(det.rect.width) / static_cast<float>(head_roi.width);
-            if (rel_cy > 0.55f || rel_h > 0.65f || rel_w < 0.25f) continue;
+            if (rel_cy > 0.45f || rel_h > 0.55f || rel_w < 0.25f) continue;
           }
           if (!best_det || det.score > best_det->score) {
             best_det = &det;
@@ -3779,7 +3782,9 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       auto hit_it = hit_time_map.find(person_id);
       const bool recent_hit = (hit_it != hit_time_map.end() &&
         (current_time - hit_it->second).seconds() < 1.5);
-      const bool active = (yes_cnt >= min_yes_cnt) || (yes_cnt >= 2 && recent_hit);
+      const bool active = is_hat
+        ? (yes_cnt >= min_yes_cnt)
+        : ((yes_cnt >= min_yes_cnt) || (yes_cnt >= 2 && recent_hit));
 
       if (active) {
         auto bit = bbox_cache.find(person_id);
@@ -3825,7 +3830,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         const cv::Rect head_roi = AttributeAnalyzer::computeHeadAccessoryRoi(bgr, e.bbox, kpt2d);
         entry_has_hat[i] = detectAccessory(
           hat_yolo_, hat_memory_, hat_bbox_cache, hat_hit_time, e.id, head_roi,
-          0.32f, 3, true, entry_hat_bboxes[i]);
+          hat_conf_, 4, true, entry_hat_bboxes[i]);
         entry_has_glasses[i] = detectAccessory(
           glasses_yolo_, glasses_memory_, glasses_bbox_cache, glasses_hit_time, e.id, head_roi,
           0.18f, 2, false, entry_glasses_bboxes[i]);
@@ -4069,7 +4074,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       if (!detected_pants.empty()) p.pants_color = detected_pants;
       if (!detected_hair.empty()) p.hair_color = detected_hair;
       if (!detected_gender.empty()) p.gender = detected_gender;
-      if (detected_hat) p.has_hat = true;
+      if (!p.locked) {
+        p.has_hat = detected_hat;
+      } else if (detected_hat) {
+        p.has_hat = true;
+      }
       if (detected_glasses) p.has_glasses = true;
 
       if (!feature.empty()) {
@@ -5605,13 +5614,18 @@ void ZedNode::showPreview(
       }
     }
 
-    if (enable_bag_) {
-      // Gambar garis crosshair horizontal & vertikal sinkron sebagai target center arm/gripper
+    if (enable_bag_ || is_receptionist_) {
+      // Gambar garis crosshair horizontal & vertikal sinkron sebagai target center
       const int target_cx = W / 2;
       const int target_cy = H / 2;
       cv::line(canvas, cv::Point(target_cx, 0), cv::Point(target_cx, H), cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
       cv::line(canvas, cv::Point(0, target_cy), cv::Point(W, target_cy), cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
       cv::circle(canvas, cv::Point(target_cx, target_cy), 8, cv::Scalar(0, 255, 255), 1, cv::LINE_AA);
+    }
+
+    if (enable_bag_) {
+      const int target_cx = W / 2;
+      const int target_cy = H / 2;
 
       for (size_t i = 0; i < std::min<size_t>(2, snap_bags.size()); ++i) {
         const auto & b = snap_bags[i];
@@ -5677,8 +5691,19 @@ void ZedNode::showPreview(
       cv::rectangle(canvas, r, color, 2);
       const int cx = r.x + r.width / 2;
       const int cy = r.y + r.height / 2;
-      cv::circle(canvas, cv::Point(cx, cy), 4, color, -1);
-      cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), color, 2);
+      if (!c.occupied) {
+        const int target_cx = W / 2;
+        const int target_cy = H / 2;
+        const int chair_align_tol_px = (W >= 1000) ? 10 : 5;
+        const bool is_x_aligned = (std::abs(cx - target_cx) <= chair_align_tol_px);
+        const cv::Scalar align_color = is_x_aligned ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 165, 255);
+        cv::line(canvas, cv::Point(cx, r.y), cv::Point(cx, r.y + r.height), align_color, 1, cv::LINE_AA);
+        cv::circle(canvas, cv::Point(cx, cy), 6, align_color, -1);
+        cv::line(canvas, cv::Point(cx, cy), cv::Point(target_cx, target_cy), align_color, 2, cv::LINE_AA);
+      } else {
+        cv::circle(canvas, cv::Point(cx, cy), 4, color, -1);
+        cv::line(canvas, cv::Point(cx, cy), cv::Point(W / 2, H), color, 2);
+      }
     }
 
     int hud_y = 36;

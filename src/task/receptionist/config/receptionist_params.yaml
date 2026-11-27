@@ -6,12 +6,12 @@ receptionist_node:
       y: 0.0                               # Posisi Y pintu
       yaw: 180.0                           # Sudut hadap pintu
     beverage_area:
-      x: 2.0                               # Posisi X minuman
-      y: 2.1                               # Posisi Y minuman
+      x: 2.1                               # Posisi X minuman
+      y: 2.25                               # Posisi Y minuman
       yaw: 270.0                           # Sudut hadap minuman
     living_room:
-      x: 2.5                               # Posisi X tamu
-      y: -0.25                             # Posisi Y tamu
+      x: 2.7                               # Posisi X tamu
+      y: 0.0                             # Posisi Y tamu
       yaw: -130.0                          # Sudut hadap tamu
 
     # Operational settings
@@ -37,7 +37,7 @@ receptionist_node:
     camera_width: 1280                     # Lebar piksel kamera
 
     guest_door_distance: 1.5               # Jarak tamu pintu
-    guest_door_distance_min: 1.3          # Jarak min pintu
+    guest_door_distance_min: 1.35          # Jarak min pintu
     guest_door_step_forward_speed: 0.50    # Kecepatan maks maju adjust pintu
     guest_door_step_forward_min_speed: 0.35 # Kecepatan min maju adjust pintu
     guest_door_step_forward_p_gain: 0.40   # P-gain maju adjust pintu
@@ -212,7 +212,8 @@ vision:
     hair_labels: "models/receptionist/hair_names.txt" # Label warna rambut
     hat_model: "models/receptionist/hat.onnx" # Model deteksi topi
     glasses_model: "models/receptionist/glasses.onnx" # Model deteksi kacamata
-    accessory_conf: 0.18               # Confidence threshold deteksi topi & kacamata (YOLO-World)
+    accessory_conf: 0.18               # Confidence threshold deteksi kacamata (YOLO-World)
+    hat_conf: 0.60                     # Confidence threshold deteksi topi (hindari false positive rambut)
     debug_window: true                     # Tampilkan jendela preview
     mirror: false                          # Cermin tampilan preview
     host_name: "Fahri"                     # Nama host utama

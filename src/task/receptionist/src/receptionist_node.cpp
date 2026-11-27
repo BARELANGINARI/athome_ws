@@ -41,6 +41,8 @@ struct EmptyChairTarget
   double dist{0.0};      // Meter
   std::string side;      // "left", "center", "right"
   std::string raw_info;
+  bool has_bbox{false};
+  double cx{0.0};        // Center X in pixels
 };
 
 struct PersonTarget
@@ -454,15 +456,6 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
-    srv_scan_living_room_ = create_service<std_srvs::srv::Trigger>(
-      "/receptionist/scan_living_room",
-      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
-             std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
-        handleScanLivingRoom(req, res);
-      },
-      rclcpp::ServicesQoS(),
-      srv_cb_group_);
-
     srv_clear_locks_ = create_service<std_srvs::srv::Trigger>(
       "/receptionist/clear_living_room_locks",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
@@ -560,6 +553,14 @@ public:
   }
 
 
+  static bool isSeatingLabel(const std::string & item)
+  {
+    return item.find("chair") != std::string::npos ||
+           item.find("sofa") != std::string::npos ||
+           item.find("couch") != std::string::npos ||
+           item.find("bench") != std::string::npos;
+  }
+
   void onChairDetections(const std_msgs::msg::String::SharedPtr msg)
   {
     if (!msg) return;
@@ -572,48 +573,57 @@ public:
     bool has_occupied_chair = false;
     std::string occupied_chairs_info;
 
+    bool has_any_chair = false;
+    std::string all_chairs_info;
+
     if (!msg->data.empty()) {
       std::stringstream ss(msg->data);
       std::string item;
       while (std::getline(ss, item, ';')) {
-        const bool is_seating = (item.find("chair") != std::string::npos ||
-                                 item.find("sofa") != std::string::npos ||
-                                 item.find("couch") != std::string::npos);
-        // Cek kursi/sofa kosong (empty) dengan filter jarak < chair_max_dist_ (3.0 meter)
-        if (is_seating &&
-            item.find("empty") != std::string::npos &&
-            item.find("occupied") == std::string::npos) {
-          
-          bool dist_ok = true;
-          const auto bar1 = item.find('|');
-          if (bar1 != std::string::npos) {
-            const auto bar2 = item.find('|', bar1 + 1);
-            std::string coord_str = (bar2 != std::string::npos)
-              ? item.substr(bar1 + 1, bar2 - bar1 - 1)
-              : item.substr(bar1 + 1);
-            double px = 0.0, py = 0.0, pz = 0.0;
-            if (coord_str.find("nan") == std::string::npos &&
-                std::sscanf(coord_str.c_str(), "%lf,%lf,%lf", &px, &py, &pz) == 3) {
-              if (px > 0.1) {
-                double d = std::hypot(px, py);
-                if (d >= chair_max_dist_) {
-                  dist_ok = false;
-                }
+        const bool is_seating = isSeatingLabel(item);
+        if (!is_seating) {
+          continue;
+        }
+
+        bool dist_ok = true;
+        const auto bar1 = item.find('|');
+        if (bar1 != std::string::npos) {
+          const auto bar2 = item.find('|', bar1 + 1);
+          std::string coord_str = (bar2 != std::string::npos)
+            ? item.substr(bar1 + 1, bar2 - bar1 - 1)
+            : item.substr(bar1 + 1);
+          double px = 0.0, py = 0.0, pz = 0.0;
+          if (coord_str.find("nan") == std::string::npos &&
+              std::sscanf(coord_str.c_str(), "%lf,%lf,%lf", &px, &py, &pz) == 3) {
+            if (px > 0.1) {
+              double d = std::hypot(px, py);
+              if (d >= chair_max_dist_) {
+                dist_ok = false;
               }
             }
           }
+        }
 
-          if (dist_ok) {
-            has_empty_chair = true;
-            if (!empty_chairs_info.empty()) {
-              empty_chairs_info += ";";
-            }
-            empty_chairs_info += item;
+        if (dist_ok) {
+          has_any_chair = true;
+          if (!all_chairs_info.empty()) {
+            all_chairs_info += ";";
           }
+          all_chairs_info += item;
+        }
+
+        // Cek kursi/sofa kosong (empty) dengan filter jarak < chair_max_dist_ (3.0 meter)
+        if (dist_ok &&
+            item.find("empty") != std::string::npos &&
+            item.find("occupied") == std::string::npos) {
+          has_empty_chair = true;
+          if (!empty_chairs_info.empty()) {
+            empty_chairs_info += ";";
+          }
+          empty_chairs_info += item;
         }
         // Cek orang yang sedang duduk di kursi/sofa (occupied)
-        if (is_seating &&
-            item.find("occupied") != std::string::npos) {
+        if (item.find("occupied") != std::string::npos) {
           has_occupied_chair = true;
           if (!occupied_chairs_info.empty()) {
             occupied_chairs_info += ";";
@@ -621,6 +631,11 @@ public:
           occupied_chairs_info += item;
         }
       }
+    }
+
+    if (has_any_chair) {
+      last_all_chairs_time_ = now();
+      latest_all_chairs_info_ = all_chairs_info;
     }
 
     if (has_empty_chair) {
@@ -668,7 +683,7 @@ public:
     }
   }
 
-  EmptyChairTarget parseEmptyChair(const std::string & data) const
+  EmptyChairTarget parseEmptyChair(const std::string & data, bool allow_occupied = false) const
   {
     EmptyChairTarget target;
     if (data.empty()) return target;
@@ -679,14 +694,15 @@ public:
     double best_dist = 1e9;
     double best_bbox_area = 0.0;
     bool target_has_3d = false;
+    bool target_is_empty = false;
 
     while (std::getline(ss, item, ';')) {
-      const bool is_seating = (item.find("chair") != std::string::npos ||
-                               item.find("sofa") != std::string::npos ||
-                               item.find("couch") != std::string::npos);
-      if (!is_seating ||
-          item.find("empty") == std::string::npos ||
-          item.find("occupied") != std::string::npos) {
+      if (!isSeatingLabel(item)) {
+        continue;
+      }
+      const bool item_is_empty =
+        (item.find("empty") != std::string::npos && item.find("occupied") == std::string::npos);
+      if (!allow_occupied && !item_is_empty) {
         continue;
       }
 
@@ -741,8 +757,11 @@ public:
       if (!target.valid) {
         is_better = true;
       } else if (has_3d && !target_has_3d) {
-        // Selalu prioritaskan kursi kosong dengan koordinat 3D valid
+        // Selalu prioritaskan kursi dengan koordinat 3D valid
         is_better = true;
+      } else if (allow_occupied && has_3d == target_has_3d && item_is_empty != target_is_empty) {
+        // Jika sama-sama memiliki/tidak memiliki 3D, prioritaskan kursi yang berstatus empty
+        is_better = item_is_empty;
       } else if (has_3d && target_has_3d) {
         // Jika jarak kedua kursi hampir sama (< 0.25m), pilih yang sudutnya paling dekat dengan tengah kamera;
         // jika selisih jarak cukup jauh, pilih kursi yang paling dekat (dist terkecil).
@@ -766,7 +785,10 @@ public:
         target.dist = dist;
         target.side = parts[3];
         target.raw_info = item;
+        target.has_bbox = (rw > 0 && rh > 0);
+        target.cx = rx + rw * 0.5;
         target_has_3d = has_3d;
+        target_is_empty = item_is_empty;
         best_dist = dist;
         best_bbox_area = bbox_area;
       }
@@ -1275,487 +1297,6 @@ public:
     publishStatus(res->message);
   }
 
-  void handleScanLivingRoom(
-    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
-    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
-  {
-    if (is_turning_.load() || is_navigating_.load() || is_searching_chair_.load()) {
-      res->success = false;
-      res->message = "Robot is busy";
-      return;
-    }
-    if (is_facing_person_.exchange(true)) {
-      res->success = false;
-      res->message = "Robot is already busy scanning/facing";
-      return;
-    }
-
-    clearLivingRoomLocks();
-
-    double arrival_yaw = 0.0;
-    for (int i = 0; i < 20 && !getRobotYaw(arrival_yaw); ++i) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-
-    std::string host_lower = toLower(host_name_);
-    std::string g1_lower;
-    std::string g2_lower;
-    {
-      std::lock_guard<std::mutex> lk(guest_mutex_);
-      g1_lower = toLower(guest_1_name_);
-      g2_lower = toLower(guest_2_name_);
-    }
-    const bool is_guest2_session = !g2_lower.empty();
-
-    struct LockedObs
-    {
-      bool valid{false};
-      double abs_yaw{0.0};
-      double dist{999.0};
-      int priority{-1};
-    };
-    LockedObs best_host, best_g1, best_g2, best_empty;
-    struct SeatedSlot
-    {
-      double abs_yaw;
-      double dist;
-    };
-    std::vector<SeatedSlot> seated_slots;
-
-    // Akumulasi vote per klaster sudut (abs_yaw +-0.30 rad) untuk menghitung modus label
-    struct YawClusterVote
-    {
-      double cos_sum{0.0};
-      double sin_sum{0.0};
-      double dist_sum{0.0};
-      int samples{0};
-      int host_votes{0};
-      int g1_votes{0};
-      int g2_votes{0};
-      int unnamed_guest_votes{0};
-      int seated_votes{0};
-
-      double meanYaw() const
-      {
-        return std::atan2(sin_sum, cos_sum);
-      }
-      double meanDist() const
-      {
-        return (samples > 0) ? (dist_sum / static_cast<double>(samples)) : 999.0;
-      }
-    };
-    std::vector<YawClusterVote> yaw_clusters;
-
-    enum class ClusterRoleVote { HOST_NAME, G1_NAME, G2_NAME, UNNAMED_GUEST, SEATED };
-    auto record_cluster_vote = [&](double abs_yaw, double dist, ClusterRoleVote role) {
-      YawClusterVote * matched = nullptr;
-      for (auto & c : yaw_clusters) {
-        if (std::abs(normalize_angle(c.meanYaw() - abs_yaw)) < 0.15) {
-          matched = &c;
-          break;
-        }
-      }
-      if (!matched) {
-        yaw_clusters.push_back(YawClusterVote{});
-        matched = &yaw_clusters.back();
-      }
-      matched->cos_sum += std::cos(abs_yaw);
-      matched->sin_sum += std::sin(abs_yaw);
-      matched->dist_sum += dist;
-      matched->samples++;
-      switch (role) {
-        case ClusterRoleVote::HOST_NAME:     matched->host_votes++; break;
-        case ClusterRoleVote::G1_NAME:       matched->g1_votes++; break;
-        case ClusterRoleVote::G2_NAME:       matched->g2_votes++; break;
-        case ClusterRoleVote::UNNAMED_GUEST: matched->unnamed_guest_votes++; break;
-        case ClusterRoleVote::SEATED:        matched->seated_votes++; break;
-      }
-    };
-
-    auto resolve_clusters_to_targets = [&]() {
-      best_host = LockedObs{};
-      best_g1 = LockedObs{};
-      best_g2 = LockedObs{};
-
-      int host_cluster_idx = -1;
-      int best_host_votes = 0;
-      for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
-        if (yaw_clusters[idx].host_votes > best_host_votes) {
-          best_host_votes = yaw_clusters[idx].host_votes;
-          host_cluster_idx = static_cast<int>(idx);
-        }
-      }
-      if (host_cluster_idx >= 0) {
-        const auto & c = yaw_clusters[static_cast<size_t>(host_cluster_idx)];
-        best_host = {true, c.meanYaw(), c.meanDist(), 100};
-      }
-
-      int g1_cluster_idx = -1;
-      int g2_cluster_idx = -1;
-      if (is_guest2_session) {
-        int best_g1_votes = 0;
-        for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
-          if (static_cast<int>(idx) == host_cluster_idx) continue;
-          if (yaw_clusters[idx].g1_votes > best_g1_votes) {
-            best_g1_votes = yaw_clusters[idx].g1_votes;
-            g1_cluster_idx = static_cast<int>(idx);
-          }
-        }
-        if (g1_cluster_idx >= 0) {
-          const auto & c = yaw_clusters[static_cast<size_t>(g1_cluster_idx)];
-          best_g1 = {true, c.meanYaw(), c.meanDist(), 100};
-        }
-
-        int best_g2_votes = 0;
-        for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
-          if (static_cast<int>(idx) == host_cluster_idx ||
-              static_cast<int>(idx) == g1_cluster_idx)
-          {
-            continue;
-          }
-          if (yaw_clusters[idx].g2_votes > best_g2_votes) {
-            best_g2_votes = yaw_clusters[idx].g2_votes;
-            g2_cluster_idx = static_cast<int>(idx);
-          }
-        }
-        if (g2_cluster_idx >= 0) {
-          const auto & c = yaw_clusters[static_cast<size_t>(g2_cluster_idx)];
-          best_g2 = {true, c.meanYaw(), c.meanDist(), 100};
-        }
-      }
-
-      if (!best_host.valid && (!is_guest2_session || g1_cluster_idx >= 0)) {
-        int unnamed_idx = -1;
-        int best_unnamed_votes = 0;
-        for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
-          if (static_cast<int>(idx) == g1_cluster_idx ||
-              static_cast<int>(idx) == g2_cluster_idx)
-          {
-            continue;
-          }
-          if (yaw_clusters[idx].unnamed_guest_votes > best_unnamed_votes) {
-            best_unnamed_votes = yaw_clusters[idx].unnamed_guest_votes;
-            unnamed_idx = static_cast<int>(idx);
-          }
-        }
-        if (unnamed_idx >= 0) {
-          const auto & c = yaw_clusters[static_cast<size_t>(unnamed_idx)];
-          best_host = {true, c.meanYaw(), c.meanDist(), 90};
-          host_cluster_idx = unnamed_idx;
-        }
-      }
-
-      if (!best_host.valid && (!is_guest2_session || g1_cluster_idx >= 0)) {
-        int seated_idx = -1;
-        int best_seated_votes = 0;
-        for (size_t idx = 0; idx < yaw_clusters.size(); ++idx) {
-          if (static_cast<int>(idx) == g1_cluster_idx ||
-              static_cast<int>(idx) == g2_cluster_idx)
-          {
-            continue;
-          }
-          if (yaw_clusters[idx].seated_votes > best_seated_votes) {
-            best_seated_votes = yaw_clusters[idx].seated_votes;
-            seated_idx = static_cast<int>(idx);
-          }
-        }
-        if (seated_idx >= 0) {
-          const auto & c = yaw_clusters[static_cast<size_t>(seated_idx)];
-          best_host = {true, c.meanYaw(), c.meanDist(), 70};
-        }
-      }
-    };
-
-    auto record_seated_slot = [&](double abs_yaw, double dist) {
-      for (auto & s : seated_slots) {
-        if (std::abs(normalize_angle(s.abs_yaw - abs_yaw)) < 0.15) {
-          if (dist < s.dist) {
-            s.abs_yaw = abs_yaw;
-            s.dist = dist;
-          }
-          return;
-        }
-      }
-      seated_slots.push_back({abs_yaw, dist});
-    };
-
-    auto parse_angle_3d_or_px = [&](const std::string & bbox_str, const std::string & coord_str,
-                                    double & out_angle, double & out_dist) {
-      int rx = 0, ry = 0, rw = 0, rh = 0;
-      std::sscanf(bbox_str.c_str(), "%d,%d,%d,%d", &rx, &ry, &rw, &rh);
-      double px = 0.0, py = 0.0, pz = 0.0;
-      if (coord_str.find("nan") == std::string::npos &&
-          std::sscanf(coord_str.c_str(), "%lf,%lf,%lf", &px, &py, &pz) == 3 &&
-          (px > 0.05 || std::abs(py) > 0.05))
-      {
-        const double corrected_y = -py;
-        out_dist = std::hypot(px, corrected_y);
-        out_angle = std::atan2(corrected_y, px);
-        return true;
-      }
-      if (rw > 0) {
-        int cx = rx + rw / 2;
-        double half_w = camera_width_ > 0 ? (camera_width_ / 2.0) : 336.0;
-        out_angle = -((cx - half_w) / half_w) * 0.75;
-        out_dist = 1.8;
-        return true;
-      }
-      return false;
-    };
-
-    auto sample_current_view = [&]() {
-      double cur_yaw = arrival_yaw;
-      getRobotYaw(cur_yaw);
-
-      std::string p_str;
-      bool p_ok = false;
-      {
-        std::lock_guard<std::mutex> lock(person_mutex_);
-        p_ok = person_detected_ && (now() - last_person_time_).seconds() < 1.0;
-        p_str = latest_persons_str_;
-      }
-
-      if (p_ok && !p_str.empty() && p_str != "NO_PERSON") {
-        std::stringstream ss(p_str);
-        std::string item;
-        while (std::getline(ss, item, ';')) {
-          const auto colon = item.find(':');
-          const auto bar1 = item.find('|');
-          if (colon == std::string::npos || bar1 == std::string::npos || bar1 <= colon) continue;
-          const std::string lbl_lower = toLower(item.substr(0, colon));
-          const auto bar2 = item.find('|', bar1 + 1);
-          const std::string bbox_str = item.substr(colon + 1, bar1 - colon - 1);
-          const std::string coord_str = (bar2 != std::string::npos)
-            ? item.substr(bar1 + 1, bar2 - bar1 - 1) : item.substr(bar1 + 1);
-
-          double rel_ang = 0.0, dist = 999.0;
-          if (!parse_angle_3d_or_px(bbox_str, coord_str, rel_ang, dist)) continue;
-          const double abs_yaw = normalize_angle(cur_yaw + rel_ang);
-          const bool is_seated = (lbl_lower.find("seated") != std::string::npos ||
-                                  lbl_lower.find("sitting") != std::string::npos ||
-                                  lbl_lower.find("duduk") != std::string::npos ||
-                                  item.find("sitting=1") != std::string::npos);
-
-          // GATING: Abaikan tamu yang sedang berdiri dekat robot (< 1.4m)
-          // Di Cycle 2 ini adalah Guest 2 yang sedang dipandu; bukan orang di kursi living room!
-          if (!is_seated && dist < 1.4) {
-            continue;
-          }
-
-          const bool matches_host = (!host_lower.empty() && lbl_lower.find(host_lower) != std::string::npos) ||
-                                    (lbl_lower.find("host") != std::string::npos);
-          const bool matches_g1 = (!g1_lower.empty() && lbl_lower.find(g1_lower) != std::string::npos) ||
-                                  (lbl_lower.find("guest_1") != std::string::npos || lbl_lower.find("guest 1") != std::string::npos);
-          const bool matches_g2 = (!g2_lower.empty() && lbl_lower.find(g2_lower) != std::string::npos) ||
-                                  (lbl_lower.find("guest_2") != std::string::npos || lbl_lower.find("guest 2") != std::string::npos);
-          const bool is_unnamed_guest =
-            (lbl_lower == "guest" || lbl_lower == "person" || lbl_lower == "unknown") &&
-            !matches_g1 && !matches_g2 && dist < 5.0;
-
-          if (matches_host && !matches_g1 && !matches_g2) {
-            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::HOST_NAME);
-          } else if (is_guest2_session && matches_g1 && !matches_host && !matches_g2) {
-            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::G1_NAME);
-          } else if (is_guest2_session && matches_g2 && !matches_host && !matches_g1) {
-            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::G2_NAME);
-          } else if (is_unnamed_guest && (is_seated || dist >= 1.5)) {
-            // Guest tanpa nama di area tempat duduk living room dijadikan Host sementara
-            if (is_seated) {
-              record_seated_slot(abs_yaw, dist);
-            }
-            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::UNNAMED_GUEST);
-          }
-
-          if (is_seated && dist < host_seated_max_dist_ &&
-              (is_guest2_session || (!matches_g1 && !matches_g2)))
-          {
-            record_seated_slot(abs_yaw, dist);
-            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::SEATED);
-          }
-        }
-      }
-
-      std::string empty_str, occ_str;
-      {
-        std::lock_guard<std::mutex> lock(chair_mutex_);
-        if ((now() - last_chair_time_).seconds() < 2.0) empty_str = latest_chair_info_;
-        if (occupied_chair_detected_ && (now() - last_occupied_chair_time_).seconds() < 2.0) {
-          occ_str = latest_occupied_chair_info_;
-        }
-      }
-      if (!occ_str.empty()) {
-        std::stringstream ss(occ_str);
-        std::string item;
-        while (std::getline(ss, item, ';')) {
-          if (item.find("occupied") == std::string::npos) continue;
-          const auto colon = item.find(':');
-          const auto bar1 = item.find('|');
-          if (colon == std::string::npos || bar1 == std::string::npos || bar1 <= colon) continue;
-          const auto bar2 = item.find('|', bar1 + 1);
-          double rel_ang = 0.0, dist = 999.0;
-          if (!parse_angle_3d_or_px(
-                item.substr(colon + 1, bar1 - colon - 1),
-                (bar2 != std::string::npos) ? item.substr(bar1 + 1, bar2 - bar1 - 1) : item.substr(bar1 + 1),
-                rel_ang, dist))
-          {
-            continue;
-          }
-          if (dist < host_seated_max_dist_) {
-            const double abs_yaw = normalize_angle(cur_yaw + rel_ang);
-            record_seated_slot(abs_yaw, dist);
-            record_cluster_vote(abs_yaw, dist, ClusterRoleVote::SEATED);
-          }
-        }
-      }
-      if (!empty_str.empty()) {
-        EmptyChairTarget ec = parseEmptyChair(empty_str);
-        if (ec.valid && ec.dist < chair_max_dist_) {
-          const double abs_yaw = normalize_angle(cur_yaw + ec.angle_err);
-          const bool hits_host = (best_host.valid && std::abs(normalize_angle(abs_yaw - best_host.abs_yaw)) < 0.25);
-          const bool hits_g1 = (best_g1.valid && std::abs(normalize_angle(abs_yaw - best_g1.abs_yaw)) < 0.25);
-          const bool hits_g2 = (best_g2.valid && std::abs(normalize_angle(abs_yaw - best_g2.abs_yaw)) < 0.25);
-          if (!hits_host && !hits_g1 && !hits_g2 && (!best_empty.valid || ec.dist < best_empty.dist)) {
-            best_empty = {true, abs_yaw, ec.dist, 50};
-          }
-        }
-      }
-    };
-
-    // 1. Scan diam terlebih dahulu (1.5 - 3.0 detik @ 20 Hz) untuk mencari Host, Guest 1, Guest 2, & kursi kosong
-    stopRobot();
-    rclcpp::Rate scan_rate(20.0);
-    for (int i = 0; i < 60 && rclcpp::ok() && is_facing_person_.load(); ++i) {
-      sample_current_view();
-      resolve_clusters_to_targets();
-      if (i >= 30 && best_host.valid && (!is_guest2_session || best_g1.valid) &&
-          (best_empty.valid || (is_guest2_session && best_g2.valid)))
-      {
-        break;
-      }
-      scan_rate.sleep();
-    }
-    resolve_clusters_to_targets();
-
-    // 2. Kunci posisi awal yang sudah terdeteksi saat scan diam
-    {
-      std::lock_guard<std::mutex> lock(living_room_lock_mutex_);
-      has_locked_host_yaw_ = best_host.valid;
-      locked_host_yaw_ = best_host.abs_yaw;
-      has_locked_guest1_yaw_ = best_g1.valid;
-      locked_guest1_yaw_ = best_g1.abs_yaw;
-      has_locked_guest2_yaw_ = best_g2.valid;
-      locked_guest2_yaw_ = best_g2.abs_yaw;
-      has_locked_empty_chair_yaw_ = best_empty.valid;
-      locked_empty_chair_yaw_ = best_empty.abs_yaw;
-    }
-    RCLCPP_INFO(
-      get_logger(),
-      "\033[1;36m[LIVING ROOM LOCK]\033[0m Stationary scan locked: Host=%s, Guest1=%s, Guest2=%s, EmptySeat=%s",
-      best_host.valid ? "OK" : "NO",
-      best_g1.valid ? "OK" : "NO",
-      best_g2.valid ? "OK" : "NO",
-      best_empty.valid ? "OK" : "NO");
-
-    // 3. Rotasi untuk scan ulang HANYA jika masih ada target yang belum terkunci
-    const bool need_rescan =
-      !best_host.valid || (is_guest2_session && !best_g1.valid) ||
-      (!best_empty.valid && !(is_guest2_session && best_g2.valid));
-    if (need_rescan && rclcpp::ok() && is_facing_person_.load()) {
-      for (double offset : {0.42, -0.42}) {
-        rotateToAbsYaw(normalize_angle(arrival_yaw + offset), is_facing_person_,
-          0.08, face_person_p_gain_, face_person_min_speed_, face_person_max_speed_, 3.5, "SCAN");
-        for (int i = 0; i < 10 && rclcpp::ok() && is_facing_person_.load(); ++i) {
-          sample_current_view();
-          scan_rate.sleep();
-        }
-      }
-      rotateToAbsYaw(arrival_yaw, is_facing_person_,
-        0.08, face_person_p_gain_, face_person_min_speed_, face_person_max_speed_, 3.5, "SCAN");
-      resolve_clusters_to_targets();
-    }
-
-    // 4. Resolusi eliminasi pada kunjungan Person 2 bila salah satu wajah sedang menoleh
-    if (is_guest2_session) {
-      std::sort(seated_slots.begin(), seated_slots.end(),
-        [](const SeatedSlot & a, const SeatedSlot & b) { return a.dist < b.dist; });
-      if (best_host.valid && !best_g1.valid) {
-        for (const auto & s : seated_slots) {
-          if (std::abs(normalize_angle(s.abs_yaw - best_host.abs_yaw)) >= 0.15 &&
-              (!best_g2.valid || std::abs(normalize_angle(s.abs_yaw - best_g2.abs_yaw)) >= 0.15))
-          {
-            best_g1 = {true, s.abs_yaw, s.dist, 50};
-            break;
-          }
-        }
-      } else if (best_g1.valid && !best_host.valid) {
-        for (const auto & s : seated_slots) {
-          if (std::abs(normalize_angle(s.abs_yaw - best_g1.abs_yaw)) >= 0.15 &&
-              (!best_g2.valid || std::abs(normalize_angle(s.abs_yaw - best_g2.abs_yaw)) >= 0.15))
-          {
-            best_host = {true, s.abs_yaw, s.dist, 50};
-            break;
-          }
-        }
-      } else if (!best_host.valid && !best_g1.valid && seated_slots.size() >= 2) {
-        best_host = {true, seated_slots[0].abs_yaw, seated_slots[0].dist, 40};
-        for (size_t k = 1; k < seated_slots.size(); ++k) {
-          if (std::abs(normalize_angle(seated_slots[k].abs_yaw - best_host.abs_yaw)) >= 0.15 &&
-              (!best_g2.valid || std::abs(normalize_angle(seated_slots[k].abs_yaw - best_g2.abs_yaw)) >= 0.15))
-          {
-            best_g1 = {true, seated_slots[k].abs_yaw, seated_slots[k].dist, 40};
-            break;
-          }
-        }
-      } else if (!best_host.valid && !best_g1.valid && seated_slots.size() == 1) {
-        best_host = {true, seated_slots[0].abs_yaw, seated_slots[0].dist, 40};
-      }
-
-      if (!best_g2.valid) {
-        for (const auto & s : seated_slots) {
-          const bool sep_host = !best_host.valid || std::abs(normalize_angle(s.abs_yaw - best_host.abs_yaw)) >= 0.15;
-          const bool sep_g1 = !best_g1.valid || std::abs(normalize_angle(s.abs_yaw - best_g1.abs_yaw)) >= 0.15;
-          if (sep_host && sep_g1) {
-            best_g2 = {true, s.abs_yaw, s.dist, 40};
-            break;
-          }
-        }
-      }
-    }
-
-    // Pastikan kursi kosong akhir tidak bertabrakan dengan sudut Host, Guest 1, atau Guest 2
-    if (best_empty.valid) {
-      const bool hits_host = (best_host.valid && std::abs(normalize_angle(best_empty.abs_yaw - best_host.abs_yaw)) < 0.25);
-      const bool hits_g1 = (best_g1.valid && std::abs(normalize_angle(best_empty.abs_yaw - best_g1.abs_yaw)) < 0.25);
-      const bool hits_g2 = (best_g2.valid && std::abs(normalize_angle(best_empty.abs_yaw - best_g2.abs_yaw)) < 0.25);
-      if (hits_host || hits_g1 || hits_g2) best_empty.valid = false;
-    }
-
-    {
-      std::lock_guard<std::mutex> lock(living_room_lock_mutex_);
-      has_locked_host_yaw_ = best_host.valid;
-      locked_host_yaw_ = best_host.abs_yaw;
-      has_locked_guest1_yaw_ = best_g1.valid;
-      locked_guest1_yaw_ = best_g1.abs_yaw;
-      has_locked_guest2_yaw_ = best_g2.valid;
-      locked_guest2_yaw_ = best_g2.abs_yaw;
-      has_locked_empty_chair_yaw_ = best_empty.valid;
-      locked_empty_chair_yaw_ = best_empty.abs_yaw;
-    }
-
-    stopRobot();
-    is_facing_person_ = false;
-
-    std::ostringstream oss;
-    oss << "Living room locks: Host=" << (best_host.valid ? std::to_string(best_host.abs_yaw) : "none")
-        << ", Guest1=" << (best_g1.valid ? std::to_string(best_g1.abs_yaw) : "none")
-        << ", Guest2=" << (best_g2.valid ? std::to_string(best_g2.abs_yaw) : "none")
-        << ", EmptySeat=" << (best_empty.valid ? std::to_string(best_empty.abs_yaw) : "none");
-    res->success = best_host.valid || best_g1.valid || best_empty.valid;
-    res->message = oss.str();
-    publishStatus(res->message);
-    RCLCPP_INFO(get_logger(), "\033[1;32m[LIVING ROOM LOCK]\033[0m %s", res->message.c_str());
-  }
-
   void handleSearchChair(
     const std::shared_ptr<std_srvs::srv::Trigger::Request>,
     std::shared_ptr<std_srvs::srv::Trigger::Response> res)
@@ -1788,15 +1329,17 @@ public:
       return;
     }
 
-    publishStatus("Service /search_chair called: Aligning to empty chair in view...");
+    publishStatus("Service /search_chair called: Aligning to detected chair in view...");
 
-    // Helper untuk mengambil data kursi kosong terkini yang tidak bertabrakan dengan kursi Host/Guest 1
+    // Helper untuk mengambil data kursi terdeteksi terkini (empty maupun occupied) yang tidak bertabrakan dengan kursi Host/Guest 1
     // Jika use_locked_yaw = true, kunci pilihan pada kursi yang sudutnya paling dekat dengan locked_yaw
     auto get_current_empty_chair = [this](bool use_locked_yaw = false, double locked_yaw = 0.0) -> EmptyChairTarget {
       std::string raw;
       {
         std::lock_guard<std::mutex> lock(chair_mutex_);
-        if (!latest_chair_info_.empty() && (now() - last_chair_time_).seconds() < 2.5) {
+        if (!latest_all_chairs_info_.empty() && (now() - last_all_chairs_time_).seconds() < 2.5) {
+          raw = latest_all_chairs_info_;
+        } else if (!latest_chair_info_.empty() && (now() - last_chair_time_).seconds() < 2.5) {
           raw = latest_chair_info_;
         }
       }
@@ -1805,14 +1348,14 @@ public:
       double cur_yaw = 0.0;
       const bool have_yaw = getRobotYaw(cur_yaw);
       if (raw.rfind("empty_seat:", 0) == 0 || !have_yaw) {
-        EmptyChairTarget ec = parseEmptyChair(raw);
+        EmptyChairTarget ec = parseEmptyChair(raw, true);
         if (ec.valid && have_yaw && isYawCollidingWithLockedPeople(normalize_angle(cur_yaw + ec.angle_err))) {
           ec.valid = false;
         }
         return ec;
       }
 
-      // Filter setiap kursi kosong di latest_chair_info_ terhadap posisi Host/Guest 1 yang terkunci
+      // Filter setiap kursi terdeteksi di raw terhadap posisi Host/Guest 1 yang terkunci
       std::string filtered;
       EmptyChairTarget best_locked;
       double best_yaw_diff = 0.35; // toleransi ~20 deg untuk mempertahankan kursi yang sama
@@ -1820,7 +1363,7 @@ public:
       std::string item;
       while (std::getline(ss, item, ';')) {
         if (item.empty()) continue;
-        EmptyChairTarget one = parseEmptyChair(item);
+        EmptyChairTarget one = parseEmptyChair(item, true);
         if (!one.valid) continue;
         const double abs_yaw = normalize_angle(cur_yaw + one.angle_err);
         if (isYawCollidingWithLockedPeople(abs_yaw)) continue;
@@ -1837,7 +1380,7 @@ public:
       if (use_locked_yaw && best_locked.valid) {
         return best_locked;
       }
-      return parseEmptyChair(filtered);
+      return parseEmptyChair(filtered, true);
     };
 
     auto start_time = now();
@@ -1946,18 +1489,27 @@ public:
 
     // ALIGN: Sempurnakan hadap robot agar tepat presisi di titik tengah kursi via visual feedback
     if (chair_found && current_target.valid && current_target.side != "locked") {
+      const double frame_w = camera_width_ > 0 ? static_cast<double>(camera_width_) : 1280.0;
+      const double target_cx = frame_w * 0.5;
+      const double align_tol_px = (frame_w >= 1000.0) ? 10.0 : 5.0;
+
       RCLCPP_INFO(
         get_logger(),
-        "\033[1;32m[CHAIR]\033[0m Target: %s (%.2fm, %s), visual aligning...",
-        current_target.raw_info.c_str(), current_target.dist, current_target.side.c_str());
-      publishStatus("Empty chair in view! Aligning robot heading to face chair...");
+        "\033[1;32m[CHAIR]\033[0m Target: %s (%.2fm, %s, cx=%.1f, target_cx=%.1f, tol=%.1f px), visual aligning...",
+        current_target.raw_info.c_str(), current_target.dist, current_target.side.c_str(),
+        current_target.cx, target_cx, align_tol_px);
+      publishStatus("Chair in view! Aligning robot heading to face chair...");
 
-      if (std::abs(current_target.angle_err) <= align_chair_tolerance_rad_) {
+      const bool already_aligned = current_target.has_bbox
+        ? (std::abs(current_target.cx - target_cx) <= align_tol_px)
+        : (std::abs(current_target.angle_err) <= align_chair_tolerance_rad_);
+
+      if (already_aligned) {
         aligned = true;
         RCLCPP_INFO(
           get_logger(),
-          "\033[1;32m[CHAIR]\033[0m Already aligned: err=%.2frad",
-          current_target.angle_err);
+          "\033[1;32m[CHAIR]\033[0m Already aligned: cx=%.1f (target=%.1f), err=%.2frad",
+          current_target.cx, target_cx, current_target.angle_err);
       } else {
         auto align_start_time = now();
         const double align_timeout_sec = 6.0;
@@ -1990,9 +1542,31 @@ public:
             has_locked_chair_yaw = true;
           }
 
-          const double err = current_target.angle_err;
+          bool is_aligned = false;
+          double angular_z = 0.0;
 
-          if (std::abs(err) <= align_chair_tolerance_rad_) {
+          if (current_target.has_bbox) {
+            const double err_px_x = current_target.cx - target_cx;
+            if (std::abs(err_px_x) <= align_tol_px) {
+              is_aligned = true;
+            } else {
+              // err_px_x < 0: chair on left -> rotate left (+z); err_px_x > 0: chair on right -> rotate right (-z)
+              double w = -0.0012 * err_px_x;
+              double spd = std::clamp(std::abs(w), align_chair_min_speed_, align_chair_max_speed_);
+              angular_z = (err_px_x < 0.0) ? spd : -spd;
+            }
+          } else {
+            const double err = current_target.angle_err;
+            if (std::abs(err) <= align_chair_tolerance_rad_) {
+              is_aligned = true;
+            } else {
+              double w = align_chair_p_gain_ * err;
+              double spd = std::clamp(std::abs(w), align_chair_min_speed_, align_chair_max_speed_);
+              angular_z = (err >= 0.0) ? spd : -spd;
+            }
+          }
+
+          if (is_aligned) {
             centered_frames++;
             geometry_msgs::msg::Twist stop_twist;
             cmd_vel_pub_->publish(stop_twist);
@@ -2004,19 +1578,6 @@ public:
             continue;
           } else {
             centered_frames = 0;
-          }
-
-          // P-controller untuk memutar hadap robot ke arah kursi
-          double angular_z = 0.0;
-          if (std::abs(err) > align_chair_tolerance_rad_) {
-            double w = align_chair_p_gain_ * err;
-            double spd = std::abs(w);
-            if (spd < align_chair_min_speed_) {
-              spd = align_chair_min_speed_;
-            } else if (spd > align_chair_max_speed_) {
-              spd = align_chair_max_speed_;
-            }
-            angular_z = (err >= 0.0) ? spd : -spd;
           }
 
           geometry_msgs::msg::Twist twist;
@@ -2035,39 +1596,47 @@ public:
     is_searching_chair_ = false;
 
     if (chair_found) {
+      bool is_guest1_session = false;
       bool is_guest2_session = false;
       {
         std::lock_guard<std::mutex> lk(guest_mutex_);
+        is_guest1_session = !guest_1_name_.empty();
         is_guest2_session = !guest_2_name_.empty();
       }
-      if (is_guest2_session) {
+      if (is_guest2_session || is_guest1_session) {
         double cur_yaw = 0.0;
         const bool have_yaw = getRobotYaw(cur_yaw);
-        double g2_yaw = 0.0;
-        bool g2_locked = false;
+        double locked_yaw = 0.0;
+        bool locked_ok = false;
         {
           std::lock_guard<std::mutex> lock(living_room_lock_mutex_);
           if (have_yaw) {
-            locked_guest2_yaw_ = cur_yaw;
-            has_locked_guest2_yaw_ = true;
-            g2_yaw = cur_yaw;
-            g2_locked = true;
+            locked_yaw = cur_yaw;
+            locked_ok = true;
           } else if (has_locked_empty_chair_yaw_) {
-            locked_guest2_yaw_ = locked_empty_chair_yaw_;
-            has_locked_guest2_yaw_ = true;
-            g2_yaw = locked_empty_chair_yaw_;
-            g2_locked = true;
+            locked_yaw = locked_empty_chair_yaw_;
+            locked_ok = true;
+          }
+          if (locked_ok) {
+            if (is_guest2_session) {
+              locked_guest2_yaw_ = locked_yaw;
+              has_locked_guest2_yaw_ = true;
+            } else {
+              locked_guest1_yaw_ = locked_yaw;
+              has_locked_guest1_yaw_ = true;
+            }
           }
         }
-        if (g2_locked) {
+        if (locked_ok) {
           RCLCPP_INFO(
             get_logger(),
-            "\033[1;36m[LIVING ROOM LOCK]\033[0m Locked Guest 2 seated yaw: %.2f rad (%.1f deg)",
-            g2_yaw, g2_yaw * 180.0 / M_PI);
+            "\033[1;36m[LIVING ROOM LOCK]\033[0m Locked %s seated yaw: %.2f rad (%.1f deg)",
+            is_guest2_session ? "Guest 2" : "Guest 1",
+            locked_yaw, locked_yaw * 180.0 / M_PI);
         }
       }
       res->success = true;
-      res->message = "Empty chair found and robot aligned facing chair: " + current_target.raw_info;
+      res->message = "Chair found and robot aligned facing chair: " + current_target.raw_info;
       publishStatus(res->message);
       RCLCPP_INFO(
         get_logger(),
@@ -2076,7 +1645,7 @@ public:
         aligned ? "aligned" : "approx");
     } else {
       res->success = false;
-      res->message = "No empty chair detected in current view";
+      res->message = "No chair detected in current view";
       publishStatus(res->message);
       RCLCPP_WARN(get_logger(), "\033[1;33m[CHAIR]\033[0m No empty chair detected");
     }
@@ -3007,7 +2576,6 @@ public:
 
     auto promise = std::make_shared<std::promise<rclcpp_action::ResultCode>>();
     auto future = promise->get_future();
-    auto dist_remaining = std::make_shared<std::atomic<double>>(999.0);
 
     auto send_opts = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     send_opts.goal_response_callback = [this, wp](const GoalHandleNav::SharedPtr & handle) {
@@ -3018,12 +2586,6 @@ public:
         RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Nav: Navigating to '%s'", wp.name.c_str());
       }
     };
-    send_opts.feedback_callback =
-      [dist_remaining](GoalHandleNav::SharedPtr, const std::shared_ptr<const NavigateToPose::Feedback> feedback) {
-        if (feedback) {
-          dist_remaining->store(static_cast<double>(feedback->distance_remaining));
-        }
-      };
     send_opts.result_callback = [promise](const GoalHandleNav::WrappedResult & res) {
       promise->set_value(res.code);
     };
@@ -3031,68 +2593,6 @@ public:
     auto send_future = nav_client_->async_send_goal(goal, send_opts);
     if (send_future.wait_for(std::chrono::seconds(5)) != std::future_status::ready || !send_future.get()) {
       RCLCPP_ERROR(get_logger(), "\033[1;31m[NAV]\033[0m Failed sending goal to %s", wp.name.c_str());
-      return false;
-    }
-
-    if (wp.name == "door") {
-      auto nav_start = now();
-      rclcpp::Rate poll_rate(20.0);
-      int door_guest_frames = 0;
-
-      while (rclcpp::ok()) {
-        if (future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-          const auto code = future.get();
-          if (code == rclcpp_action::ResultCode::SUCCEEDED) {
-            RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Nav: Arrived at '%s'", wp.name.c_str());
-            return true;
-          } else {
-            RCLCPP_WARN(
-              get_logger(), "\033[1;33m[NAV]\033[0m Failed: '%s' (code %d)",
-              wp.name.c_str(), static_cast<int>(code));
-            return false;
-          }
-        }
-
-        if ((now() - nav_start).seconds() > nav_timeout_sec_) {
-          RCLCPP_ERROR(
-            get_logger(), "\033[1;31m[NAV]\033[0m Timeout: '%s' (%.1fs)",
-            wp.name.c_str(), nav_timeout_sec_);
-          if (current_goal_handle_) {
-            nav_client_->async_cancel_goal(current_goal_handle_);
-          }
-          return false;
-        }
-
-        // Hanya izinkan early-stop di 1.5m jika robot sudah dekat area waypoint door (<= 1.5m),
-        // supaya saat baru berangkat dari living room tidak langsung cancel di tengah jalan.
-        PersonTarget door_t;
-        if (dist_remaining->load() <= 1.5) {
-          std::lock_guard<std::mutex> lock(person_mutex_);
-          if (person_detected_ && (now() - last_person_time_).seconds() < 0.5) {
-            door_t = parseTargetPerson(latest_persons_str_, "door_guest");
-          }
-        }
-        if (door_t.valid && door_t.dist > 0.20 && door_t.dist <= guest_door_distance_ &&
-            std::abs(door_t.angle_err) < 0.65)
-        {
-          door_guest_frames++;
-          if (door_guest_frames >= 3) {
-            RCLCPP_INFO(
-              get_logger(),
-              "\033[1;32m[NAV]\033[0m Standing guest detected ahead at %.2fm (<= %.2fm) while heading to door; stopping for scan.",
-              door_t.dist, guest_door_distance_);
-            if (current_goal_handle_) {
-              nav_client_->async_cancel_goal(current_goal_handle_);
-            }
-            stopRobot();
-            return true;
-          }
-        } else {
-          door_guest_frames = 0;
-        }
-
-        poll_rate.sleep();
-      }
       return false;
     }
 
@@ -3170,6 +2670,8 @@ private:
   bool chair_detected_{false};
   std::string latest_chair_info_;
   rclcpp::Time last_chair_time_{0, 0, RCL_ROS_TIME};
+  std::string latest_all_chairs_info_;
+  rclcpp::Time last_all_chairs_time_{0, 0, RCL_ROS_TIME};
   int consecutive_chair_frames_{0};
   bool occupied_chair_detected_{false};
   std::string latest_occupied_chair_info_;
@@ -3262,7 +2764,6 @@ private:
 
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_left_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_right_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_scan_living_room_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_clear_locks_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_reset_living_room_yaw_;
 };

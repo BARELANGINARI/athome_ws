@@ -28,7 +28,6 @@ class MockHardwareNode(Node):
         '/receptionist/approach_guest',
         '/receptionist/left',
         '/receptionist/right',
-        '/receptionist/scan_living_room',
         '/receptionist/clear_living_room_locks',
         '/receptionist/reset_living_room_yaw',
         '/search_chair',
@@ -89,7 +88,7 @@ class MockHardwareNode(Node):
         self._timer = self.create_timer(1.0 / rate_hz, self._publish_vision)
 
         self.get_logger().info(
-            'Receptionist Mock Hardware ready (18 Trigger services + 4 Vision topics).'
+            'Receptionist Mock Hardware ready (17 Trigger services + 4 Vision topics).'
         )
 
     def _register_trigger(self, srv_name: str, is_nav: bool):

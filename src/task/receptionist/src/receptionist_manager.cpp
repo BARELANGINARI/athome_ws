@@ -63,7 +63,6 @@ enum class ReceptionistState {
   CHECK_BEVERAGE,
   // Phase 3 — Living Room & Seat Offering
   NAV_TO_LIVING_ROOM,
-  SCAN_LIVING_ROOM,
   SEARCH_CHAIR,
   OFFER_SEAT,
   WAIT_GUEST_SIT,
@@ -100,7 +99,6 @@ static std::string stateToString(ReceptionistState state)
     case ReceptionistState::WAIT_CONFIRM_DRINK:      return "WAIT_CONFIRM_DRINK";
     case ReceptionistState::CHECK_BEVERAGE:          return "CHECK_BEVERAGE";
     case ReceptionistState::NAV_TO_LIVING_ROOM:      return "NAV_TO_LIVING_ROOM";
-    case ReceptionistState::SCAN_LIVING_ROOM:        return "SCAN_LIVING_ROOM";
     case ReceptionistState::SEARCH_CHAIR:            return "SEARCH_CHAIR";
     case ReceptionistState::OFFER_SEAT:              return "OFFER_SEAT";
     case ReceptionistState::WAIT_GUEST_SIT:          return "WAIT_GUEST_SIT";
@@ -282,8 +280,6 @@ public:
       "/receptionist/approach_guest", rclcpp::ServicesQoS(), callback_group_);
     rotate_left_client_ = create_client<Trigger>(
       "/receptionist/left", rclcpp::ServicesQoS(), callback_group_);
-    scan_living_room_client_ = create_client<Trigger>(
-      "/receptionist/scan_living_room", rclcpp::ServicesQoS(), callback_group_);
     clear_locks_client_ = create_client<Trigger>(
       "/receptionist/clear_living_room_locks", rclcpp::ServicesQoS(), callback_group_);
     reset_living_room_yaw_client_ = create_client<Trigger>(
@@ -378,7 +374,6 @@ private:
   std::vector<std::string> known_drinks_;
   std::vector<std::string> known_interests_;
   ReceptionistState after_return_living_room_state_{ReceptionistState::SEARCH_CHAIR};
-  ReceptionistState after_scan_living_room_state_{ReceptionistState::SEARCH_CHAIR};
   bool return_yaw_only_{false};
   bool g1_desc_announced_{false};
   bool look_camera_g1_announced_{false};
@@ -468,7 +463,6 @@ private:
   TriggerClient::SharedPtr adjust_guest_client_;
   TriggerClient::SharedPtr approach_guest_client_;
   TriggerClient::SharedPtr rotate_left_client_;
-  TriggerClient::SharedPtr scan_living_room_client_;
   TriggerClient::SharedPtr clear_locks_client_;
   TriggerClient::SharedPtr reset_living_room_yaw_client_;
 
@@ -535,7 +529,6 @@ private:
       case ReceptionistState::WAIT_GUEST:
       case ReceptionistState::SCAN_GUEST_ATTRIBUTES:
       case ReceptionistState::CHECK_BEVERAGE:
-      case ReceptionistState::SCAN_LIVING_ROOM:
       case ReceptionistState::SEARCH_CHAIR:
         return "SEARCHING";
       case ReceptionistState::ALIGN_GUEST:
@@ -622,7 +615,6 @@ private:
     search_chair_retries_ = 0;
     face_g1_retries_ = 0;
     face_g2_retries_ = 0;
-    after_scan_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
     g1_desc_announced_ = false;
     look_camera_g1_announced_ = false;
     look_camera_g2_announced_ = false;
@@ -822,17 +814,6 @@ private:
       face_guest2_client_, "/receptionist/guest2",
       [this, on_finished](bool success, const std::string & msg) {
         RCLCPP_INFO(get_logger(), "[GUEST 2] %s (%s)", success ? "OK" : "WARN", msg.c_str());
-        if (on_finished) on_finished(success, msg);
-      },
-      25.0);
-  }
-
-  void scanLivingRoom(std::function<void(bool, const std::string &)> on_finished)
-  {
-    callTrigger(
-      scan_living_room_client_, "/receptionist/scan_living_room",
-      [this, on_finished](bool success, const std::string & msg) {
-        RCLCPP_INFO(get_logger(), "[LIVING ROOM SCAN] %s (%s)", success ? "OK" : "WARN", msg.c_str());
         if (on_finished) on_finished(success, msg);
       },
       25.0);
@@ -2841,11 +2822,10 @@ private:
           face_g2_retries_ = 0;
           look_camera_g1_announced_ = false;
           look_camera_g2_announced_ = false;
-          // Langsung cari kursi setelah scan ruang tamu (intro baru setelah kedua tamu duduk)
-          after_scan_living_room_state_ = ReceptionistState::SEARCH_CHAIR;
+          // Langsung cari kursi setelah tiba di ruang tamu
           transitionTo(
-            ReceptionistState::SCAN_LIVING_ROOM,
-            "Arrived at living_room; scanning room before offering seat");
+            ReceptionistState::SEARCH_CHAIR,
+            "Arrived at living_room; searching chair");
         });
         // Optional Goal 2: ucapkan ajakan + deskripsi Guest 1 secara paralel sejak navigasi dimulai
         if (service_busy_.load()) {
@@ -2854,19 +2834,6 @@ private:
           }
           speakAsync(escort_msg);
         }
-        break;
-      }
-
-      case ReceptionistState::SCAN_LIVING_ROOM: {
-        if ((now() - state_enter_time_).seconds() < vision_initial_settle_sec_) {
-          return;
-        }
-        const ReceptionistState next_after_scan = after_scan_living_room_state_;
-        scanLivingRoom([this, next_after_scan](bool /*success*/, const std::string & /*msg*/) {
-          transitionTo(
-            next_after_scan,
-            "Living room scan finished -> " + stateToString(next_after_scan));
-        });
         break;
       }
 
@@ -2913,25 +2880,20 @@ private:
             "SUCCESS: Guest " + std::to_string(guest_idx_) + " (" +
             cg_name + ") occupied the indicated chair.");
 
-          const int finished_guest_idx = guest_idx_;
-          clearLivingRoomLocks([this, finished_guest_idx]() {
-            if (finished_guest_idx == 1) {
-              // Guest 1 duduk -> langsung jemput Guest 2 (hemat waktu < 6 menit)
-              initCurrentGuest(2);
-              transitionTo(
-                ReceptionistState::NAV_TO_DOOR,
-                "Guest 1 seated; returning to door for Guest 2");
-            } else {
-              // Guest 2 duduk -> reset yaw & scan ulang living room (antisipasi switching places)
-              // sebelum memperkenalkan Guest 1 <-> Guest 2
-              after_scan_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_G2;
-              after_return_living_room_state_ = ReceptionistState::SCAN_LIVING_ROOM;
-              return_yaw_only_ = true;
-              transitionTo(
-                ReceptionistState::RETURN_TO_LIVING_ROOM,
-                "Both guests seated; resetting yaw to rescan room before introductions");
-            }
-          });
+          // Pertahankan yaw kursi yang sudah dikunci oleh /search_chair (guest_1 & guest_2)
+          // hingga fase perkenalan (INTRODUCE_G1_TO_G2 / INTRODUCE_G2_TO_G1) selesai
+          if (guest_idx_ == 1) {
+            initCurrentGuest(2);
+            transitionTo(
+              ReceptionistState::NAV_TO_DOOR,
+              "Guest 1 seated; returning to door for Guest 2");
+          } else {
+            after_return_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_G2;
+            return_yaw_only_ = true;
+            transitionTo(
+              ReceptionistState::RETURN_TO_LIVING_ROOM,
+              "Both guests seated; resetting yaw before introductions");
+          }
         } else {
           RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 3000,

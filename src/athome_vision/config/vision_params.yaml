@@ -30,6 +30,7 @@ vision:
     hat_model: "models/receptionist/hat.onnx"
     glasses_model: "models/receptionist/glasses.onnx"
     accessory_conf: 0.18
+    hat_conf: 0.60
     face_model: "models/receptionist/arcface_w600k_r50.onnx"
     face_threshold: 0.40
     botol_model: "models/receptionist/water.onnx"
