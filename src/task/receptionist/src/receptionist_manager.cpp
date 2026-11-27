@@ -2975,6 +2975,10 @@ private:
           }
         }
         // Melakukan scaning untuk mencari tamu pertama
+        if (!look_camera_g1_announced_) {
+          look_camera_g1_announced_ = true;
+          speakAsync("Please look to my camera.");
+        }
         faceGuest1([this](bool success, const std::string & /*msg*/) {
           if (!success && face_g1_retries_ < 1) {
             face_g1_retries_++;
@@ -3008,10 +3012,6 @@ private:
             transitionTo(ReceptionistState::INTRODUCE_G2_TO_G1, "Introduced Guest 2 to Guest 1");
           });
         });
-        if (service_busy_.load() && !look_camera_g1_announced_) {
-          look_camera_g1_announced_ = true;
-          speakAsync("Please look to my camera.");
-        }
         break;
       }
 
@@ -3026,6 +3026,10 @@ private:
           }
         }
 
+        if (!look_camera_g2_announced_) {
+          look_camera_g2_announced_ = true;
+          speakAsync("Please look to my camera.");
+        }
         faceGuest2([this](bool success, const std::string & /*msg*/) {
           if (!success && face_g2_retries_ < 1) {
             face_g2_retries_++;
@@ -3059,10 +3063,6 @@ private:
             transitionTo(ReceptionistState::EVALUATE_SIMILARITY, "Introduced Guest 1 to Guest 2");
           });
         });
-        if (service_busy_.load() && !look_camera_g2_announced_) {
-          look_camera_g2_announced_ = true;
-          speakAsync("Please look to my camera.");
-        }
         break;
       }
 
