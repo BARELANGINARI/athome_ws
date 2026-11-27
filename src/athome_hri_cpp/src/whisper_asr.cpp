@@ -4,15 +4,67 @@
 #include <cctype>
 #include <chrono>
 #include <fstream>
+#include <initializer_list>
+#include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 
 #ifdef HAVE_WHISPER_CPP
+#include <ggml-backend.h>
 #include <whisper.h>
 #endif
 
 namespace athome_hri_cpp
 {
+
+namespace
+{
+#ifdef HAVE_WHISPER_CPP
+struct WhisperLogCapture
+{
+  bool capturing{false};
+  std::string buffer;
+};
+
+std::mutex g_whisper_log_mutex;
+WhisperLogCapture g_whisper_log_capture;
+
+void whisperLogCallback(enum ggml_log_level level, const char * text, void * /*user_data*/)
+{
+  if (text == nullptr) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_whisper_log_mutex);
+    if (g_whisper_log_capture.capturing) {
+      g_whisper_log_capture.buffer.append(text);
+    }
+  }
+  if (level == GGML_LOG_LEVEL_ERROR || level == GGML_LOG_LEVEL_WARN) {
+    std::cerr << "[whisper.cpp] " << text;
+  }
+}
+
+std::string toLowerCopy(std::string s)
+{
+  std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return s;
+}
+
+bool containsAny(const std::string & haystack, std::initializer_list<const char *> needles)
+{
+  for (const char * needle : needles) {
+    if (haystack.find(needle) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+#endif
+}  // namespace
 
 struct WhisperAsr::Impl
 {
@@ -21,6 +73,10 @@ struct WhisperAsr::Impl
 #endif
   bool ready{false};
   bool using_gpu{false};
+  bool cuda_compiled{false};
+  bool flash_attn_active{false};
+  std::string system_info;
+  std::string backend_summary{"uninitialized"};
 };
 
 WhisperAsr::WhisperAsr(const WhisperAsrConfig & config)
@@ -31,34 +87,161 @@ WhisperAsr::WhisperAsr(const WhisperAsrConfig & config)
 #ifdef HAVE_WHISPER_CPP
   if (config_.model_path.empty()) {
     std::cerr << "[WhisperAsr] Empty model_path.\n";
+    impl_->backend_summary = "not ready (empty model_path)";
     return;
   }
   std::ifstream ifs(config_.model_path, std::ios::binary);
   if (!ifs.good()) {
     std::cerr << "[WhisperAsr] Model file not found: " << config_.model_path << "\n";
+    impl_->backend_summary = "not ready (model file not found)";
     return;
   }
 
+  static std::once_flag backend_init_flag;
+  std::call_once(backend_init_flag, []() {
+    ggml_backend_load_all();
+  });
+
+  const char * sys_info_cstr = whisper_print_system_info();
+  impl_->system_info = (sys_info_cstr != nullptr) ? sys_info_cstr : "";
+
+  const ggml_backend_reg_t cuda_reg = ggml_backend_reg_by_name("CUDA");
+  ggml_backend_dev_t gpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+#ifdef HAVE_WHISPER_CUDA
+  const bool cmake_cuda = true;
+#else
+  const bool cmake_cuda = false;
+#endif
+  impl_->cuda_compiled =
+    cmake_cuda || (cuda_reg != nullptr) || (impl_->system_info.find("CUDA") != std::string::npos);
+
+  const bool gpu_backend_present = (cuda_reg != nullptr) && (gpu_dev != nullptr);
+  std::string gpu_label = "none";
+  size_t vram_free_before = 0;
+  size_t vram_total = 0;
+  if (gpu_dev != nullptr) {
+    const char * dname = ggml_backend_dev_name(gpu_dev);
+    const char * ddesc = ggml_backend_dev_description(gpu_dev);
+    gpu_label = std::string(dname ? dname : "GPU") + " (" + std::string(ddesc ? ddesc : "unknown") + ")";
+    ggml_backend_dev_memory(gpu_dev, &vram_free_before, &vram_total);
+  }
+
+  std::string fallback_reason;
   whisper_context_params cparams = whisper_context_default_params();
-  cparams.use_gpu = config_.use_gpu;
-  impl_->ctx = whisper_init_from_file_with_params(config_.model_path.c_str(), cparams);
-  if (impl_->ctx != nullptr) {
-    impl_->ready = true;
-    impl_->using_gpu = config_.use_gpu;
+  if (config_.use_gpu && !gpu_backend_present) {
+    if (!impl_->cuda_compiled || cuda_reg == nullptr) {
+      fallback_reason = "whisper.cpp compiled without GGML_CUDA=1 (no CUDA backend registered)";
+    } else {
+      fallback_reason = "no CUDA GPU device detected by ggml";
+    }
+    std::cerr << "[WhisperAsr] WARNING: whisper_use_gpu=true requested, but "
+              << fallback_reason << ". Running on CPU (threads=" << config_.n_threads << ").\n";
+    cparams.use_gpu = false;
+    cparams.flash_attn = false;
+  } else {
+    cparams.use_gpu = config_.use_gpu;
+    cparams.flash_attn = config_.use_gpu && config_.flash_attn;
+  }
+
+  auto initWithCapturedLogs = [&](const whisper_context_params & params, std::string & out_logs) {
+    {
+      std::lock_guard<std::mutex> lock(g_whisper_log_mutex);
+      g_whisper_log_capture.buffer.clear();
+      g_whisper_log_capture.capturing = true;
+    }
+    whisper_log_set(whisperLogCallback, nullptr);
+    whisper_context * ctx = whisper_init_from_file_with_params(config_.model_path.c_str(), params);
+    {
+      std::lock_guard<std::mutex> lock(g_whisper_log_mutex);
+      g_whisper_log_capture.capturing = false;
+      out_logs = g_whisper_log_capture.buffer;
+    }
+    return ctx;
+  };
+
+  std::string init_logs;
+  impl_->ctx = initWithCapturedLogs(cparams, init_logs);
+
+  if (impl_->ctx == nullptr && cparams.use_gpu && cparams.flash_attn) {
+    std::cerr << "[WhisperAsr] GPU init with flash_attn=true failed, retrying with flash_attn=false...\n";
+    cparams.flash_attn = false;
+    impl_->ctx = initWithCapturedLogs(cparams, init_logs);
+  }
+
+  if (impl_->ctx == nullptr && cparams.use_gpu) {
+    std::cerr << "[WhisperAsr] GPU init failed, retrying on CPU...\n";
+    fallback_reason = "whisper_init_from_file_with_params() failed with use_gpu=true";
+    cparams.use_gpu = false;
+    cparams.flash_attn = false;
+    impl_->ctx = initWithCapturedLogs(cparams, init_logs);
+  }
+
+  if (impl_->ctx == nullptr) {
+    impl_->backend_summary = "init failed";
     return;
   }
 
-  if (config_.use_gpu) {
-    std::cerr << "[WhisperAsr] GPU init failed, retrying on CPU...\n";
-    cparams.use_gpu = false;
-    impl_->ctx = whisper_init_from_file_with_params(config_.model_path.c_str(), cparams);
-    if (impl_->ctx != nullptr) {
-      impl_->ready = true;
+  impl_->ready = true;
+  if (cparams.use_gpu && gpu_dev != nullptr) {
+    size_t vram_free_after = 0;
+    ggml_backend_dev_memory(gpu_dev, &vram_free_after, &vram_total);
+    const double free_before_mb = static_cast<double>(vram_free_before) / 1048576.0;
+    const double free_after_mb = static_cast<double>(vram_free_after) / 1048576.0;
+    const double total_mb = static_cast<double>(vram_total) / 1048576.0;
+    const double delta_mb = (vram_free_before > vram_free_after)
+      ? static_cast<double>(vram_free_before - vram_free_after) / 1048576.0
+      : 0.0;
+
+    const std::string lower_logs = toLowerCopy(init_logs);
+    const bool saw_gpu_failure = containsAny(lower_logs, {
+      "no gpu found",
+      "failed to initialize",
+      "failed to allocate",
+      "falling back to cpu",
+      "using cpu backend",
+    });
+    const bool saw_cuda_backend =
+      (lower_logs.find("whisper_backend_init_gpu: using ") != std::string::npos) &&
+      (lower_logs.find("whisper_backend_init_gpu: using cpu") == std::string::npos);
+
+    const bool gpu_verified = !saw_gpu_failure && (saw_cuda_backend || delta_mb >= 50.0);
+    if (gpu_verified) {
+      impl_->using_gpu = true;
+      impl_->flash_attn_active = cparams.flash_attn;
+      std::ostringstream oss;
+      oss << std::fixed << std::setprecision(0)
+          << gpu_label << ", flash_attn=" << (impl_->flash_attn_active ? "ON" : "OFF")
+          << ", VRAM free " << free_after_mb << "/" << total_mb << " MB"
+          << " (model ~" << delta_mb << " MB)";
+      impl_->backend_summary = oss.str();
+    } else {
       impl_->using_gpu = false;
+      impl_->flash_attn_active = false;
+      std::ostringstream rsn;
+      rsn << std::fixed << std::setprecision(0)
+          << "whisper.cpp silently fell back to CPU (VRAM free "
+          << free_before_mb << "->" << free_after_mb << "/" << total_mb << " MB)";
+      fallback_reason = rsn.str();
+      std::cerr << "[WhisperAsr] WARNING: " << fallback_reason << "\n";
     }
+  } else {
+    impl_->using_gpu = false;
+    impl_->flash_attn_active = false;
+  }
+
+  if (!impl_->using_gpu) {
+    std::ostringstream oss;
+    oss << "CPU (threads=" << std::max(1, config_.n_threads)
+        << ", cuda_compiled=" << (impl_->cuda_compiled ? "true" : "false");
+    if (!fallback_reason.empty()) {
+      oss << "; " << fallback_reason;
+    }
+    oss << ")";
+    impl_->backend_summary = oss.str();
   }
 #else
   std::cerr << "[WhisperAsr] Built without whisper.cpp (HAVE_WHISPER_CPP not defined).\n";
+  impl_->backend_summary = "unavailable (HAVE_WHISPER_CPP not defined)";
 #endif
 }
 
@@ -80,6 +263,26 @@ bool WhisperAsr::isReady() const
 bool WhisperAsr::usingGpu() const
 {
   return impl_->using_gpu;
+}
+
+bool WhisperAsr::cudaCompiled() const
+{
+  return impl_->cuda_compiled;
+}
+
+bool WhisperAsr::flashAttnActive() const
+{
+  return impl_->flash_attn_active;
+}
+
+std::string WhisperAsr::backendSummary() const
+{
+  return impl_->backend_summary;
+}
+
+std::string WhisperAsr::systemInfo() const
+{
+  return impl_->system_info;
 }
 
 std::string WhisperAsr::trim(const std::string & s)
@@ -270,9 +473,14 @@ AsrResult WhisperAsr::transcribe(const std::vector<float> & audio_16k)
   wparams.suppress_nst = true;
   wparams.initial_prompt = config_.initial_prompt.empty() ? nullptr : config_.initial_prompt.c_str();
 
+  whisper_reset_timings(impl_->ctx);
   if (whisper_full(impl_->ctx, wparams, audio_16k.data(), static_cast<int>(audio_16k.size())) != 0) {
     res.reject_reason = "whisper_error";
     return res;
+  }
+  if (const whisper_timings * tm = whisper_get_timings(impl_->ctx)) {
+    res.encode_ms = static_cast<double>(tm->encode_ms);
+    res.decode_ms = static_cast<double>(tm->decode_ms);
   }
 
   std::ostringstream joined;

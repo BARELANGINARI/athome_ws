@@ -13,6 +13,7 @@ struct WhisperAsrConfig
 {
   std::string model_path;
   bool use_gpu{true};
+  bool flash_attn{true};
   int n_threads{2};
   std::string language{"en"};
   int beam_size{2};
@@ -35,6 +36,8 @@ struct AsrResult
   double latency_sec{0.0};
   double audio_duration_sec{0.0};
   double rtf{0.0};
+  double encode_ms{0.0};
+  double decode_ms{0.0};
   double avg_logprob{0.0};
   double no_speech_prob{0.0};
   bool has_scores{false};
@@ -55,6 +58,10 @@ public:
 
   bool isReady() const;
   bool usingGpu() const;
+  bool cudaCompiled() const;
+  bool flashAttnActive() const;
+  std::string backendSummary() const;
+  std::string systemInfo() const;
 
   void updateRuntimeConfig(
     const std::string & language,

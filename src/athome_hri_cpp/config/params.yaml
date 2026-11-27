@@ -27,7 +27,7 @@ stt_engine:
     adaptive_noise_alpha_up: 0.10         # Kecepatan adaptasi noise floor naik saat background makin ramai (0-1)
     adaptive_noise_alpha_down: 0.15       # Kecepatan adaptasi noise floor turun saat ruangan kembali tenang (0-1)
     pre_roll_frames: 15                  # 15 x 30 ms = 450 ms pre-roll agar awal kata tidak terpotong
-    hangover_frames: 18                  # 22 x 30 ms = 660 ms jeda hening agar jeda kalimat carrier tidak terpotong
+    hangover_frames: 22                  # 22 x 30 ms = 660 ms jeda hening agar jeda kalimat carrier tidak terpotong
     min_speech_frames: 5                  # 5 x 30 ms = 150 ms durasi minimal ucapan valid (kata singkat seperti Yes/No)
     max_speech_frames: 233                 # 233 x 30 ms = 7.0 detik batas maks segmen (cegah macet saat bising)
 
@@ -55,6 +55,7 @@ stt_engine:
     # -------------------------------------------------------------------------
     whisper_model_path: "models/ggml-large-v3-turbo-q5_0.bin"  # Path model GGUF whisper.cpp (absolut atau relatif share dir)
     whisper_use_gpu: true                 # true = pakai GPU CUDA RTX 2060; false = CPU
+    whisper_flash_attn: true              # true = aktifkan Flash Attention CUDA (lebih cepat & hemat ~150 MB VRAM)
     whisper_n_threads: 2                  # Batasi thread CPU (2) agar Nav2 tidak mengalami starvation di NUC 4-core
     stt_language: "en"                    # Kode bahasa ("en", "id", dll)
     stt_beam_size: 2                   # Beam width decoding (1-5)

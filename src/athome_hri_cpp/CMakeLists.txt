@@ -59,6 +59,15 @@ if(WHISPER_INCLUDE_DIR AND WHISPER_LIBRARY)
     endif()
   endforeach()
   message(STATUS "[athome_hri_cpp] whisper.cpp FOUND: ${WHISPER_LIBRARY}")
+  if(_FOUND_ggml-cuda)
+    set(HAVE_WHISPER_CUDA TRUE)
+    message(STATUS "[athome_hri_cpp] whisper.cpp CUDA backend FOUND: ${_FOUND_ggml-cuda}")
+  else()
+    set(HAVE_WHISPER_CUDA FALSE)
+    message(WARNING
+      "[athome_hri_cpp] libggml-cuda NOT found in ${WHISPER_LIBDIR}! "
+      "whisper.cpp appears compiled without GGML_CUDA=1 (CPU-only).")
+  endif()
 else()
   message(WARNING
     "[athome_hri_cpp] whisper.cpp NOT found (WHISPER_CPP_ROOT). "
@@ -147,6 +156,9 @@ set(_EXTRA_RPATHS "")
 
 if(HAVE_WHISPER_CPP)
   target_compile_definitions(stt_engine_node PRIVATE HAVE_WHISPER_CPP=1)
+  if(HAVE_WHISPER_CUDA)
+    target_compile_definitions(stt_engine_node PRIVATE HAVE_WHISPER_CUDA=1)
+  endif()
   target_include_directories(stt_engine_node PRIVATE ${WHISPER_INCLUDE_DIR})
   target_link_libraries(stt_engine_node
     ${WHISPER_LIBRARY}

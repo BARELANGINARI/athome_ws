@@ -140,6 +140,7 @@ public:
     WhisperAsrConfig asr_cfg;
     asr_cfg.model_path = resolveModelPath(requireYamlParameter<std::string>("whisper_model_path"));
     asr_cfg.use_gpu = requireYamlParameter<bool>("whisper_use_gpu");
+    asr_cfg.flash_attn = declare_parameter<bool>("whisper_flash_attn", true);
     asr_cfg.n_threads = static_cast<int>(requireYamlParameter<int64_t>("whisper_n_threads"));
     asr_cfg.language = requireYamlParameter<std::string>("stt_language");
     asr_cfg.beam_size = static_cast<int>(requireYamlParameter<int64_t>("stt_beam_size"));
@@ -184,10 +185,16 @@ public:
     asr_ = std::make_unique<WhisperAsr>(asr_cfg);
     if (asr_->isReady()) {
       RCLCPP_INFO(
-        get_logger(), "%s\n  Whisper.cpp Ready (%s, threads=%d)",
+        get_logger(), "%s\n  Whisper.cpp Ready: %s",
         task_header_.c_str(),
-        asr_->usingGpu() ? "CUDA" : "CPU",
-        asr_cfg.n_threads);
+        asr_->backendSummary().c_str());
+      if (asr_cfg.use_gpu && !asr_->usingGpu()) {
+        RCLCPP_WARN(
+          get_logger(),
+          "%s\n  whisper_use_gpu=true, namun inferensi berjalan di CPU! (%s)",
+          task_header_.c_str(),
+          asr_->backendSummary().c_str());
+      }
     } else {
       RCLCPP_WARN(
         get_logger(), "%s\n  Whisper.cpp NOT ready (check whisper_model_path / scripts/setup_deps.sh)",
@@ -463,8 +470,10 @@ private:
           res.audio_duration_sec, res.latency_sec, res.rtf,
           res.has_scores, res.avg_logprob, res.no_speech_prob);
         RCLCPP_INFO(
-          get_logger(), "%s\n  STT: \"%s\" (RTF: %.3f | Latency: %.2fs | Audio: %.2fs)",
-          task_header_.c_str(), res.text.c_str(), res.rtf, res.latency_sec, res.audio_duration_sec);
+          get_logger(),
+          "%s\n  STT: \"%s\" (RTF: %.3f | Latency: %.2fs | enc: %.0fms dec: %.0fms | Audio: %.2fs)",
+          task_header_.c_str(), res.text.c_str(), res.rtf, res.latency_sec,
+          res.encode_ms, res.decode_ms, res.audio_duration_sec);
       } else {
         const std::string raw_dbg = !res.raw_text.empty() ? res.raw_text : res.rejected_raw;
         publishSttEvent(
