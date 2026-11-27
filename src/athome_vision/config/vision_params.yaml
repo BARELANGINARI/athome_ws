@@ -3,7 +3,7 @@ vision:
     task: "all"
     camera_fps: 30.0
     camera_resolution: "vga"
-    depth_mode: "performance"
+    depth_mode: "quality"
     publish_yaw: true
     yaw_360: true
     depth_minimum_distance: 30.0
@@ -14,7 +14,7 @@ vision:
     yolo_model: "models/help_me_carry/paper_bag.onnx"
     yolo_classes: "models/help_me_carry/paper_bag_classes.txt"
     yolo_conf: 0.35
-    bag_conf: 0.35
+    bag_conf: 0.22
     yolo_nms: 0.45
     yolo_size: 640
     yolo_stride: 3

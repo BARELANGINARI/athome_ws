@@ -2772,10 +2772,6 @@ ZedNode::ZedNode()
     init.depth_mode = sl::DEPTH_MODE::ULTRA;
   } else if (dm == "quality") {
     init.depth_mode = sl::DEPTH_MODE::QUALITY;
-  } else if (dm == "neural") {
-    init.depth_mode = sl::DEPTH_MODE::NEURAL;
-  } else if (dm == "neural_light") {
-    init.depth_mode = sl::DEPTH_MODE::NEURAL_LIGHT;
   } else {
     init.depth_mode = sl::DEPTH_MODE::PERFORMANCE;
   }
@@ -3883,8 +3879,12 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       for (size_t i = 0; i < entries.size(); ++i) {
         const auto & cand = entries[i];
         if (!cand.has_depth) continue;
+        const bool is_same_zed_id = (op_mem_.last_zed_id >= 0 && cand.id == op_mem_.last_zed_id);
+        const double effective_max_dist = is_same_zed_id
+          ? max_match_dist
+          : (0.55 + 0.35 * std::min(dt, 1.0));
         const double dist_diff = std::hypot(cand.x - pred_x, cand.y - pred_y);
-        if (dist_diff > max_match_dist) continue;
+        if (dist_diff > effective_max_dist) continue;
         double color_penalty = 0.0;
         if (op_mem_.has_color) {
           const cv::Scalar cand_hsv = zed_vision::extractTorsoColor(bgr, cand.bbox);
@@ -3892,12 +3892,15 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
             std::abs(cand_hsv[0] - op_mem_.torso_hsv[0]),
             180.0 - std::abs(cand_hsv[0] - op_mem_.torso_hsv[0]));
           const double ds = std::abs(cand_hsv[1] - op_mem_.torso_hsv[1]);
-          color_penalty = (dh / 90.0) * 0.8 + (ds / 255.0) * 0.5;
-          if (entries.size() > 1 && cand.id != op_mem_.last_zed_id && color_penalty > 0.65 && dist_diff > 0.45) {
+          const double dv = std::abs(cand_hsv[2] - op_mem_.torso_hsv[2]);
+          color_penalty = (dh / 90.0) * 0.8 + (ds / 255.0) * 0.5 + (dv / 255.0) * 0.4;
+          // Jika ZED ID berubah (misal orang lain lewat menutupi operator), tolak jika warna baju berbeda
+          // meskipun hanya ada 1 orang yang terlihat kamera.
+          if (!is_same_zed_id && color_penalty > 0.50) {
             continue;
           }
         }
-        const double id_bonus = (op_mem_.last_zed_id >= 0 && cand.id == op_mem_.last_zed_id) ? -0.35 : 0.0;
+        const double id_bonus = is_same_zed_id ? -0.35 : 0.0;
         const double cost = dist_diff + color_penalty + id_bonus;
         if (cost < best_cost) {
           best_cost = cost;
@@ -3930,6 +3933,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   if (op_match_idx >= 0 && op_match_idx < static_cast<int>(entries.size())) {
     if (op_match_idx > 0) std::swap(entries[0], entries[static_cast<size_t>(op_match_idx)]);
     auto & op = entries.front();
+    const bool id_switched = (op_mem_.last_zed_id >= 0 && op.id != op_mem_.last_zed_id);
     op_mem_.last_zed_id = op.id;
     op.id = op_mem_.stable_id;
     op.label = "operator";
@@ -3943,9 +3947,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       op_mem_.y = op.y;
     }
     op_mem_.last_seen = current_time;
-    const cv::Scalar hsv = zed_vision::extractTorsoColor(bgr, op.bbox);
-    op_mem_.torso_hsv = 0.85 * op_mem_.torso_hsv + 0.15 * hsv;
-    op_mem_.has_color = true;
+    if (!id_switched || !op_mem_.has_color) {
+      const cv::Scalar hsv = zed_vision::extractTorsoColor(bgr, op.bbox);
+      op_mem_.torso_hsv = op_mem_.has_color ? (0.85 * op_mem_.torso_hsv + 0.15 * hsv) : hsv;
+      op_mem_.has_color = true;
+    }
 
     if (is_help_me_carry_ && op.has_depth) {
       latest_operator_found_ = true;

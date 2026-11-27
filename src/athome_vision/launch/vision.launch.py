@@ -25,7 +25,7 @@ def generate_launch_description():
         DeclareLaunchArgument('yolo_model', default_value='models/help_me_carry/paper_bag.onnx', description='Path to YOLO ONNX model'),
         DeclareLaunchArgument('yolo_classes', default_value='models/help_me_carry/paper_bag_classes.txt', description='Path to YOLO class labels file'),
         DeclareLaunchArgument('yolo_conf', default_value='0.35', description='YOLO confidence threshold'),
-        DeclareLaunchArgument('bag_conf', default_value='0.35', description='Bag detection confidence threshold'),
+        DeclareLaunchArgument('bag_conf', default_value='0.22', description='Bag detection confidence threshold'),
         DeclareLaunchArgument('yolo_nms', default_value='0.45', description='YOLO NMS IoU threshold'),
         DeclareLaunchArgument('yolo_size', default_value='640', description='YOLO input image dimension'),
         DeclareLaunchArgument('yolo_min_area', default_value='250.0', description='Minimum bounding box area (pixels)'),
