@@ -3282,6 +3282,11 @@ private:
     rclcpp::Time queue_avoid_state_start{0, 0, RCL_ROS_TIME};
     int queue_stuck_cycles = 0;
     bool queue_escape_prefer_left = true;
+    bool is_queue_aligning_yaw = false;
+    rclcpp::Time queue_nav_to_slot_start{0, 0, RCL_ROS_TIME};
+    rclcpp::Time queue_slot_progress_time{0, 0, RCL_ROS_TIME};
+    double queue_slot_best_dist = 1e9;
+    rclcpp::Time queue_slot_align_start{0, 0, RCL_ROS_TIME};
 
     // Kecepatan gerak antri yang di-smoothing (filter transisi mulus & anti tabrak)
     double queue_cmd_vx_smooth = 0.0;
@@ -3324,20 +3329,21 @@ private:
       {
         const auto res_code = nav_future.get();
         if (is_queue_nav_to_slot_.load()) {
-          // Nav2 menuju koordinat slot antrian selesai -> masuk mode antri & kunci orang terdekat yang terdeteksi
+          // Nav2 menuju koordinat slot antrian selesai/aborted -> pastikan yaw sesuai lalu masuk mode antri
           nav_goal_active_ = false;
           is_queue_nav_to_slot_ = false;
-          is_homing_queuing_ = true;
           locked_queue_id = -1;
           has_locked_world = false;
           need_lock_closest_at_slot = true;
+          is_queue_aligning_yaw = true;
+          queue_slot_align_start = now();
           last_corridor_person_time = now();
           geometry_msgs::msg::Twist stop_twist;
           cmd_vel_pub_->publish(stop_twist);
           RCLCPP_INFO(
             get_logger(),
-            "\033[1;32m[Homing Queue Nav2]\033[0m Nav2 tiba/selesai menuju koordinat slot antrian (code=%d). "
-            "Masuk mode antri & mengunci orang terdekat!",
+            "\033[1;32m[Homing Queue Nav2]\033[0m Nav2 menuju koordinat slot selesai (code=%d). "
+            "Menyelaraskan yaw ke arah antrian lalu masuk mode antri!",
             static_cast<int>(res_code));
         } else {
           nav_result   = res_code;
@@ -3371,6 +3377,7 @@ private:
         if (is_homing_queuing_ || queue_engaged) {
           is_homing_queuing_ = false;
           queue_engaged      = false;
+          is_queue_aligning_yaw = false;
           has_queue_vector   = false;
           locked_queue_id    = -1;
           has_locked_world   = false;
@@ -3778,6 +3785,9 @@ private:
               is_queue_nav_to_slot_ = true;
               is_homing_queuing_ = false;
               need_lock_closest_at_slot = true;
+              queue_nav_to_slot_start = now();
+              queue_slot_progress_time = now();
+              queue_slot_best_dist = 1e9;
               RCLCPP_INFO(
                 get_logger(),
                 "\033[1;32m[Homing Queue Nav2]\033[0m Mengirim Nav2 menuju koordinat slot antrian (%.2f, %.2f) "
@@ -3931,12 +3941,65 @@ private:
         if (has_locked_slot && get_robot_pose_world(rx_w, ry_w, ryaw_w)) {
           const double d_slot = std::hypot(locked_slot_wx - rx_w, locked_slot_wy - ry_w);
           const double slot_yaw_err = std::abs(normalize_angle(locked_slot_yaw - ryaw_w));
+
+          if (d_slot < queue_slot_best_dist - 0.05) {
+            queue_slot_best_dist = d_slot;
+            queue_slot_progress_time = now();
+          }
+
+          // Cek jarak rintangan depan via LiDAR untuk mendeteksi slot terhalang / mepet
+          double min_front_slot_x = 999.0;
+          if (enable_avoidance_) {
+            sensor_msgs::msg::LaserScan::SharedPtr scan;
+            {
+              std::lock_guard<std::mutex> lock(scan_mutex_);
+              scan = latest_scan_;
+            }
+            if (scan && !scan->ranges.empty()) {
+              double laser_tx = 0.0, laser_ty = 0.0, laser_yaw = M_PI;
+              try {
+                auto tf_laser = tf_buffer_->lookupTransform(
+                  frame_base_, scan->header.frame_id, tf2::TimePointZero);
+                laser_tx = tf_laser.transform.translation.x;
+                laser_ty = tf_laser.transform.translation.y;
+                const auto & rq = tf_laser.transform.rotation;
+                laser_yaw = std::atan2(2.0 * (rq.w * rq.z + rq.x * rq.y),
+                                       1.0 - 2.0 * (rq.y * rq.y + rq.z * rq.z));
+              } catch (const tf2::TransformException &) {
+                laser_yaw = M_PI;
+              }
+              const int n_scan = static_cast<int>(scan->ranges.size());
+              for (int i = 0; i < n_scan; ++i) {
+                const float r = scan->ranges[i];
+                if (!std::isfinite(r) || r < scan->range_min || r > scan->range_max) continue;
+                const double angle_base = std::atan2(
+                  std::sin(scan->angle_min + i * scan->angle_increment + laser_yaw),
+                  std::cos(scan->angle_min + i * scan->angle_increment + laser_yaw));
+                const double ox = laser_tx + r * std::cos(angle_base);
+                const double oy = laser_ty + r * std::sin(angle_base);
+                if (std::hypot(ox, oy) < footprint_radius_) continue;
+                if (ox > footprint_radius_ && std::abs(oy) < corridor_width_ && ox < min_front_slot_x) {
+                  min_front_slot_x = ox;
+                }
+              }
+            }
+          }
+
+          const double no_progress_sec = (now() - queue_slot_progress_time).seconds();
+          const double nav_slot_elapsed = (now() - queue_nav_to_slot_start).seconds();
+          const bool slot_blocked_or_stuck =
+            (d_slot <= 0.85 && no_progress_sec >= 2.0) ||
+            (min_front_slot_x <= (min_stop_x_ + 0.10) && no_progress_sec >= 1.5) ||
+            (nav_slot_elapsed >= 10.0);
+
           RCLCPP_INFO_THROTTLE(
             get_logger(), *get_clock(), 1000,
-            "\033[1;36m[Homing Queue Nav2]\033[0m Menuju koordinat slot antrian (%.2f, %.2f) | sisa jarak=%.2fm | yaw_err=%.1f°",
-            locked_slot_wx, locked_slot_wy, d_slot, slot_yaw_err * 180.0 / M_PI);
+            "\033[1;36m[Homing Queue Nav2]\033[0m Menuju koordinat slot antrian (%.2f, %.2f) | sisa jarak=%.2fm | yaw_err=%.1f° | front=%.2fm",
+            locked_slot_wx, locked_slot_wy, d_slot, slot_yaw_err * 180.0 / M_PI, min_front_slot_x);
+
           if (d_slot <= 0.20 && slot_yaw_err <= 0.15) {
             cancel_homing_nav2_goal();
+            nav_goal_active_ = false;
             is_queue_nav_to_slot_ = false;
             is_homing_queuing_ = true;
             locked_queue_id = -1;
@@ -3950,10 +4013,61 @@ private:
               "\033[1;32m[Homing Queue Nav2]\033[0m Tiba di koordinat slot antrian (sisa=%.2fm). "
               "Masuk mode antri & mengunci orang terdekat!",
               d_slot);
+          } else if (slot_blocked_or_stuck) {
+            cancel_homing_nav2_goal();
+            nav_goal_active_ = false;
+            is_queue_nav_to_slot_ = false;
+            locked_queue_id = -1;
+            has_locked_world = false;
+            need_lock_closest_at_slot = true;
+            is_queue_aligning_yaw = true;
+            queue_slot_align_start = now();
+            last_corridor_person_time = now();
+            geometry_msgs::msg::Twist stop_twist;
+            cmd_vel_pub_->publish(stop_twist);
+            RCLCPP_WARN(
+              get_logger(),
+              "\033[1;33m[Homing Queue Nav2]\033[0m Koordinat slot terhalang/mepet (sisa=%.2fm, front=%.2fm, stagnan=%.1fs). "
+              "Hentikan Nav2, sesuaikan yaw ke arah antrian lalu lanjut antri!",
+              d_slot, min_front_slot_x, no_progress_sec);
           }
         }
         rate.sleep();
         continue;
+      }
+
+      // ── FASE PENYESUAIAN YAW DI TEMPAT SEBELUM MASUK MODE ANTRI ────────────
+      if (is_queue_aligning_yaw) {
+        double rx_w = 0.0, ry_w = 0.0, ryaw_w = 0.0;
+        double yaw_err = 0.0;
+        bool has_pose_w = get_robot_pose_world(rx_w, ry_w, ryaw_w);
+        if (has_pose_w) {
+          yaw_err = normalize_angle(locked_slot_yaw - ryaw_w);
+        }
+        const double align_elapsed = (now() - queue_slot_align_start).seconds();
+        if (!has_pose_w || std::abs(yaw_err) <= 0.15 || align_elapsed >= 4.0) {
+          is_queue_aligning_yaw = false;
+          is_homing_queuing_ = true;
+          last_corridor_person_time = now();
+          geometry_msgs::msg::Twist stop_twist;
+          cmd_vel_pub_->publish(stop_twist);
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;32m[Homing Queue Align]\033[0m Penyesuaian yaw selesai (err=%.1f°, t=%.1fs). "
+            "Lanjut mode antri & mengunci orang terdekat!",
+            yaw_err * 180.0 / M_PI, align_elapsed);
+        } else {
+          geometry_msgs::msg::Twist align_twist;
+          double wz = std::clamp(1.30 * yaw_err, -max_wz_, max_wz_);
+          if (std::abs(wz) < 0.12) {
+            wz = (yaw_err > 0.0) ? 0.12 : -0.12;
+          }
+          align_twist.angular.z = wz;
+          cmd_vel_pub_->publish(align_twist);
+          last_corridor_person_time = now();
+          rate.sleep();
+          continue;
+        }
       }
 
       // Update timestamp dan posisi terakhir jika orang terdeteksi menghalangi path
@@ -4428,6 +4542,7 @@ private:
         if (is_homing_queuing_ || queue_engaged) {
           is_homing_queuing_ = false;
           queue_engaged      = false;
+          is_queue_aligning_yaw = false;
           has_queue_vector   = false;
           locked_queue_id    = -1;
           has_locked_world   = false;
