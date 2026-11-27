@@ -3869,48 +3869,60 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
   }
 
   int op_match_idx = -1;
+  double matched_color_penalty = 0.0;
   if (op_mem_.active) {
     const double dt = (current_time - op_mem_.last_seen).seconds();
-    if (dt <= 4.0) {
-      const double pred_x = op_mem_.x + op_mem_.vx * std::min(dt, 2.0);
-      const double pred_y = op_mem_.y + op_mem_.vy * std::min(dt, 2.0);
-      const double max_match_dist = 0.65 + 0.6 * std::min(dt, 1.5);
-      double best_cost = std::numeric_limits<double>::infinity();
-      for (size_t i = 0; i < entries.size(); ++i) {
-        const auto & cand = entries[i];
-        if (!cand.has_depth) continue;
-        const bool is_same_zed_id = (op_mem_.last_zed_id >= 0 && cand.id == op_mem_.last_zed_id);
-        const double effective_max_dist = is_same_zed_id
-          ? max_match_dist
-          : (0.55 + 0.35 * std::min(dt, 1.0));
-        const double dist_diff = std::hypot(cand.x - pred_x, cand.y - pred_y);
-        if (dist_diff > effective_max_dist) continue;
-        double color_penalty = 0.0;
-        if (op_mem_.has_color) {
-          const cv::Scalar cand_hsv = zed_vision::extractTorsoColor(bgr, cand.bbox);
-          const double dh = std::min(
-            std::abs(cand_hsv[0] - op_mem_.torso_hsv[0]),
-            180.0 - std::abs(cand_hsv[0] - op_mem_.torso_hsv[0]));
-          const double ds = std::abs(cand_hsv[1] - op_mem_.torso_hsv[1]);
-          const double dv = std::abs(cand_hsv[2] - op_mem_.torso_hsv[2]);
-          color_penalty = (dh / 90.0) * 0.8 + (ds / 255.0) * 0.5 + (dv / 255.0) * 0.4;
-          // Jika ZED ID berubah (misal orang lain lewat menutupi operator), tolak jika warna baju berbeda
-          // meskipun hanya ada 1 orang yang terlihat kamera.
-          if (!is_same_zed_id && color_penalty > 0.50) {
-            continue;
-          }
-        }
-        const double id_bonus = is_same_zed_id ? -0.35 : 0.0;
-        const double cost = dist_diff + color_penalty + id_bonus;
-        if (cost < best_cost) {
-          best_cost = cost;
-          op_match_idx = static_cast<int>(i);
+    const bool long_occlusion = (dt > 4.0);
+    if (long_occlusion) {
+      // Pertahankan warna baju & posisi terakhir operator meski terhalang > 4 detik;
+      // jangan reset ke orang acak yang kebetulan lewat di depan.
+      op_mem_.vx = 0.0;
+      op_mem_.vy = 0.0;
+      op_mem_.last_zed_id = -1;
+    }
+    const double pred_x = op_mem_.x + (long_occlusion ? 0.0 : op_mem_.vx * std::min(dt, 2.0));
+    const double pred_y = op_mem_.y + (long_occlusion ? 0.0 : op_mem_.vy * std::min(dt, 2.0));
+    const double max_match_dist = long_occlusion ? 1.50 : (0.65 + 0.6 * std::min(dt, 1.5));
+    double best_cost = std::numeric_limits<double>::infinity();
+
+    for (size_t i = 0; i < entries.size(); ++i) {
+      const auto & cand = entries[i];
+      if (!cand.has_depth) continue;
+      const bool is_same_zed_id = (op_mem_.last_zed_id >= 0 && cand.id == op_mem_.last_zed_id);
+      const double effective_max_dist = is_same_zed_id
+        ? max_match_dist
+        : (long_occlusion ? 1.35 : (0.55 + 0.35 * std::min(dt, 1.0)));
+      const double dist_diff = std::hypot(cand.x - pred_x, cand.y - pred_y);
+      if (dist_diff > effective_max_dist) continue;
+
+      // Tolak kandidat yang memotong jalur di depan operator (lebih dekat ke kamera atau bergeser menyamping mendadak)
+      if (!is_same_zed_id && pred_x > 0.8) {
+        if (cand.x < pred_x - 0.35) continue;
+        if (dt < 1.5 && std::abs(cand.y - pred_y) > 0.45) continue;
+      }
+
+      double color_penalty = 0.0;
+      if (op_mem_.has_color) {
+        const cv::Scalar cand_hsv = zed_vision::extractTorsoColor(bgr, cand.bbox);
+        const double dh = std::min(
+          std::abs(cand_hsv[0] - op_mem_.torso_hsv[0]),
+          180.0 - std::abs(cand_hsv[0] - op_mem_.torso_hsv[0]));
+        const double ds = std::abs(cand_hsv[1] - op_mem_.torso_hsv[1]);
+        const double dv = std::abs(cand_hsv[2] - op_mem_.torso_hsv[2]);
+        color_penalty = (dh / 90.0) * 0.8 + (ds / 255.0) * 0.5 + (dv / 255.0) * 0.4;
+        // Cek warna baju tetap aktif bahkan saat ZED ID sama (anti ID-swap ZED)
+        const double color_reject_thresh = is_same_zed_id ? 0.55 : 0.48;
+        if (color_penalty > color_reject_thresh) {
+          continue;
         }
       }
-    } else {
-      op_mem_.active = false;
-      op_mem_.has_color = false;
-      op_mem_.last_zed_id = -1;
+      const double id_bonus = (is_same_zed_id && color_penalty <= 0.45) ? -0.35 : 0.0;
+      const double cost = dist_diff + color_penalty + id_bonus;
+      if (cost < best_cost) {
+        best_cost = cost;
+        op_match_idx = static_cast<int>(i);
+        matched_color_penalty = color_penalty;
+      }
     }
   }
 
@@ -3947,7 +3959,7 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       op_mem_.y = op.y;
     }
     op_mem_.last_seen = current_time;
-    if (!id_switched || !op_mem_.has_color) {
+    if ((!id_switched && matched_color_penalty <= 0.40) || !op_mem_.has_color) {
       const cv::Scalar hsv = zed_vision::extractTorsoColor(bgr, op.bbox);
       op_mem_.torso_hsv = op_mem_.has_color ? (0.85 * op_mem_.torso_hsv + 0.15 * hsv) : hsv;
       op_mem_.has_color = true;
