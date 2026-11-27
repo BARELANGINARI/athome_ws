@@ -2238,8 +2238,11 @@ private:
     int feature_samples{0};
     cv::Scalar torso_hsv{0, 0, 0};
     std::string clothing_color;
+    std::string pants_color;
     std::string hair_color;
     std::string gender;
+    bool has_hat{false};
+    bool has_glasses{false};
     bool has_color{false};
     bool locked{false};
     bool has_face_verified{false};
@@ -2561,8 +2564,11 @@ ZedNode::ZedNode()
   declare_parameter("host_name", std::string("Revaldo"));
   declare_parameter("host_photo", std::string("models/host.jpg"));
   declare_parameter("host_shirt_color", std::string("black shirt"));
+  declare_parameter("host_pants_color", std::string(""));
   declare_parameter("host_gender", std::string("male"));
   declare_parameter("host_hair_color", std::string("black"));
+  declare_parameter("host_hat", false);
+  declare_parameter("host_glasses", false);
   declare_parameter("enable_back_detection", true);
   declare_parameter("person_back_topic", std::string("/vision/person_back"));
 
@@ -3196,11 +3202,38 @@ void ZedNode::loadPreRegisteredHost(const std::string & custom_photo_path)
   RegisteredPerson host_person;
   host_person.name = host_name;
   host_person.clothing_color = raw_shirt;
+  host_person.pants_color = get_parameter("host_pants_color").as_string();
   host_person.gender = get_parameter("host_gender").as_string();
   host_person.hair_color = get_parameter("host_hair_color").as_string();
+  host_person.has_hat = get_parameter("host_hat").as_bool();
+  host_person.has_glasses = get_parameter("host_glasses").as_bool();
   host_person.has_color = false;
   host_person.last_tracking_id = -1;
   host_person.last_seen = now();
+
+  if (!img.empty()) {
+    std::vector<YoloDetection> acc_dets;
+    if (!host_person.has_hat && hat_yolo_.ready()) {
+      acc_dets.clear();
+      hat_yolo_.detect(img, {"hat"}, acc_dets);
+      for (const auto & d : acc_dets) {
+        if (d.score >= 0.25f) {
+          host_person.has_hat = true;
+          break;
+        }
+      }
+    }
+    if (!host_person.has_glasses && glasses_yolo_.ready()) {
+      acc_dets.clear();
+      glasses_yolo_.detect(img, {"glasses"}, acc_dets);
+      for (const auto & d : acc_dets) {
+        if (d.score >= 0.18f) {
+          host_person.has_glasses = true;
+          break;
+        }
+      }
+    }
+  }
 
   if (!feat.empty()) {
     host_person.feature = feat;
@@ -3218,16 +3251,25 @@ void ZedNode::loadPreRegisteredHost(const std::string & custom_photo_path)
     host_person.locked = true;
     host_person.has_face_verified = true;
     RCLCPP_INFO(get_logger(),
-      "\033[1;32m[RECEPTIONIST]\033[0m Host '%s' registered from photo (%dx%d, shirt: %s, gender: %s, gallery: %zu templates)",
-      host_name.c_str(), img.cols, img.rows, raw_shirt.c_str(), host_person.gender.c_str(), host_person.face_gallery.size());
+      "\033[1;32m[RECEPTIONIST]\033[0m Host '%s' registered from photo (%dx%d, shirt: %s, pants: %s, gender: %s, hat: %s, glasses: %s, gallery: %zu templates)",
+      host_name.c_str(), img.cols, img.rows, raw_shirt.c_str(),
+      host_person.pants_color.empty() ? "-" : host_person.pants_color.c_str(),
+      host_person.gender.c_str(),
+      host_person.has_hat ? "yes" : "no",
+      host_person.has_glasses ? "yes" : "no",
+      host_person.face_gallery.size());
   } else {
     // Foto tidak ada: tetap daftarkan profil Host berbasis atribut pakaian & gender
     host_person.feature_samples = 0;
     host_person.locked = false; // Self-learn face when robot faces Host in Cycle 1
     host_person.has_face_verified = false;
     RCLCPP_INFO(get_logger(),
-      "\033[1;32m[RECEPTIONIST]\033[0m Host '%s' pre-registered from attributes (shirt: %s, gender: %s, photo pending self-learn)",
-      host_name.c_str(), raw_shirt.c_str(), host_person.gender.c_str());
+      "\033[1;32m[RECEPTIONIST]\033[0m Host '%s' pre-registered from attributes (shirt: %s, pants: %s, gender: %s, hat: %s, glasses: %s, photo pending self-learn)",
+      host_name.c_str(), raw_shirt.c_str(),
+      host_person.pants_color.empty() ? "-" : host_person.pants_color.c_str(),
+      host_person.gender.c_str(),
+      host_person.has_hat ? "yes" : "no",
+      host_person.has_glasses ? "yes" : "no");
   }
 
   auto it = std::remove_if(registered_persons_.begin(), registered_persons_.end(),
@@ -4003,8 +4045,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
 
     const cv::Scalar torso_hsv = zed_vision::extractTorsoColor(bgr, target->bbox);
     const std::string detected_shirt = entry_clothes[target_idx];
+    const std::string detected_pants = entry_pants[target_idx];
     const std::string detected_hair = entry_hairs[target_idx];
     const std::string detected_gender = (entry_genders[target_idx] != "unknown") ? entry_genders[target_idx] : "";
+    const bool detected_hat = entry_has_hat[target_idx];
+    const bool detected_glasses = entry_has_glasses[target_idx];
     const double reg_elapsed = (register_start_time_.nanoseconds() > 0)
       ? (current_time - register_start_time_).seconds() : 0.0;
 
@@ -4021,8 +4066,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         p.has_color = true;
       }
       if (!detected_shirt.empty()) p.clothing_color = detected_shirt;
+      if (!detected_pants.empty()) p.pants_color = detected_pants;
       if (!detected_hair.empty()) p.hair_color = detected_hair;
       if (!detected_gender.empty()) p.gender = detected_gender;
+      if (detected_hat) p.has_hat = true;
+      if (detected_glasses) p.has_glasses = true;
 
       if (!feature.empty()) {
         if (p.face_gallery.empty()) {
@@ -4085,12 +4133,15 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       reg_ptr->feature_samples = 30;
       reg_ptr->locked = true;
       RCLCPP_INFO(get_logger(),
-        "\033[1;32m[%s]\033[0m Registered '%s' (%s, %s, %s, face=%s)",
+        "\033[1;32m[%s]\033[0m Registered '%s' (shirt=%s, pants=%s, hair=%s, gender=%s, hat=%s, glasses=%s, face=%s)",
         is_restaurant_ ? "RESTAURANT" : "RECEPTIONIST",
         pending_register_name_.c_str(),
         reg_ptr->clothing_color.c_str(),
+        reg_ptr->pants_color.c_str(),
         reg_ptr->hair_color.c_str(),
         reg_ptr->gender.c_str(),
+        reg_ptr->has_hat ? "yes" : "no",
+        reg_ptr->has_glasses ? "yes" : "no",
         reg_ptr->feature.empty() ? "NO" : "OK");
       pending_register_name_.clear();
     }
@@ -4117,8 +4168,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     bool has_torso{false};
     cv::Rect shirt_roi;
     std::string shirt_color;
+    std::string pants_color;
     std::string hair_color;
     std::string gender;
+    bool has_hat{false};
+    bool has_glasses{false};
   };
   std::vector<EntryFeature> entry_feats(entries.size());
   for (size_t i = 0; i < entries.size(); ++i) {
@@ -4134,8 +4188,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
     entry_feats[i].has_torso = (entries[i].bbox.width > 20 && entries[i].bbox.height > 40);
     entry_feats[i].shirt_roi = entry_shirt_rois[i];
     entry_feats[i].shirt_color = entry_clothes[i];
+    entry_feats[i].pants_color = entry_pants[i];
     entry_feats[i].hair_color = entry_hairs[i];
     entry_feats[i].gender = (entry_genders[i] == "unknown") ? std::string("") : entry_genders[i];
+    entry_feats[i].has_hat = entry_has_hat[i];
+    entry_feats[i].has_glasses = entry_has_glasses[i];
   }
 
   // --------------------------------------------------------------------------
@@ -4232,7 +4289,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         shirt_score = static_cast<float>(std::max(0.0, 1.0 - color_dist / 0.40));
       }
 
-      // Skor gender & warna rambut sebagai pembeda ekstra saat baju sama
+      // Skor celana, gender & warna rambut sebagai pembeda ekstra saat baju/wajah mirip
+      float pants_score = 0.50f;
+      if (!prof.pants_color.empty() && !entry_feats[i].pants_color.empty()) {
+        pants_score = (prof.pants_color == entry_feats[i].pants_color) ? 1.0f : 0.10f;
+      }
       float gender_score = 0.50f;
       if (!prof.gender.empty() && !entry_feats[i].gender.empty()) {
         gender_score = (prof.gender == entry_feats[i].gender) ? 1.0f : 0.05f;
@@ -4257,8 +4318,14 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       bool veto = false;
       if (has_face) {
         if (!has_continuity) {
-          const bool attr_matches = (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
-                                     prof.clothing_color == entry_feats[i].shirt_color);
+          const bool shirt_match = (!prof.clothing_color.empty() && !entry_feats[i].shirt_color.empty() &&
+                                    prof.clothing_color == entry_feats[i].shirt_color);
+          const bool pants_match = (!prof.pants_color.empty() && !entry_feats[i].pants_color.empty() &&
+                                    prof.pants_color == entry_feats[i].pants_color);
+          const bool pants_conflict = (!prof.pants_color.empty() && !entry_feats[i].pants_color.empty() &&
+                                       prof.pants_color != entry_feats[i].pants_color);
+          const bool shirt_ok = (prof.clothing_color.empty() || entry_feats[i].shirt_color.empty() || shirt_match);
+          const bool attr_matches = (shirt_match && !pants_conflict) || (pants_match && shirt_ok);
           float req_claim_th = attr_matches
             ? th
             : (registered_persons_.size() <= 1
@@ -4296,9 +4363,11 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           // Jika salah satu profil belum memiliki rekaman warna baju (misal host dari foto), jangan veto.
           const bool cloth_ok = prof.clothing_color.empty() || entry_feats[i].shirt_color.empty() ||
                                 prof.clothing_color == entry_feats[i].shirt_color;
+          const bool pants_ok = prof.pants_color.empty() || entry_feats[i].pants_color.empty() ||
+                                prof.pants_color == entry_feats[i].pants_color;
           const bool gender_ok = prof.gender.empty() || entry_feats[i].gender.empty() ||
                                  prof.gender == entry_feats[i].gender;
-          const bool strong_attr_match = cloth_ok && gender_ok;
+          const bool strong_attr_match = cloth_ok && pants_ok && gender_ok;
 
           if (!strong_attr_match && !entries[i].is_sitting) {
             veto = true;
@@ -4318,6 +4387,12 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           attr_penalty += 0.20f;
         }
       }
+      if (!prof.pants_color.empty() && !entry_feats[i].pants_color.empty() &&
+          prof.pants_color != entry_feats[i].pants_color &&
+          (!has_face || f_sim < strong_th || face_margin < 0.10f))
+      {
+        attr_penalty += 0.15f;
+      }
       if (!prof.gender.empty() && !entry_feats[i].gender.empty() &&
           prof.gender != entry_feats[i].gender &&
           (!has_face || f_sim < strong_th || face_margin < 0.10f))
@@ -4334,21 +4409,35 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       } else {
         if (has_face) {
           if (entries[i].range_m > 1.6) {
-            // Pada jarak jauh living room (> 1.6m), beri bobot warna baju lebih tinggi (32%)
+            // Pada jarak jauh living room (> 1.6m), beri bobot warna baju & celana lebih tinggi
             // untuk membedakan orang yang duduk saat kursi ditukar
-            score_matrix[i][j] = 0.52f * face_score + 0.32f * shirt_score +
-                                 0.08f * gender_score + 0.08f * hair_score;
+            score_matrix[i][j] = 0.48f * face_score + 0.25f * shirt_score + 0.13f * pants_score +
+                                 0.07f * gender_score + 0.07f * hair_score;
           } else {
-            score_matrix[i][j] = 0.80f * face_score + 0.08f * shirt_score +
+            score_matrix[i][j] = 0.74f * face_score + 0.08f * shirt_score + 0.06f * pants_score +
                                  0.06f * gender_score + 0.06f * hair_score;
           }
           if (f_sim >= strong_th && face_margin >= 0.07f) {
             score_matrix[i][j] += 0.25f; // Bonus hanya jika unggul mutlak atas kandidat lain
           }
         } else {
-          score_matrix[i][j] = 0.55f * shirt_score + 0.25f * gender_score + 0.20f * hair_score;
+          score_matrix[i][j] = 0.42f * shirt_score + 0.25f * pants_score + 0.18f * gender_score + 0.15f * hair_score;
         }
         score_matrix[i][j] -= attr_penalty;
+        if (prof.has_hat) {
+          if (entry_feats[i].has_hat) {
+            score_matrix[i][j] += 0.08f;
+          } else if (!has_face || f_sim < strong_th) {
+            score_matrix[i][j] -= 0.05f;
+          }
+        }
+        if (prof.has_glasses) {
+          if (entry_feats[i].has_glasses) {
+            score_matrix[i][j] += 0.08f;
+          } else if (!has_face || f_sim < strong_th) {
+            score_matrix[i][j] -= 0.05f;
+          }
+        }
 
         if (is_sticky) {
           score_matrix[i][j] += 0.18f; // Sticky inertia ringan agar tidak mengalahkan skor wajah ArcFace
@@ -4458,12 +4547,17 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
         }
       }
 
-      // Belajar atribut baju/rambut/gender jika sebelumnya belum terekam
+      // Belajar atribut baju/celana/rambut/gender jika sebelumnya belum terekam
       if (prof.clothing_color.empty() && !entry_feats[assigned_entry].shirt_color.empty()) {
         if (has_face_match && f_sim >= eff_claim && margin >= 0.05f) {
           prof.clothing_color = entry_feats[assigned_entry].shirt_color;
           prof.torso_hsv = entry_feats[assigned_entry].torso_hsv;
           prof.has_color = true;
+        }
+      }
+      if (prof.pants_color.empty() && !entry_feats[assigned_entry].pants_color.empty()) {
+        if (has_face_match && f_sim >= eff_claim && margin >= 0.05f) {
+          prof.pants_color = entry_feats[assigned_entry].pants_color;
         }
       }
       if (prof.hair_color.empty() && !entry_feats[assigned_entry].hair_color.empty()) {
@@ -4474,6 +4568,16 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
       if (prof.gender.empty() && !entry_feats[assigned_entry].gender.empty()) {
         if (has_face_match && f_sim >= eff_claim && margin >= 0.05f) {
           prof.gender = entry_feats[assigned_entry].gender;
+        }
+      }
+      if (!prof.has_hat && entry_feats[assigned_entry].has_hat) {
+        if (has_face_match && f_sim >= eff_claim && margin >= 0.05f) {
+          prof.has_hat = true;
+        }
+      }
+      if (!prof.has_glasses && entry_feats[assigned_entry].has_glasses) {
+        if (has_face_match && f_sim >= eff_claim && margin >= 0.05f) {
+          prof.has_glasses = true;
         }
       }
 
@@ -4922,15 +5026,27 @@ void ZedNode::processPersons(const cv::Mat & bgr, const sl::Mat & cloud)
           if ((pub_cloth.empty() || pub_cloth == "casual attire") && !target_prof->clothing_color.empty()) {
             pub_cloth = target_prof->clothing_color;
           }
+          if (pub_pants.empty() && !target_prof->pants_color.empty()) {
+            pub_pants = target_prof->pants_color;
+          }
           if (pub_hair.empty() && !target_prof->hair_color.empty()) {
             pub_hair = target_prof->hair_color;
+          }
+          if (!pub_hat && target_prof->has_hat) {
+            pub_hat = true;
+          }
+          if (!pub_glasses && target_prof->has_glasses) {
+            pub_glasses = true;
           }
         }
         bound_to_registered = true;
       } else if (target_prof != nullptr && target_prof->locked) {
         pub_gender = target_prof->gender;
         pub_cloth = target_prof->clothing_color;
+        pub_pants = target_prof->pants_color;
         pub_hair = target_prof->hair_color;
+        pub_hat = target_prof->has_hat;
+        pub_glasses = target_prof->has_glasses;
         bound_to_registered = true;
       }
     }

@@ -48,8 +48,11 @@ vision:
     host_name: "Fahri"
     host_photo: "models/receptionist/host.jpg"
     host_shirt_color: "black"
+    host_pants_color: ""
     host_gender: "male"
     host_hair_color: "black"
+    host_hat: false
+    host_glasses: false
     enable_back_detection: true
     person_back_topic: "/vision/person_back"
 

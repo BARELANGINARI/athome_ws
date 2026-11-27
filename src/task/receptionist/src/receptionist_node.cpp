@@ -106,7 +106,13 @@ public:
     declare_parameter<double>("host_seated_max_dist", 3.0);
     declare_parameter<double>("guest_door_distance", 1.2);
     declare_parameter<double>("guest_door_distance_min", 0.9);
+    declare_parameter<double>("guest_door_step_forward_speed", 0.25);
+    declare_parameter<double>("guest_door_step_forward_min_speed", 0.10);
+    declare_parameter<double>("guest_door_step_forward_p_gain", 0.40);
     declare_parameter<double>("guest_door_step_back_speed", 0.18);
+    declare_parameter<double>("guest_door_step_back_min_speed", 0.08);
+    declare_parameter<double>("guest_door_step_back_p_gain", 0.35);
+    declare_parameter<double>("guest_door_adjust_angular_speed", 0.12);
     declare_parameter<double>("guest_door_timeout_sec", 15.0);
     declare_parameter<double>("guest_approach_distance", 0.7);
     declare_parameter<double>("guest_approach_speed", 0.16);
@@ -119,13 +125,21 @@ public:
     declare_parameter<double>("face_person_max_speed", 0.30);
     declare_parameter<double>("face_person_tolerance_rad", 0.07);
 
-    // Relative 90-degree turn parameters (/receptionist/left & /receptionist/right)
+    // Relative 90-degree turn parameters (/receptionist/right)
     declare_parameter<double>("turn_90_angular_speed", 0.30);
     declare_parameter<double>("turn_90_min_speed", 0.14);
     declare_parameter<double>("turn_90_max_speed", 0.35);
     declare_parameter<double>("turn_90_tolerance_rad", 0.04);
     declare_parameter<double>("turn_90_timeout_sec", 15.0);
     declare_parameter<double>("turn_90_p_gain", 1.5);
+
+    // Map-frame absolute yaw turn parameters (/receptionist/left)
+    declare_parameter<double>("turn_left_map_yaw_deg", 0.0);
+    declare_parameter<double>("turn_left_min_speed", 0.14);
+    declare_parameter<double>("turn_left_max_speed", 0.35);
+    declare_parameter<double>("turn_left_tolerance_rad", 0.04);
+    declare_parameter<double>("turn_left_timeout_sec", 15.0);
+    declare_parameter<double>("turn_left_p_gain", 1.5);
 
     // Chair search & motion parameters
     declare_parameter<std::string>("cmd_vel_topic", "cmd_vel");
@@ -156,7 +170,13 @@ public:
     host_seated_max_dist_ = get_parameter("host_seated_max_dist").as_double();
     guest_door_distance_ = get_parameter("guest_door_distance").as_double();
     guest_door_distance_min_ = get_parameter("guest_door_distance_min").as_double();
+    guest_door_step_forward_speed_ = get_parameter("guest_door_step_forward_speed").as_double();
+    guest_door_step_forward_min_speed_ = get_parameter("guest_door_step_forward_min_speed").as_double();
+    guest_door_step_forward_p_gain_ = get_parameter("guest_door_step_forward_p_gain").as_double();
     guest_door_step_back_speed_ = get_parameter("guest_door_step_back_speed").as_double();
+    guest_door_step_back_min_speed_ = get_parameter("guest_door_step_back_min_speed").as_double();
+    guest_door_step_back_p_gain_ = get_parameter("guest_door_step_back_p_gain").as_double();
+    guest_door_adjust_angular_speed_ = get_parameter("guest_door_adjust_angular_speed").as_double();
     guest_door_timeout_sec_ = get_parameter("guest_door_timeout_sec").as_double();
     guest_approach_distance_ = get_parameter("guest_approach_distance").as_double();
     guest_approach_speed_ = get_parameter("guest_approach_speed").as_double();
@@ -175,6 +195,13 @@ public:
     turn_90_tolerance_rad_ = get_parameter("turn_90_tolerance_rad").as_double();
     turn_90_timeout_sec_ = get_parameter("turn_90_timeout_sec").as_double();
     turn_90_p_gain_ = get_parameter("turn_90_p_gain").as_double();
+
+    turn_left_map_yaw_deg_ = get_parameter("turn_left_map_yaw_deg").as_double();
+    turn_left_min_speed_ = get_parameter("turn_left_min_speed").as_double();
+    turn_left_max_speed_ = get_parameter("turn_left_max_speed").as_double();
+    turn_left_tolerance_rad_ = get_parameter("turn_left_tolerance_rad").as_double();
+    turn_left_timeout_sec_ = get_parameter("turn_left_timeout_sec").as_double();
+    turn_left_p_gain_ = get_parameter("turn_left_p_gain").as_double();
 
     cmd_vel_topic_ = get_parameter("cmd_vel_topic").as_string();
     chair_topic_ = get_parameter("chair_topic").as_string();
@@ -407,12 +434,13 @@ public:
       rclcpp::ServicesQoS(),
       srv_cb_group_);
 
-    // Services for 90-degree relative rotation (/receptionist/left dan /receptionist/right)
+    // Service /receptionist/left menghadap yaw absolut terhadap peta (default 0 deg),
+    // sedangkan /receptionist/right tetap rotasi relatif 90 derajat.
     srv_turn_left_ = create_service<std_srvs::srv::Trigger>(
       "/receptionist/left",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> req,
              std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
-        handleTurnRelative(M_PI / 2.0, "left", req, res);
+        handleTurnToMapYaw(req, res);
       },
       rclcpp::ServicesQoS(),
       srv_cb_group_);
@@ -511,6 +539,24 @@ public:
       return true;
     }
     return false;
+  }
+
+  bool getMapYaw(double & yaw_out)
+  {
+    if (!tf_buffer_) {
+      return false;
+    }
+    try {
+      const auto tf_stamped = tf_buffer_->lookupTransform(
+        global_frame_, "base_link", tf2::TimePointZero);
+      const auto & q = tf_stamped.transform.rotation;
+      const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+      const double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+      yaw_out = std::atan2(siny_cosp, cosy_cosp);
+      return true;
+    } catch (const tf2::TransformException &) {
+      return false;
+    }
   }
 
 
@@ -698,8 +744,13 @@ public:
         // Selalu prioritaskan kursi kosong dengan koordinat 3D valid
         is_better = true;
       } else if (has_3d && target_has_3d) {
-        // Jika keduanya punya 3D, pilih kursi yang jaraknya paling dekat (dist terkecil)
-        if (dist < best_dist) {
+        // Jika jarak kedua kursi hampir sama (< 0.25m), pilih yang sudutnya paling dekat dengan tengah kamera;
+        // jika selisih jarak cukup jauh, pilih kursi yang paling dekat (dist terkecil).
+        if (std::abs(dist - best_dist) < 0.25) {
+          if (std::abs(angle) < std::abs(target.angle_err)) {
+            is_better = true;
+          }
+        } else if (dist < best_dist) {
           is_better = true;
         }
       } else if (!has_3d && !target_has_3d) {
@@ -980,11 +1031,9 @@ public:
         if (std::abs(angle) > 0.50) {
           continue;
         }
-        // Saat mencari/berhenti di 1.5m ("door_guest"), wajib full-body berdiri agar orang duduk
-        // yang hanya terlihat kepala & lehernya tidak dianggap sebagai tamu berdiri
-        if (target_role == "door_guest" && !is_fullbody_standing) {
-          continue;
-        }
+        // Syarat wajib full-body untuk "door_guest" dinonaktifkan agar tamu yang sebagian
+        // tubuh bawahnya terpotong tetap bisa dikunci oleh adjust_guest.
+        (void)is_fullbody_standing;
         is_match = true;
         // Prioritaskan tamu yang paling lurus di depan kamera, lalu jarak terdekat
         priority = 100.0 - (std::abs(angle) * 25.0) - (dist * 5.0);
@@ -1742,7 +1791,8 @@ public:
     publishStatus("Service /search_chair called: Aligning to empty chair in view...");
 
     // Helper untuk mengambil data kursi kosong terkini yang tidak bertabrakan dengan kursi Host/Guest 1
-    auto get_current_empty_chair = [this]() -> EmptyChairTarget {
+    // Jika use_locked_yaw = true, kunci pilihan pada kursi yang sudutnya paling dekat dengan locked_yaw
+    auto get_current_empty_chair = [this](bool use_locked_yaw = false, double locked_yaw = 0.0) -> EmptyChairTarget {
       std::string raw;
       {
         std::lock_guard<std::mutex> lock(chair_mutex_);
@@ -1764,6 +1814,8 @@ public:
 
       // Filter setiap kursi kosong di latest_chair_info_ terhadap posisi Host/Guest 1 yang terkunci
       std::string filtered;
+      EmptyChairTarget best_locked;
+      double best_yaw_diff = 0.35; // toleransi ~20 deg untuk mempertahankan kursi yang sama
       std::stringstream ss(raw);
       std::string item;
       while (std::getline(ss, item, ';')) {
@@ -1772,8 +1824,18 @@ public:
         if (!one.valid) continue;
         const double abs_yaw = normalize_angle(cur_yaw + one.angle_err);
         if (isYawCollidingWithLockedPeople(abs_yaw)) continue;
+        if (use_locked_yaw) {
+          const double y_diff = std::abs(normalize_angle(abs_yaw - locked_yaw));
+          if (y_diff <= best_yaw_diff) {
+            best_yaw_diff = y_diff;
+            best_locked = one;
+          }
+        }
         if (!filtered.empty()) filtered += ";";
         filtered += item;
+      }
+      if (use_locked_yaw && best_locked.valid) {
+        return best_locked;
       }
       return parseEmptyChair(filtered);
     };
@@ -1900,6 +1962,11 @@ public:
         auto align_start_time = now();
         const double align_timeout_sec = 6.0;
         int centered_frames = 0;
+        double locked_chair_yaw = 0.0;
+        bool has_locked_chair_yaw = getRobotYaw(locked_chair_yaw);
+        if (has_locked_chair_yaw) {
+          locked_chair_yaw = normalize_angle(locked_chair_yaw + current_target.angle_err);
+        }
 
         while (rclcpp::ok() && is_searching_chair_.load()) {
           const double align_elapsed = (now() - align_start_time).seconds();
@@ -1908,7 +1975,7 @@ public:
             break;
           }
 
-          EmptyChairTarget t = get_current_empty_chair();
+          EmptyChairTarget t = get_current_empty_chair(has_locked_chair_yaw, locked_chair_yaw);
           if (!t.valid) {
             centered_frames = 0;
             geometry_msgs::msg::Twist stop_twist;
@@ -1917,6 +1984,11 @@ public:
             continue;
           }
           current_target = t;
+          double cur_yaw = 0.0;
+          if (getRobotYaw(cur_yaw)) {
+            locked_chair_yaw = normalize_angle(cur_yaw + current_target.angle_err);
+            has_locked_chair_yaw = true;
+          }
 
           const double err = current_target.angle_err;
 
@@ -2386,16 +2458,18 @@ public:
       twist.linear.y = 0.0;
 
       if (dist > target_max) {
-        // Tamu berdiri agak jauh (> 1.2m): Robot maju mendekat secara proporsional
+        // Tamu berdiri agak jauh (> target_max): Robot maju mendekat secara proporsional
         const double err = dist - target_max;
-        const double p_gain = 0.40;
-        double spd = std::clamp(p_gain * err, 0.10, 0.25);
+        const double max_fwd = std::abs(guest_door_step_forward_speed_);
+        const double min_fwd = std::min(std::abs(guest_door_step_forward_min_speed_), max_fwd);
+        double spd = std::clamp(guest_door_step_forward_p_gain_ * err, min_fwd, max_fwd);
         twist.linear.x = spd;
       } else if (dist < target_min && dist > 0.10) {
-        // Tamu berdiri terlalu dekat (< 0.9m): Robot mundur sedikit secara proporsional
+        // Tamu berdiri terlalu dekat (< target_min): Robot mundur sedikit secara proporsional
         const double err = target_min - dist;
-        const double p_gain = 0.35;
-        double spd = std::clamp(p_gain * err, 0.08, std::abs(guest_door_step_back_speed_));
+        const double max_back = std::abs(guest_door_step_back_speed_);
+        const double min_back = std::min(std::abs(guest_door_step_back_min_speed_), max_back);
+        double spd = std::clamp(guest_door_step_back_p_gain_ * err, min_back, max_back);
         twist.linear.x = -spd;
       } else {
         twist.linear.x = 0.0;
@@ -2403,7 +2477,8 @@ public:
 
       // Koreksi sudut halus sambil bergerak jika sudut agak melenceng
       if (std::abs(current_target.angle_err) > 0.08) {
-        twist.angular.z = (current_target.angle_err >= 0.0) ? 0.12 : -0.12;
+        const double ang_spd = std::abs(guest_door_adjust_angular_speed_);
+        twist.angular.z = (current_target.angle_err >= 0.0) ? ang_spd : -ang_spd;
       } else {
         twist.angular.z = 0.0;
       }
@@ -2587,6 +2662,131 @@ public:
     while (angle > M_PI) angle -= 2.0 * M_PI;
     while (angle < -M_PI) angle += 2.0 * M_PI;
     return angle;
+  }
+
+  void handleTurnToMapYaw(
+    const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+    std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+  {
+    if (is_navigating_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy with navigation task";
+      publishStatus(res->message);
+      return;
+    }
+
+    if (is_facing_person_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy facing person";
+      publishStatus(res->message);
+      return;
+    }
+
+    if (is_searching_chair_.load()) {
+      res->success = false;
+      res->message = "Robot is currently busy searching for a chair";
+      publishStatus(res->message);
+      return;
+    }
+
+    if (is_turning_.exchange(true)) {
+      res->success = false;
+      res->message = "Robot is already executing a turn";
+      publishStatus(res->message);
+      return;
+    }
+
+    const double target_yaw = normalize_angle(turn_left_map_yaw_deg_ * M_PI / 180.0);
+    publishStatus(
+      "Service /receptionist/left called: Rotating to map yaw " +
+      std::to_string(turn_left_map_yaw_deg_) + " deg...");
+
+    // Tunggu pembacaan yaw terhadap peta (TF map -> base_link) maksimal ~1 detik
+    double cur_yaw = 0.0;
+    bool got_yaw = false;
+    for (int i = 0; i < 20; ++i) {
+      if (getMapYaw(cur_yaw)) {
+        got_yaw = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    if (!got_yaw) {
+      is_turning_ = false;
+      res->success = false;
+      res->message = "Failed to turn: Map TF yaw (" + global_frame_ + " -> base_link) not available";
+      publishStatus(res->message);
+      RCLCPP_ERROR(
+        get_logger(),
+        "\033[1;31m[TURN MAP]\033[0m Map TF yaw (%s -> base_link) not available",
+        global_frame_.c_str());
+      return;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "\033[1;32m[TURN MAP]\033[0m Rotating to map yaw %.1f deg (%.2f rad), current map yaw: %.2f rad",
+      turn_left_map_yaw_deg_, target_yaw, cur_yaw);
+
+    auto start_time = now();
+    rclcpp::Rate loop_rate(30.0);
+    int centered_count = 0;
+    bool success = false;
+    const double max_spd = std::abs(turn_left_max_speed_);
+    const double min_spd = std::min(std::abs(turn_left_min_speed_), max_spd);
+
+    while (rclcpp::ok() && is_turning_.load()) {
+      if ((now() - start_time).seconds() > turn_left_timeout_sec_) {
+        RCLCPP_WARN(
+          get_logger(),
+          "\033[1;33m[TURN MAP]\033[0m Timeout reached (%.1fs)",
+          turn_left_timeout_sec_);
+        break;
+      }
+
+      if (!getMapYaw(cur_yaw)) {
+        loop_rate.sleep();
+        continue;
+      }
+
+      const double err = normalize_angle(target_yaw - cur_yaw);
+      if (std::abs(err) <= turn_left_tolerance_rad_) {
+        centered_count++;
+        if (centered_count >= 3) {
+          success = true;
+          break;
+        }
+      } else {
+        centered_count = 0;
+      }
+
+      double w = turn_left_p_gain_ * err;
+      double spd = std::clamp(std::abs(w), min_spd, max_spd);
+
+      geometry_msgs::msg::Twist twist;
+      twist.linear.x = 0.0;
+      twist.linear.y = 0.0;
+      twist.angular.z = (err >= 0.0) ? spd : -spd;
+      cmd_vel_pub_->publish(twist);
+
+      loop_rate.sleep();
+    }
+
+    stopRobot();
+    is_turning_ = false;
+
+    if (success) {
+      res->success = true;
+      res->message = "Rotated to map yaw " + std::to_string(turn_left_map_yaw_deg_) + " deg";
+      publishStatus(res->message);
+      RCLCPP_INFO(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Turn Map: %s", res->message.c_str());
+    } else {
+      res->success = false;
+      res->message = "Turn to map yaw timed out or interrupted";
+      publishStatus(res->message);
+      RCLCPP_WARN(get_logger(), "\033[1;36m[RECEPTIONIST]\033[0m\n  Turn Map: %s", res->message.c_str());
+    }
   }
 
   void handleTurnRelative(
@@ -3001,7 +3201,13 @@ private:
   double host_seated_max_dist_{3.0};
   double guest_door_distance_{1.2};
   double guest_door_distance_min_{0.9};
+  double guest_door_step_forward_speed_{0.25};
+  double guest_door_step_forward_min_speed_{0.10};
+  double guest_door_step_forward_p_gain_{0.40};
   double guest_door_step_back_speed_{0.18};
+  double guest_door_step_back_min_speed_{0.08};
+  double guest_door_step_back_p_gain_{0.35};
+  double guest_door_adjust_angular_speed_{0.12};
   double guest_door_timeout_sec_{15.0};
   double guest_approach_distance_{0.7};
   double guest_approach_speed_{0.16};
@@ -3046,6 +3252,13 @@ private:
   double turn_90_tolerance_rad_{0.04};
   double turn_90_timeout_sec_{15.0};
   double turn_90_p_gain_{1.5};
+
+  double turn_left_map_yaw_deg_{0.0};
+  double turn_left_min_speed_{0.14};
+  double turn_left_max_speed_{0.35};
+  double turn_left_tolerance_rad_{0.04};
+  double turn_left_timeout_sec_{15.0};
+  double turn_left_p_gain_{1.5};
 
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_left_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_turn_right_;

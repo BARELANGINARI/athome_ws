@@ -6,11 +6,11 @@ receptionist_node:
       y: 0.0                               # Posisi Y pintu
       yaw: 180.0                           # Sudut hadap pintu
     beverage_area:
-      x: 1.9                               # Posisi X minuman
+      x: 2.0                               # Posisi X minuman
       y: 2.1                               # Posisi Y minuman
       yaw: 270.0                           # Sudut hadap minuman
     living_room:
-      x: 2.4                               # Posisi X tamu
+      x: 2.5                               # Posisi X tamu
       y: -0.25                             # Posisi Y tamu
       yaw: -130.0                          # Sudut hadap tamu
 
@@ -37,8 +37,14 @@ receptionist_node:
     camera_width: 1280                     # Lebar piksel kamera
 
     guest_door_distance: 1.5               # Jarak tamu pintu
-    guest_door_distance_min: 1.35          # Jarak min pintu
-    guest_door_step_back_speed: 0.22       # Kecepatan mundur pintu
+    guest_door_distance_min: 1.3          # Jarak min pintu
+    guest_door_step_forward_speed: 0.50    # Kecepatan maks maju adjust pintu
+    guest_door_step_forward_min_speed: 0.35 # Kecepatan min maju adjust pintu
+    guest_door_step_forward_p_gain: 0.40   # P-gain maju adjust pintu
+    guest_door_step_back_speed: 0.40       # Kecepatan mundur pintu
+    guest_door_step_back_min_speed: 0.20   # Kecepatan min mundur adjust pintu
+    guest_door_step_back_p_gain: 0.35      # P-gain mundur adjust pintu
+    guest_door_adjust_angular_speed: 0.12  # Kecepatan koreksi sudut saat adjust pintu
     guest_door_timeout_sec: 15.0           # Timeout mundur pintu
     guest_door_align_tolerance: 0.07       # Toleransi lurus pintu
     guest_approach_distance: 0.7           # Jarak dekati tamu
@@ -60,11 +66,19 @@ receptionist_node:
 
     # Relative 90-degree turn settings
     turn_90_angular_speed: 0.30            # Kecepatan belok kanan/kiri
-    turn_90_min_speed: 0.14                # Kecepatan min belok
+    turn_90_min_speed: 0.20                # Kecepatan min belok
     turn_90_max_speed: 0.55                # Kecepatan maks belok
     turn_90_tolerance_rad: 0.04            # Toleransi sudut belok
     turn_90_timeout_sec: 15.0              # Timeout belok robot
     turn_90_p_gain: 1.5                    # Gain belok robot
+
+    # Map-frame absolute yaw turn settings (/receptionist/left)
+    turn_left_map_yaw_deg: 0.0             # Target sudut hadap terhadap peta (derajat, 0.0 = 0 deg map)
+    turn_left_min_speed: 0.14              # Kecepatan rotasi min /receptionist/left (rad/s)
+    turn_left_max_speed: 0.55              # Kecepatan rotasi maks /receptionist/left (rad/s)
+    turn_left_tolerance_rad: 0.04          # Toleransi sudut target /receptionist/left (rad)
+    turn_left_timeout_sec: 15.0            # Timeout rotasi /receptionist/left (detik)
+    turn_left_p_gain: 1.5                  # P-gain rotasi /receptionist/left
 
 receptionist_manager:
   ros__parameters:
@@ -74,7 +88,10 @@ receptionist_manager:
       interest: "Robotics"                 # Minat hobi host
       gender: "male"                       # Gender profil host
       shirt_color: "black"                 # Warna baju host
+      pants_color: ""                      # Warna celana host (opsional)
       hair_color: "black"                  # Warna rambut host
+      has_hat: false                       # Apakah host memakai topi
+      has_glasses: false                   # Apakah host memakai kacamata
     camera_width: 1280                     # Lebar piksel kamera
     global_timeout_sec: 600.0              # Batas waktu task
     nav_service_timeout_sec: 50.0          # Timeout layanan navigasi
@@ -201,6 +218,9 @@ vision:
     host_name: "Fahri"                     # Nama host utama
     host_photo: "models/receptionist/host.jpg" # Foto wajah host
     host_shirt_color: ""                   # Warna baju host
+    host_pants_color: ""                   # Warna celana host
     host_gender: ""                        # Gender profil host
     host_hair_color: ""                    # Warna rambut host
+    host_hat: false                        # Apakah host memakai topi
+    host_glasses: false                    # Apakah host memakai kacamata
 

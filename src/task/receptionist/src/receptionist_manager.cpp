@@ -162,11 +162,26 @@ public:
     host_.gender = requireYamlParameter<std::string>("host.gender");
     host_.shirt_color = requireYamlParameter<std::string>("host.shirt_color");
     host_.hair_color = requireYamlParameter<std::string>("host.hair_color");
+    declare_parameter<std::string>("host.pants_color", "");
+    declare_parameter<bool>("host.has_hat", false);
+    declare_parameter<bool>("host.has_glasses", false);
+    host_.pants_color = get_parameter("host.pants_color").as_string();
+    host_.has_hat = get_parameter("host.has_hat").as_bool();
+    host_.has_glasses = get_parameter("host.has_glasses").as_bool();
     host_.attributes = {
       host_.gender,
       host_.shirt_color + " shirt",
       host_.hair_color + " hair"
     };
+    if (!host_.pants_color.empty()) {
+      host_.attributes.push_back(host_.pants_color);
+    }
+    if (host_.has_hat) {
+      host_.attributes.push_back("wearing hat");
+    }
+    if (host_.has_glasses) {
+      host_.attributes.push_back("wearing glasses");
+    }
     camera_width_ = requireYamlParameter<int>("camera_width");
 
     global_timeout_sec_ = requireYamlParameter<double>("global_timeout_sec");
@@ -1917,11 +1932,13 @@ private:
                                 plabel_lower.find("duduk") != std::string::npos);
         const bool is_host = (!host_lower.empty() && plabel_lower.find(host_lower) != std::string::npos);
         const bool is_standing_3d = (pitem_lower.find("standing=1") != std::string::npos);
+        int bx = 0, by = 0, bw = 0, bh = 0;
+        bool has_bbox = false;
         bool is_tall_bbox = false;
         const auto bbar = pitem.find('|');
         if (colon_pos != std::string::npos && bbar != std::string::npos && bbar > colon_pos) {
-          int bx = 0, by = 0, bw = 0, bh = 0;
           if (std::sscanf(pitem.substr(colon_pos + 1, bbar - colon_pos - 1).c_str(), "%d,%d,%d,%d", &bx, &by, &bw, &bh) == 4) {
+            has_bbox = true;
             is_tall_bbox = (bw > 0 && bh >= static_cast<int>(bw * 1.70));
           }
         }
@@ -1944,7 +1961,33 @@ private:
           has_lower_kpt = (kv(18) || kv(22)) && (kv(19) || kv(23));
         }
         const bool is_fullbody_standing = !is_seated && (is_standing_3d || (has_lower_kpt && is_tall_bbox));
-        if (is_fullbody_standing && !is_host) {
+        (void)is_fullbody_standing;
+
+        // Hitung sudut target terhadap kamera (3D jika tersedia, fallback ke bbox 2D)
+        double angle = 0.0;
+        bool has_angle = false;
+        if (bbar != std::string::npos) {
+          const auto bbar2 = pitem.find('|', bbar + 1);
+          const std::string coord_str = (bbar2 != std::string::npos)
+            ? pitem.substr(bbar + 1, bbar2 - bbar - 1)
+            : pitem.substr(bbar + 1);
+          double pos_x = 0.0, pos_y = 0.0, pos_z = 0.0;
+          if (coord_str.find("nan") == std::string::npos &&
+              std::sscanf(coord_str.c_str(), "%lf,%lf,%lf", &pos_x, &pos_y, &pos_z) == 3 &&
+              (pos_x > 0.05 || std::abs(pos_y) > 0.05))
+          {
+            angle = std::atan2(-pos_y, pos_x);
+            has_angle = true;
+          }
+        }
+        if (!has_angle && has_bbox) {
+          const int cx = bx + bw / 2;
+          const double half_w = (camera_width_ > 0) ? (camera_width_ / 2.0) : 336.0;
+          angle = -((cx - half_w) / half_w) * 0.75;
+          has_angle = true;
+        }
+
+        if (!is_seated && !is_host && has_angle && std::abs(angle) <= 0.50) {
           has_standing_guest = true;
           break;
         }
