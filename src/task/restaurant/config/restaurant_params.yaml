@@ -26,7 +26,7 @@ restaurant_node:
 
     # 3. Customer Search Rotation Settings
     search_sweep_angle_deg: 90.0         # Sudut sapuan pencarian
-    search_angular_speed: 0.15           # Kecepatan putar pencarian
+    search_angular_speed: 0.18           # Kecepatan putar pencarian
     search_hold_time_sec: 0.5            # Jeda ujung sapuan
     search_timeout_sec: 35.0             # Batas waktu pencarian
     cmd_vel_topic: "/cmd_vel"            # Topik kecepatan robot
