@@ -36,6 +36,7 @@
   const speechBubble = document.getElementById("speech-bubble");
   const speechText = document.getElementById("speech-text");
   const emotionLabel = document.getElementById("current-emotion-label");
+  const hudBar = document.getElementById("hud-bar");
   const testToolbar = document.getElementById("test-toolbar");
   const btnToggleToolbar = document.getElementById("btn-toggle-toolbar");
   const btnCloseToolbar = document.getElementById("btn-close-toolbar");
@@ -54,35 +55,27 @@
   let saccadeTimer = null;
   let scanTimer = null;
   let ws = null;
-  let refreshInterval = null;
+  let reconnectTimer = null;
+  let wasDisconnected = false;
 
-  function stopDisconnectRefreshLoop() {
-    if (refreshInterval !== null) {
-      clearInterval(refreshInterval);
-      refreshInterval = null;
+  function hideCleanControls() {
+    if (testToolbar) testToolbar.classList.add("hidden");
+    if (hudBar) hudBar.classList.remove("visible");
+  }
+
+  function clearReconnectTimer() {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
     }
   }
 
-  function startDisconnectRefreshLoop() {
-    if (refreshInterval !== null) return;
-    refreshInterval = setInterval(async () => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        stopDisconnectRefreshLoop();
-        return;
-      }
-      console.log("[AthomeFace] Disconnected, attempting web refresh...");
-      try {
-        const res = await fetch(window.location.href, {
-          method: "HEAD",
-          cache: "no-store"
-        });
-        if (res.ok) {
-          window.location.reload();
-        }
-      } catch (err) {
-        console.warn("[AthomeFace] Server unreachable, retrying refresh in 5s...");
-      }
-    }, 5000);
+  function scheduleWebSocketReconnect() {
+    if (reconnectTimer !== null) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connectWebSocket();
+    }, 2000);
   }
   let isSpeechActive = false;
   let subtitleTimer = null;
@@ -401,6 +394,7 @@
   }
 
   function connectWebSocket() {
+    clearReconnectTimer();
     const host = window.location.hostname || "localhost";
     const wsUrl = `ws://${host}:8766`;
 
@@ -408,23 +402,38 @@
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        stopDisconnectRefreshLoop();
+        clearReconnectTimer();
         wsDot.className = "dot connected";
         wsLabel.innerText = "ROS 2 CONNECTED";
+        if (wasDisconnected) {
+          wasDisconnected = false;
+          hideCleanControls();
+          hideSubtitle();
+          handleCustomerDisplay({ action: "hide" });
+          setEmotion("IDLE");
+        }
         console.log("[AthomeFace] Connected to ROS 2 WebSocket on " + wsUrl);
       };
 
       ws.onclose = () => {
+        wasDisconnected = true;
+        ws = null;
         wsDot.className = "dot disconnected";
         wsLabel.innerText = "STANDALONE PREVIEW";
-        startDisconnectRefreshLoop();
-        setTimeout(connectWebSocket, 3000);
+        scheduleWebSocketReconnect();
       };
 
       ws.onerror = () => {
+        wasDisconnected = true;
         wsDot.className = "dot disconnected";
         wsLabel.innerText = "STANDALONE PREVIEW";
-        startDisconnectRefreshLoop();
+        if (ws && ws.readyState !== WebSocket.CLOSED) {
+          try {
+            ws.close();
+          } catch (_) {}
+        } else {
+          scheduleWebSocketReconnect();
+        }
       };
 
       ws.onmessage = (event) => {
@@ -455,8 +464,9 @@
         }
       };
     } catch (e) {
+      wasDisconnected = true;
       console.log("[AthomeFace] Running in standalone preview mode.");
-      startDisconnectRefreshLoop();
+      scheduleWebSocketReconnect();
     }
   }
 
@@ -553,6 +563,9 @@
 
   function toggleToolbar() {
     testToolbar.classList.toggle("hidden");
+    if (hudBar) {
+      hudBar.classList.toggle("visible", !testToolbar.classList.contains("hidden"));
+    }
   }
 
   btnToggleToolbar.addEventListener("click", (e) => {
@@ -562,7 +575,7 @@
 
   btnCloseToolbar.addEventListener("click", (e) => {
     e.stopPropagation();
-    testToolbar.classList.add("hidden");
+    hideCleanControls();
   });
 
   document.querySelectorAll(".btn-expr").forEach((btn) => {
@@ -620,6 +633,7 @@
   });
 
   window.addEventListener("load", () => {
+    hideCleanControls();
     setEmotion("IDLE");
     startRandomBlinking();
     connectWebSocket();

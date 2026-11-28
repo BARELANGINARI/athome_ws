@@ -340,6 +340,8 @@ public:
       "/vision/camera_capture_face", rclcpp::ServicesQoS(), callback_group_);
 
     // Navigation helper services (dari restaurant_node jika dijalankan bersamaan)
+    search_client_ = create_client<Trigger>(
+      "/search", rclcpp::ServicesQoS(), callback_group_);
     go_to_order_client_ = create_client<Trigger>(
       "/go_to_order", rclcpp::ServicesQoS(), callback_group_);
     go_to_order1_client_ = create_client<Trigger>(
@@ -464,6 +466,8 @@ private:
   rclcpp::Time task_start_time_;
   rclcpp::Time state_enter_time_;
   rclcpp::Time last_wave_prompt_time_{0, 0, RCL_ROS_TIME};
+  rclcpp::Time last_search_time_{0, 0, RCL_ROS_TIME};
+  bool search_attempted_in_state_{false};
   rclcpp::Time tts_cooldown_until_{0, 0, RCL_ROS_TIME};
   rclcpp::Time tts_started_time_{0, 0, RCL_ROS_TIME};
   rclcpp::Time last_nav_fail_time_{0, 0, RCL_ROS_TIME};
@@ -524,6 +528,7 @@ private:
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_action_client_;
   TriggerClient::SharedPtr vision_wave_hand_client_;
   TriggerClient::SharedPtr vision_capture_face_client_;
+  TriggerClient::SharedPtr search_client_;
   TriggerClient::SharedPtr go_to_order_client_;
   TriggerClient::SharedPtr go_to_order1_client_;
   TriggerClient::SharedPtr deliver_order_client_;
@@ -632,6 +637,8 @@ private:
       has_waving_person_coords_ = false;
       detected_items_.clear();
       has_last_order1_3d_ = false;
+      last_search_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+      search_attempted_in_state_ = false;
     }
     if (person_name_pub_) {
       std_msgs::msg::String msg;
@@ -704,6 +711,8 @@ private:
       std::lock_guard<std::mutex> lock(vision_mutex_);
       wave_detected_ = false;
       last_wave_prompt_time_ = now();
+      last_search_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+      search_attempted_in_state_ = false;
     }
     if (next_state == RestaurantState::DETECT_AND_NAV_TO_ORDER1) {
       std::lock_guard<std::mutex> lock(vision_mutex_);
@@ -998,6 +1007,36 @@ private:
       }
     }
     navigateToRelativeOrMapTargetAsync(wx, wy, customer_standoff_dist_, std::move(on_finished));
+  }
+
+  // Mengumumkan pelanggan ditemukan, menyegarkan koordinat via /vision/wave_hand, lalu lanjut navigasi
+  void announceAndNavigateToWavingCustomer(const std::string & fallback_reason)
+  {
+    speakAsync("I see you, I am coming.", [this, fallback_reason]() {
+      if (vision_wave_hand_client_ && vision_wave_hand_client_->service_is_ready()) {
+        callTrigger(
+          vision_wave_hand_client_, "/vision/wave_hand",
+          [this](bool ok, const std::string & msg) {
+            double px = 0.0, py = 0.0;
+            if (parseCoordinates(msg, px, py)) {
+              std::lock_guard<std::mutex> lock(vision_mutex_);
+              waving_person_x_ = px;
+              waving_person_y_ = -py;
+              has_waving_person_coords_ = true;
+            }
+            RCLCPP_INFO(
+              get_logger(),
+              "[VISION] Service /vision/wave_hand finished (ok=%s, msg='%s')",
+              ok ? "true" : "false", msg.c_str());
+            transitionTo(
+              RestaurantState::NAV_TO_WAVING_CUSTOMER,
+              "Wave hand processed, navigating to customer");
+          },
+          10.0);
+      } else {
+        transitionTo(RestaurantState::NAV_TO_WAVING_CUSTOMER, fallback_reason);
+      }
+    });
   }
 
   // Navigasi kembali ke titik origin (barman place)
@@ -2242,37 +2281,41 @@ private:
         }
 
         if (waved) {
-          speakAsync("I see you, I am coming.", [this]() {
-            if (vision_wave_hand_client_ && vision_wave_hand_client_->service_is_ready()) {
-              callTrigger(
-                vision_wave_hand_client_, "/vision/wave_hand",
-                [this](bool ok, const std::string & msg) {
-                  double px = 0.0, py = 0.0;
-                  if (parseCoordinates(msg, px, py)) {
-                    std::lock_guard<std::mutex> lock(vision_mutex_);
-                    waving_person_x_ = px;
-                    waving_person_y_ = -py;
-                    has_waving_person_coords_ = true;
-                  }
-                  RCLCPP_INFO(
-                    get_logger(),
-                    "[VISION] Service /vision/wave_hand finished (ok=%s, msg='%s')",
-                    ok ? "true" : "false", msg.c_str());
-                  transitionTo(
-                    RestaurantState::NAV_TO_WAVING_CUSTOMER,
-                    "Wave hand processed, navigating to customer");
-                },
-                10.0);
-            } else {
-              transitionTo(
-                RestaurantState::NAV_TO_WAVING_CUSTOMER,
-                "Wave hand detected via vision topic, navigating to customer");
-            }
-          });
-        } else if (vision_wave_hand_client_ && vision_wave_hand_client_->service_is_ready() &&
+          announceAndNavigateToWavingCustomer(
+            "Wave hand detected via vision topic, navigating to customer");
+        } else if (search_client_ && search_client_->service_is_ready() &&
+                   (now() - state_enter_time_).seconds() >= 1.0 &&
+                   (!search_attempted_in_state_ ||
+                    (now() - last_search_time_).seconds() >= wave_reprompt_sec_))
+        {
+          search_attempted_in_state_ = true;
+          last_search_time_ = now();
+          RCLCPP_INFO(
+            get_logger(),
+            "\033[1;36m[SEARCH]\033[0m Calling /search service for Customer %d...",
+            customer_idx_);
+          callTrigger(
+            search_client_, "/search",
+            [this](bool ok, const std::string & msg) {
+              last_search_time_ = now();
+              RCLCPP_INFO(
+                get_logger(),
+                "[SEARCH] Service /search finished (ok=%s, msg='%s')",
+                ok ? "true" : "false", msg.c_str());
+              if (ok) {
+                announceAndNavigateToWavingCustomer(
+                  "Customer found via /search, navigating to customer");
+              } else {
+                last_wave_prompt_time_ = now();
+                speakAsync("If you would like to order, please wave your hand.");
+              }
+            },
+            40.0);
+        } else if ((!search_client_ || !search_client_->service_is_ready()) &&
+                   vision_wave_hand_client_ && vision_wave_hand_client_->service_is_ready() &&
                    (now() - state_enter_time_).seconds() >= 2.0)
         {
-          // Jika deteksi wave disediakan langsung oleh service /vision/wave_hand
+          // Fallback jika /search tidak tersedia: deteksi langsung via /vision/wave_hand
           callTrigger(
             vision_wave_hand_client_, "/vision/wave_hand",
             [this](bool ok, const std::string & msg) {

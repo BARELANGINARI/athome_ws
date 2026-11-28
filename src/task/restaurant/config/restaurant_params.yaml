@@ -6,7 +6,7 @@ restaurant_node:
     # 1. Homing / Origin Settings
     origin_x: 0.0                        # Posisi X awal
     origin_y: 0.0                        # Posisi Y awal
-    origin_yaw: 0.0                      # Sudut hadap awal
+    origin_yaw: 1.5708                   # Sudut hadap awal (90 derajat dalam radian)
     global_frame: "map"                  # Frame peta global
     base_frame: "base_link"              # Frame dasar robot
 
@@ -26,7 +26,7 @@ restaurant_node:
 
     # 3. Customer Search Rotation Settings
     search_sweep_angle_deg: 90.0         # Sudut sapuan pencarian
-    search_angular_speed: 0.35           # Kecepatan putar pencarian
+    search_angular_speed: 0.15           # Kecepatan putar pencarian
     search_hold_time_sec: 0.5            # Jeda ujung sapuan
     search_timeout_sec: 35.0             # Batas waktu pencarian
     cmd_vel_topic: "/cmd_vel"            # Topik kecepatan robot

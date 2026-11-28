@@ -40,6 +40,11 @@ html, body {
   cursor: pointer;
 }
 
+:fullscreen .stage,
+:-webkit-full-screen .stage {
+  cursor: none;
+}
+
 .hud-bar {
   position: absolute;
   top: 0;
@@ -50,12 +55,13 @@ html, body {
   justify-content: space-between;
   align-items: center;
   padding: 0 16px;
-  opacity: 0.7;
+  opacity: 0;
   transition: opacity 0.3s;
   z-index: 50;
 }
 
-.hud-bar:hover {
+.hud-bar:hover,
+.hud-bar.visible {
   opacity: 1.0;
 }
 
