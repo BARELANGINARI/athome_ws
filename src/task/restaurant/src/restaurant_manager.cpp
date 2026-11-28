@@ -71,8 +71,8 @@ enum class RestaurantState {
   NAV_DELIVER_TO_CUSTOMER,        // 9a. Navigasi kembali ke koordinat pelanggan
   GREET_DELIVERY_CUSTOMER,        // 9b. "Hello {name}, i have brought the order you requested"
   WAIT_1S_BEFORE_RELEASE_PROMPT,  // 9c. Tunggu 1 detik
-  PROMPT_RELEASE_ORDER1,          // 9d. "for {order_1}, please hold out your hand beneath this order..."
-  RELEASE_GRIPPER_AND_TORQUE_OFF, // 9e. Panggil service release gripper lalu matikan torsi arm (/arm/free)
+  PROMPT_RELEASE_ORDER1,          // 9d. Jalankan MOTION 1 (/arm/raising_arm) lalu prompt "for {order_1}..."
+  RELEASE_GRIPPER_AND_TORQUE_OFF, // 9e. Jalankan MOTION 2 (/arm/release_gripper) lalu relax arm (/arm/relax)
   PROMPT_TAKE_ORDER2_TRAY,        // 9f. "for {order_2} please take it from the tray"
   WAIT_5S_CUSTOMER_TAKE_TRAY,     // 9g. Tunggu 5 detik -> "thank you for your order"
   NAV_RETURN_ORIGIN_AFTER_SERVE,  // 9h/10. Kembali ke origin_position, lalu cek loop pelanggan ke-2
@@ -354,10 +354,10 @@ public:
     // Arm Services
     arm_grab_simple_client_ = create_client<Trigger>(
       "/arm/ambil_order", rclcpp::ServicesQoS(), callback_group_);
-    arm_release_client_ = create_client<Trigger>(
+    arm_raising_arm_client_ = create_client<Trigger>(
+      "/arm/raising_arm", rclcpp::ServicesQoS(), callback_group_);
+    arm_release_gripper_client_ = create_client<Trigger>(
       "/arm/release_gripper", rclcpp::ServicesQoS(), callback_group_);
-    arm_letakkan_client_ = create_client<Trigger>(
-      "/arm/letakkan_tas", rclcpp::ServicesQoS(), callback_group_);
     arm_free_client_ = create_client<Trigger>(
       "/arm/free", rclcpp::ServicesQoS(), callback_group_);
     arm_relax_client_ = create_client<Trigger>(
@@ -530,8 +530,8 @@ private:
   TriggerClient::SharedPtr homing_client_;
   TriggerClient::SharedPtr find_barman_client_;
   TriggerClient::SharedPtr arm_grab_simple_client_;
-  TriggerClient::SharedPtr arm_release_client_;
-  TriggerClient::SharedPtr arm_letakkan_client_;
+  TriggerClient::SharedPtr arm_raising_arm_client_;
+  TriggerClient::SharedPtr arm_release_gripper_client_;
   TriggerClient::SharedPtr arm_free_client_;
   TriggerClient::SharedPtr arm_relax_client_;
 
@@ -2051,39 +2051,31 @@ private:
       });
   }
 
-  // Memanggil service release gripper lalu mematikan torsi arm (/arm/free)
+  // Memanggil service MOTION 2 (/arm/release_gripper) lalu relax arm (/arm/relax)
   void releaseGripperAndTorqueOff(std::function<void()> on_done)
   {
-    TriggerClient::SharedPtr release_client = arm_release_client_;
-    std::string release_srv_name = "/arm/release_gripper";
-    if (!release_client || !release_client->service_is_ready()) {
-      release_client = arm_letakkan_client_;
-      release_srv_name = "/arm/letakkan_tas";
-    }
-
     RCLCPP_INFO(
       get_logger(),
-      "\033[1;36m[ARM]\033[0m Releasing gripper via %s...",
-      release_srv_name.c_str());
+      "\033[1;36m[ARM]\033[0m Releasing gripper via /arm/release_gripper...");
 
     callTrigger(
-      release_client, release_srv_name,
+      arm_release_gripper_client_, "/arm/release_gripper",
       [this, on_done](bool /*rel_ok*/, const std::string & rel_msg) {
         RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Arm: Release gripper: %s", rel_msg.c_str());
 
-        TriggerClient::SharedPtr free_client = arm_free_client_;
-        std::string free_srv_name = "/arm/free";
-        if ((!free_client || !free_client->service_is_ready()) &&
-            arm_relax_client_ && arm_relax_client_->service_is_ready())
+        TriggerClient::SharedPtr relax_client = arm_relax_client_;
+        std::string relax_srv_name = "/arm/relax";
+        if ((!relax_client || !relax_client->service_is_ready()) &&
+            arm_free_client_ && arm_free_client_->service_is_ready())
         {
-          free_client = arm_relax_client_;
-          free_srv_name = "/arm/relax";
+          relax_client = arm_free_client_;
+          relax_srv_name = "/arm/free";
         }
 
         callTrigger(
-          free_client, free_srv_name,
-          [this, on_done](bool /*free_ok*/, const std::string & free_msg) {
-            RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Arm: Torque off: %s", free_msg.c_str());
+          relax_client, relax_srv_name,
+          [this, on_done](bool /*relax_ok*/, const std::string & relax_msg) {
+            RCLCPP_INFO(get_logger(), "\033[1;34m[RESTAURANT]\033[0m\n  Arm: Relax gripper: %s", relax_msg.c_str());
             if (on_done) {
               on_done();
             }
@@ -2368,7 +2360,7 @@ private:
       // ========================================================================
       case RestaurantState::ASK_CUSTOMER_ORDER:
         speakAsync(
-          "Hello, welcome! May I take your order? Please say your items separated by and.",
+          "Hello, welcome! May I take your order? Please say your items, separated by and. example, i order your order 1 and your order 2",
           [this]() {
             transitionTo(
               RestaurantState::WAIT_CUSTOMER_ORDER,
@@ -2842,13 +2834,25 @@ private:
           std::lock_guard<std::mutex> lock(customer_mutex_);
           o1 = current_customer_.orders.empty() ? "this item" : current_customer_.orders[0];
         }
-        speakAsync(
-          "For " + o1 + ", please hold your hand under my gripper. Releasing on one, two, three.",
-          [this]() {
-            transitionTo(
-              RestaurantState::RELEASE_GRIPPER_AND_TORQUE_OFF,
-              "Releasing gripper and turning arm torque off");
-          });
+        RCLCPP_INFO(
+          get_logger(),
+          "\033[1;36m[ARM]\033[0m Raising arm via /arm/raising_arm...");
+        callTrigger(
+          arm_raising_arm_client_, "/arm/raising_arm",
+          [this, o1](bool raise_ok, const std::string & raise_msg) {
+            RCLCPP_INFO(
+              get_logger(),
+              "\033[1;34m[RESTAURANT]\033[0m\n  Arm: Raising arm (ok=%s): %s",
+              raise_ok ? "true" : "false", raise_msg.c_str());
+            speakAsync(
+              "For " + o1 + ", please hold your hand under my gripper. Releasing on one, two, three.",
+              [this]() {
+                transitionTo(
+                  RestaurantState::RELEASE_GRIPPER_AND_TORQUE_OFF,
+                  "Releasing gripper and relaxing arm");
+              });
+          },
+          20.0);
         break;
       }
 

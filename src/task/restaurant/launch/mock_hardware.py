@@ -27,6 +27,7 @@ class MockHardwareNode(Node):
         '/vision/wave_hand',
         '/vision/camera_capture_face',
         '/arm/ambil_order',
+        '/arm/raising_arm',
         '/arm/release_gripper',
         '/arm/letakkan_tas',
         '/arm/free',
