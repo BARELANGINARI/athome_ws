@@ -68,6 +68,8 @@ enum class ReceptionistState {
   WAIT_GUEST_SIT,
   RETURN_TO_LIVING_ROOM,
   // Phase 4 — Post-Seating Introductions & Similarity (Guest 2 cycle)
+  INTRODUCE_G1_TO_HOST,
+  INTRODUCE_G2_TO_HOST,
   INTRODUCE_G1_TO_G2,
   INTRODUCE_G2_TO_G1,
   EVALUATE_SIMILARITY,
@@ -103,6 +105,8 @@ static std::string stateToString(ReceptionistState state)
     case ReceptionistState::OFFER_SEAT:              return "OFFER_SEAT";
     case ReceptionistState::WAIT_GUEST_SIT:          return "WAIT_GUEST_SIT";
     case ReceptionistState::RETURN_TO_LIVING_ROOM:   return "RETURN_TO_LIVING_ROOM";
+    case ReceptionistState::INTRODUCE_G1_TO_HOST:    return "INTRODUCE_G1_TO_HOST";
+    case ReceptionistState::INTRODUCE_G2_TO_HOST:    return "INTRODUCE_G2_TO_HOST";
     case ReceptionistState::INTRODUCE_G1_TO_G2:      return "INTRODUCE_G1_TO_G2";
     case ReceptionistState::INTRODUCE_G2_TO_G1:      return "INTRODUCE_G2_TO_G1";
     case ReceptionistState::EVALUATE_SIMILARITY:     return "EVALUATE_SIMILARITY";
@@ -270,6 +274,8 @@ public:
 
     search_chair_client_ = create_client<Trigger>(
       "/search_chair", rclcpp::ServicesQoS(), callback_group_);
+    face_host_client_ = create_client<Trigger>(
+      "/receptionist/host", rclcpp::ServicesQoS(), callback_group_);
     face_guest1_client_ = create_client<Trigger>(
       "/receptionist/guest1", rclcpp::ServicesQoS(), callback_group_);
     face_guest2_client_ = create_client<Trigger>(
@@ -368,6 +374,7 @@ private:
   PersonProfile current_guest_;
   int guest_idx_{1};
   int search_chair_retries_{0};
+  int face_host_retries_{0};
   int face_g1_retries_{0};
   int face_g2_retries_{0};
   std::vector<std::string> known_names_;
@@ -458,6 +465,7 @@ private:
   TriggerClient::SharedPtr nav_beverage_client_;
   TriggerClient::SharedPtr nav_living_room_client_;
   TriggerClient::SharedPtr search_chair_client_;
+  TriggerClient::SharedPtr face_host_client_;
   TriggerClient::SharedPtr face_guest1_client_;
   TriggerClient::SharedPtr face_guest2_client_;
   TriggerClient::SharedPtr adjust_guest_client_;
@@ -538,6 +546,8 @@ private:
       case ReceptionistState::CONFIRM_GUEST_INFO:
       case ReceptionistState::ASK_DRINK:
       case ReceptionistState::CONFIRM_DRINK:
+      case ReceptionistState::INTRODUCE_G1_TO_HOST:
+      case ReceptionistState::INTRODUCE_G2_TO_HOST:
       case ReceptionistState::INTRODUCE_G1_TO_G2:
       case ReceptionistState::INTRODUCE_G2_TO_G1:
         return "GREETING";
@@ -613,6 +623,7 @@ private:
       resetGuestProfileFields(current_guest_, idx);
     }
     search_chair_retries_ = 0;
+    face_host_retries_ = 0;
     face_g1_retries_ = 0;
     face_g2_retries_ = 0;
     g1_desc_announced_ = false;
@@ -795,6 +806,17 @@ private:
         if (on_finished) on_finished(success, msg);
       },
       45.0);
+  }
+
+  void faceHost(std::function<void(bool, const std::string &)> on_finished)
+  {
+    callTrigger(
+      face_host_client_, "/receptionist/host",
+      [this, on_finished](bool success, const std::string & msg) {
+        RCLCPP_INFO(get_logger(), "[HOST] %s (%s)", success ? "OK" : "WARN", msg.c_str());
+        if (on_finished) on_finished(success, msg);
+      },
+      25.0);
   }
 
   void faceGuest1(std::function<void(bool, const std::string &)> on_finished)
@@ -2818,6 +2840,7 @@ private:
         navigateTo("living_room", [this](bool success) {
           if (!success) return;
           search_chair_retries_ = 0;
+          face_host_retries_ = 0;
           face_g1_retries_ = 0;
           face_g2_retries_ = 0;
           look_camera_g1_announced_ = false;
@@ -2883,16 +2906,17 @@ private:
           // Pertahankan yaw kursi yang sudah dikunci oleh /search_chair (guest_1 & guest_2)
           // hingga fase perkenalan (INTRODUCE_G1_TO_G2 / INTRODUCE_G2_TO_G1) selesai
           if (guest_idx_ == 1) {
-            initCurrentGuest(2);
-            transitionTo(
-              ReceptionistState::NAV_TO_DOOR,
-              "Guest 1 seated; returning to door for Guest 2");
-          } else {
-            after_return_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_G2;
+            after_return_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_HOST;
             return_yaw_only_ = true;
             transitionTo(
               ReceptionistState::RETURN_TO_LIVING_ROOM,
-              "Both guests seated; resetting yaw before introductions");
+              "Guest 1 seated; resetting yaw before introducing Guest 1 to Host");
+          } else {
+            after_return_living_room_state_ = ReceptionistState::INTRODUCE_G2_TO_HOST;
+            return_yaw_only_ = true;
+            transitionTo(
+              ReceptionistState::RETURN_TO_LIVING_ROOM,
+              "Guest 2 seated; resetting yaw before introducing Guest 2 to Host");
           }
         } else {
           RCLCPP_INFO_THROTTLE(
@@ -2925,6 +2949,106 @@ private:
       // ------------------------------------------------------------------------
       // PHASE 4: INTRODUCE BOTH SEATED GUESTS TO EACH OTHER & SIMILARITY BONUS
       // ------------------------------------------------------------------------
+      case ReceptionistState::INTRODUCE_G1_TO_HOST: {
+        PersonProfile host_copy, guest1;
+        {
+          std::lock_guard<std::mutex> lock(guest_mutex_);
+          if (guests_.empty()) {
+            RCLCPP_ERROR(get_logger(), "Missing Guest 1 profile for host introduction!");
+            initCurrentGuest(2);
+            transitionTo(ReceptionistState::NAV_TO_DOOR, "Skipped G1-to-Host intro (missing profile)");
+            break;
+          }
+          host_copy = host_;
+          guest1 = guests_[0];
+        }
+
+        auto speakG1ToHost = [this, host_copy, guest1]() {
+          const std::string text =
+            "Hello " + host_copy.name + ", this is " + guest1.name + ". " +
+            guest1.name + "'s favorite drink is " + guest1.drink +
+            ", and interest is " + guest1.interest + ".";
+
+          speakAsync(text, [this]() {
+            initCurrentGuest(2);
+            transitionTo(
+              ReceptionistState::NAV_TO_DOOR,
+              "Introduced Guest 1 to Host; returning to door for Guest 2");
+          });
+        };
+
+        if (face_host_client_ && face_host_client_->service_is_ready()) {
+          faceHost([this, speakG1ToHost](bool success, const std::string & /*msg*/) {
+            if (!success && face_host_retries_ < 1) {
+              face_host_retries_++;
+              after_return_living_room_state_ = ReceptionistState::INTRODUCE_G1_TO_HOST;
+              return_yaw_only_ = true;
+              transitionTo(
+                ReceptionistState::RETURN_TO_LIVING_ROOM,
+                "Face Host failed; resetting yaw for 1x retry");
+              return;
+            }
+            speakG1ToHost();
+          });
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "[HOST] Service '/receptionist/host' not ready; speaking at default living_room yaw.");
+          speakG1ToHost();
+        }
+        break;
+      }
+
+      case ReceptionistState::INTRODUCE_G2_TO_HOST: {
+        PersonProfile host_copy, guest2;
+        {
+          std::lock_guard<std::mutex> lock(guest_mutex_);
+          if (guests_.size() < 2) {
+            RCLCPP_ERROR(get_logger(), "Insufficient guest profiles (%zu < 2)!", guests_.size());
+            clearLivingRoomLocks([this]() {
+              transitionTo(ReceptionistState::FINISH_TASK, "Skipped introductions (missing profile)");
+            });
+            break;
+          }
+          host_copy = host_;
+          guest2 = guests_[1];
+        }
+
+        auto speakG2ToHost = [this, host_copy, guest2]() {
+          const std::string text =
+            "Hello " + host_copy.name + ", this is " + guest2.name + ". " +
+            guest2.name + "'s favorite drink is " + guest2.drink +
+            ", and interest is " + guest2.interest + ".";
+
+          speakAsync(text, [this]() {
+            transitionTo(
+              ReceptionistState::INTRODUCE_G1_TO_G2,
+              "Introduced Guest 2 to Host; introducing guests to each other");
+          });
+        };
+
+        if (face_host_client_ && face_host_client_->service_is_ready()) {
+          faceHost([this, speakG2ToHost](bool success, const std::string & /*msg*/) {
+            if (!success && face_host_retries_ < 1) {
+              face_host_retries_++;
+              after_return_living_room_state_ = ReceptionistState::INTRODUCE_G2_TO_HOST;
+              return_yaw_only_ = true;
+              transitionTo(
+                ReceptionistState::RETURN_TO_LIVING_ROOM,
+                "Face Host failed; resetting yaw for 1x retry");
+              return;
+            }
+            speakG2ToHost();
+          });
+        } else {
+          RCLCPP_WARN(
+            get_logger(),
+            "[HOST] Service '/receptionist/host' not ready; speaking at default living_room yaw.");
+          speakG2ToHost();
+        }
+        break;
+      }
+
       case ReceptionistState::INTRODUCE_G1_TO_G2: {
         {
           std::lock_guard<std::mutex> lock(guest_mutex_);
