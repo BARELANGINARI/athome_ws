@@ -60,6 +60,7 @@ install(TARGETS
 
 install(PROGRAMS
   launch/mock_hardware.py
+  launch/mock_arm_flow.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
