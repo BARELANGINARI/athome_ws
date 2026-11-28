@@ -2360,7 +2360,7 @@ private:
       // ========================================================================
       case RestaurantState::ASK_CUSTOMER_ORDER:
         speakAsync(
-          "Hello, welcome! May I take your order? Please say your items, separated by and. example, i order your order 1 and your order 2",
+          "Hello, welcome! May I take your order? Please say your items, separated by and.",
           [this]() {
             transitionTo(
               RestaurantState::WAIT_CUSTOMER_ORDER,
