@@ -13,9 +13,9 @@ restaurant_node:
     # 2. Customer Order / Person Navigation Settings
     order_topic: "/vision/order"         # Topik posisi order
     order_frame: "base_link"             # Frame koordinat order
-    standoff_distance: 1.0               # Jarak henti pelanggan
+    standoff_distance: 0.7               # Jarak henti pelanggan
     adaptive_standoff_enabled: true      # Jarak henti adaptif
-    adaptive_standoff_min: 1.0           # Jarak adaptif minimal
+    adaptive_standoff_min: 0.7           # Jarak adaptif minimal
     adaptive_standoff_max: 1.6           # Jarak adaptif maksimal
     adaptive_standoff_step: 0.05         # Langkah mundur adaptif
     costmap_obstacle_threshold: 60       # Ambang batas rintangan
@@ -58,10 +58,10 @@ restaurant_manager:
     global_frame: "map"                  # Frame peta global
     base_frame: "base_link"              # Frame dasar robot
     order_frame: "base_link"             # Frame koordinat order
-    customer_standoff_distance: 1.0      # Jarak henti pelanggan
+    customer_standoff_distance: 0.7      # Jarak henti pelanggan
     object_standoff_distance: 0.45       # Jarak henti meja
     adaptive_standoff_enabled: true      # Jarak henti adaptif
-    adaptive_standoff_min: 1.0           # Jarak adaptif minimal
+    adaptive_standoff_min: 0.7           # Jarak adaptif minimal
     adaptive_standoff_max: 1.6           # Jarak adaptif maksimal
     adaptive_standoff_step: 0.05         # Langkah mundur adaptif
     costmap_obstacle_threshold: 60       # Ambang batas rintangan

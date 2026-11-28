@@ -78,7 +78,7 @@ controller_server:
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker" # Stuck detection plugin
       required_movement_radius: 0.10     # Required movement radius (m)
-      movement_time_allowance: 60.0      # Movement time allowance (s, diberi waktu leluasa untuk manuver dan antri)
+      movement_time_allowance: 12.0      # Movement time allowance (s, responsif memicu recovery jika tersangkut di meja/kursi)
 
     general_goal_checker:
       stateful: True                     # Stateful goal checking
@@ -101,20 +101,20 @@ controller_server:
 
       # DWB Local Planner Parameters (3-wheel omni)
       debug_trajectory_details: False    # Disable heavy debug logging to prevent loop rate dropping from 20Hz to 3Hz
-      min_vel_x: 0.0                     # KUNCI MUTLAK: 0.0 m/s (DILARANG MUNDUR! Robot hanya boleh maju ke depan menghadap path)
-      max_vel_x: 0.70                    # Max forward velocity (m/s)
+      min_vel_x: -0.05                   # Izinkan mundur tipis (-0.05 m/s) untuk keluar dari sudut sempit meja/kursi
+      max_vel_x: 0.55                    # Max forward velocity (m/s, selaras dengan velocity_smoother)
       min_vel_y: -0.12                   # Min lateral strafe velocity (-0.12 m/s) cukup lincah untuk sidestep rintangan tanpa membuat robot jalan kepiting
       max_vel_y: 0.12                    # Max lateral strafe velocity (+0.12 m/s)
       min_speed_xy: 0.05                 # Min translational speed (m/s, mencegah micro-speed di bawah deadband motor)
-      max_speed_xy: 0.70                 # Max translational speed (m/s)
-      max_vel_theta: 1.8                 # Max angular velocity dinaikkan ke 1.8 rad/s agar manuver hadap saat melaju juga gesit
+      max_speed_xy: 0.55                 # Max translational speed (m/s, selaras dengan velocity_smoother)
+      max_vel_theta: 1.6                 # Max angular velocity (rad/s, selaras dengan velocity_smoother)
       min_speed_theta: 0.15              # Min angular velocity (rad/s, dinaikkan ke 0.15 agar PWM motor di atas deadband motor dan tidak freeze di lantai)
       acc_lim_x: 1.2                     # Translation X acceleration limit (m/s^2)
       acc_lim_y: 1.0                     # Translation Y acceleration limit (m/s^2)
-      acc_lim_theta: 4.5                 # Angular acceleration limit dinaikkan ke 4.5 rad/s^2
+      acc_lim_theta: 3.0                 # Angular acceleration limit (rad/s^2, selaras dengan velocity_smoother)
       decel_lim_x: -1.8                  # Translation X deceleration limit (m/s^2, dinaikkan agar pengereman mendekati goal sigap)
       decel_lim_y: -1.0                  # Translation Y deceleration limit (m/s^2)
-      decel_lim_theta: -4.5              # Angular deceleration limit (-4.5 rad/s^2)
+      decel_lim_theta: -3.0              # Angular deceleration limit (-3.0 rad/s^2, selaras dengan velocity_smoother)
       vx_samples: 20                     # VX velocity samples
       vy_samples: 15                     # VY velocity samples (dinaikkan ke 15 agar sampling translasi lateral omni halus)
       vtheta_samples: 31                 # Vtheta velocity samples (angka ganjil 31 agar ada sampel resolusi nol dan rotasi halus)
@@ -123,7 +123,7 @@ controller_server:
       angular_granularity: 0.025         # Angular simulation step (rad)
       transform_tolerance: 0.25          # TF transform tolerance (s)
       xy_goal_tolerance: 0.20            # Goal XY tolerance (m)
-      trans_stopped_velocity: 0.25       # Stopped translational velocity threshold (m/s, memungkinkan rotasi goal segera aktif saat robot tiba di goal)
+      trans_stopped_velocity: 0.15       # Stopped translational velocity threshold (m/s, tunggu robot cukup tenang sebelum rotasi final)
       short_circuit_trajectory_evaluation: False # Allow exploring alternative trajectories when rotating near obstacles
       stateful: True                     # Maintain state between iterations
       prune_plan: True                   # Pangkas titik path di belakang robot agar fokus maju ke rute di depan
@@ -131,7 +131,7 @@ controller_server:
       forward_prune_distance: 0.8        # KUNCI: Batasi path di depan robot max 0.8m agar target GoalDist tidak tembus dinding ke ruang sebelah
       shorten_transformed_plan: True     # Potong plan sesuai batas local costmap
       critics: ["RotateToGoal", "Oscillation", "BaseObstacle", "PathAlign", "PathDist", "GoalDist"] # GoalAlign dihapus; GoalDist diberi bobot kecil agar robot maju menyusuri path tanpa memotong dinding
-      BaseObstacle.scale: 0.12           # Obstacle proximity penalty dinaikkan tegas dari 0.02 ke 0.12 agar robot aktif menjauhi rintangan/orang di depan
+      BaseObstacle.scale: 0.20           # Obstacle proximity penalty dinaikkan ke 0.20 agar menjauhi meja/kursi lebih halus tanpa memperlebar inflation_radius
       PathDist.scale: 24.0               # Bobot path dist diturunkan dari 35.0 ke 24.0 agar robot fleksibel menyimpang dari garis path untuk mengambil ruang aman
       GoalDist.scale: 16.0               # Bobot dorong maju kontinu agar robot melaju lancar hingga masuk radius goal tanpa merayap
       PathAlign.scale: 36.0              # KUNCI: Bobot penjajaran hadap dijaga tinggi (36.0) agar moncong robot SELALU tegas menghadap lurus ke depan path
@@ -175,7 +175,7 @@ local_costmap:
           inf_is_valid: true             # KUNCI: Sinar tak-hingga (inf) saat rintangan hilang tetap dipakai untuk clearing raytrace
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Safety buffer layer around obstacles
-        cost_scaling_factor: 25.0        # Exponential cost decay factor (ditingkatkan dari 10.0 agar objek kecil seperti kaki tidak menggelembung tebal)
+        cost_scaling_factor: 12.0        # Gradien biaya lebih halus di dalam radius 0.35m tanpa memperlebar inflation_radius
         inflation_radius: 0.35           # Inflation radius (m)
       always_send_full_costmap: True     # Send full costmap on publish
 
@@ -217,7 +217,7 @@ global_costmap:
           inf_is_valid: true             # KUNCI: Sinar tak-hingga (inf) saat rintangan hilang tetap dipakai untuk clearing raytrace
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer" # Wall & obstacle inflation layer
-        cost_scaling_factor: 25.0        # Exponential cost decay factor
+        cost_scaling_factor: 12.0        # Gradien biaya lebih halus di dalam radius 0.35m tanpa memperlebar inflation_radius
         inflation_radius: 0.35           # Inflation radius (m)
       always_send_full_costmap: True     # Send full costmap on publish
 
@@ -304,10 +304,10 @@ velocity_smoother:
     smoothing_frequency: 20.0            # Output smoothing frequency (Hz)
     scale_velocities: True               # Scale velocities when limits hit
     feedback: "OPEN_LOOP"                # Open-loop velocity estimation
-    max_velocity: [0.45, 0.20, 1.4]      # Max velocity limits [vx, vy, vtheta]
-    min_velocity: [-0.08, -0.20, -1.4]   # Min velocity limits [vx, vy, vtheta]
-    max_accel: [1.2, 1.0, 1.8]           # Max acceleration limits [ax, ay, atheta]
-    max_decel: [-1.8, -1.0, -1.8]        # Max deceleration limits [dx, dy, dtheta]
+    max_velocity: [0.55, 0.20, 1.6]      # Max velocity limits [vx, vy, vtheta] (selaras dengan controller_server)
+    min_velocity: [-0.08, -0.20, -1.6]   # Min velocity limits [vx, vy, vtheta]
+    max_accel: [1.2, 1.0, 3.0]           # Max acceleration limits [ax, ay, atheta] (selaras dengan controller_server)
+    max_decel: [-1.8, -1.0, -3.0]        # Max deceleration limits [dx, dy, dtheta]
     odom_topic: "odom"                   # Odometry input topic
     odom_duration: 0.1                   # Odometry time window (s)
     deadband_velocity: [0.0, 0.0, 0.0]   # Deadband velocity [vx, vy, vtheta]
